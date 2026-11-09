@@ -806,3 +806,91 @@ let ``Watchdog logs a host suspension once when a tick that read the clocks befo
         <@
             suspensions () = [ "host was suspended ~392s since the previous watchdog tick (wall clock advanced 394s, awake 2s)" ]
         @>
+
+// --- Client waits are judged by the work they wait on (AUTOMATION-1520) ---
+
+let private waitWatchdog (clock: DateTime ref) (logged: ResizeArray<string>) =
+    new Watchdog(
+        threshold,
+        heartbeatEvery = TimeSpan.FromHours(1.0),
+        now = (fun () -> clock.Value),
+        log = logged.Add,
+        tick = TimeSpan.FromMilliseconds(20.0)
+    )
+
+// A healthy cold scan held `WaitForScan` for 500 s and `status` told the reader to stop
+// the daemon, discarding the scan's work.
+[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a wait on work that keeps moving is never reported wedged, however long it runs`` () =
+    let clock = ref t0
+    let logged = ResizeArray<string>()
+    use watchdog = waitWatchdog clock logged
+
+    let quietFor = ref (TimeSpan.FromSeconds 5.0)
+    let token = watchdog.BeginWait("WaitForScan", fun () -> quietFor.Value)
+    clock.Value <- t0.AddSeconds 500.0
+    Thread.Sleep 100
+
+    test <@ watchdog.WedgeReport() = None @>
+    test <@ logged |> Seq.exists (fun l -> l.StartsWith "operation exceeded") |> not @>
+    watchdog.End token
+
+// The positive control: the same wait, on work that has stopped, is still reported.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a wait on work that has stopped moving is reported wedged with its recovery`` () =
+    let clock = ref t0
+    let logged = ResizeArray<string>()
+    use watchdog = waitWatchdog clock logged
+
+    let token = watchdog.BeginWait("WaitForScan", fun () -> WaitStallBound)
+    clock.Value <- t0.AddSeconds 700.0
+
+    match watchdog.WedgeReport() with
+    | None -> Assert.Fail "a stuck scan must still be reported"
+    | Some report ->
+        test <@ report.StartsWith "WEDGED: WaitForScan" @>
+        test <@ report.Contains "fshw stop" @>
+
+    watchdog.End token
+
+// The threshold still applies to a wait whose work stalls only later: the wait was
+// healthy, then the work stopped.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a wait turns wedged when the work it waits on stops moving`` () =
+    let clock = ref t0
+    let logged = ResizeArray<string>()
+    use watchdog = waitWatchdog clock logged
+
+    let quietFor = ref TimeSpan.Zero
+    let token = watchdog.BeginWait("WaitForComplete", fun () -> quietFor.Value)
+    clock.Value <- t0.AddSeconds 500.0
+    test <@ watchdog.WedgeReport() = None @>
+
+    quietFor.Value <- WaitStallBound.Add(TimeSpan.FromSeconds 1.0)
+
+    test
+        <@
+            (watchdog.WedgeReport()
+             |> Option.map (fun r -> r.StartsWith "WEDGED: WaitForComplete")) = Some true
+        @>
+
+    watchdog.End token
+
+// Plain ops keep the age rule: this is not a watchdog that went quiet everywhere.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an op that is not a wait is still wedged by its age alone`` () =
+    let clock = ref t0
+    let logged = ResizeArray<string>()
+    use watchdog = waitWatchdog clock logged
+
+    let token = watchdog.Begin "TriggerBuild"
+    clock.Value <- t0.AddSeconds 500.0
+
+    test
+        <@
+            (watchdog.WedgeReport()
+             |> Option.map (fun r -> r.StartsWith "WEDGED: TriggerBuild")) = Some true
+        @>
+
+    watchdog.End token

@@ -318,6 +318,10 @@ type DaemonRpcConfig =
         /// at the bound. Asks nothing about evidence and starts nothing — the wait a
         /// reader such as `fshw findings` needs, where `WaitForAllTerminal` is a check's.
         WaitForRest: TimeSpan -> Task<unit>
+        /// How long the daemon's work has shown no movement: a checked file, a dispatch, a
+        /// plugin status change. Zero while a plugin is busy, since a plugin's own run has its
+        /// own wedge detector. What a client wait is judged by (`OperationWatchdog.WaitStallBound`).
+        WorkQuietFor: unit -> TimeSpan
         RerunPlugin: string -> Async<Result<unit, string>>
         /// Drop every persisted task-result entry for this workspace. The task
         /// boundary keeps filesystem enumeration off the RPC dispatch thread.
@@ -415,8 +419,13 @@ type DaemonRpcTarget
     /// callback receives the disconnect token so it can cancel what it started SOLELY
     /// for this client; anything it merely waits on that others share (a plugin run,
     /// the daemon-wide terminal wait) must be left running — see each method.
-    let trackedTask (name: string) (f: CancellationToken -> Task<'a>) : Task<'a> =
-        let token = watchdog |> Option.map (fun w -> w.Begin name)
+    let trackedWith
+        (start: OperationWatchdog.Watchdog -> OperationWatchdog.OpToken)
+        (deadlineMessage: TimeSpan -> string)
+        (name: string)
+        (f: CancellationToken -> Task<'a>)
+        : Task<'a> =
+        let token = watchdog |> Option.map start
 
         task {
             try
@@ -436,13 +445,7 @@ type DaemonRpcTarget
                     return
                         raise (OperationCanceledException($"%s{name} abandoned: its client disconnected", disconnected))
                 elif obj.ReferenceEquals(winner, expiry) then
-                    return
-                        raise (
-                            TimeoutException(
-                                $"%s{name} exceeded its %d{int d.TotalSeconds}s deadline — the daemon is wedged on this \
-                                  operation. %s{OperationWatchdog.recoveryAction ()}"
-                            )
-                        )
+                    return raise (TimeoutException(deadlineMessage d))
                 else
                     // Cancel the timer so its registration doesn't outlive the call.
                     timeoutCts.Cancel()
@@ -452,6 +455,29 @@ type DaemonRpcTarget
                 | Some w, Some t -> w.End t
                 | _ -> ()
         }
+
+    let wedgedAtDeadline (name: string) (d: TimeSpan) =
+        $"%s{name} exceeded its %d{int d.TotalSeconds}s deadline — the daemon is wedged on this \
+          operation. %s{OperationWatchdog.recoveryAction ()}"
+
+    /// `trackedWith` for an RPC that does its own work: stuck past the threshold is stuck.
+    let trackedTask (name: string) (f: CancellationToken -> Task<'a>) : Task<'a> =
+        trackedWith (fun w -> w.Begin name) (wedgedAtDeadline name) name f
+
+    /// `trackedWith` for a client's wait on daemon work. It lasts as long as that work, so it
+    /// is judged by whether the work is moving: a cold scan holds one for minutes, and
+    /// telling that reader to `fshw stop` discards the scan (AUTOMATION-1520).
+    let trackedWait (name: string) (f: CancellationToken -> Task<'a>) : Task<'a> =
+        trackedWith
+            (fun w -> w.BeginWait(name, config.WorkQuietFor))
+            (fun d ->
+                if OperationWatchdog.isAdvancing (config.WorkQuietFor()) then
+                    $"%s{name} gave up after %d{int d.TotalSeconds}s, but the work it waits on is still moving: \
+                      the daemon is not wedged. Re-run to wait again; raise FSHW_VERDICT_DEADLINE_SEC to wait longer."
+                else
+                    wedgedAtDeadline name d)
+            name
+            f
 
     /// Run a registered command under `requester`, the token its requests hold their
     /// intents for, and reply with its result or the unknown-command sentinel.
@@ -744,7 +770,7 @@ type DaemonRpcTarget
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
         // The scan is the daemon's, shared by every waiter: a dropped client only stops
         // waiting on it.
-        trackedTask "WaitForScan" (fun _ ->
+        trackedWait "WaitForScan" (fun _ ->
             task {
                 Logging.debug "rpc" $"WaitForScan(%d{afterGeneration}) called"
                 do! config.WaitForScanGeneration(afterGeneration)
@@ -758,7 +784,7 @@ type DaemonRpcTarget
     member this.WaitForComplete(timeoutMs: int) : Task<string> =
         // Plugin runs are the daemon's, shared by every waiter and the watcher: a dropped
         // client only stops waiting on them.
-        trackedTask "WaitForComplete" (fun _ ->
+        trackedWait "WaitForComplete" (fun _ ->
             task {
                 let statuses = config.Host.GetAllStatuses()
 
@@ -799,7 +825,7 @@ type DaemonRpcTarget
     /// asked for, so this asks the one question both share — is anything still owned? —
     /// and nothing else. A wedged or dead plugin answers `busy` with the detector's words.
     member _.WaitForRest(timeoutMs: int) : Task<string> =
-        trackedTask "WaitForRest" (fun _ ->
+        trackedWait "WaitForRest" (fun _ ->
             task {
                 if timeoutMs <= 0 then
                     return

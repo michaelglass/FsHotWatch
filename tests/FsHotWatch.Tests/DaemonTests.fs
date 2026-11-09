@@ -1260,6 +1260,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   WaitForScanGeneration = fun _ -> Task.FromResult(())
                   WaitForAllTerminal = fun _ -> Task.FromResult(())
                   WaitForRest = fun _ -> Task.FromResult(())
+                  WorkQuietFor = fun () -> TimeSpan.Zero
                   RerunPlugin = fun _ -> async { return Result.Ok() }
                   InvalidateCache = fun () -> Task.FromResult(())
                   GetUncheckedCount = fun () -> 0
@@ -1325,6 +1326,18 @@ let ``formatScanStatusWith renders scanning progress with elapsed time and cache
         formatScanStatusWith 0 0 scanNow (Some(cacheTally 3L 2L)) (Scanning(10, 5, scanNow.AddSeconds -42.0))
 
     test <@ status = "scanning: 5/10 files (50%), 42s elapsed, cache 3 hit / 2 miss" @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatScanStatusWith names the files a filed check record answered during the scan`` () =
+    let tally =
+        { cacheTally 0L 0L with
+            Misses = Map.empty
+            Replayed = 2744L }
+
+    let status =
+        formatScanStatusWith 0 0 scanNow (Some tally) (Scanning(2744, 2744, scanNow.AddSeconds -5.0))
+
+    test <@ status = "scanning: 2744/2744 files (100%), 5s elapsed, cache 0 hit / 0 miss / 2744 replayed" @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatScanStatusWith renders a long scan's elapsed time in minutes`` () =
