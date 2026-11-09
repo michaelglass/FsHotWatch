@@ -629,6 +629,15 @@ let runOrder (graded: Guid option) (checkRuns: Guid list) : string list =
     earlier @ checkRuns |> List.map (fun g -> g.ToString "N")
 
 /// The observation a published verdict makes.
+/// The run today's full-suite watermark records, for a publication that does not name
+/// one. A watermark run with a red project publishes red, and today accepts it anyway:
+/// without this its passing projects earned no baseline (AUTOMATION-1536).
+let private watermarkRun (repoRoot: string) : string option =
+    match FsHotWatch.TestPrune.FullSuiteBaseline.load repoRoot with
+    | FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> Some(baseline.RunId.ToString "N")
+    | FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline.Loaded None
+    | FsHotWatch.TestPrune.FullSuiteBaseline.LoadedBaseline.Unreadable _ -> None
+
 let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
     let today =
         match v.Outcome with
@@ -667,7 +676,7 @@ let ofVerdict (repoRoot: string) (v: Verdict.Verdict) : Observation =
       BaselineRunId =
         (match v.Outcome with
          | Verdict.Green(CheckVerdict.Baseline.FullSuiteRun r) -> Some(r.RunId.ToString "N")
-         | _ -> None)
+         | _ -> watermarkRun repoRoot)
       Scope =
         (match v.Scope with
          | IpcParsing.FullSuite _ -> GradedScope.FullSuite

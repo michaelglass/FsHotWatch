@@ -288,7 +288,12 @@ let ``observe reads the configured test projects and never throws`` () =
 // `fshw verdict` reads (ADR-059 §7): the CURRENT tree looked up beside what the read reports.
 // ---------------------------------------------------------------------------
 
-let private publishedVerdict (command: Verdict.Command) (outcome: Verdict.Outcome) (exitCode: int) =
+let private publishedVerdictWith
+    (lint: Verdict.PluginOutcome)
+    (command: Verdict.Command)
+    (outcome: Verdict.Outcome)
+    (exitCode: int)
+    =
     Verdict.create
         command
         (BaselineFixtures.reportOf (IpcParsing.FullSuite(2, None)))
@@ -302,13 +307,18 @@ let private publishedVerdict (command: Verdict.Command) (outcome: Verdict.Outcom
         outcome
         exitCode
         [ { Name = "lint"
-            Outcome = Verdict.PluginOutcome.Ok
+            Outcome = lint
             ElapsedMs = Some 1L
             Summary = None } ]
         []
         Verdict.CheckComparison.notRecorded
         []
         ProjectModelFixtures.available
+
+let private publishedVerdict = publishedVerdictWith Verdict.PluginOutcome.Ok
+
+let private publishedRed () =
+    publishedVerdictWith Verdict.PluginOutcome.Fail Verdict.Check Verdict.Red 1
 
 let private greenConfirm () =
     publishedVerdict Verdict.Confirm (Verdict.Green BaselineFixtures.baseline) 0
@@ -805,3 +815,58 @@ let ``a direction and a class read back from their own tokens, and nothing else 
 
     test <@ Direction.tryParse "sideways" = None @>
     test <@ Class.tryParse "amber" = None @>
+
+// ---------------------------------------------------------------------------
+// A watermark run with one red project earned no baselines at all (AUTOMATION-1536). Its
+// own publication was red, so it named no run; the later green publication named the run
+// but did not carry its suites. The projects that passed read as missing.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a red publication names the run the watermark records`` () =
+    withStore (fun repo _ ->
+        let runId = Guid.NewGuid()
+
+        FsHotWatch.TestPrune.FullSuiteBaseline.save
+            repo
+            { RunId = runId
+              EarnedAt = DateTime.UtcNow
+              Projects = Set.ofList projects }
+
+        let observation = ofVerdict repo (publishedRed ())
+        let expected = Some(runId.ToString "N")
+        test <@ observation.BaselineRunId = expected @>)
+
+[<Fact>]
+let ``a red publication with no watermark names no run (positive control)`` () =
+    withStore (fun repo _ ->
+        let observation = ofVerdict repo (publishedRed ())
+        test <@ observation.BaselineRunId = None @>)
+
+[<Fact>]
+let ``a watermark run's passing project earns a baseline from a red publication, its red project none`` () =
+    withStore (fun repo store ->
+        let red =
+            { confirmGreen with
+                Command = Verdict.Check
+                Tree = "sha256:t0"
+                Today = Class.Red
+                TodayOutcome = "red"
+                ExitCode = 1
+                GradedRunId = Some "r2"
+                BaselineRunId = Some "r1"
+                Scope = GradedScope.ImpactFiltered
+                Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 1; suite "r2" "B.Tests" 1 ] }
+
+        observeWith repo store None projects red |> ignore
+
+        let check =
+            { confirmGreen with
+                Command = Verdict.Check
+                Tree = "sha256:t1"
+                GradedRunId = Some "r3"
+                Scope = GradedScope.ImpactFiltered
+                Suites = [ suite "r3" "A.Tests" 0; suite "r3" "B.Tests" 0 ]
+                RecordedAt = t0.AddMinutes 1.0 }
+
+        test <@ observeWith repo store None projects check = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
