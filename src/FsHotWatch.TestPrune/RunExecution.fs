@@ -691,6 +691,7 @@ let internal executeTests
             { Collected = collected
               Settled = fun project -> traceIngestion |> Option.iter (fun t -> t.Settled project)
               LogToCtx = logToCtx
+              RunDir = runDir
               LaunchProject = launchProject
               LaunchSampled = launchSampled
               SelectionOf = selectionOf }

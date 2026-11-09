@@ -353,6 +353,7 @@ type internal WatchEnv =
         /// A project's result is final: no starvation re-run is pending for it.
         Settled: string -> unit
         LogToCtx: string -> unit
+        RunDir: string
         LaunchProject: ProjectLauncher
         LaunchSampled: SampledLauncher
         SelectionOf: TestConfig -> string list option
@@ -398,7 +399,10 @@ let internal launchWatchedWith
             | Starvation.Report why ->
                 why
                 |> Option.iter (fun reason ->
-                    Logging.info "test-prune" $"%s{config.Project}: starvation declared; %s{reason}")
+                    let line = $"%s{config.Project}: starvation declared; %s{reason}"
+                    Logging.info "test-prune" line
+                    logToCtx line
+                    Starvation.writeNotRerun policy env.RunDir config.Project reason reading)
 
                 env.Settled config.Project
 

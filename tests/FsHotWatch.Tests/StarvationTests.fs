@@ -490,3 +490,39 @@ let ``an assertion beside a declared timeout message keeps the red`` () =
         )
 
     test <@ Result.isError (Starvation.timeoutsOfReport playwrightTimeouts json) @>
+
+// --- every reason a declared project is not re-run names the load (AUTOMATION-1524) ---
+
+let private assertNamesLoad (decision: Starvation.Decision) =
+    match decision with
+    | Starvation.Report(Some reason) ->
+        test <@ reason.Contains "on 12 cores" @>
+        test <@ reason.Contains "samples at ≥ 2.0/core" @>
+    | other -> failwith $"expected a report with a reason, got %A{other}"
+
+[<Fact>]
+let ``a red with no readable report names the load and the threshold`` () =
+    assertNamesLoad (Starvation.decide (Some everyClass) None failedRed None quiet)
+
+[<Fact>]
+let ``a red that is not all timeouts names the load and the threshold`` () =
+    let json =
+        ctrfOf [ timeoutRow "A.Slow" "one"; ("A.Slow", "two", "failed", "assertion failed") ]
+
+    assertNamesLoad (Starvation.decide (Some everyClass) None failedRed (Some json) quiet)
+
+[<Fact>]
+let ``a timeout in classes the declaration does not cover names the load and the threshold`` () =
+    let policy = Starvation.Policy.rerunAlone [ "A.Slow" ]
+    assertNamesLoad (Starvation.decide (Some policy) (Some [ "B.Other" ]) timedOut None quiet)
+
+[<Fact>]
+let ``a not-re-run record that cannot be written loses the explanation, never the run`` () =
+    // A file where the run directory should be: the write is refused by the filesystem.
+    let notADirectory = Path.GetTempFileName()
+
+    try
+        Starvation.writeNotRerun everyClass notADirectory "Slow.Tests" "not starved" quiet
+        test <@ not (File.Exists(Starvation.notRerunPathIn notADirectory "Slow.Tests")) @>
+    finally
+        File.Delete notADirectory

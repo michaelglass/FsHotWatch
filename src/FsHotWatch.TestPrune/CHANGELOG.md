@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a project that declares `starvation` and does not qualify for the re-run now says why (AUTOMATION-1524). The reason, with
+  the load reading and threshold, goes to the run's output and to `<Project>.starvation-not-rerun.json` in the run directory.
+  It only reached the daemon log before, which a reader of a red land could not retrieve. A project with no declaration is unchanged.
+
 - fix!: a class that read quiet across a gap in the profile's samples no longer says `contended: false` (AUTOMATION-1529).
   A host that slept while a test ran left 72-1105 s between 5 s samples, and the run's profile called it uncontended. A gap over
   three sampling intervals now makes a quiet reading unknown and appears as `samplerGapSec` on the class line. A contended
