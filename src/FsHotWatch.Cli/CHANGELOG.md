@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `confirm`, `test-rerun` and the other one-shot verbs stop the daemon they started only if the daemon says nobody
+  else is using it (AUTOMATION-1197). The release used to read the run claims, which only `check` and `confirm` hold, so a
+  `test-rerun` that reused the daemon had it stopped under it. The verb now asks with `ReleaseIfSole`, and when the
+  daemon stays up the CLI says who for.
+
 ## 0.14.0-alpha.140 - 2026-11-09
 
 - feat: `scope.selectedBy` and `scope.testsByCause` name `composition-root-restored`, ranked immediately above

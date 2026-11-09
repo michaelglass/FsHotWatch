@@ -590,14 +590,25 @@ let internal releasesDaemon (command: Command) (outcome: EnsureOutcome) : bool =
     | Invalidate, EnsureOutcome.Started -> true
     | _ -> false
 
+/// What came of asking to stop a daemon this verb started.
+[<RequireQualifiedAccess>]
+type ReleaseOutcome =
+    /// Stopped, or detached.
+    | Released
+    /// Left running for another client, named here.
+    | Kept of who: string
+
 /// End the daemon a one-shot verb started, unless another run is in flight on this repo.
 /// A `check` that reused the daemon while this command ran holds a run claim
 /// (`RunClaim`) until it finishes, and releasing would stop its daemon under it; the daemon
 /// is then that run's to keep. This command's own claim is released before this is
 /// reached, so every claim held here is another run's.
-let internal releaseUnlessShared (repoRoot: string) (release: unit -> unit) : unit =
+let internal releaseUnlessShared (repoRoot: string) (release: unit -> ReleaseOutcome) : unit =
     match RunClaim.live repoRoot with
-    | [] -> release ()
+    | [] ->
+        match release () with
+        | ReleaseOutcome.Released -> ()
+        | ReleaseOutcome.Kept who -> eprintfn $"  Leaving the daemon running: another client is using it (%s{who})."
     | others ->
         let users = others |> List.map RunClaim.describe |> String.concat "; "
         eprintfn $"  Leaving the daemon running: another run is using it (%s{users})."
@@ -750,6 +761,9 @@ let launchDaemonProcess (exe: string) (toolPrefix: string) (repoRoot: string) (e
 type IpcOps =
     {
         Shutdown: string -> Async<string>
+        /// Stop the daemon only if the caller is its sole user: the daemon decides, and
+        /// answers `ReleaseReply`.
+        ReleaseIfSole: string -> Async<string>
         /// Request a scan on `pipe`, held through the run claim of the invocation named,
         /// if any (`ScanFor`); with none the scan is the daemon's (`Scan`).
         Scan: string -> string option -> Async<string>
@@ -778,6 +792,7 @@ type IpcOps =
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
     { Shutdown = IpcClient.shutdown
+      ReleaseIfSole = IpcClient.releaseIfSole
       Scan =
         fun pipeName invocation ->
             match invocation with
@@ -814,6 +829,7 @@ let defaultIpcOps: IpcOps =
 /// its startup timeout against a daemon that is already serving.
 let internal resolvingIpcOps (resolve: string -> string) (ipc: IpcOps) : IpcOps =
     { Shutdown = fun pipe -> ipc.Shutdown(resolve pipe)
+      ReleaseIfSole = fun pipe -> ipc.ReleaseIfSole(resolve pipe)
       Scan = fun pipe invocation -> ipc.Scan (resolve pipe) invocation
       ScanStatus = fun pipe -> ipc.ScanStatus(resolve pipe)
       GetStatus = fun pipe -> ipc.GetStatus(resolve pipe)
@@ -3090,6 +3106,7 @@ let sessionIpcOps (link: HostLink) : IpcOps =
         }
 
     { Shutdown = fun _ -> call "Shutdown" [||]
+      ReleaseIfSole = fun _ -> call "ReleaseIfSole" [||]
       Scan =
         fun _ invocation ->
             match invocation with
@@ -3591,7 +3608,7 @@ type DaemonLink =
         ForceRestart: unit -> EnsureOutcome
         /// End what this command started: stop the per-worktree daemon and wait until its
         /// pipe is gone, or detach the host session. The host itself stays up.
-        Release: unit -> unit
+        Release: unit -> ReleaseOutcome
         /// Say so when the serving daemon was built from different code. A host
         /// session's binary was already checked by the attach handshake.
         WarnIfStale: unit -> unit
@@ -3638,6 +3655,24 @@ let internal ownDaemonLink
 
         killStaleDaemon repoRoot
 
+    // Ask the daemon, which alone can see every client; `stopAnswering` only once it agreed.
+    let release () =
+        let reply =
+            try
+                Ok(ipc.ReleaseIfSole pipeName |> Async.RunSynchronously)
+            with ex ->
+                Error ex.Message
+
+        match reply with
+        | Ok answer ->
+            match ReleaseReply.keptFor answer with
+            | Some who -> ReleaseOutcome.Kept who
+            | None ->
+                stopAnswering ()
+                ReleaseOutcome.Released
+        | Error _ when not (ipc.IsRunning pipeName) -> ReleaseOutcome.Released
+        | Error message -> ReleaseOutcome.Kept $"the daemon could not be asked (%s{message})"
+
     { Ensure = ensure
       // Unlike `Ensure` this never reuses: the pipe's occupant emits garbage.
       ForceRestart =
@@ -3646,7 +3681,7 @@ let internal ownDaemonLink
 
             startFreshDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
             |> EnsureOutcome.ofStart
-      Release = stopAnswering
+      Release = release
       WarnIfStale = fun () -> staleness () |> Option.iter (staleIdentityStatusWarning >> eprintfn "%s")
       RestartIfStale = fun () -> staleness () |> Option.iter (fun _ -> ensure () |> ignore)
       Start = fun startHere -> startHere ()
@@ -3666,7 +3701,10 @@ let internal hostSessionLink (host: HostLink) (attachedHere: bool) : DaemonLink 
 
     { Ensure = attach
       ForceRestart = attach
-      Release = fun () -> ipc.Shutdown "" |> Async.RunSynchronously |> ignore
+      Release =
+        fun () ->
+            ipc.Shutdown "" |> Async.RunSynchronously |> ignore
+            ReleaseOutcome.Released
       WarnIfStale = ignore
       RestartIfStale = ignore
       Start =

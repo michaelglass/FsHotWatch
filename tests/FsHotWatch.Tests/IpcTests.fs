@@ -30,6 +30,7 @@ let private waitForServer (pipeName: string) =
 let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
+      LiveRunClaims = fun () -> []
       RequestScan = ignore
       InvocationReleased = fun _ -> System.Threading.CancellationToken.None
       GetScanStatus = fun () -> FsHotWatch.ScanProgress.Progress.Idle
@@ -1427,6 +1428,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
     let config =
         { defaultRpcConfig host with
             RequestShutdown = fun () -> cts.Cancel()
+            LiveRunClaims = fun () -> []
             WaitForAllTerminal =
                 fun timeout ->
                     let pending = waitForAllTerminal host timeout cts.Token
