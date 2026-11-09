@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.140 - 2026-11-09
+
 - feat: `scope.selectedBy` and `scope.testsByCause` name `composition-root-restored`, ranked immediately above
   `changed-symbols`, and `fshw explain` says when a file's selection includes projects the fail-safe restored
   (`restoredProjects` in `--json`) (AUTOMATION-1515).

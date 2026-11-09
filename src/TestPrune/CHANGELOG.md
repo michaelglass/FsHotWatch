@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 16.0.0 - 2026-11-09
+
+- Merge: AUTOMATION-1515 attribute the composition-root fail-safe in a test selection
+- Finish: AUTOMATION-1515 attribute the composition-root fail-safe in a test selection
+
+
 ## 15.0.1 - 2026-11-08
 
 - fix: a project's index key hashes its EVALUATED compile list, so an MSBuild condition that flips

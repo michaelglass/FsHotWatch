@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.107 - 2026-11-09
+
 - feat: a test selection attributes a project the composition-root fail-safe restored to its own cause,
   `composition-root-restored` (AUTOMATION-1515). Such a project read as `changed-symbols`, which over-reported what a
   barrier saves. It ranks immediately above `changed-symbols`: `testsByCause` counts a project once under its widest
