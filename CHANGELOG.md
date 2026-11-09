@@ -74,6 +74,19 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a kill escalation reaches the whole process group
+
+A tree whose kill does not return is now reaped by process group as well as by pid.
+fshw starts each child as the leader of its own group (through `/usr/bin/perl`, which
+keeps the child's pid; absent, or when `fshw` holds a terminal, the child stays in
+fshw's group and the old pid sweep is used). One `kill(-pgid)` reaches members the
+process table no longer links to the root, including when the root has already gone,
+and a recycled leader's group is never signalled. When the table cannot be read at
+all, the root is still signalled if its start time proves it ours. The registry's
+shutdown budget now covers the escalation's own worst case, so a shutdown no longer
+books a tree that is still being reaped as LEAKED. A DEAD plugin now writes its line
+to the log before the wait raises it.
+
 ### core: a hung process tree is reaped even when `ps` will not answer
 
 Escalating a kill that did not return read the process table by starting `ps`. A kill hangs

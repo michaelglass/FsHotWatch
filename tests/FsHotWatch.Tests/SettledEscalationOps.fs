@@ -52,6 +52,10 @@ let internal settledOps () : EscalationOps =
             fun pid signum ->
                 lastSignal.Value <- signum
                 liveEscalationOps.Signal pid signum
+        SignalGroup =
+            fun pgid signum ->
+                lastSignal.Value <- signum
+                liveEscalationOps.SignalGroup pgid signum
         Pause =
             fun () ->
                 if lastSignal.Value = 9 then

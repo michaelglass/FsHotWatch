@@ -64,6 +64,15 @@ let private captureLogs () =
 
     lines, sink
 
+// A shutdown budget shorter than the escalation it waits on books a tree that is being
+// reaped as LEAKED, which is the outcome this escalation exists to remove.
+[<Fact(Timeout = 10000)>]
+let ``the shutdown escalation budget covers the escalation.s own worst case`` () =
+    Assert.True(
+        EscalationBudget >= escalationWorstCase,
+        $"budget %O{EscalationBudget} is below the escalation worst case %O{escalationWorstCase}"
+    )
+
 let private shutDownWith (child: IOwnedChild) : Registry =
     let registry = Registry(None, fast)
     Assert.True(registry.AdmitChild(obj (), child))

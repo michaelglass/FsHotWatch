@@ -17,7 +17,8 @@ let private row pid ppid command : ProcessRow =
     { Pid = pid
       ParentPid = ppid
       Zombie = false
-      Command = command }
+      Command = command
+      ProcessGroup = None }
 
 // ---------------------------------------------------------------------------
 // parseProcessTable — `ps` with `processTableArgs`: state, pid, ppid, command

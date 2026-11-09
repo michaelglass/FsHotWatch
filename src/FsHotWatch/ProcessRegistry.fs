@@ -52,7 +52,22 @@ let private teardownGrace = TimeSpan.FromSeconds 1.0
 
 /// How long a teardown waits for the escalation of a kill that did not return. The
 /// escalation bounds itself (two signal rounds of bounded polls); this is the backstop.
-let internal EscalationBudget = TimeSpan.FromSeconds 10.0
+/// Liveness polls per escalation signal, and the pause between them.
+let internal EscalationAttempts = 10
+let internal EscalationPause = TimeSpan.FromMilliseconds 200.0
+
+/// The bound on one process-table read during escalation.
+let internal EscalationTableBudget = TimeSpan.FromSeconds 2.0
+
+/// The longest an escalation can take with every read at its bound: one snapshot read,
+/// then for each of the two signals a read before signalling and `EscalationAttempts`
+/// polls, with a pause between polls.
+let internal escalationWorstCase =
+    let reads = 1 + 2 * (1 + EscalationAttempts)
+    let pauses = 2 * (EscalationAttempts - 1)
+    (EscalationTableBudget * float reads) + (EscalationPause * float pauses)
+
+let internal EscalationBudget = escalationWorstCase + TimeSpan.FromSeconds 5.0
 
 /// The bounds one registry's teardowns run under. Injected so a test can drive a kill
 /// that hangs without paying the production budgets.
@@ -219,7 +234,7 @@ let private escalateHung (hung: string) (child: IOwnedChild) : Termination =
         | EscalationResult.TreeGone ->
             Logging.warn
                 "process-registry"
-                $"ESCALATED tracked child pid %d{child.Pid} at teardown: %s{hung}, so its tree was sent SIGTERM,                   then SIGKILL, member by member (pid and start time). It is gone."
+                $"ESCALATED tracked child pid %d{child.Pid} at teardown: %s{hung}, so its tree was sent SIGTERM, then SIGKILL (pid and start time, and its process group). It is gone."
 
             Termination.Established
         | EscalationResult.Survived survivors ->
@@ -230,7 +245,7 @@ let private escalateHung (hung: string) (child: IOwnedChild) : Termination =
 
             Logging.error
                 "process-registry"
-                $"tracked child pid %d{child.Pid} SURVIVED escalation at teardown: %s{hung}, and SIGTERM then                   SIGKILL left %s{named}. These are STILL RUNNING."
+                $"tracked child pid %d{child.Pid} SURVIVED escalation at teardown: %s{hung}, and SIGTERM then SIGKILL left %s{named}. These are STILL RUNNING."
 
             Termination.Survived(hung, survivors)
     with ex ->
