@@ -588,3 +588,7 @@ let ``Watchdog logs a host suspension once, when the wall clock outruns the awak
         <@
             suspensions () = [ "host was suspended ~392s since the previous watchdog tick (wall clock advanced 394s, awake 2s)" ]
         @>
+
+// SPIKE ONLY (never landed): a red verdict so the warm re-run re-dispatches outstanding tests.
+[<Fact>]
+let ``spike 1215 keeps the verdict red`` () = Assert.Fail "spike-1215: deliberately red"

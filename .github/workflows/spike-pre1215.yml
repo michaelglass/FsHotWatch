@@ -1,0 +1,57 @@
+name: spike-pre1215-linux-warm-rerun
+on:
+  push:
+    branches: ['spike-pre1215-**']
+jobs:
+  warm-rerun:
+    strategy:
+      fail-fast: false
+      matrix:
+        processors: ['16', 'unset']
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DOTNET_NOLOGO: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.4xx'
+      - run: dotnet tool restore
+      - run: dotnet tool install -g dotnet-stack
+      - run: dotnet restore
+      - run: dotnet build --no-restore
+      - name: Cold check, then warm re-runs on the unchanged tree after a red verdict
+        env:
+          PROCS: ${{ matrix.processors }}
+        run: |
+          nproc
+          [ "$PROCS" != unset ] && export DOTNET_PROCESSOR_COUNT="$PROCS"
+          echo "DOTNET_PROCESSOR_COUNT=${DOTNET_PROCESSOR_COUNT:-unset}"
+          FSHW="dotnet run --project src/FsHotWatch.Cli --no-build --"
+          set +e
+          timeout 3000 $FSHW -a check > cold.log 2>&1; echo "cold-check exit=$?"
+          tail -5 cold.log
+          for i in 1 2; do
+            start=$(date +%s)
+            timeout 1500 $FSHW -a check > warm$i.log 2>&1; code=$?
+            echo "warm-check-$i exit=$code seconds=$(( $(date +%s) - start ))"
+            tail -5 warm$i.log
+            if [ "$code" = 124 ]; then
+              echo "WARM RE-RUN HUNG"
+              pid=$(cat .fshw/daemon.pid)
+              "$HOME/.dotnet/tools/dotnet-stack" report -p "$pid" > stack-$i.txt 2>&1
+              grep -c 'Lock.Enter' stack-$i.txt
+            fi
+          done
+          $FSHW status > status.log 2>&1; tail -30 status.log
+          grep -E 'FileChecked fold took|nothing running, but work still OWNED|\[wedge\]' logs/*.log .fshw/*.log 2>/dev/null | tail -20
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: warm-rerun-${{ matrix.processors }}
+          path: |
+            *.log
+            stack-*.txt
+            .fshw/verdict.json
+            logs/
