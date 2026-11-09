@@ -16,6 +16,7 @@ open FsHotWatch.TestPrune.PluginStartup
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.TestPrune.CoverageIngest
 open FsHotWatch.TestPrune.CoverageArtifacts
+open FsHotWatch.TestPrune.IndexMaintenance
 open FsHotWatch.Tests.TestHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
@@ -220,3 +221,105 @@ let ``a run that aborts on a database schema error names the schema as the cause
 
         Assert.Equal(syntaxError.Message, FsHotWatch.TestPrune.RunSupport.abortReasonOf syntaxError)
         Assert.Equal("boom", FsHotWatch.TestPrune.RunSupport.abortReasonOf (InvalidOperationException "boom")))
+
+// AUTOMATION-784: the mapping and the write are one IMMEDIATE transaction, so the writer now
+// queues for the write lock rather than losing an id to a rebuild. A cold indexer flush
+// holds that lock in one transaction (58s for 2523 files in a measured run, on a loaded
+// box), so a writer bounded at SQLite's 30s default failed with `database is locked`
+// exactly while the scenario this ticket is about was running.
+
+/// A coverage input and report that map to one indexed symbol in `directory`.
+let private ratchetInput (directory: string) (db: Database) =
+    let symbol: SymbolInfo =
+        { FullName = "Fixture.covered"
+          Kind = SymbolKind.Value
+          Location = InSource("src/Fixture.fs", 10, 10, "original") }
+
+    db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
+
+    let input: CoverageInput =
+        { Project = "Fixture.Tests"
+          RawPath = Path.Combine(directory, "coverage.xml")
+          IncludeInRatchet = true
+          Scope = CoverageRunScope.Full }
+
+    let xml =
+        """<coverage><packages><package name="Fixture"><classes><class name="Fixture" filename="src/Fixture.fs"><lines><line number="10" hits="7" /></lines></class></classes></package></packages></coverage>"""
+
+    input, xml
+
+/// A separate connection that takes the write lock the way an indexer flush does, and holds
+/// it until the returned action releases it.
+let private holdWriteLock (dbPath: string) =
+    let contender = new SqliteConnection($"Data Source=%s{dbPath}")
+    contender.Open()
+    use begin' = contender.CreateCommand()
+    begin'.CommandText <- "BEGIN IMMEDIATE;"
+    begin'.ExecuteNonQuery() |> ignore
+
+    fun () ->
+        use rollback = contender.CreateCommand()
+        rollback.CommandText <- "ROLLBACK;"
+        rollback.ExecuteNonQuery() |> ignore
+        contender.Dispose()
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the daemon's test-impact DB waits out an indexer flush that the library's 30s default would have refused`` () =
+    withTempDir "ratchet-busy-bound" (fun directory ->
+        let db =
+            openOwnIndex (Path.Combine(directory, "impact.db")) TestPrune.Domain.WalkPolicy.FollowAll
+
+        Assert.True(
+            dbBusyTimeout db >= TimeSpan.FromMinutes 2.0,
+            $"the daemon's own write lock waits are bounded at {dbBusyTimeout db}, shorter than the longest measured indexer flush"
+        ))
+
+[<WallClock("simulated work: a held write lock is the subject; the outcome is awaited, and the sleep only gives the holder a duration inside the writer's bound")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a coverage write queued behind an indexer's write lock persists once the indexer finishes`` () =
+    withTempDir "ratchet-busy-wait" (fun directory ->
+        let dbPath = Path.Combine(directory, "impact.db")
+
+        let db =
+            Database.create (dbPath, TestPrune.Domain.WalkPolicy.FollowAll, TimeSpan.FromSeconds 20.0)
+
+        let input, xml = ratchetInput directory db
+        let release = holdWriteLock dbPath
+
+        let writer =
+            Threading.Tasks.Task.Run(fun () -> persistProjectRatchetCoverageWithMapped ignore db directory input xml)
+
+        Threading.Thread.Sleep 1500
+        Assert.False(writer.IsCompleted, "the writer must wait for the indexer's lock, not race it")
+        release ()
+        writer.GetAwaiter().GetResult()
+
+        use inspection = db.OpenConnection()
+        use coverage = inspection.CreateCommand()
+
+        coverage.CommandText <-
+            "SELECT COUNT(*) FROM fshw_project_ratchet_coverage WHERE project = 'Fixture.Tests' AND hits = 7;"
+
+        Assert.Equal(1L, Convert.ToInt64(coverage.ExecuteScalar())))
+
+// The honest failure the ticket asked to preserve: a holder that outlasts the writer's own
+// bound fails the write, naming the lock, instead of writing partial or succeeding silently.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a holder that outlasts the writer's busy bound fails the write as a held lock`` () =
+    withTempDir "ratchet-busy-timeout" (fun directory ->
+        let dbPath = Path.Combine(directory, "impact.db")
+
+        let db =
+            Database.create (dbPath, TestPrune.Domain.WalkPolicy.FollowAll, TimeSpan.FromSeconds 1.0)
+
+        let input, xml = ratchetInput directory db
+        let release = holdWriteLock dbPath
+
+        try
+            let failure =
+                Assert.ThrowsAny<SqliteException>(fun () ->
+                    persistProjectRatchetCoverageWithMapped ignore db directory input xml)
+
+            Assert.Equal(5, failure.SqliteErrorCode)
+        finally
+            release ())
