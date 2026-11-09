@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `Database.create(dbPath, policy, busyTimeout)` sets how long the connections wait on a held lock (AUTOMATION-784).
+
 ## 16.0.0 - 2026-11-09
 
 - feat: the affected-test walk names the projects the composition-root fail-safe restored (AUTOMATION-1515).

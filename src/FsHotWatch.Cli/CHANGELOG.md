@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: a coverage write queued behind an indexer flush no longer fails with `database is locked` (AUTOMATION-784). The daemon's
+  test-impact DB waits up to 5 minutes on a held lock; TestPrune.Core's 30s default was shorter than a measured 58s cold flush.
+
 - fix: a restart served from check records no longer reads as a full re-typecheck (AUTOMATION-1520). The scan's log line and
   its `check-result cache` progress now say how many files were replayed from check records, and `scan-metrics.jsonl`
   carries `cacheReplays`; a replay is no longer counted as a cache miss.
