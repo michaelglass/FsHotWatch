@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `ReleaseIfSole`, an RPC that stops the daemon only when it finds no other open connection and no run claim
+  (AUTOMATION-1197). The daemon decides, so a client holding a connection and no claim (a `test-rerun` on the daemon, a
+  `status` reader) is counted, and a claim taken between a client asking and the daemon answering is seen. The caller's
+  own closing connection is allowed a second to go.
+
 ## 0.10.0-alpha.107 - 2026-11-09
 
 - feat: a diagnostic-only red in a file the change did not touch is re-checked once before a verdict is graded, whatever

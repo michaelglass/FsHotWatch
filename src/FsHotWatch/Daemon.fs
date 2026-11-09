@@ -4072,6 +4072,7 @@ type Daemon
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
+                      LiveRunClaims = fun () -> RunClaim.live repoRoot |> List.map RunClaim.describe
                       RequestScan = onScan
                       InvocationReleased = RunClaim.releasedFor repoRoot
                       GetScanStatus = this.ScanProgress
