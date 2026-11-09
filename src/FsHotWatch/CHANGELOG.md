@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a run asked for before a daemon's first discovery has begun waits for the model instead of launching without one
+  (AUTOMATION-887). A cold daemon serves first and its startup scan restores before it discovers, so `ProjectModel()` read
+  `Unobserved` for those seconds, and a launch only waited on `Rediscovering`. The run took its reading as "no model",
+  and when the first model arrived its whole result was revoked on an unchanged tree. A daemon now declares the discovery
+  it is about to perform before it serves, and readers see `Rediscovering` until the first attempt begins or its startup
+  scan ends without one.
+
 ## 0.10.0-alpha.107 - 2026-11-09
 
 - feat: a diagnostic-only red in a file the change did not touch is re-checked once before a verdict is graded, whatever

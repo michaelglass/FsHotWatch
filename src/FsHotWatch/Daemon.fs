@@ -637,6 +637,9 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     let mutable generation = 0L
     let mutable completed: (int64 * DiscoverySnapshot) option = None
     let mutable pendingAttempts = 0
+    // Set by a daemon that is going to discover, until its first attempt begins or its
+    // startup scan ends without one. See `ExpectFirstDiscovery`.
+    let mutable firstDiscoveryExpected = false
     let mutable quiescence: TaskCompletionSource<unit> option = None
     // ADR-044: how `WithCurrent` publications ended. Written and read under `stateGate`.
     let mutable publications = ProjectModel.Publications.none
@@ -710,12 +713,47 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
     /// treating it as an empty model.
     member _.Observation: ProjectModel.Observation =
         Locking.locked stateGate (fun () ->
-            if pendingAttempts > 0 then
+            if pendingAttempts > 0 || (firstDiscoveryExpected && completed.IsNone) then
                 ProjectModel.Observation.Rediscovering generation
             else
                 match completed with
                 | Some(epoch, snapshot) -> ProjectModel.ofCompleted epoch snapshot
                 | None -> ProjectModel.Observation.Unobserved)
+
+    /// Declare that a discovery is coming: from here until the first attempt begins, a
+    /// reader sees `Rediscovering` rather than `Unobserved`, which also describes a host that
+    /// never discovers. A daemon serves before its startup scan begins, and the scan restores
+    /// before it discovers, so without this a client that connects first is told there is
+    /// no model, not to wait for one.
+    member _.ExpectFirstDiscovery() =
+        let announcement =
+            Locking.locked stateGate (fun () ->
+                if pendingAttempts = 0 && completed.IsNone && not firstDiscoveryExpected then
+                    firstDiscoveryExpected <- true
+                    Some(generation, issueAnnouncement ())
+                else
+                    None)
+
+        announcement
+        |> Option.iter (fun (attempt, place) -> publishInOrder place (ProjectModel.Observation.Rediscovering attempt))
+
+    /// The startup scan ended. If it never reached a discovery, none is coming on its
+    /// account: a reader waiting on the expectation is told so instead of waiting out its bound.
+    member _.FirstDiscoveryNoLongerExpected() =
+        let announcement =
+            Locking.locked stateGate (fun () ->
+                if firstDiscoveryExpected then
+                    firstDiscoveryExpected <- false
+
+                    if pendingAttempts = 0 && completed.IsNone then
+                        Some(issueAnnouncement ())
+                    else
+                        None
+                else
+                    None)
+
+        announcement
+        |> Option.iter (fun place -> publishInOrder place ProjectModel.Observation.Unobserved)
 
     member _.WaitForCompletion() : Task<DiscoverySnapshot option> =
         task {
@@ -778,6 +816,7 @@ type internal DiscoveryCoordinator(?publish: ProjectModel.Observation -> unit) =
                 Locking.locked stateGate (fun () ->
                     generation <- generation + 1L
                     pendingAttempts <- pendingAttempts + 1
+                    firstDiscoveryExpected <- false
 
                     if pendingAttempts = 1 then
                         quiescence <-
@@ -4161,6 +4200,10 @@ type Daemon
                                 "daemon"
                                 $"Shutting down with work in flight: %s{Interruption.describe interrupted}")
 
+                // Before the first client can connect: a run it asks for must wait for the model
+                // the startup scan is about to discover, not launch without one.
+                discovery.ExpectFirstDiscovery()
+
                 // Started on this thread: a server creates its listening instances
                 // before its first wait, so the daemon accepts connections before this
                 // method goes on. Queued to the thread pool instead, a loaded box could
@@ -4338,6 +4381,7 @@ type Daemon
                 let scanTask = Async.StartAsTask(this.ScanAll())
 
                 scanTask.ContinueWith(fun (_: System.Threading.Tasks.Task) ->
+                    discovery.FirstDiscoveryNoLongerExpected()
                     startupScanSettled.TrySetResult() |> ignore)
                 |> ignore
 
