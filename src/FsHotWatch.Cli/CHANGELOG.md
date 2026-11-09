@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: the ADR-059 shadow files a baseline for every project that passed the run today's watermark records (AUTOMATION-1536). A
+  watermark run with one red project published red, so it named no run, and its passing projects read as missing to the lookup later.
+
 - fix: agent mode is machine-only on the last two paths that were not (AUTOMATION-410). A root-level plugin command, including
   one no plugin serves or a daemon that cannot be reached, and a `.fshw.json` that cannot be loaded now answer with the
   `fshw-agent-v1` envelope on stdout and nothing on stderr. A config error keeps exit 2, and its message is in the envelope. What `.fshw.json` logs while it loads no longer reaches
