@@ -34,6 +34,8 @@ module CacheMiss =
 [<RequireQualifiedAccess>]
 type CacheLookupOutcome =
     | Hit
+    /// No cache entry, but a filed `check` record answered it: no FCS check ran.
+    | Replayed
     | Miss of CacheMiss
 
 /// What became of a finished check's answer.
@@ -58,6 +60,8 @@ module CacheStore =
 type CacheTally =
     {
         Hits: int64
+        /// Lookups a filed `check` record answered (ADR-059 §17). Not misses: no FCS check ran.
+        Replayed: int64
         /// Misses per `CacheMiss.label`.
         Misses: Map<string, int64>
         /// Per moved output, the misses it caused. A miss on two outputs counts on both.
@@ -70,6 +74,7 @@ type CacheTally =
 module CacheTally =
     let empty =
         { Hits = 0L
+          Replayed = 0L
           Misses = Map.empty
           MovedOutputs = Map.empty
           Stored = 0L
@@ -81,6 +86,9 @@ module CacheTally =
     let lookedUp (outcome: CacheLookupOutcome) (tally: CacheTally) : CacheTally =
         match outcome with
         | CacheLookupOutcome.Hit -> { tally with Hits = tally.Hits + 1L }
+        | CacheLookupOutcome.Replayed ->
+            { tally with
+                Replayed = tally.Replayed + 1L }
         | CacheLookupOutcome.Miss miss ->
             let moved =
                 match miss with
@@ -115,6 +123,7 @@ module CacheTally =
             |> Map.ofSeq
 
         { Hits = later.Hits - earlier.Hits
+          Replayed = later.Replayed - earlier.Replayed
           Misses = minus earlier.Misses later.Misses
           MovedOutputs = minus earlier.MovedOutputs later.MovedOutputs
           Stored = later.Stored - earlier.Stored
@@ -162,7 +171,13 @@ let describeCacheTally (tally: CacheTally) : string =
         |> List.map (fun (reason, n) -> $", %d{n} not stored (%s{reason})")
         |> String.concat ""
 
-    $"check-result cache: %d{tally.Hits} hits, %d{CacheTally.misses tally} misses%s{reasons}%s{moved}; stored %d{tally.Stored}%s{notStored}"
+    let replayed =
+        if tally.Replayed > 0L then
+            $", %d{tally.Replayed} replayed from check records"
+        else
+            ""
+
+    $"check-result cache: %d{tally.Hits} hits, %d{CacheTally.misses tally} misses%s{replayed}%s{reasons}%s{moved}; stored %d{tally.Stored}%s{notStored}"
 
 /// A `CacheTally` many checks add to at once.
 type CacheTallyCounter() =

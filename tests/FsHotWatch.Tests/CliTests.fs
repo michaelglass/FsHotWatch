@@ -4157,7 +4157,15 @@ let ``every scan progress reads back from its own answer, with its wedge report`
         [ FsHotWatch.ScanProgress.Progress.Idle
           FsHotWatch.ScanProgress.Progress.Discovering(TimeSpan.FromSeconds 12.5)
           FsHotWatch.ScanProgress.Progress.Checking(5, 10, TimeSpan.FromSeconds 42.0, None)
-          FsHotWatch.ScanProgress.Progress.Checking(5, 10, TimeSpan.FromSeconds 42.0, Some { Hits = 3L; Misses = 2L })
+          FsHotWatch.ScanProgress.Progress.Checking(
+              5,
+              10,
+              TimeSpan.FromSeconds 42.0,
+              Some
+                  { Hits = 3L
+                    Misses = 2L
+                    Replayed = 0L }
+          )
           FsHotWatch.ScanProgress.Progress.Complete(70, 0, TimeSpan.FromSeconds 15.5)
           FsHotWatch.ScanProgress.Progress.Complete(70, 4, TimeSpan.FromSeconds 15.5) ]
 

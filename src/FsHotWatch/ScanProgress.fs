@@ -11,7 +11,13 @@ open System.Text.Json
 open System.Text.Json.Nodes
 
 /// What the check-result cache has done for a running scan, counted from its start.
-type CacheCounts = { Hits: int64; Misses: int64 }
+type CacheCounts =
+    {
+        Hits: int64
+        Misses: int64
+        /// Files a filed `check` record answered: neither a cache hit nor a re-check.
+        Replayed: int64
+    }
 
 [<RequireQualifiedAccess>]
 type Progress =
@@ -48,6 +54,8 @@ let render (progress: Progress) : string =
 
         let cacheText =
             match cache with
+            | Some cache when cache.Replayed > 0L ->
+                $"cache %d{cache.Hits} hit / %d{cache.Misses} miss / %d{cache.Replayed} replayed"
             | Some cache -> $"cache %d{cache.Hits} hit / %d{cache.Misses} miss"
             | None -> "check-result cache off"
 
@@ -91,7 +99,10 @@ let toJson (wedge: string option) (progress: Progress) : string =
         cache
         |> Option.iter (fun cache ->
             o["cacheHits"] <- cache.Hits
-            o["cacheMisses"] <- cache.Misses)
+            o["cacheMisses"] <- cache.Misses
+
+            if cache.Replayed > 0L then
+                o["cacheReplayed"] <- cache.Replayed)
     | Progress.Complete(registered, unchecked, elapsed) ->
         o["state"] <- "complete"
         o["registered"] <- registered
@@ -117,7 +128,11 @@ let private progressOf (o: JsonElement) : Progress option =
 
     let cache () =
         match Json.tryInt64 o "cacheHits", Json.tryInt64 o "cacheMisses" with
-        | Some hits, Some misses -> Some { Hits = hits; Misses = misses }
+        | Some hits, Some misses ->
+            Some
+                { Hits = hits
+                  Misses = misses
+                  Replayed = Json.tryInt64 o "cacheReplayed" |> Option.defaultValue 0L }
         | _ -> None
 
     match Json.tryString o "state" with

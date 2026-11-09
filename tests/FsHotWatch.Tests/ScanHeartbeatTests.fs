@@ -13,7 +13,15 @@ let private every = TimeSpan.FromMilliseconds 20.0
 let private scanning =
     FsHotWatch.ScanProgress.Reading.Reported(
         None,
-        FsHotWatch.ScanProgress.Progress.Checking(3, 10, TimeSpan.FromSeconds 5.0, Some { Hits = 0L; Misses = 3L })
+        FsHotWatch.ScanProgress.Progress.Checking(
+            3,
+            10,
+            TimeSpan.FromSeconds 5.0,
+            Some
+                { Hits = 0L
+                  Misses = 3L
+                  Replayed = 0L }
+        )
     )
 
 let private scanningLine =
