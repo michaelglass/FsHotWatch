@@ -177,3 +177,27 @@ let ``the env var beats the config`` () =
 
     withAgentEnv (Some "1") None (fun () ->
         test <@ renderModeFor (optionsFor [| "check" |]) false = ProgressRenderer.RenderMode.Agent @>)
+
+// --- the plugin passthrough, which never reaches CommandTree's env-var folding ---
+
+let private envOf (values: (string * string) list) (name: string) : string =
+    values
+    |> List.tryFind (fun (key, _) -> key = name)
+    |> Option.map snd
+    |> Option.toObj
+
+[<Fact(Timeout = 15000)>]
+let ``the passthrough honours the env vars when no flag is given`` () =
+    test <@ passthroughAgentChoice [ "warnings" ] (envOf [ agentEnv, "1" ]) = Some true @>
+    test <@ passthroughAgentChoice [ "warnings" ] (envOf [ agentEnv, "true" ]) = Some true @>
+    test <@ passthroughAgentChoice [ "warnings" ] (envOf [ noAgentEnv, "1" ]) = Some false @>
+
+[<Fact(Timeout = 15000)>]
+let ``the passthrough lets a flag beat the env vars`` () =
+    test <@ passthroughAgentChoice [ "--no-agent"; "warnings" ] (envOf [ agentEnv, "1" ]) = Some false @>
+    test <@ passthroughAgentChoice [ "-a"; "warnings" ] (envOf [ noAgentEnv, "1" ]) = Some true @>
+
+[<Fact(Timeout = 15000)>]
+let ``the passthrough reads an unset or false env var as no choice (positive control)`` () =
+    test <@ passthroughAgentChoice [ "warnings" ] (envOf []) = None @>
+    test <@ passthroughAgentChoice [ "warnings" ] (envOf [ agentEnv, "0"; noAgentEnv, "false" ]) = None @>

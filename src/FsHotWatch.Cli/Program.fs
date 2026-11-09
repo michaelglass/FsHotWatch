@@ -2255,6 +2255,9 @@ type GlobalOptions =
         /// the latter as its own `--verbose`; here the global flag carries it).
         Verbose: bool
         DaemonExtraArgs: string
+        /// Log lines `.fshw.json` wrote while it loaded, held for the agent transcript
+        /// (`holdConfigLogInto`). Empty when they went to stderr as usual.
+        HeldConfigLog: string list
     }
 
 let defaultGlobalOptions =
@@ -2263,7 +2266,8 @@ let defaultGlobalOptions =
       AgentMode = None
       CompactMode = false
       Verbose = false
-      DaemonExtraArgs = "" }
+      DaemonExtraArgs = ""
+      HeldConfigLog = [] }
 
 /// Whether a command renders for an agent. Precedence: an explicit choice (`--agent` /
 /// `--no-agent`, or their env vars — `GlobalOptions.AgentMode`) > the configuration's
@@ -4688,6 +4692,11 @@ let internal executeCommandWatchingConfig
 
     let token = commandToken command
 
+    // `verdict` keeps no transcript, so it does not write these: it reads a stored answer.
+    let renderedWithHeldLog () =
+        opts.HeldConfigLog |> List.iter (eprintfn "%s")
+        rendered ()
+
     match renderModeFor opts config.AgentMode, agentGateFor command with
     | ProgressRenderer.Agent, AgentGate.VerdictRead ->
         let report, _ = Verdict.reportWithCoverage repoRoot config.Exclude
@@ -4702,7 +4711,7 @@ let internal executeCommandWatchingConfig
         // Taken BEFORE the command runs: a verdict published earlier than this was not
         // produced by this invocation (`AgentEnvelope.reusedBy`).
         let invokedAt = DateTime.UtcNow
-        let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
+        let exitCode, transcript = AgentEnvelope.capture repoRoot renderedWithHeldLog
 
         // The verdict on disk answers for this run only when it applies to this tree and
         // records this exit code (`AgentEnvelope.factsOf`); otherwise the exit code and
@@ -4722,7 +4731,7 @@ let internal executeCommandWatchingConfig
         printfn "%s" (AgentEnvelope.render token exitCode (AgentEnvelope.Shape.VerdictBacked facts) (Some transcript))
         exitCode
     | ProgressRenderer.Agent, AgentGate.OwnOutput ->
-        let exitCode, transcript = AgentEnvelope.capture repoRoot rendered
+        let exitCode, transcript = AgentEnvelope.capture repoRoot renderedWithHeldLog
         printfn "%s" (AgentEnvelope.render token exitCode AgentEnvelope.Shape.OutputBacked (Some transcript))
         exitCode
     | _ -> rendered ()
@@ -4856,6 +4865,110 @@ let forwardRootUnknownCommand
     | Handled exitCode -> exitCode
     | NotRecognized -> renderErr ()
     | DaemonUnavailable -> 1
+
+/// `forwardRootUnknownCommand`, machine-only in agent mode: everything it would print,
+/// the plugin's output, a parse error for a command no plugin serves and an unreachable
+/// daemon's hint alike, goes to the transcript behind one envelope (AUTOMATION-410).
+let internal forwardPluginCommandIn
+    (repoRoot: string)
+    (daemonLog: string)
+    (ipc: IpcOps)
+    (pipeName: string)
+    (opts: GlobalOptions)
+    (cmd: string)
+    (argsStr: string)
+    (renderErr: unit -> int)
+    : int =
+    let forward () =
+        forwardRootUnknownCommand daemonLog ipc pipeName opts cmd argsStr renderErr
+
+    match renderModeFor opts false with
+    | ProgressRenderer.Agent ->
+        let exitCode, transcript = AgentEnvelope.capture repoRoot forward
+        printfn "%s" (AgentEnvelope.render cmd exitCode AgentEnvelope.Shape.OutputBacked (Some transcript))
+        exitCode
+    | ProgressRenderer.Compact
+    | ProgressRenderer.Verbose -> forward ()
+
+/// Keep what `.fshw.json` logs while it loads out of an agent's stderr. Those lines come
+/// before any transcript exists, so they are held in `held` until the disposable ends
+/// and the transcript's owner writes them. A verb with no envelope logs as usual.
+let internal holdConfigLogInto
+    (mode: ProgressRenderer.RenderMode)
+    (command: Command)
+    (held: ResizeArray<string>)
+    : IDisposable =
+    match mode, agentGateFor command with
+    | ProgressRenderer.Agent, (AgentGate.VerdictAfterRun | AgentGate.VerdictRead | AgentGate.OwnOutput) ->
+        FsHotWatch.Logging.installSink
+            { Write = held.Add
+              Level = FsHotWatch.Logging.LogLevel.Info
+              File = None }
+    | _ ->
+        { new IDisposable with
+            member _.Dispose() = () }
+
+/// Report a `.fshw.json` that could not be loaded, returning the fail-closed exit code.
+/// In agent mode a gated verb says so in its envelope (AUTOMATION-410); nothing ran, so a
+/// verdict verb has no verdict to report and the error is its reason.
+let internal reportConfigLoadError
+    (mode: ProgressRenderer.RenderMode)
+    (repoRoot: string)
+    (command: Command)
+    (held: string list)
+    (message: string)
+    : int =
+    let report () =
+        held |> List.iter (eprintfn "%s")
+        eprintfn $"fshw: config error: %s{message}"
+        2
+
+    let shape =
+        match agentGateFor command with
+        | AgentGate.VerdictAfterRun
+        | AgentGate.VerdictRead -> Some(AgentEnvelope.Shape.VerdictBacked None)
+        | AgentGate.OwnOutput -> Some AgentEnvelope.Shape.OutputBacked
+        | AgentGate.Ungated -> None
+
+    match mode, shape with
+    | ProgressRenderer.Agent, Some shape ->
+        let exitCode, transcript = AgentEnvelope.capture repoRoot report
+        printfn "%s" (AgentEnvelope.render (commandToken command) exitCode shape (Some transcript))
+        exitCode
+    | _ -> report ()
+
+/// The explicit agent-mode choice on the plugin passthrough, which never reaches
+/// CommandTree's flag parsing: a flag, then `FS_HOT_WATCH_AGENT`, then
+/// `FS_HOT_WATCH_NO_AGENT`, each read as CommandTree reads a boolean env var.
+let internal passthroughAgentChoice (args: string list) (getEnv: string -> string) : bool option =
+    let isOn (name: string) =
+        match getEnv name |> Option.ofObj |> Option.map _.ToLowerInvariant() with
+        | Some "1"
+        | Some "true" -> true
+        | _ -> false
+
+    args
+    |> List.tryPick (fun a ->
+        match a with
+        | "--agent"
+        | "-a" -> Some true
+        | "--no-agent" -> Some false
+        | _ -> None)
+    |> Option.orElseWith (fun () ->
+        if isOn "FS_HOT_WATCH_AGENT" then Some true
+        elif isOn "FS_HOT_WATCH_NO_AGENT" then Some false
+        else None)
+
+/// Whether this repository's `.fshw.json` sets `"agent": true`, for a path that has no
+/// loaded configuration to ask. An unreadable file reads as unset.
+let private configuredAgentAt (repoRoot: string) : bool =
+    let configText =
+        try
+            File.ReadAllText(Path.Combine(repoRoot, ".fshw.json"))
+        with _ ->
+            ""
+
+    DaemonConfig.agentConfigured configText
 
 /// The IPC a root-level plugin command is sent through: the session of the repository
 /// host that serves this worktree when its record is live, else the worktree's own
@@ -5151,12 +5264,19 @@ let private runCli (args: string array) : int =
             | RunCommand(globals, command) ->
                 let opts = applyGlobalFlags globals
 
+                let loadMode = renderModeFor opts (configuredAgentAt repoRoot)
+                let heldConfigLog = ResizeArray<string>()
+
                 let config, configSource =
                     try
+                        use _hold = holdConfigLogInto loadMode command heldConfigLog
                         loadConfigWithSource repoRoot
                     with ConfigErrorException msg ->
-                        eprintfn $"fshw: config error: %s{msg}"
-                        exit 2
+                        exit (reportConfigLoadError loadMode repoRoot command (List.ofSeq heldConfigLog) msg)
+
+                let opts =
+                    { opts with
+                        HeldConfigLog = List.ofSeq heldConfigLog }
 
                 // Read once and cleared: the builds and tests this process starts must not
                 // take this daemon's log for their own.
@@ -5214,26 +5334,13 @@ let private runCli (args: string array) : int =
                 let compact = argList |> List.exists (fun a -> a = "--compact" || a = "-q")
 
                 let explicitAgent =
-                    argList
-                    |> List.tryPick (fun a ->
-                        match a with
-                        | "--agent"
-                        | "-a" -> Some true
-                        | "--no-agent" -> Some false
-                        | _ -> None)
+                    passthroughAgentChoice argList Environment.GetEnvironmentVariable
 
                 // No configuration is loaded on this path, so the `agent` key is read
-                // from the file's text directly; an unreadable file reads as unset.
-                let configText =
-                    try
-                        File.ReadAllText(Path.Combine(repoRoot, ".fshw.json"))
-                    with _ ->
-                        ""
-
+                // from the file's text directly.
                 let opts =
                     { defaultGlobalOptions with
-                        AgentMode =
-                            Some(resolveAgentMode explicitAgent compact (DaemonConfig.agentConfigured configText))
+                        AgentMode = Some(resolveAgentMode explicitAgent compact (configuredAgentAt repoRoot))
                         CompactMode = compact }
 
                 let ipc =
@@ -5243,7 +5350,8 @@ let private runCli (args: string array) : int =
                             FsHotWatch.RepositoryHost.processAlive
                             repoRoot)
 
-                forwardRootUnknownCommand
+                forwardPluginCommandIn
+                    repoRoot
                     (DaemonConfig.DaemonLog.forRepo repoRoot)
                     ipc
                     pipeName
