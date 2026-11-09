@@ -59,6 +59,9 @@ type ScanSample =
         /// Check-result cache lookups this scan missed, for any reason; the reasons are in
         /// the scan's `check-result cache:` log line (`CheckCacheTally.describeCacheTally`).
         CacheMisses: int64
+        /// Files this scan served from filed `check` records (ADR-059 §17): neither hits nor
+        /// misses, and no FCS check ran for them.
+        CacheReplays: int64
         /// Whether this daemon ran a check-result cache. `Some false` makes `CacheHits` and
         /// `CacheMisses` 0 because there was no cache, not because nothing was looked up
         /// (`"checkCache": "off"`). `None` for a record written before the field existed.
@@ -158,6 +161,7 @@ let toJsonLine (sample: ScanSample) : string =
            checkStarts = sample.CheckStarts
            cacheHits = sample.CacheHits
            cacheMisses = sample.CacheMisses
+           cacheReplays = sample.CacheReplays
            checkCache =
             match sample.CheckCache with
             | Some true -> "on"
@@ -219,6 +223,7 @@ let tryParseLine (line: string) : ScanSample option =
                   CheckStarts = optionalInt64 "checkStarts"
                   CacheHits = optionalInt64 "cacheHits"
                   CacheMisses = optionalInt64 "cacheMisses"
+                  CacheReplays = optionalInt64 "cacheReplays"
                   CheckCache =
                     match root.TryGetProperty "checkCache" with
                     | true, value when value.ValueKind = JsonValueKind.String ->
