@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: traces from a run that finishes during a cold daemon's boot scan are no longer joined against a half-built symbol index
+  (AUTOMATION-1532). Ingestion waited for the analysis events already admitted, but the scan was still checking files and the index
+  is written when its cohort flushes, so every union case and type in the rest of the tree read as not indexed and no test had a
+  complete trace. Ingestion now waits for the boot scan's flush, within the existing bound.
+
 - fix: a project that declares `starvation` and does not qualify for the re-run now says why (AUTOMATION-1524). The reason, with
   the load reading and threshold, goes to the run's output and to `<Project>.starvation-not-rerun.json` in the run directory.
   It only reached the daemon log before, which a reader of a red land could not retrieve. A project with no declaration is unchanged.

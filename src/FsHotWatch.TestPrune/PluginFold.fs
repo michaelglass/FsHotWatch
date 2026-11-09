@@ -288,9 +288,22 @@ let internal updateWith
                 $"ignoring BatchChecked from model %A{batch.ModelGeneration}; current %A{modelGeneration}"
 
             return state
-        | PluginEvent.FileChecked result -> return! onFileChecked ctx state modelGeneration result
+        | PluginEvent.FileChecked result ->
+            let! folded = onFileChecked ctx state modelGeneration result
 
-        | PluginEvent.BatchChecked batch -> return! onBatchChecked ctx state modelGeneration batch
+            return
+                { folded with
+                    ColdScan = ColdScan.onFileChecked folded.ColdScan }
+
+        | PluginEvent.BatchChecked batch ->
+            let! folded = onBatchChecked ctx state modelGeneration batch
+
+            match batch.Trigger with
+            | BootScan ->
+                return
+                    { folded with
+                        ColdScan = ColdScan.onBootScanFlushed folded.ColdScan }
+            | InSessionBatch _ -> return folded
 
         | PluginEvent.BuildCompleted buildResult -> return! onBuildCompleted ctx state buildResult
 
@@ -389,8 +402,9 @@ let internal updateWith
         | Custom(RunTestsRequested(configs, filter, reply)) -> return requestTestRun ctx state configs filter reply
 
         | Custom(IndexFoldProbe folded) ->
-            folded.TrySetResult() |> ignore
-            return state
+            return
+                { state with
+                    ColdScan = ColdScan.onProbe folded state.ColdScan }
 
         | Custom(RunFailedTestsRequested(filter, reply)) ->
             match failedTestConfigs (defaultArg testConfigs []) state.LastResults state.OutstandingFailures with
