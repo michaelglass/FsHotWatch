@@ -385,7 +385,8 @@ let internal openerWithin
                         | Error(kind, message) ->
                             do! refuse kind message
                             return None
-                        | Ok config -> return! accept (fun () -> IpcServer.servedDaemon config watchdog disconnected)
+                        | Ok config ->
+                            return! accept (fun () -> IpcServer.servedDaemon config watchdog disconnected (fun () -> 1))
         }
 
 /// The connection opener for the repository endpoint: read the preamble, answer it,

@@ -123,6 +123,7 @@ let private recordingIpc (seen: Collections.Generic.List<string>) : Program.IpcO
         async { return "" }
 
     { Shutdown = reply
+      ReleaseIfSole = reply
       Scan = fun pipe _ -> reply pipe
       ScanStatus = reply
       GetStatus = reply

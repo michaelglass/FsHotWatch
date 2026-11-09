@@ -505,6 +505,7 @@ let fakeConfig: DaemonConfiguration =
 
 let fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
+      ReleaseIfSole = fun _ -> async { return "released" }
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return "{}" }
