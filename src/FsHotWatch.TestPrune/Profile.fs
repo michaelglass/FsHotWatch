@@ -80,9 +80,13 @@ type Contention =
         Samples: int
         LoadPerCoreMean: float option
         LoadPerCoreMax: float option
-        /// Mean load per core ≥ `ContendedLoadPerCore`; `None` when no sample read a load
-        /// — unknown is never reported as quiet.
+        /// Mean load per core ≥ `ContendedLoadPerCore`; `None` when no sample read a load,
+        /// or when the load read quiet across a `SamplerGapSeconds` gap: unknown is never
+        /// reported as quiet.
         Contended: bool option
+        /// The longest gap, in seconds, between the samples this judgement rests on, when
+        /// it exceeds `SamplerGapThreshold`; `None` when the sampler kept its schedule.
+        SamplerGapSeconds: float option
     }
 
 /// At one runnable thread per core the class could no longer count on a whole core.
@@ -317,6 +321,11 @@ let MaxPartialLine = 64 * 1024
 /// The load a window ran under: every sample inside it, plus the nearest sample on each
 /// side — a class shorter than the sampling interval still has the two readings that
 /// bracket it.
+/// A gap between samples longer than this means nothing watched the box for that long:
+/// the host was suspended, or this process was starved of its timer. The load read on
+/// either side says nothing about the gap, so a quiet reading across one is unknown.
+let SamplerGapThreshold = TimeSpan.FromTicks(DefaultInterval.Ticks * 3L)
+
 let contentionOver (cores: int) (samples: Sample list) (windowStart: DateTime, windowStop: DateTime) : Contention =
     let ordered = samples |> List.sortBy _.At
 
@@ -329,6 +338,15 @@ let contentionOver (cores: int) (samples: Sample list) (windowStart: DateTime, w
 
     let used = Option.toList before @ inside @ Option.toList after
 
+    let samplerGap =
+        used
+        |> List.pairwise
+        |> List.map (fun (earlier, later) -> later.At - earlier.At)
+        |> List.filter (fun gap -> gap > SamplerGapThreshold)
+        |> function
+            | [] -> None
+            | gaps -> Some (List.max gaps).TotalSeconds
+
     let perCore =
         used |> List.choose _.Load1 |> List.map (fun l -> l / float (max 1 cores))
 
@@ -337,14 +355,20 @@ let contentionOver (cores: int) (samples: Sample list) (windowStart: DateTime, w
         { Samples = used.Length
           LoadPerCoreMean = None
           LoadPerCoreMax = None
-          Contended = None }
+          Contended = None
+          SamplerGapSeconds = samplerGap }
     | loads ->
         let mean = List.average loads
 
         { Samples = used.Length
           LoadPerCoreMean = Some mean
           LoadPerCoreMax = Some(List.max loads)
-          Contended = Some(mean >= ContendedLoadPerCore) }
+          Contended =
+            match mean >= ContendedLoadPerCore, samplerGap with
+            | true, _ -> Some true
+            | false, None -> Some false
+            | false, Some _ -> None
+          SamplerGapSeconds = samplerGap }
 
 // ---------------------------------------------------------------------------------------
 // Lines
@@ -423,6 +447,9 @@ let render (line: Line) : string =
               "loadPerCoreMean", optNumber c.LoadPerCoreMean
               "loadPerCoreMax", optNumber c.LoadPerCoreMax
               "contended", optBool c.Contended ]
+            @ (c.SamplerGapSeconds
+               |> Option.map (fun gap -> "samplerGapSec", num gap)
+               |> Option.toList)
         | ClassesUnavailable reason -> [ "event", str "classes-unavailable"; "reason", str reason ]
         | Running(test, since) -> [ "event", str "running"; "test", str test; "since", str (iso since) ]
         | Children c ->
@@ -545,7 +572,8 @@ let tryParse (text: string) : Line option =
                             { Samples = n
                               LoadPerCoreMean = mean
                               LoadPerCoreMax = mx
-                              Contended = c }
+                              Contended = c
+                              SamplerGapSeconds = optional<float> o "samplerGapSec" |> Option.flatten }
                     | _ -> None
 
                 let source =

@@ -99,7 +99,8 @@ let ``loadRun reads a report-only project, a killed one, and prefers a profile t
               { Samples = 3
                 LoadPerCoreMean = Some 2.0
                 LoadPerCoreMax = Some 3.0
-                Contended = Some true },
+                Contended = Some true
+                SamplerGapSeconds = None },
               Profile.ClassSource.Report
           ) ]
         |> List.map Profile.render
@@ -295,7 +296,8 @@ let ``the report says when a run went over its budget, and when a profile measur
             { Samples = 2
               LoadPerCoreMean = Some load
               LoadPerCoreMax = Some load
-              Contended = Some contended },
+              Contended = Some contended
+              SamplerGapSeconds = None },
             Profile.ClassSource.Console
         )
 
@@ -381,7 +383,8 @@ let private killedProfile (load1: float) =
           { Samples = 2
             LoadPerCoreMean = Some(load1 / 4.0)
             LoadPerCoreMax = Some(load1 / 4.0)
-            Contended = Some(load1 / 4.0 >= 1.0) },
+            Contended = Some(load1 / 4.0 >= 1.0)
+            SamplerGapSeconds = None },
           Profile.ClassSource.Console
       )
       Profile.Class(
@@ -389,7 +392,8 @@ let private killedProfile (load1: float) =
           { Samples = 1
             LoadPerCoreMean = None
             LoadPerCoreMax = None
-            Contended = None },
+            Contended = None
+            SamplerGapSeconds = None },
           Profile.ClassSource.Console
       ) ]
     |> List.map Profile.render
