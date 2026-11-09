@@ -85,6 +85,11 @@ let private stuckWedge () =
     finally
         release.Set()
 
+/// The lines of the wait detector's report in `path`: its stable prefix, once per failure.
+let private reportLines (path: string) (needle: string) =
+    File.ReadAllLines path
+    |> Array.filter (fun line -> line.Contains needle)
+
 let private overranWedge () =
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
@@ -168,7 +173,8 @@ let ``a WEDGED failure names the installed log file, which holds the message`` (
         test <@ failure.Message.Contains path @>
         test <@ not (failure.Message.Contains "logs/daemon.log") @>
         test <@ File.Exists path @>
-        test <@ File.ReadAllText(path).Contains "WEDGED" @>)
+        test <@ File.ReadAllText(path).Contains "WEDGED" @>
+        test <@ reportLines path "WaitForComplete: plugin(s) WEDGED" |> Array.length = 1 @>)
 
 [<Fact(Timeout = 60_000)>]
 let ``a WEDGED failure with no file sink names stderr`` () =
@@ -189,7 +195,16 @@ let ``an OVERRAN failure names the installed log file`` () =
 
         test <@ failure.Message.Contains "OVERRAN" @>
         test <@ failure.Message.Contains path @>
-        test <@ File.Exists path @>)
+        test <@ File.Exists path @>
+
+        // The daemon-side trace the ticket asked for: exactly one line, under a stable
+        // prefix, naming the work, its bound, the elapsed time and the plugin that owned it.
+        let lines = reportLines path "WaitForComplete: plugin(s) WEDGED"
+        test <@ lines |> Array.length = 1 @>
+        test <@ lines[0].Contains "cold impact attribution" @>
+        test <@ lines[0].Contains "of 1s" @>
+        test <@ lines[0].Contains "overrunning-plugin" @>
+        test <@ lines[0].Contains "OVERRAN its deadline" @>)
 
 [<Fact(Timeout = 60_000)>]
 let ``an OVERRAN failure with no file sink names stderr`` () =
@@ -209,6 +224,25 @@ let ``a DEAD failure names the log it is given`` () =
 
     let onStderr = Daemon.deadPluginMessage "stderr above" "build" (exn "boom")
     test <@ onStderr.Contains "See stderr above for the full stack" @>
+
+
+[<Fact(Timeout = 60_000)>]
+let ``a DEAD plugin writes exactly one line to the log before it is raised`` () =
+    withTempDir "dead-names-log" (fun dir ->
+        let path = Path.Combine(dir, "logs", "daemon.log")
+
+        let failure =
+            isolated (fun () ->
+                use _ = Logging.installSink (Logging.fileSink path Logging.LogLevel.Info)
+                Daemon.deadPluginFailure "build" (exn "boom"))
+
+        test <@ failure.Message.Contains "DEAD" @>
+        test <@ failure.Message.Contains path @>
+
+        let lines = reportLines path "is DEAD"
+        test <@ lines |> Array.length = 1 @>
+        test <@ lines[0].Contains "boom" @>
+        test <@ lines[0].Contains "build" @>)
 
 // --- CLI: which process writes the log file, and where ---
 
