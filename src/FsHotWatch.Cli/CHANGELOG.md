@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: agent mode is machine-only on the last two paths that were not (AUTOMATION-410). A root-level plugin command, including
+  one no plugin serves or a daemon that cannot be reached, and a `.fshw.json` that cannot be loaded now answer with the
+  `fshw-agent-v1` envelope on stdout and nothing on stderr. A config error keeps exit 2, and its message is in the envelope. What `.fshw.json` logs while it loads no longer reaches
+  stderr in agent mode: it goes to the transcript, except on `verdict`, which keeps none.
+
 - fix: a coverage write queued behind an indexer flush no longer fails with `database is locked` (AUTOMATION-784). The daemon's
   test-impact DB waits up to 5 minutes on a held lock; TestPrune.Core's 30s default was shorter than a measured 58s cold flush.
 

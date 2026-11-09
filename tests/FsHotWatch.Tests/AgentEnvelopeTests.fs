@@ -728,3 +728,225 @@ let ``a reused verdict that names no run reports a null runId`` () =
     test <@ kind = JsonValueKind.Null @>
     let expected = producedAt.ToString("o")
     test <@ str r "producedAt" = expected @>
+
+// --- the paths that never reach a verb's own gate (AUTOMATION-410) ---
+
+/// Run `action` with the console swapped, returning (stdout, stderr, exit code).
+let private withConsole (action: unit -> int) : string * string * int =
+    let priorOut = Console.Out
+    let priorErr = Console.Error
+    use out = new StringWriter()
+    use err = new StringWriter()
+    Console.SetOut out
+    Console.SetError err
+
+    let exitCode =
+        try
+            action ()
+        finally
+            Console.SetOut priorOut
+            Console.SetError priorErr
+
+    out.ToString(), err.ToString(), exitCode
+
+let private onlyLine (stdout: string) : JsonElement =
+    let lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+    test <@ lines.Length = 1 @>
+    parse lines.[0]
+
+let private replyingIpc (reply: string -> string) : IpcOps =
+    { fakeIpc () with
+        RunCommand = fun _ cmd _ -> async { return reply cmd } }
+
+let private forward (root: string) (agent: bool) (ipc: IpcOps) (renderErr: unit -> int) =
+    withConsole (fun () ->
+        forwardPluginCommandIn
+            root
+            (Path.Combine(root, "daemon.log"))
+            ipc
+            "pipe-agent-passthrough"
+            { defaultGlobalOptions with
+                AgentMode = Some agent }
+            "warnings"
+            ""
+            renderErr)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a plugin command in agent mode prints only the envelope, with the command's own output`` () =
+    withTempDir "agent-passthrough" (fun root ->
+        let ipc =
+            replyingIpc (fun cmd -> FsHotWatch.Ipc.commandOutputReply cmd "three warnings")
+
+        let stdout, stderr, exitCode = forward root true ipc (fun () -> 7)
+        test <@ exitCode = 0 @>
+        test <@ stderr = "" @>
+        let e = onlyLine stdout
+        test <@ str e "fshw" = AgentEnvelope.Contract @>
+        test <@ str e "command" = "warnings" @>
+        test <@ str e "outcome" = "ok" @>
+        test <@ strings e "lines" |> List.exists _.Contains("three warnings") @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a plugin command without agent mode prints no envelope (positive control)`` () =
+    withTempDir "human-passthrough" (fun root ->
+        let ipc =
+            replyingIpc (fun cmd -> FsHotWatch.Ipc.commandOutputReply cmd "three warnings")
+
+        let stdout, stderr, exitCode = forward root false ipc (fun () -> 7)
+        test <@ exitCode = 0 @>
+        test <@ stderr.Contains "three warnings" @>
+        test <@ not (stdout.Contains AgentEnvelope.Contract) @>
+        test <@ not (stderr.Contains AgentEnvelope.Contract) @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a command the daemon does not know, in agent mode, reports the parse error in the envelope`` () =
+    withTempDir "agent-passthrough-unknown" (fun root ->
+        let ipc = replyingIpc FsHotWatch.Ipc.unknownCommandReply
+
+        let stdout, stderr, exitCode =
+            forward root true ipc (fun () ->
+                eprintfn "unknown command: warnings"
+                1)
+
+        test <@ exitCode = 1 @>
+        test <@ stderr = "" @>
+        let e = onlyLine stdout
+        test <@ str e "outcome" = "fail" @>
+        test <@ strings e "lines" |> List.exists _.Contains("unknown command: warnings") @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an unreachable daemon, in agent mode, is reported in the envelope`` () =
+    withTempDir "agent-passthrough-down" (fun root ->
+        let ipc =
+            { fakeIpc () with
+                RunCommand = fun _ _ _ -> async { return failwith "connection refused" } }
+
+        let stdout, stderr, exitCode = forward root true ipc (fun () -> 7)
+        test <@ exitCode = 1 @>
+        test <@ stderr = "" @>
+        let e = onlyLine stdout
+        test <@ str e "outcome" = "fail" @>
+        test <@ not (List.isEmpty (strings e "lines")) @>)
+
+let private refuseConfig (mode: ProgressRenderer.RenderMode) (root: string) (command: Command) =
+    withConsole (fun () -> reportConfigLoadError mode root command [] "agent: unknown value 'yes'")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a config error on a verdict verb, in agent mode, is the envelope's reason and exit 2`` () =
+    withTempDir "agent-config-error" (fun root ->
+        let stdout, stderr, exitCode =
+            refuseConfig ProgressRenderer.Agent root Command.Verdict
+
+        test <@ exitCode = 2 @>
+        test <@ stderr = "" @>
+        let e = onlyLine stdout
+        test <@ str e "command" = "verdict" @>
+        test <@ num e "exit" = 2 @>
+
+        test
+            <@
+                strings e "reasons"
+                |> List.exists _.Contains("config error: agent: unknown value 'yes'")
+            @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a config error on an output verb, in agent mode, carries the error in its lines`` () =
+    withTempDir "agent-config-error-output" (fun root ->
+        let stdout, stderr, exitCode = refuseConfig ProgressRenderer.Agent root Command.Scan
+
+        test <@ exitCode = 2 @>
+        test <@ stderr = "" @>
+        let e = onlyLine stdout
+        test <@ str e "outcome" = "fail" @>
+        test <@ strings e "lines" |> List.exists _.Contains("config error") @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a config error without agent mode stays on stderr (positive control)`` () =
+    withTempDir "human-config-error" (fun root ->
+        let stdout, stderr, exitCode =
+            refuseConfig ProgressRenderer.Compact root Command.Verdict
+
+        test <@ exitCode = 2 @>
+        test <@ stdout = "" @>
+        test <@ stderr.Contains "fshw: config error: agent: unknown value 'yes'" @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a config error on an ungated verb stays on stderr even in agent mode`` () =
+    withTempDir "ungated-config-error" (fun root ->
+        let stdout, stderr, exitCode =
+            refuseConfig ProgressRenderer.Agent root Command.Start
+
+        test <@ exitCode = 2 @>
+        test <@ stdout = "" @>
+        test <@ stderr.Contains "fshw: config error" @>)
+
+// --- what `.fshw.json` logs while it loads, before any transcript exists (AUTOMATION-410) ---
+
+let private holding (mode: ProgressRenderer.RenderMode) (command: Command) =
+    let held = ResizeArray<string>()
+
+    let stdout, stderr, _ =
+        withConsole (fun () ->
+            use _hold = holdConfigLogInto mode command held
+            FsHotWatch.Logging.info "config" "Loaded .fshw.json"
+            0)
+
+    stdout, stderr, List.ofSeq held
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a gated verb in agent mode holds the config-load log off stderr`` () =
+    let _, stderr, held = holding ProgressRenderer.Agent Command.Scan
+    test <@ stderr = "" @>
+    test <@ held |> List.exists _.Contains("Loaded .fshw.json") @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the config-load log stays on stderr without agent mode (positive control)`` () =
+    let _, stderr, held = holding ProgressRenderer.Compact Command.Scan
+    test <@ stderr.Contains "Loaded .fshw.json" @>
+    test <@ List.isEmpty held @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the config-load log stays on stderr for an ungated verb in agent mode`` () =
+    let _, stderr, held = holding ProgressRenderer.Agent Command.Start
+    test <@ stderr.Contains "Loaded .fshw.json" @>
+    test <@ List.isEmpty held @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a config error in agent mode keeps the held log lines in the transcript`` () =
+    withTempDir "agent-config-held" (fun root ->
+        let _, stderr, exitCode =
+            withConsole (fun () ->
+                reportConfigLoadError
+                    ProgressRenderer.Agent
+                    root
+                    Command.Verdict
+                    [ "[config] NOT RUN tests/Slow" ]
+                    "agent: unknown value 'yes'")
+
+        test <@ exitCode = 2 @>
+        test <@ stderr = "" @>
+        let transcript = File.ReadAllText(AgentEnvelope.transcriptPath root)
+        test <@ transcript.Contains "[config] NOT RUN tests/Slow" @>
+        test <@ transcript.Contains "config error" @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a transcript verb in agent mode writes the held log lines into its transcript`` () =
+    withTempDir "agent-held-transcript" (fun root ->
+        let _, stderr, _ =
+            withConsole (fun () ->
+                executeCommand
+                    ""
+                    (fun _ -> Unchecked.defaultof<_>)
+                    (fakeIpc ())
+                    root
+                    "pipe-agent-held"
+                    Command.Scan
+                    { defaultGlobalOptions with
+                        AgentMode = Some true
+                        HeldConfigLog = [ "[config] Loaded .fshw.json" ] }
+                    fakeConfig
+                    5.0)
+
+        test <@ stderr = "" @>
+        let transcript = File.ReadAllText(AgentEnvelope.transcriptPath root)
+        test <@ transcript.Contains "[config] Loaded .fshw.json" @>)
