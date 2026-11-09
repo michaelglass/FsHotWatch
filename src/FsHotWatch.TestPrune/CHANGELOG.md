@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix!: a class that read quiet across a gap in the profile's samples no longer says `contended: false` (AUTOMATION-1529).
+  A host that slept while a test ran left 72-1105 s between 5 s samples, and the run's profile called it uncontended. A gap over
+  three sampling intervals now makes a quiet reading unknown and appears as `samplerGapSec` on the class line. A contended
+  reading stays contended. The gap cannot tell a suspended host from a starved timer. `Profile.Contention` gains `SamplerGapSeconds`.
+
 ## 0.13.0-alpha.107 - 2026-11-09
 
 - feat: a test selection attributes a project the composition-root fail-safe restored to its own cause,

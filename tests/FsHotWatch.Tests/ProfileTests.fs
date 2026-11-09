@@ -117,8 +117,90 @@ let ``a class is contended when the load per core over its own window reaches th
     test <@ early.Samples = 2 @>
     test <@ early.Contended = Some true @> // the 5 s sample already reads 40/12
 
-    let quiet = Profile.contentionOver 12 [ samples.Head; samples.[4] ] (at 1.0, at 2.0)
+    let quiet =
+        Profile.contentionOver 12 [ samples.Head; { samples.[4] with At = at 5.0 } ] (at 1.0, at 2.0)
+
     test <@ quiet.Contended = Some false @>
+
+let private loadAt (seconds: float) (load: float) : Profile.Sample =
+    { At = at seconds
+      Load1 = Some load
+      CpuMs = None
+      Processes = None }
+
+[<Fact>]
+let ``a quiet reading across a sampler gap is unknown, never quiet`` () =
+    // A class CTRF timed at 760 ms, with the host asleep for the 72 s around it.
+    let c =
+        Profile.contentionOver 12 [ loadAt 0.0 2.0; loadAt 72.0 2.0 ] (at 1.0, at 1.76)
+
+    test <@ c.Contended = None @>
+    test <@ c.SamplerGapSeconds = Some 72.0 @>
+    test <@ c.LoadPerCoreMean = Some(2.0 / 12.0) @>
+
+[<Fact>]
+let ``a contended reading across a sampler gap stays contended`` () =
+    // A starved timer leaves the same gap, and the load it did read is real.
+    let c =
+        Profile.contentionOver 12 [ loadAt 0.0 48.0; loadAt 72.0 48.0 ] (at 1.0, at 2.0)
+
+    test <@ c.Contended = Some true @>
+    test <@ c.SamplerGapSeconds = Some 72.0 @>
+
+[<Fact>]
+let ``POSITIVE CONTROL: samples on schedule report no gap and stay quiet`` () =
+    let c =
+        Profile.contentionOver 12 [ loadAt 0.0 2.0; loadAt 5.0 2.0 ] (at 1.0, at 2.0)
+
+    test <@ c.Contended = Some false @>
+    test <@ c.SamplerGapSeconds = None @>
+
+[<Fact>]
+let ``a gap at the threshold is not a gap, and one past it is`` () =
+    let bound = Profile.SamplerGapThreshold.TotalSeconds
+
+    let within =
+        Profile.contentionOver 12 [ loadAt 0.0 2.0; loadAt bound 2.0 ] (at 1.0, at 2.0)
+
+    test <@ within.Contended = Some false @>
+
+    let past =
+        Profile.contentionOver 12 [ loadAt 0.0 2.0; loadAt (bound + 0.1) 2.0 ] (at 1.0, at 2.0)
+
+    test <@ past.Contended = None @>
+
+[<Fact>]
+let ``a gap outside the samples a class rests on is not charged to it`` () =
+    let samples = [ loadAt 0.0 2.0; loadAt 5.0 2.0; loadAt 10.0 2.0; loadAt 90.0 2.0 ]
+    let c = Profile.contentionOver 12 samples (at 1.0, at 2.0)
+    test <@ c.Contended = Some false @>
+    test <@ c.SamplerGapSeconds = None @>
+
+[<Fact>]
+let ``a class line keeps its sampler gap, and a line without one still parses`` () =
+    let timing: Profile.ClassTiming =
+        { Class = "P.Gap"
+          Tests = 1
+          DurationMs = 760L
+          Start = at 1.0
+          Stop = at 1.76 }
+
+    let gapped =
+        Profile.contentionOver 12 [ loadAt 0.0 2.0; loadAt 72.0 2.0 ] (timing.Start, timing.Stop)
+
+    let line = Profile.Class(timing, gapped, Profile.ClassSource.Report)
+    let text = Profile.render line
+    test <@ text.Contains "samplerGapSec" @>
+    test <@ Profile.tryParse text = Some line @>
+
+    let plain =
+        Profile.contentionOver 12 [ loadAt 0.0 2.0; loadAt 5.0 2.0 ] (timing.Start, timing.Stop)
+
+    let older =
+        Profile.render (Profile.Class(timing, plain, Profile.ClassSource.Report))
+
+    test <@ not (older.Contains "samplerGapSec") @>
+    test <@ Profile.tryParse older = Some(Profile.Class(timing, plain, Profile.ClassSource.Report)) @>
 
 [<Fact>]
 let ``with no load samples a class's contention is unknown, not quiet`` () =

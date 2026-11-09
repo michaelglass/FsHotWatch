@@ -40,7 +40,8 @@ let private timeoutRun () : string * Guid =
         { Samples = 1
           LoadPerCoreMean = Some 0.25
           LoadPerCoreMax = Some 0.25
-          Contended = Some false }
+          Contended = Some false
+          SamplerGapSeconds = None }
 
     let consoleClass cls startMs stopMs : Profile.Line =
         Profile.Class(
