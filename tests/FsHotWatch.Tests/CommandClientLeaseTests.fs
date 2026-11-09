@@ -95,6 +95,7 @@ let private config (host: PluginHost) (invocationReleased: string -> Cancellatio
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       WaitForRest = fun _ -> Task.FromResult(())
+      WorkQuietFor = fun () -> TimeSpan.Zero
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0

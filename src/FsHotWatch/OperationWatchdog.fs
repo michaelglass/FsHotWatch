@@ -40,6 +40,17 @@ type WatchdogState =
 /// every 10s) so the watchdog only fires on a genuine stall.
 let DefaultThreshold = TimeSpan.FromSeconds(120.0)
 
+/// How long the work a client wait depends on may show no movement before the wait
+/// counts as stuck. A wait (`WaitForScan`, `WaitForComplete`, `WaitForRest`) lasts as long
+/// as the work it waits on, so its own age says nothing: a healthy cold scan holds one for
+/// many minutes. Only silence from that work does. Well above the longest gap between
+/// two checked files on a cold scan, and well below the verdict deadline, because a
+/// stuck scan should say so long before a client gives up.
+let WaitStallBound = TimeSpan.FromMinutes 10.0
+
+/// Whether work that has been quiet for `quietFor` still counts as moving.
+let isAdvancing (quietFor: TimeSpan) : bool = quietFor < WaitStallBound
+
 /// True when `op` has been in flight for at least `threshold` as of `now`.
 let isWedgedAt (now: DateTime) (threshold: TimeSpan) (op: InFlightOp) : bool = now - op.StartedAt >= threshold
 
@@ -349,6 +360,16 @@ type Watchdog
     // Ops whose overrun record has already been emitted, so a long op logs its overrun
     // once.
     let overrunLogged = HashSet<int64>()
+    // The waits among the in-flight ops: each reads how long the work it waits on has
+    // shown no movement.
+    let waits = Dictionary<int64, unit -> TimeSpan>()
+
+    /// An in-flight wait whose work is still moving. Its age says nothing (`WaitStallBound`).
+    let isAdvancingWait (id: int64) =
+        match waits.TryGetValue id with
+        | true, quietFor -> isAdvancing (quietFor ())
+        | _ -> false
+
     let mutable nextId = 0L
     let mutable lastHeartbeat = now ()
     let mutable lastGcPause = gcPauseTotal ()
@@ -389,7 +410,7 @@ type Watchdog
                 lastTick <- clocks
 
                 for KeyValue(id, op) in inFlight do
-                    if isWedgedAt n threshold op && overrunLogged.Add id then
+                    if isWedgedAt n threshold op && not (isAdvancingWait id) && overrunLogged.Add id then
                         logs.Add(overrunLogRecord n threshold op)
 
                 // Heartbeat at its own cadence regardless of wedge state.
@@ -472,19 +493,36 @@ type Watchdog
             inFlight[id] <- { Name = name; StartedAt = now () }
             OpToken id)
 
+    /// Record a client wait on daemon work. `quietFor` reads how long that work has shown no
+    /// movement; a wait is judged by it, not by its own age (`WaitStallBound`).
+    member this.BeginWait(name: string, quietFor: unit -> TimeSpan) : OpToken =
+        let token = this.Begin name
+        let (OpToken id) = token
+        Locking.locked gate (fun () -> waits[id] <- quietFor)
+        token
+
     /// Retire the operation `token` identified (it completed or faulted). Retiring
     /// an already-retired token is a no-op, so a double-`End` cannot erase a
     /// sibling op's record.
     member _.End(OpToken id) =
         Locking.locked gate (fun () ->
             inFlight.Remove id |> ignore
+            waits.Remove id |> ignore
             overrunLogged.Remove id |> ignore)
 
     /// Current state snapshot — for `status`/tests.
     member _.State = snapshot ()
 
     /// The wedge report for `status`, or `None` when not wedged.
-    member this.WedgeReport() = wedgeReport (now ()) this.State
+    member _.WedgeReport() =
+        Locking.locked gate (fun () ->
+            wedgeReport
+                (now ())
+                { InFlight =
+                    [ for KeyValue(id, op) in inFlight do
+                          if not (isAdvancingWait id) then
+                              op ]
+                  Threshold = threshold })
 
     /// The heap valve's report for `status`, or `None` when it has never fired.
     member _.HeapValveReport() : string option =

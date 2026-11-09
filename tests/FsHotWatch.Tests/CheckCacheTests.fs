@@ -1362,3 +1362,30 @@ let ``UpstreamFingerprints names an earlier file by the signature recorded for i
         // New bytes: the record no longer holds, and A is named by its content again.
         File.WriteAllText(a, "module A // edited")
         test <@ fps.ForApi(b, opts, "h") <> bySignature @>)
+
+// AUTOMATION-1520: a restart served entirely from check records logged "0 hits, 2744
+// misses — no entry", which reads as a full re-typecheck; FCS had started 0 checks.
+[<Fact>]
+let ``describeCacheTally of a restart served from check records says what it replayed and calls none of it a miss`` () =
+    let tally =
+        CacheTally.empty
+        |> CacheTally.lookedUp CacheLookupOutcome.Replayed
+        |> CacheTally.lookedUp CacheLookupOutcome.Replayed
+
+    test <@ tally.Replayed = 2L @>
+    test <@ CacheTally.misses tally = 0L @>
+
+    test
+        <@ describeCacheTally tally = "check-result cache: 0 hits, 0 misses, 2 replayed from check records; stored 0" @>
+
+[<Fact>]
+let ``CacheTally.since counts the replays between two snapshots`` () =
+    let atScanStart =
+        CacheTally.empty |> CacheTally.lookedUp CacheLookupOutcome.Replayed
+
+    let atScanEnd =
+        atScanStart
+        |> CacheTally.lookedUp CacheLookupOutcome.Replayed
+        |> CacheTally.lookedUp CacheLookupOutcome.Replayed
+
+    test <@ (CacheTally.since atScanStart atScanEnd).Replayed = 2L @>

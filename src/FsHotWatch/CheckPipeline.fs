@@ -1625,15 +1625,17 @@ type CheckPipeline
                         |> Some
                     | None -> None
 
+                let miss =
+                    match cached with
+                    | Some(Error miss) -> Some miss
+                    | _ -> None
+
                 let cached =
                     match cached with
                     | Some(Ok cached) ->
                         cacheTally.LookedUp CacheLookupOutcome.Hit
                         Some cached
-                    | Some(Error miss) ->
-                        cacheTally.LookedUp(CacheLookupOutcome.Miss miss)
-                        None
-                    | None -> None
+                    | _ -> None
 
                 // Missed in memory: a filed `check` record for exactly these inputs answers
                 // without FCS (ADR-059 §17), unless the caller demands a live check.
@@ -1641,6 +1643,12 @@ type CheckPipeline
                     match cached with
                     | None when replay -> replayAwaiting absPath options contentHash ct
                     | other -> async.Return other
+
+                // A replay is not a miss: no FCS check runs for it (AUTOMATION-1520).
+                match cached, miss with
+                | Some { CheckResults = Replayed _ }, _ -> cacheTally.LookedUp CacheLookupOutcome.Replayed
+                | _, Some miss -> cacheTally.LookedUp(CacheLookupOutcome.Miss miss)
+                | _ -> ()
 
                 match cached with
                 | Some cached ->
