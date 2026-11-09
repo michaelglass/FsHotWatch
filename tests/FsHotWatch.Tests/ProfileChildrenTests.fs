@@ -14,7 +14,8 @@ let private row pid parent command : FsHotWatch.ProcessHelper.ProcessRow =
     { Pid = pid
       ParentPid = parent
       Zombie = false
-      Command = command }
+      Command = command
+      ProcessGroup = None }
 
 [<Theory>]
 [<InlineData("/usr/bin/git status --porcelain", "git")>]

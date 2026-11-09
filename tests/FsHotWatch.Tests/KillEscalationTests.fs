@@ -18,7 +18,13 @@ let private row pid ppid zombie =
     { Pid = pid
       ParentPid = ppid
       Zombie = zombie
-      Command = $"proc-%d{pid}" }
+      Command = $"proc-%d{pid}"
+      ProcessGroup = None }
+
+/// A process in process group `group`, as the in-process table reports it.
+let private inGroup group pid ppid =
+    { row pid ppid false with
+        ProcessGroup = Some group }
 
 /// A fake OS: a process table, each pid's start time, and how each pid answers a signal.
 /// `onSignal pid signum` returns the new table state for that pid: `Some zombie` keeps
@@ -47,6 +53,19 @@ type private FakeOs(rows: ProcessRow list, startTimes: Map<int, DateTime>, onSig
                             Some r
                         else
                             onSignal pid signum |> Option.map (fun zombie -> { r with Zombie = zombie }))
+
+                Ok()
+          SignalGroup =
+            fun pgid signum ->
+                sent.Add((-pgid, signum))
+
+                table <-
+                    table
+                    |> List.choose (fun r ->
+                        if r.ProcessGroup <> Some pgid then
+                            Some r
+                        else
+                            onSignal r.Pid signum |> Option.map (fun zombie -> { r with Zombie = zombie }))
 
                 Ok()
           Pause = ignore
@@ -153,11 +172,12 @@ let ``a root whose ownership cannot be proven is never signalled`` () =
     Assert.Equal(100, fst (Assert.Single e.Survivors))
 
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
-let ``an unreadable process table signals nothing and leaves the root a survivor`` () =
+let ``an unreadable table and an unreadable start time signal nothing and leave the root a survivor`` () =
     let ops =
         { ReadTable = fun () -> Error "ps did not answer"
-          StartTimeOf = fun _ -> Ok t0
+          StartTimeOf = fun _ -> Error "no such process"
           Signal = fun _ _ -> failwith "nothing may be signalled blind"
+          SignalGroup = fun _ _ -> Error "no group in this table"
           Pause = ignore
           Attempts = 2 }
 
@@ -184,6 +204,7 @@ let ``a table that becomes unreadable mid-escalation leaves the member a survivo
                     Error "ps did not answer"
           StartTimeOf = fun _ -> Ok t0
           Signal = fun _ _ -> Ok()
+          SignalGroup = fun _ _ -> Error "no group in this table"
           Pause = ignore
           Attempts = 2 }
 
@@ -197,6 +218,7 @@ let ``a refused SIGKILL is named in the survivor's reason`` () =
         { ReadTable = fun () -> Ok [ row 100 1 false ]
           StartTimeOf = fun _ -> Ok t0
           Signal = fun pid signum -> Error $"kill(%d{pid}, %d{signum}) failed with errno 1"
+          SignalGroup = fun _ _ -> Error "no group in this table"
           Pause = ignore
           Attempts = 1 }
 
@@ -218,6 +240,7 @@ let ``a descendant recycled mid-escalation is left alone`` () =
                     starts.Value <- starts.Value.Add(101, t0.AddMinutes 5.0)
 
                 Ok()
+          SignalGroup = fun _ _ -> Error "no group in this table"
           Pause = ignore
           Attempts = 1 }
 
@@ -241,6 +264,7 @@ let ``a member whose start time becomes unreadable mid-escalation is not SIGKILL
                 sent.Add((pid, signum))
                 readable.Value <- false
                 Ok()
+          SignalGroup = fun _ _ -> Error "no group in this table"
           Pause = ignore
           Attempts = 2 }
 
@@ -268,6 +292,7 @@ let ``a member that exits between the table read and the start-time read is gone
                     Ok [ row 100 1 false ]
           StartTimeOf = fun pid -> if pid = 100 then Ok t0 else Error "no such process"
           Signal = fun _ _ -> Ok()
+          SignalGroup = fun _ _ -> Error "no group in this table"
           Pause = ignore
           Attempts = 2 }
 
@@ -554,7 +579,8 @@ let ``the escalation table is read in process and never starts ps when that succ
         { Pid = 7
           ParentPid = 1
           Zombie = false
-          Command = "x" }
+          Command = "x"
+          ProcessGroup = None }
 
     let table =
         readEscalationTable (fun () -> Ok [ row' ]) (fun () -> failwith "ps must not be started")
@@ -611,3 +637,169 @@ let ``the live escalation table reads a real process tree without starting ps`` 
     finally
         parent.Kill true
         parent.WaitForExit()
+
+// ---------------------------------------------------------------------------
+// The process group: every member, however it was re-parented, and with no `ps`
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``an unreadable process table still signals a root whose start time proves it ours`` () =
+    let sent = Collections.Generic.List<int * int>()
+
+    let ops =
+        { ReadTable = fun () -> Error "ps did not answer"
+          StartTimeOf = fun _ -> Ok t0
+          Signal =
+            fun pid signum ->
+                sent.Add((pid, signum))
+                Ok()
+          SignalGroup = fun _ _ -> Error "no group in this table"
+          Pause = ignore
+          Attempts = 2 }
+
+    let e = escalateWith ops root
+
+    Assert.Equal<(int * int) list>([ 100, 15; 100, 9 ], List.ofSeq sent)
+    Assert.Equal(100, fst (Assert.Single e.Survivors))
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a root already gone still has its live process group reaped`` () =
+    // The root has left; 200 was re-parented to init but stays in the root's group.
+    let os = FakeOs([ inGroup 100 200 1 ], Map [ 200, t0 ], ignoresTerm)
+
+    let e = escalateWith (os.Ops 3) root
+
+    Assert.Empty(e.Survivors)
+    Assert.Equal<(int * int) list>([ -100, 15; -100, 9 ], os.Sent)
+    Assert.Equal<int list>([ 100; 200 ], List.sort e.Exited)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a group is signalled once, and a member that left the group is signalled by pid`` () =
+    let os =
+        FakeOs(
+            [ inGroup 100 100 1; inGroup 100 101 100; row 102 100 false ],
+            Map [ 100, t0; 101, t0; 102, t0 ],
+            ignoresTerm
+        )
+
+    let e = escalateWith (os.Ops 3) root
+
+    Assert.Empty(e.Survivors)
+    Assert.Equal<(int * int) list>([ -100, 15; 102, 15; -100, 9; 102, 9 ], os.Sent)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the group of a recycled leader is never signalled`` () =
+    // The pid and the group now belong to a process started a minute later.
+    let os =
+        FakeOs(
+            [ inGroup 100 100 1; inGroup 100 300 100 ],
+            Map [ 100, t0.AddMinutes 1.0; 300, t0.AddMinutes 1.0 ],
+            ignoresTerm
+        )
+
+    let e = escalateWith (os.Ops 3) root
+
+    Assert.Empty(os.Sent)
+    Assert.Equal<int list>([ 100 ], e.Recycled)
+    Assert.Empty(e.Survivors)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``signalGroup names no group for pgid 0 or 1`` () =
+    Assert.True(Result.isError (signalGroup 0 9))
+    Assert.True(Result.isError (signalGroup 1 9))
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a child leads its own process group through perl, with its command and arguments intact`` () =
+    let psi = ProcessStartInfo("/opt/my tools/dotnet", "test --no-build")
+
+    let wrapped = ownProcessGroupWith (Some "/usr/bin/perl") false Some psi
+
+    Assert.Equal("/usr/bin/perl", wrapped.FileName)
+
+    Assert.Equal(
+        "-e \"setpgrp(0,0);$p=shift;exec{$p}@ARGV;die qq($p: $!)\" -- \"/opt/my tools/dotnet\" \"/opt/my tools/dotnet\" test --no-build",
+        wrapped.Arguments
+    )
+
+[<Theory(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``a child is left in the caller's group when perl is absent or the caller has a terminal`` (hasPerl: bool) =
+    let interactive = hasPerl
+    let psi = ProcessStartInfo("/bin/dotnet", "test")
+
+    let wrapped =
+        ownProcessGroupWith (if hasPerl then Some "/usr/bin/perl" else None) interactive Some psi
+
+    Assert.Equal("/bin/dotnet", wrapped.FileName)
+    Assert.Equal("test", wrapped.Arguments)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a command that cannot be started is left for Process.Start to refuse`` () =
+    let psi = ProcessStartInfo("/nonexistent/fshw-no-such-command", "x")
+
+    let wrapped = ownProcessGroupWith (Some "/usr/bin/perl") false startableCommand psi
+
+    Assert.Equal("/nonexistent/fshw-no-such-command", wrapped.FileName)
+    Assert.Equal("x", wrapped.Arguments)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a bare command resolves to its absolute path on PATH`` () =
+    let resolved = startableCommand "sh"
+    Assert.True(resolved |> Option.exists IO.Path.IsPathRooted, $"%A{resolved}")
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+[<WallClock("LIVE: a real tree and real signals — the claim is about the real OS, so it runs on real time; every wait in it is a named hang budget")>]
+let ``LIVE: a grandchild that ignores SIGTERM, left by a root already gone, is reaped through the process group`` () =
+    // The launch goes through the same shim every spawn does, so the group is real.
+    let psi =
+        ProcessStartInfo(
+            "sh",
+            "-c \"(trap '' TERM; while :; do sleep 1; done) > /dev/null 2>&1 & echo $!; read _; exit 0\""
+        )
+
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardInput <- true
+    psi.UseShellExecute <- false
+
+    let p =
+        Process.Start(ownProcessGroupWith (Some "/usr/bin/perl") false startableCommand psi)
+
+    let grandchild = int (p.StandardOutput.ReadLine())
+
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+    let kill, gate = blockingKill ()
+
+    try
+        let owned = recordOwnedPid p.Id
+        Assert.True(Result.isOk owned, $"%A{owned}")
+
+        // The root is gone before escalation looks: nothing links the grandchild to it.
+        p.StandardInput.Close()
+        Assert.True(p.WaitForExit FsHotWatch.Tests.TestHelpers.HangWaitMs, "the root did not exit")
+        Assert.Equal(Liveness.Alive, isProcessAlive grandchild)
+
+        let outcome =
+            killTreeEscalatingWith
+                (TimeSpan.FromMilliseconds 250.0)
+                p.Id
+                (fun () -> $"`sh` (pid %d{p.Id})")
+                kill
+                (escalationWith (SettledEscalationOps.settledOps ()) owned)
+
+        Assert.Equal(KillOutcome.Killed, outcome)
+
+        Assert.True(
+            Threading.SpinWait.SpinUntil(
+                (fun () -> isProcessAlive grandchild = Liveness.Gone),
+                FsHotWatch.Tests.TestHelpers.HangWaitMs
+            ),
+            "the grandchild is still running"
+        )
+
+        Assert.Empty(registry.Leaks)
+    finally
+        gate.Set()
+        signalPid grandchild 9 |> ignore
+        cleanUp p

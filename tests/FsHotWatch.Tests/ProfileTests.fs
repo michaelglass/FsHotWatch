@@ -299,7 +299,8 @@ let ``a host's CPU is its whole tree's — dotnet run, the controller and the te
         { Pid = pid
           ParentPid = parent
           Zombie = false
-          Command = $"proc %d{pid}" }
+          Command = $"proc %d{pid}"
+          ProcessGroup = None }
 
     let tables =
         Collections.Generic.Queue<Result<FsHotWatch.ProcessHelper.ProcessRow list, string>>(
@@ -341,7 +342,8 @@ let ``the process table is read only every Nth sample; the known members are re-
         { Pid = pid
           ParentPid = parent
           Zombie = false
-          Command = $"proc %d{pid}" }
+          Command = $"proc %d{pid}"
+          ProcessGroup = None }
 
     let tableReads = ref 0
     let cpuOf = ref (Map [ 10, 1.0; 11, 2.0 ])

@@ -25,6 +25,8 @@ type Row =
         /// Exited but not yet reaped.
         Zombie: bool
         Command: string
+        /// The process group, when the kernel reported one.
+        ProcessGroup: int option
     }
 
 /// `sizeof(struct proc_bsdinfo)`: `proc_pidinfo` answers a flavor only for a buffer of
@@ -57,7 +59,8 @@ let internal decodeBsdInfo (info: byte[]) : Row option =
             { Pid = int (BitConverter.ToUInt32(info, 12))
               ParentPid = int (BitConverter.ToUInt32(info, 16))
               Zombie = BitConverter.ToUInt32(info, 4) = DarwinZombieStatus
-              Command = comm.TrimEnd('\000') }
+              Command = comm.TrimEnd('\000')
+              ProcessGroup = Some(int (BitConverter.ToUInt32(info, 100))) }
 
 /// Pure: the text of `/proc/<pid>/stat` — `pid (comm) state ppid …`. The command may hold
 /// spaces and parentheses, so the fields after it are found from the LAST `)`.
@@ -79,7 +82,14 @@ let internal parseProcStat (text: string) : Row option =
                     { Pid = pid
                       ParentPid = ppid
                       Zombie = fields[0] = "Z"
-                      Command = text.Substring(opened + 1, closed - opened - 1) }
+                      Command = text.Substring(opened + 1, closed - opened - 1)
+                      ProcessGroup =
+                        (if fields.Length >= 3 then
+                             (match Int32.TryParse fields[2] with
+                              | true, g -> Some g
+                              | _ -> None)
+                         else
+                             None) }
             | _ -> None
         | _ -> None
 

@@ -433,6 +433,8 @@ type internal ProcessRow =
         /// Exited but not yet reaped. Dead: it holds no lock, port or pipe.
         Zombie: bool
         Command: string
+        /// The process group this process is in, when the source of the row knew it.
+        ProcessGroup: int option
     }
 
 /// The first whitespace-separated word of `text` and everything after it.
@@ -465,7 +467,8 @@ let internal parseProcessTable (text: string) : ProcessRow list =
                 { Pid = p
                   ParentPid = pp
                   Zombie = stat.StartsWith "Z"
-                  Command = command }
+                  Command = command
+                  ProcessGroup = None }
         | _ -> None)
     |> Array.toList
 
@@ -519,6 +522,8 @@ type internal EscalationOps =
         StartTimeOf: int -> Result<DateTime, string>
         /// Send signal `signum` to `pid`.
         Signal: int -> int -> Result<unit, string>
+        /// Send signal `signum` to every member of process group `pgid`.
+        SignalGroup: int -> int -> Result<unit, string>
         Pause: unit -> unit
         /// Liveness polls per signal before escalating (or giving up).
         Attempts: int
@@ -573,63 +578,125 @@ type private Ledger =
 /// The members one sweep found still running: ours, and unproven with why.
 [<NoComparison>]
 type private Sweep =
-    { Ours: Tracked list
-      Unproven: (Tracked * string) list }
+    {
+        Ours: Tracked list
+        Unproven: (Tracked * string) list
+        /// Members of the root's process group still running in this read. Empty when the
+        /// group cannot be proven ours or the table could not be read.
+        Group: int list
+        /// Why this read had to rest on start times alone, when it did: such a member is
+        /// proven ours, but whether it is still running is not known.
+        Unreadable: string option
+    }
 
 let private pendingIn (s: Sweep) : Tracked list = s.Ours @ List.map fst s.Unproven
 
+/// The live members of `root`'s process group, which `kill(-pgid, ...)` will reach, in one
+/// table read. A group outlives its leader, and the kernel does not hand out a pid while a
+/// group of that id still exists, so members with no leader row are still ours. A leader
+/// row whose start time is not the recorded one is a recycled pid, and its group is
+/// somebody else's: never signalled.
+let private groupIn (ops: EscalationOps) (root: OwnedPid) (rows: ProcessRow list) : int list =
+    let leaderIsOurs =
+        match rows |> List.tryFind (fun r -> r.Pid = root.Pid) with
+        | None -> true
+        | Some r when r.Zombie -> true
+        | Some _ ->
+            match ops.StartTimeOf root.Pid with
+            | Ok startedAt -> startedAt = root.StartedAt
+            | Error _ -> false
+
+    if leaderIsOurs then
+        rows
+        |> List.filter (fun r -> r.ProcessGroup = Some root.Pid && not r.Zombie)
+        |> List.map _.Pid
+    else
+        []
+
+/// A member's state with no table to read: its start time alone. A match proves it is
+/// still the process we recorded, so a table nobody can read does not strand the tree.
+let private stateWithoutTable (ops: EscalationOps) (why: string) (m: Tracked) : MemberState =
+    match m.Identity with
+    | Error reason -> MemberState.Unproven $"%s{why}; its start time could not be recorded either (%s{reason})"
+    | Ok recorded ->
+        match ops.StartTimeOf m.Pid with
+        | Ok startedAt when startedAt = recorded -> MemberState.Ours
+        | Ok _ -> MemberState.Recycled
+        | Error reason -> MemberState.Unproven $"%s{why}; its start time could not be read either (%s{reason})"
+
 /// File `members` by their state in one fresh table read. `Gone` and `Recycled` are final
 /// and go to the ledger; the rest are returned to be polled again.
-let private sweep (ops: EscalationOps) (members: Tracked list) (ledger: Ledger) : Sweep * Ledger =
+let private sweep (ops: EscalationOps) (root: OwnedPid) (members: Tracked list) (ledger: Ledger) : Sweep * Ledger =
+    let file (stateOf: Tracked -> MemberState) =
+        members
+        |> List.fold
+            (fun (s: Sweep, l: Ledger) m ->
+                match stateOf m with
+                | MemberState.Ours -> { s with Ours = m :: s.Ours }, l
+                | MemberState.Unproven reason ->
+                    { s with
+                        Unproven = (m, reason) :: s.Unproven },
+                    l
+                | MemberState.Gone -> s, { l with Exited = m.Pid :: l.Exited }
+                | MemberState.Recycled ->
+                    s,
+                    { l with
+                        Recycled = m.Pid :: l.Recycled })
+            ({ Ours = []
+               Unproven = []
+               Group = []
+               Unreadable = None },
+             ledger)
+
+    let finish (s: Sweep, l: Ledger) (group: int list) (unreadable: string option) =
+        { Ours = List.rev s.Ours
+          Unproven = List.rev s.Unproven
+          Group = group
+          Unreadable = unreadable },
+        l
+
     match ops.ReadTable() with
     | Error reason ->
         let why =
             $"the process table could not be read (%s{reason}), so its state is unknown"
 
-        { Ours = []
-          Unproven = members |> List.map (fun m -> m, why) },
-        ledger
-    | Ok rows ->
-        let s, l =
-            members
-            |> List.fold
-                (fun (s: Sweep, l: Ledger) m ->
-                    match stateIn ops rows m with
-                    | MemberState.Ours -> { s with Ours = m :: s.Ours }, l
-                    | MemberState.Unproven reason ->
-                        { s with
-                            Unproven = (m, reason) :: s.Unproven },
-                        l
-                    | MemberState.Gone -> s, { l with Exited = m.Pid :: l.Exited }
-                    | MemberState.Recycled ->
-                        s,
-                        { l with
-                            Recycled = m.Pid :: l.Recycled })
-                ({ Ours = []; Unproven = [] }, ledger)
-
-        { Ours = List.rev s.Ours
-          Unproven = List.rev s.Unproven },
-        l
+        finish (file (stateWithoutTable ops why)) [] (Some why)
+    | Ok rows -> finish (file (stateIn ops rows)) (groupIn ops root rows) None
 
 /// Send `signal` to every member a fresh sweep proves is still ours, then poll until
 /// nothing is left running or the attempts run out. `observe` is told what is established
 /// before every pause.
 let private signalRound
     (ops: EscalationOps)
+    (root: OwnedPid)
     (observe: Ledger -> Tracked list -> unit)
     (signum: int, name: string)
     (members: Tracked list)
     (ledger: Ledger)
     : Sweep * Ledger =
-    let before, ledger = sweep ops members ledger
-    let sent = before.Ours |> List.map (fun m -> m.Pid, name, ops.Signal m.Pid signum)
+    let before, ledger = sweep ops root members ledger
+
+    // One `kill(-pgid, ...)` reaches every member of the group, including one forked after
+    // this read. A member that has left the group is signalled by its own pid.
+    let groupSent =
+        if List.isEmpty before.Group then
+            []
+        else
+            [ root.Pid, $"%s{name} to process group", ops.SignalGroup root.Pid signum ]
+
+    let individually =
+        before.Ours |> List.filter (fun m -> not (List.contains m.Pid before.Group))
+
+    let sent =
+        groupSent
+        @ (individually |> List.map (fun m -> m.Pid, name, ops.Signal m.Pid signum))
 
     let ledger =
         { ledger with
             Sent = List.rev sent @ ledger.Sent }
 
     let rec poll attempt (left: Tracked list) (l: Ledger) =
-        let s, l = sweep ops left l
+        let s, l = sweep ops root left l
 
         if List.isEmpty (pendingIn s) || attempt >= ops.Attempts then
             s, l
@@ -650,9 +717,10 @@ let private signalRound
 /// dropped, not signalled. A member whose start time cannot be read is never signalled; it
 /// is polled until it is gone, and stays a survivor if it is not.
 ///
-/// A descendant re-parented away before the escalation's snapshot (a double fork, or a
-/// child orphaned when its parent died) is not linked to the root any more, so it is not
-/// found here.
+/// The root leads its own process group (`ownProcessGroup`), so one `kill(-pgid, ...)` also
+/// reaches members the table no longer links to it: a double fork, or a child orphaned
+/// when its parent died, including when the root has already gone. Only a member that left
+/// the group (`setsid`) and is no longer linked by the table is not found.
 let internal escalateObservedWith (ops: EscalationOps) (observe: Escalation -> unit) (root: OwnedPid) : Escalation =
     let ledger =
         { Sent = []
@@ -667,8 +735,15 @@ let internal escalateObservedWith (ops: EscalationOps) (observe: Escalation -> u
         match ops.ReadTable() with
         | Error _ -> [ rootTracked ], ledger
         | Ok rows ->
+            let groupMembers () =
+                groupIn ops root rows
+                |> List.map (fun pid ->
+                    { Pid = pid
+                      Identity = ops.StartTimeOf pid })
+
             match stateIn ops rows rootTracked with
-            | MemberState.Gone -> [], { ledger with Exited = [ root.Pid ] }
+            // The root has left, but its group may still hold live members re-parented away.
+            | MemberState.Gone -> groupMembers (), { ledger with Exited = [ root.Pid ] }
             | MemberState.Recycled -> [], { ledger with Recycled = [ root.Pid ] }
             | MemberState.Unproven _ -> [ rootTracked ], ledger
             | MemberState.Ours ->
@@ -679,7 +754,11 @@ let internal escalateObservedWith (ops: EscalationOps) (observe: Escalation -> u
                         { Pid = r.Pid
                           Identity = ops.StartTimeOf r.Pid })
 
-                rootTracked :: descendants, ledger
+                let groupOnly =
+                    groupMembers ()
+                    |> List.filter (fun m -> m.Pid <> root.Pid && descendants |> List.forall (fun d -> d.Pid <> m.Pid))
+
+                rootTracked :: descendants @ groupOnly, ledger
 
     // What is established so far, for `observe`: the members still running are pending.
     let progress (l: Ledger) (pending: Tracked list) =
@@ -692,13 +771,17 @@ let internal escalateObservedWith (ops: EscalationOps) (observe: Escalation -> u
 
     let final, ledger =
         if List.isEmpty tracked then
-            { Ours = []; Unproven = [] }, ledger
+            { Ours = []
+              Unproven = []
+              Group = []
+              Unreadable = None },
+            ledger
         else
-            let afterTerm, ledger = signalRound ops progress (15, "SIGTERM") tracked ledger
+            let afterTerm, ledger = signalRound ops root progress (15, "SIGTERM") tracked ledger
 
             match pendingIn afterTerm with
             | [] -> afterTerm, ledger
-            | left -> signalRound ops progress (9, "SIGKILL") left ledger
+            | left -> signalRound ops root progress (9, "SIGKILL") left ledger
 
     let refusals pid =
         ledger.Sent
@@ -710,7 +793,9 @@ let internal escalateObservedWith (ops: EscalationOps) (observe: Escalation -> u
 
     let survivors =
         (final.Ours
-         |> List.map (fun m -> m.Pid, String.concat "; " ("still running after SIGKILL" :: refusals m.Pid)))
+         |> List.map (fun m ->
+             m.Pid,
+             String.concat "; " ("still running after SIGKILL" :: Option.toList final.Unreadable @ refusals m.Pid)))
         @ (final.Unproven |> List.map (fun (m, why) -> m.Pid, why))
 
     { Root = root.Pid
@@ -1444,6 +1529,15 @@ let internal signalPid (pid: int) (signum: int) : Result<unit, string> =
     with ex ->
         Error $"kill(2) is unavailable: %s{ex.GetType().Name}: %s{ex.Message}"
 
+/// `kill(-pgid, signum)`: deliver one signal to every member of a process group, in one
+/// call the kernel performs. Never for a pgid of 0 or 1: `kill` reads those as "this
+/// group" and "every process".
+let internal signalGroup (pgid: int) (signum: int) : Result<unit, string> =
+    if pgid <= 1 then
+        Error $"pgid %d{pgid} names no process group"
+    else
+        signalPid -pgid signum
+
 /// When the OS started the process that holds `pid` now (UTC). With the pid, this is the
 /// identity escalation re-checks before every signal (`OwnedPid`).
 let internal processStartTime (pid: int) : Result<DateTime, string> =
@@ -1458,16 +1552,6 @@ let internal recordOwnedPid (pid: int) : Result<OwnedPid, string> =
     processStartTime pid
     |> Result.map (fun startedAt -> { Pid = pid; StartedAt = startedAt })
 
-/// Polls per escalation signal, and the pause between them: ~2s for a tree to answer
-/// SIGTERM, and again for SIGKILL. Each poll reads the process table once, so they are
-/// fewer and further apart than the settle poll's.
-let internal EscalationAttempts = 10
-let internal EscalationPause = TimeSpan.FromMilliseconds 200.0
-
-/// The bound on one process-table read during escalation. Shorter than `TeardownBudget`:
-/// escalation runs after that budget is already spent.
-let internal EscalationTableBudget = TimeSpan.FromSeconds 2.0
-
 /// The kernel's process table as escalation's rows.
 let private inProcessEscalationTable () : Result<ProcessRow list, string> =
     InProcessProcessTable.read ()
@@ -1476,7 +1560,8 @@ let private inProcessEscalationTable () : Result<ProcessRow list, string> =
             { Pid = row.Pid
               ParentPid = row.ParentPid
               Zombie = row.Zombie
-              Command = row.Command })
+              Command = row.Command
+              ProcessGroup = row.ProcessGroup })
     )
 
 /// The table escalation reads: in process first, because a kill that hangs is exactly
@@ -1493,11 +1578,14 @@ let internal readEscalationTable
 /// The real OS behind `escalateWith`.
 let internal liveEscalationOps: EscalationOps =
     { ReadTable =
-        fun () -> readEscalationTable inProcessEscalationTable (fun () -> readProcessTableWithin EscalationTableBudget)
+        fun () ->
+            readEscalationTable inProcessEscalationTable (fun () ->
+                readProcessTableWithin ProcessRegistry.EscalationTableBudget)
       StartTimeOf = processStartTime
       Signal = signalPid
-      Pause = fun () -> Thread.Sleep EscalationPause
-      Attempts = EscalationAttempts }
+      SignalGroup = signalGroup
+      Pause = fun () -> Thread.Sleep ProcessRegistry.EscalationPause
+      Attempts = ProcessRegistry.EscalationAttempts }
 
 /// The escalation for a child recorded at launch against `ops`, or `None` when its
 /// identity could not be recorded: without it, no signal could be proven to reach OUR
@@ -1793,6 +1881,69 @@ let installedDotnet (path: string) : string =
         | resolved -> resolved.FullName
     with _ ->
         path
+
+/// The perl program a child runs first: join its own process group, then become the real
+/// command by `exec`, keeping its pid and start time. .NET offers no way to place a child
+/// in its own group, and `setsid(1)` does not exist on macOS, while `perl` does on every
+/// host fshw runs on. The first argument is the file to run and the rest its argv, so the
+/// child's argv[0] is the name the caller gave it, as with a direct start. `die` only runs
+/// if `exec` could not.
+[<Literal>]
+let internal GroupLeaderProgram =
+    "setpgrp(0,0);$p=shift;exec{$p}@ARGV;die qq($p: $!)"
+
+/// The absolute path of the file `command` would start, or `None` when nothing startable is
+/// there. `perl` always starts, so a command it could not `exec` would surface as a child
+/// that exited, not as the `Win32Exception` a spawn failure raises: such a command is not
+/// wrapped, and `Process.Start` refuses it as before.
+let internal startableCommand (command: string) : string option =
+    let path =
+        Environment.GetEnvironmentVariable "PATH"
+        |> Option.ofObj
+        |> Option.defaultValue ""
+
+    tryResolveOnPath path command
+    |> Option.filter isExecutableFile
+    |> Option.map IO.Path.GetFullPath
+
+/// `psi`, made to start as the leader of its own process group, so an escalation can
+/// signal every member of its tree with `kill(-pgid, ...)` even once the root has gone or
+/// re-parented them. Left alone with no `perl`, for a command that cannot be started (escalation then falls back to the pid
+/// sweep), and when the caller holds a terminal: a child in its own group would no longer
+/// get the terminal's Ctrl+C, and a background group reading the terminal stops.
+let internal ownProcessGroupWith
+    (perl: string option)
+    (interactive: bool)
+    (resolve: string -> string option)
+    (psi: ProcessStartInfo)
+    : ProcessStartInfo =
+    match perl, resolve psi.FileName with
+    | Some interpreter, Some resolved when not interactive ->
+        let quote (text: string) =
+            text.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
+        psi.Arguments <-
+            $"-e \"%s{GroupLeaderProgram}\" -- \"%s{quote resolved}\" \"%s{quote psi.FileName}\" %s{psi.Arguments}"
+
+        psi.FileName <- interpreter
+        psi
+    | _ -> psi
+
+let private groupLeaderInterpreter =
+    lazy
+        (if System.IO.File.Exists "/usr/bin/perl" then
+             Some "/usr/bin/perl"
+         else
+             Logging.warn
+                 "process"
+                 "no /usr/bin/perl: children stay in this process's group, so a kill escalation can only reach the \
+                  members the process table still links to the root."
+
+             None)
+
+/// `ownProcessGroupWith` for this host.
+let internal ownProcessGroup (psi: ProcessStartInfo) : ProcessStartInfo =
+    ownProcessGroupWith groupLeaderInterpreter.Value (not Console.IsInputRedirected) startableCommand psi
 
 /// Build the `ProcessStartInfo` for a spawned child: redirected stdio, the
 /// working directory, the sanitized+overlaid environment, and the realpath'd
@@ -2307,7 +2458,7 @@ let internal runProcessCore
 
     let child =
         try
-            let psi = makeChildProcessStartInfo command args workDir env
+            let psi = makeChildProcessStartInfo command args workDir env |> ownProcessGroup
 
             match helper with
             | Some connection -> launchViaHelper connection psi

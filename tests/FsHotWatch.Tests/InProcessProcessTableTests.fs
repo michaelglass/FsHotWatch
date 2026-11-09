@@ -10,10 +10,12 @@ let private rowOf pid command : InProcessProcessTable.Row =
     { Pid = pid
       ParentPid = 0
       Zombie = false
-      Command = command }
+      Command = command
+      ProcessGroup = None }
 
 let private bsdInfo pid ppid (status: uint32) (comm: string) =
     let info = Array.zeroCreate<byte> 136
+    BitConverter.GetBytes(uint32 4321).CopyTo(info, 100)
     BitConverter.GetBytes(status).CopyTo(info, 4)
     BitConverter.GetBytes(uint32 pid).CopyTo(info, 12)
     BitConverter.GetBytes(uint32 ppid).CopyTo(info, 16)
@@ -103,3 +105,36 @@ let ``this host's table holds this process`` () =
     match InProcessProcessTable.read () with
     | Ok rows -> Assert.Contains(rows, fun r -> r.Pid = Environment.ProcessId)
     | Error reason -> Assert.Fail reason
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the process group is read from proc_bsdinfo`` () =
+    let row =
+        InProcessProcessTable.decodeBsdInfo (bsdInfo 42 7 2u "dotnet") |> Option.get
+
+    Assert.Equal(Some 4321, row.ProcessGroup)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the process group is read from the proc stat line`` () =
+    let row =
+        InProcessProcessTable.parseProcStat "1234 (x) R 77 900 1234 0 -1" |> Option.get
+
+    Assert.Equal(Some 900, row.ProcessGroup)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``the live table reports this process's own process group`` () =
+    let self = Diagnostics.Process.GetCurrentProcess().Id
+
+    match InProcessProcessTable.read () with
+    | Error reason -> Assert.Fail reason
+    | Ok rows ->
+        let row = rows |> List.find (fun r -> r.Pid = self)
+        // Every process belongs to a group; its id is a positive pid.
+        Assert.True(row.ProcessGroup.IsSome && row.ProcessGroup.Value > 0, $"%A{row.ProcessGroup}")
+
+[<Theory(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+[<InlineData("9 (x) Z 1")>]
+[<InlineData("9 (x) Z 1 abc")>]
+let ``a proc stat line with no readable process group still decodes, with no group`` (line: string) =
+    let row = InProcessProcessTable.parseProcStat line |> Option.get
+    Assert.Equal(1, row.ParentPid)
+    Assert.Equal(None, row.ProcessGroup)
