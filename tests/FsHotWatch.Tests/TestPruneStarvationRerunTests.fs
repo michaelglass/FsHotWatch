@@ -12,6 +12,7 @@ open System.IO
 open System.Text.Json
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.PluginRuns
@@ -111,6 +112,7 @@ let ``a declared project that timed out on a quiet box is reported timed out, an
 
         test <@ status = "timed-out" @>
         test <@ not (File.Exists(Starvation.pathIn runDir "Slow.Tests")) @>
+        test <@ File.Exists(Starvation.notRerunPathIn runDir "Slow.Tests") @>
         test <@ not (Directory.Exists(Path.Combine(runDir, Starvation.AttemptDirName))) @>
     finally
         File.Delete marker
@@ -124,6 +126,7 @@ let ``a project that declared nothing is never re-run, however starved the box``
 
         test <@ status = "timed-out" @>
         test <@ not (File.Exists(Starvation.pathIn runDir "Slow.Tests")) @>
+        test <@ not (File.Exists(Starvation.notRerunPathIn runDir "Slow.Tests")) @>
     finally
         File.Delete marker
 
@@ -317,3 +320,97 @@ let ``a re-run alone over build output it cannot certify is not launched, and is
         test <@ not (File.Exists baseline) @>
     finally
         File.Delete marker
+
+// --- a declared project that does not qualify says why (AUTOMATION-1524) ---
+
+let private watched (policy: Starvation.Policy option) (result: TestResult) (runDir: string) =
+    let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+    let reading: Starvation.Reading =
+        { Cores = 12
+          Samples = [ { At = DateTime.UtcNow; Load = 5.0 } ] }
+
+    let env: FsHotWatch.TestPrune.RunGroups.WatchEnv =
+        { Collected = Unchecked.defaultof<_>
+          Settled = ignore
+          LogToCtx = lines.Enqueue
+          RunDir = runDir
+          LaunchProject = fun _ _ -> async { return result, None }
+          LaunchSampled = fun _ _ -> async { return result, None, reading }
+          SelectionOf = fun _ -> None }
+
+    let reported =
+        FsHotWatch.TestPrune.RunGroups.launchWatchedWith
+            env
+            Threading.CancellationToken.None
+            (hangsOnceThenPasses "/nowhere" policy)
+        |> Async.RunSynchronously
+
+    test <@ reported = Some result @>
+    List.ofSeq lines
+
+let private timedOutResult =
+    TestsTimedOut("killed", TimeSpan.FromSeconds 2.0, false, TimeSpan.FromSeconds 2.0)
+
+let private passedResult = TestsPassed("ok", false, TimeSpan.FromSeconds 1.0)
+
+let private inTempRunDir (body: string -> unit) =
+    let dir =
+        Path.Combine(Path.GetTempPath(), "fshw-1524-" + Guid.NewGuid().ToString("N"))
+
+    Directory.CreateDirectory dir |> ignore
+
+    try
+        body dir
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a declared project that did not qualify says why in the run's output, with the load and threshold`` () =
+    inTempRunDir (fun runDir ->
+        let lines = watched (Some(Starvation.Policy.rerunAlone [])) timedOutResult runDir
+
+        let line = lines |> List.exactlyOne
+        test <@ line.Contains "Slow.Tests: starvation declared" @>
+        test <@ line.Contains "not starved" @>
+        test <@ line.Contains "load 5.0" @>
+        test <@ line.Contains "≥ 2.0/core" @>)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a declared project that did not qualify leaves its reason, load and threshold in the run directory`` () =
+    inTempRunDir (fun runDir ->
+        watched (Some(Starvation.Policy.rerunAlone [])) timedOutResult runDir |> ignore
+
+        let path = Starvation.notRerunPathIn runDir "Slow.Tests"
+        test <@ File.Exists path @>
+        use doc = JsonDocument.Parse(File.ReadAllText path)
+        let root = doc.RootElement
+        let text (name: string) = root.GetProperty(name).GetString()
+        let project, reason, load = text "project", text "reason", text "load"
+        let cores = root.GetProperty("cores").GetInt32()
+        let loadPerCore = root.GetProperty("loadPerCore").GetDouble()
+        let share = root.GetProperty("share").GetDouble()
+        let samples = root.GetProperty("samples").GetArrayLength()
+        test <@ project = "Slow.Tests" @>
+        test <@ reason.Contains "not starved" @>
+        test <@ load.Contains "load 5.0" @>
+        test <@ cores = 12 @>
+        test <@ loadPerCore = 2.0 @>
+        test <@ share = 0.5 @>
+        test <@ samples = 1 @>
+        // Never the re-run record: its readers are told the project was re-run.
+        test <@ not (File.Exists(Starvation.pathIn runDir "Slow.Tests")) @>)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a project with no declaration prints nothing new and writes no record (positive control)`` () =
+    inTempRunDir (fun runDir ->
+        let lines = watched None timedOutResult runDir
+        test <@ List.isEmpty lines @>
+        test <@ not (File.Exists(Starvation.notRerunPathIn runDir "Slow.Tests")) @>)
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a declared project that passed has nothing to explain`` () =
+    inTempRunDir (fun runDir ->
+        let lines = watched (Some(Starvation.Policy.rerunAlone [])) passedResult runDir
+        test <@ List.isEmpty lines @>
+        test <@ not (File.Exists(Starvation.notRerunPathIn runDir "Slow.Tests")) @>)

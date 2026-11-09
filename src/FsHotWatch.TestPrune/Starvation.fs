@@ -346,6 +346,9 @@ let decide
     (reportJson: string option)
     (reading: Reading)
     : Decision =
+    let withLoad (p: Policy) (why: string) =
+        Report(Some $"%s{why} (%s{Reading.describe p reading})")
+
     let starvedOr (p: Policy) (timedOut: TimedOut) =
         if Reading.isStarved p reading then
             RerunAlone(timedOut, reading)
@@ -366,15 +369,14 @@ let decide
         if pinned then
             starvedOr p (ProjectTimedOut after)
         else
-            Report(
-                Some
-                    "the project timed out, but its run included classes the starvation declaration does not cover — reported as it is"
-            )
+            withLoad
+                p
+                "the project timed out, but its run included classes the starvation declaration does not cover — reported as it is"
     | Some p, TestsFailed _ ->
         match reportJson |> Option.map (timeoutsOfReport p) with
         | Some(Ok tests) -> starvedOr p (TestTimeouts tests)
-        | Some(Error why) -> Report(Some $"not re-run: %s{why}")
-        | None -> Report(Some "not re-run: no report, so nothing shows every failure was a timeout")
+        | Some(Error why) -> withLoad p $"not re-run: %s{why}"
+        | None -> withLoad p "not re-run: no report, so nothing shows every failure was a timeout"
     | Some _, TestsPassed _
     | Some _, TestsErrored _
     | Some _, TestsDeferred _
@@ -390,6 +392,14 @@ let AttemptDirName = "starved-attempt"
 let Suffix = ".starved.json"
 
 let pathIn (runDir: string) (project: string) : string = Path.Combine(runDir, project + Suffix)
+
+/// The suffix of the record of a declared project that was NOT re-run. Not `Suffix`: a
+/// reader of that record is told the project was re-run.
+[<Literal>]
+let NotRerunSuffix = ".starvation-not-rerun.json"
+
+let notRerunPathIn (runDir: string) (project: string) : string =
+    Path.Combine(runDir, project + NotRerunSuffix)
 
 /// Move `project`'s first-attempt artifacts (`<project><suffix>` for each suffix) into
 /// the attempt directory, so the re-run writes the run's report and log afresh. Returns
@@ -477,6 +487,33 @@ let write (policy: Policy) (runDir: string) (record: Record) : unit =
         FsHwPaths.atomicWriteAllText path json
     with ex when RunLog.isExpectedFileFailure ex ->
         Logging.warn "test-prune" $"%s{record.Project}: could not write the starvation record %s{path}: %s{ex.Message}"
+
+/// Write why a project that declared a policy was not re-run, beside its report, so the
+/// reason is readable from the run directory alone. A filesystem refusal is logged:
+/// losing it loses the explanation, never the result.
+let writeNotRerun (policy: Policy) (runDir: string) (project: string) (reason: string) (reading: Reading) : unit =
+    let json =
+        JsonSerializer.Serialize(
+            {| project = project
+               reason = reason
+               load = Reading.describe policy reading
+               cores = reading.Cores
+               loadPerCore = policy.LoadPerCore
+               share = policy.StarvedShare
+               samples =
+                reading.Samples
+                |> List.map (fun s ->
+                    {| at = s.At.ToString("O")
+                       load = s.Load |}) |},
+            JsonSerializerOptions(WriteIndented = true)
+        )
+
+    let path = notRerunPathIn runDir project
+
+    try
+        FsHwPaths.atomicWriteAllText path json
+    with ex when RunLog.isExpectedFileFailure ex ->
+        Logging.warn "test-prune" $"%s{project}: could not write the starvation record %s{path}: %s{ex.Message}"
 
 /// The fields of a record a verdict carries.
 type Stored =
