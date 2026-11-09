@@ -1280,6 +1280,77 @@ type BillingTests() =
                     @>)
 
 
+    // AUTOMATION-179 (QA 2026-10-29), the run path: the type a route-naming attribute
+    // decorates is selected, the one before it is not.
+    [<Fact>]
+    let ``a route in an attribute above a top-level type selects that type and not the one before it`` () =
+        let testContent =
+            """type FirstTests() =
+    [<Fact>]
+    member _.Other() = ()
+
+[<Trait("Endpoint", "/api/users/1")>]
+type SecondTests() =
+    [<Fact>]
+    member _.Visits() = ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("AttrTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result -> test <@ result |> List.map _.TestClass = [ "SecondTests" ] @>)
+
+    // Residual 4: `[<Fact>]` inside an ordinary string is not an attribute. The route is
+    // named in both modules, so the helper is excluded by what it is, not by matching nothing.
+    [<Fact>]
+    let ``attribute-like text in a string literal does not make a helper module selectable`` () =
+        let testContent =
+            "module Helpers =\n"
+            + "    let sample = \"[<Fact>]\"\n"
+            + "    let url = \"/api/users/1\"\n"
+            + "\n"
+            + "module RealTests =\n"
+            + "    [<Fact>]\n"
+            + "    let ``visits`` () = ignore \"/api/users/1\"\n"
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("HelperTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result -> test <@ result |> List.map _.TestClass = [ "RealTests" ] @>)
+
+    // The direction that costs a verdict: a quote character before a real marker must not
+    // open a "string" that swallows it. Pinned against the fix above.
+    [<Fact>]
+    let ``a character literal holding a quote does not hide the test attribute after it`` () =
+        let testContent =
+            "module RealTests =\n"
+            + "    let quote = '\"'\n"
+            + "    [<Fact>]\n"
+            + "    let ``visits`` () = ignore (quote, \"/api/users/1\")\n"
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
+            [ ("CharTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result -> test <@ result |> List.map _.TestClass = [ "RealTests" ] @>)
+
     // -- A `>]` inside an attribute string must not truncate -----------------------
     //
     // `[<Trait("k","v>]"); Fact>]` used to be read as `Trait("k","v` — the scan
@@ -2024,6 +2095,35 @@ let ``visits nothing`` () = ignore Ready
               at "App.Tests.BrowserTests.visits nothing" Function 14 ]
 
         test <@ sourcesOf symbols content = set [ "App.Tests.BrowserTests.visits a user" ] @>
+
+    // AUTOMATION-179 (QA 2026-10-29): spans were cut at `^type`, so the attribute above a
+    // top-level declaration sat inside the PREVIOUS declaration's span and its route was
+    // credited to the wrong class.
+    [<Fact>]
+    let ``a URL in an attribute above a top-level type belongs to the type below it, not the one before`` () =
+        let content =
+            """module App.Tests.BrowserTests
+
+type FirstTests() =
+    [<Fact>]
+    member _.Other() = ()
+
+[<Trait("Endpoint", "/api/users/1")>]
+type SecondTests() =
+    [<Fact>]
+    member _.Visits() = ()
+"""
+
+        let symbols =
+            [ at "App.Tests.BrowserTests.FirstTests" Type 3
+              at "App.Tests.BrowserTests.FirstTests.Other" Function 5
+              at "App.Tests.BrowserTests.SecondTests" Type 8
+              at "App.Tests.BrowserTests.SecondTests.Visits" Function 10 ]
+
+        let sources = sourcesOf symbols content
+
+        test <@ sources |> Set.contains "App.Tests.BrowserTests.SecondTests.Visits" @>
+        test <@ not (sources |> Set.contains "App.Tests.BrowserTests.FirstTests.Other") @>
 
     [<Fact>]
     let ``a URL in a test's attribute belongs to the test it decorates`` () =
