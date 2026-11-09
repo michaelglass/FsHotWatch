@@ -697,6 +697,12 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
     // fsharplint:disable-next-line MemberNames
     static member create(dbPath: string, policy: Domain.WalkPolicy) = Database(dbPath, policy)
 
+    /// `create`, with connections that wait `busyTimeout` on a lock instead of `BusyTimeout`.
+    // Public API: consumers call `Database.create`, and renaming it breaks every one of them.
+    // fsharplint:disable-next-line MemberNames
+    static member create(dbPath: string, policy: Domain.WalkPolicy, busyTimeout: TimeSpan) =
+        Database(dbPath, policy, busyTimeout)
+
     /// The policy `QueryAffectedTests` walks under.
     member _.WalkPolicy = policy
 
