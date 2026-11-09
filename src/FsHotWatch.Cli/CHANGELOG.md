@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a coverage write queued behind an indexer flush no longer fails with `database is locked` (AUTOMATION-784). The daemon's
+  test-impact DB waits up to 5 minutes on a held lock; TestPrune.Core's 30s default was shorter than a measured 58s cold flush.
+
+- fix: a restart served from check records no longer reads as a full re-typecheck (AUTOMATION-1520). The scan's log line and
+  its `check-result cache` progress now say how many files were replayed from check records, and `scan-metrics.jsonl`
+  carries `cacheReplays`; a replay is no longer counted as a cache miss.
+
+- fix: a client wait (`WaitForScan`, `WaitForComplete`, `WaitForRest`) is judged by whether the work it waits on is
+  moving, not by its own age (AUTOMATION-1520). A healthy cold scan is never called WEDGED and never told to `fshw stop`;
+  a wait on work silent for 10 minutes still is. A wait cut off by the verdict deadline while its work moves says the
+  daemon is not wedged.
+
 - fix: `confirm`, `test-rerun` and the other one-shot verbs stop the daemon they started only if the daemon says nobody
   else is using it (AUTOMATION-1197). The release used to read the run claims, which only `check` and `confirm` hold, so a
   `test-rerun` that reused the daemon had it stopped under it. The verb now asks with `ReleaseIfSole`, and when the

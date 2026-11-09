@@ -918,3 +918,35 @@ let ``a project reference a project does not compile against moves none of its k
         let compiled = keysOf (Path.Combine(dir, "store")) tree tree.B
         File.AppendAllLines(tree.A2, [| "let evenMore = 2" |])
         test <@ keysOf (Path.Combine(dir, "store")) tree tree.B <> compiled @>)
+
+// AUTOMATION-1520: the check-result cache has nothing on a restart, but a filed record
+// answers: the tally counts the replay, and the cache's empty lookup is not a miss.
+[<Fact(Timeout = 240000)>]
+let ``a restart served from check records tallies replays, with no miss, through a check-result cache`` () =
+    withTempDir "check-records-tally" (fun dir ->
+        let tree, store, files, _, _ = seeded dir
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let counter = CheckCounter()
+
+        let pipeline =
+            CheckPipeline(
+                checker,
+                cacheBackend =
+                    (FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100) :> FsHotWatch.CheckCache.ICheckCacheBackend),
+                activity = counter,
+                repoRoot = tree.Root,
+                checkRecords = store,
+                checkToolchain = toolchain
+            )
+
+        pipeline.RegisterProject(tree.A.ProjectFileName, tree.A)
+        pipeline.RegisterProject(tree.B.ProjectFileName, tree.B)
+
+        for file in files do
+            pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously |> ignore
+
+        let tally = pipeline.CacheTally
+
+        test <@ counter.Started = 0 @>
+        test <@ tally.Replayed = int64 files.Length @>
+        test <@ CheckCacheTally.CacheTally.misses tally = 0L @>)

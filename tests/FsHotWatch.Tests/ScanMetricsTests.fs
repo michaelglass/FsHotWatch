@@ -25,6 +25,7 @@ let private sample generation rss =
       CheckStarts = 1552L
       CacheHits = 0L
       CacheMisses = 0L
+      CacheReplays = 0L
       CheckCache = Some true
       RetryRounds = 0
       RssBytes = rss

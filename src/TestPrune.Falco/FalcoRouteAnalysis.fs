@@ -246,12 +246,37 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         else
             None
 
+    /// The index just past the character literal opening at `i`, or `None`. A `'"'` must not
+    /// open a string: a stray string would swallow the attribute after it.
+    let charLiteralEnd (text: string) (i: int) : int option =
+        if text[i] <> '\'' then
+            None
+        elif startsAt text (i + 1) "\\" && startsAt text (i + 3) "'" then
+            Some(i + 4)
+        elif startsAt text (i + 2) "'" then
+            Some(i + 3)
+        else
+            None
+
+    /// A plain `"…"` string that spans a line. F# allows one, but a stray quote that
+    /// reaches this far is more often a mistracked scan than a multi-line literal, and
+    /// skipping it could hide a real `[<Fact>]`: over-selection is the safe direction.
+    let isPlainMultilineString (text: string) (i: int) (literalEnd: int) =
+        text[i] = '"'
+        && not (startsAt text i "\"\"\"")
+        && text.IndexOf('\n', i, literalEnd - i) >= 0
+
     let attributeBlocks (text: string) : string list =
         let blocks = ResizeArray<string>()
         let mutable i = 0
 
         while i < text.Length - 1 do
-            if text.[i] = '[' && text.[i + 1] = '<' then
+            match stringLiteralEnd text i, charLiteralEnd text i with
+            | Some literalEnd, _ when not (isPlainMultilineString text i literalEnd) ->
+                // An attribute-like run inside a string is text, not an attribute (AUTOMATION-179).
+                i <- literalEnd
+            | _, Some literalEnd -> i <- literalEnd
+            | _ when text.[i] = '[' && text.[i + 1] = '<' ->
                 let contentStart = i + 2
                 let mutable j = contentStart
                 let mutable closed = false
@@ -267,8 +292,7 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 // An unterminated block consumes the rest of the text; resume
                 // after the opener so a stray `[<` cannot swallow the file.
                 i <- if closed then j else contentStart
-            else
-                i <- i + 1
+            | _ -> i <- i + 1
 
         List.ofSeq blocks
 
@@ -339,6 +363,31 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     // under-selection silently skips affected tests. A file whose ONLY declarations are
     // non-selectable therefore contributes no TEST CLASS, though it can still contribute
     // EDGE PARTICIPANTS — see `RouteMatch`.
+    /// Where the attribute lines directly above the declaration at `start` begin, or `start`
+    /// when there are none. An attribute above a declaration belongs to it, not to the
+    /// declaration before it: a route named there must select the type it decorates
+    /// (AUTOMATION-179).
+    let leadingAttributeStart (content: string) (start: int) : int =
+        let rec walk (lineStart: int) =
+            if lineStart = 0 then
+                lineStart
+            else
+                let previousEnd = lineStart - 1
+
+                let previousStart =
+                    match content.LastIndexOf('\n', max 0 (previousEnd - 1)) with
+                    | -1 -> 0
+                    | newline -> newline + 1
+
+                let line = content.Substring(previousStart, previousEnd - previousStart).Trim()
+
+                if line.StartsWith("[<") || line.EndsWith(")>]") then
+                    walk previousStart
+                else
+                    lineStart
+
+        walk start
+
     let matchDeclarationsInFiles
         (repoRoot: string)
         (testFiles: (string * string) list)
@@ -366,7 +415,8 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                             ->
                             List.tail candidates
                         | _ -> candidates
-                        |> List.map (fun (start, name, kind) -> start, name, (kind = ClassDeclaration))
+                        |> List.map (fun (start, name, kind) ->
+                            leadingAttributeStart content start, name, (kind = ClassDeclaration))
 
                     let spans =
                         declarations
@@ -514,28 +564,26 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
             match stringLiteralEnd text i with
             | Some literalEnd -> i <- literalEnd
             | None ->
-                // Character literals `'"'` and `'\''` must not open or close a string.
-                if text[i] = '\'' && at (i + 1) "\\" && at (i + 3) "'" then
-                    i <- i + 4
-                elif text[i] = '\'' && at (i + 2) "'" then
-                    i <- i + 3
-                // `(*)` is the multiplication operator, not a comment.
-                elif at i "(*)" then
-                    i <- i + 3
-                elif at i "(*" then
-                    let finish = closeBlockComment (i + 2)
-                    blank i finish
-                    i <- finish
-                elif at i "//" then
-                    let finish =
-                        match text.IndexOf('\n', i) with
-                        | -1 -> text.Length
-                        | newline -> newline
+                match charLiteralEnd text i with
+                | Some literalEnd -> i <- literalEnd
+                | None ->
+                    // `(*)` is the multiplication operator, not a comment.
+                    if at i "(*)" then
+                        i <- i + 3
+                    elif at i "(*" then
+                        let finish = closeBlockComment (i + 2)
+                        blank i finish
+                        i <- finish
+                    elif at i "//" then
+                        let finish =
+                            match text.IndexOf('\n', i) with
+                            | -1 -> text.Length
+                            | newline -> newline
 
-                    blank i finish
-                    i <- finish
-                else
-                    i <- i + 1
+                        blank i finish
+                        i <- finish
+                    else
+                        i <- i + 1
 
         System.String chars
 

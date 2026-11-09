@@ -77,6 +77,14 @@ let internal hasFcsErrors (suppression: Suppression) (state: FileCheckState) : b
 let internal dbWriteLabel (dbPath: string) (fileCount: int) =
     $"test-impact DB write: %d{fileCount} file(s) to %s{dbPath}"
 
+/// How long this daemon's connections to its own test-impact DB wait on a lock another
+/// connection holds. A cold indexer flush holds the write lock in one transaction for as long
+/// as the flush takes (58s for 2523 files on a loaded box), and the ratchet writer queues
+/// behind it by design (AUTOMATION-784). TestPrune.Core's 30s default refused that writer
+/// with `database is locked` during exactly that flush, so this is set well past it. A holder
+/// that outlasts even this is reported as a held lock (`namedDbWriteFailure`), never a wedge.
+let internal ImpactDbBusyTimeout = TimeSpan.FromMinutes 5.0
+
 /// The busy timeout the test-impact DB's connections carry: how long a write waits on a lock
 /// another connection holds before SQLite refuses it. Read from a connection the database
 /// opened, so the bound a blocked write reports is the one it ran out of, not a restatement.
@@ -218,7 +226,7 @@ let internal quarantinedIndexPath (dbPath: string) (foundVersion: int) : string 
 /// TestPrune.Core's refusal itself stands: it must never downgrade a newer file in place.
 let internal openOwnIndex (dbPath: string) (walkPolicy: WalkPolicy) : Database =
     try
-        Database.create (dbPath, walkPolicy)
+        Database.create (dbPath, walkPolicy, ImpactDbBusyTimeout)
     with SchemaNewerThanConsumerException(_, found, supported) ->
         let aside = quarantinedIndexPath dbPath found
 
@@ -233,7 +241,7 @@ let internal openOwnIndex (dbPath: string) (walkPolicy: WalkPolicy) : Database =
             "test-prune"
             $"%s{dbPath} was written by TestPrune.Core schema v%d{found}; this daemon supports schema v%d{supported}. Moved it aside to %s{aside} (kept for a consumer at schema v%d{found} or newer) and starting on a fresh test-impact index."
 
-        let fresh = Database.create (dbPath, walkPolicy)
+        let fresh = Database.create (dbPath, walkPolicy, ImpactDbBusyTimeout)
 
         Logging.info
             "test-prune"

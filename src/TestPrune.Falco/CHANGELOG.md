@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a route named in an attribute above a top-level declaration belongs to that declaration, not the one before it
+  (AUTOMATION-179). Declaration spans now begin at the attribute lines directly above `^type` / `^module`, so the type it
+  decorates is the one selected and carries the edge.
+- fix: attribute-like text inside a string literal or after a character literal no longer makes a helper test-bearing
+  (AUTOMATION-179), and a quote character cannot open a string that hides a real test attribute.
+
 ## 4.0.5 - 2026-11-02
 
 - refactor: `AnalyzeEdges` memoises each file's symbols once (a handler file and a test file

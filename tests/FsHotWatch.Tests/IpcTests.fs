@@ -40,6 +40,7 @@ let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       WaitForRest = fun _ -> Task.FromResult(())
+      WorkQuietFor = fun () -> TimeSpan.Zero
       RerunPlugin = fun _ -> async { return Result.Ok() }
       InvalidateCache = fun () -> Task.FromResult(())
       GetUncheckedCount = fun () -> 0
@@ -709,6 +710,86 @@ let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
         // The underlying scan progress is still there.
         test <@ progress = FsHotWatch.ScanProgress.Progress.Complete(10, 0, TimeSpan.FromSeconds 1.0) @>
     | other -> failwith $"expected a wedged answer, got %A{other}"
+
+// AUTOMATION-1520: the `ScanStatus` a client reads during a cold scan. The wait's own age
+// (past the 1 s threshold here) must not make a scan that is moving read as wedged.
+let private scanWaitAnswer (quietFor: TimeSpan) =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let clock = ref (DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+
+    use watchdog =
+        new FsHotWatch.OperationWatchdog.Watchdog(
+            TimeSpan.FromSeconds(1.0),
+            heartbeatEvery = TimeSpan.FromHours(1.0),
+            now = (fun () -> clock.Value),
+            log = ignore,
+            tick = TimeSpan.FromMilliseconds(50.0)
+        )
+
+    let scanDone = TaskCompletionSource<unit>()
+
+    let scanning =
+        FsHotWatch.ScanProgress.Progress.Checking(5, 10, TimeSpan.FromSeconds 500.0, None)
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForScanGeneration = fun _ -> scanDone.Task
+            WorkQuietFor = fun () -> quietFor
+            GetScanStatus = fun () -> scanning }
+
+    let target = DaemonRpcTarget(config, watchdog)
+    let waiting = target.WaitForScan 0L
+    clock.Value <- clock.Value.AddSeconds 500.0
+    let answer = FsHotWatch.ScanProgress.parse (target.ScanStatus())
+    scanDone.SetResult()
+    waiting.GetAwaiter().GetResult() |> ignore
+    answer, scanning
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``ScanStatus during a slow scan that is moving reports no wedge and no advice to stop`` () =
+    let answer, scanning = scanWaitAnswer (TimeSpan.FromSeconds 3.0)
+
+    test <@ answer = FsHotWatch.ScanProgress.Reading.Reported(None, scanning) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``ScanStatus during a scan that has stopped moving still reports the wedge and its recovery`` () =
+    match scanWaitAnswer FsHotWatch.OperationWatchdog.WaitStallBound with
+    | FsHotWatch.ScanProgress.Reading.Reported(Some wedge, _), _ ->
+        test <@ wedge.StartsWith "WEDGED: WaitForScan" @>
+        test <@ wedge.Contains "fshw stop" @>
+    | other -> failwith $"expected a wedged answer, got %A{other}"
+
+// The seam's hard deadline: a client whose wait is cut off while the work is moving is
+// told the daemon is not wedged, and is not told to stop it.
+let private deadlineMessage (quietFor: TimeSpan) =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForScanGeneration = fun _ -> TaskCompletionSource<unit>().Task
+            WorkQuietFor = fun () -> quietFor }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 100.0)
+
+    try
+        target.WaitForScan(0L).GetAwaiter().GetResult() |> ignore
+        failwith "the deadline should have fired"
+    with :? TimeoutException as ex ->
+        ex.Message
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a wait cut off by the deadline while its work is moving does not call the daemon wedged`` () =
+    let message = deadlineMessage (TimeSpan.FromSeconds 2.0)
+
+    test <@ message.Contains "not wedged" @>
+    test <@ not (message.Contains "fshw stop") @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a wait cut off by the deadline on work that has stopped says the daemon is wedged`` () =
+    let message = deadlineMessage FsHotWatch.OperationWatchdog.WaitStallBound
+
+    test <@ message.Contains "wedged on this" @>
+    test <@ message.Contains "fshw stop" @>
 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -1774,7 +1855,8 @@ let ``an RPC whose work never completes faults with TimeoutException at the seam
     // A scan that never signals — a Fantomas preprocessor wedged inside performScan.
     let config =
         { defaultRpcConfig host with
-            WaitForScanGeneration = fun _ -> TaskCompletionSource<unit>().Task }
+            WaitForScanGeneration = fun _ -> TaskCompletionSource<unit>().Task
+            WorkQuietFor = fun () -> FsHotWatch.OperationWatchdog.WaitStallBound }
 
     let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 300.0)
 

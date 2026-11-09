@@ -3590,7 +3590,8 @@ let internal scanProgressWith
             cache
             |> Option.map (fun cache ->
                 ({ Hits = cache.Hits
-                   Misses = CheckCacheTally.CacheTally.misses cache }
+                   Misses = CheckCacheTally.CacheTally.misses cache
+                   Replayed = cache.Replayed }
                 : ScanProgress.CacheCounts))
 
         ScanProgress.Progress.Checking(completed, total, now - startedAt, counts)
@@ -4152,6 +4153,12 @@ type Daemon
                       WaitForAllTerminal = fun timeout -> this.SettleForVerdict(timeout, cts.Token)
                       // A reader's wait (`fshw findings`): settle, nothing else.
                       WaitForRest = fun timeout -> waitForAllTerminal host timeout cts.Token
+                      WorkQuietFor =
+                        fun () ->
+                            if host.AnyPluginBusy() then
+                                System.TimeSpan.Zero
+                            else
+                                max System.TimeSpan.Zero (HostClock.awakeUtc () - host.LastActivityAt())
                       RerunPlugin = rerunPlugin
                       InvalidateCache =
                         fun () ->
@@ -5105,7 +5112,11 @@ let private performScan
             let cacheScan =
                 CheckCacheTally.CacheTally.since cacheTallyAtScanStart.Value pipeline.CacheTally
 
-            if cacheScan.Hits + CheckCacheTally.CacheTally.misses cacheScan > 0L then
+            if
+                cacheScan.Hits
+                + CheckCacheTally.CacheTally.misses cacheScan
+                + cacheScan.Replayed > 0L
+            then
                 Logging.info "cache" (CheckCacheTally.describeCacheTally cacheScan)
 
             let sample: ScanMetrics.ScanSample =
@@ -5121,6 +5132,7 @@ let private performScan
                   CheckStarts = pipeline.CheckStarts - checkStartsAtScanStart.Value
                   CacheHits = cacheScan.Hits
                   CacheMisses = CheckCacheTally.CacheTally.misses cacheScan
+                  CacheReplays = cacheScan.Replayed
                   CheckCache = Some pipeline.HasCheckCache
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
