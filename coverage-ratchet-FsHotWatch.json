@@ -493,8 +493,8 @@
     "DebouncedWork.fs": [
       {
         "line": 97,
-        "branch": 92,
-        "reason": "provisional Linux floor (2026-09-17): new file, not yet measured on Linux. macOS measures 100 percent line and 100 percent branch (132 lines, 28/28 branches) with DebouncedWorkTests and DaemonTests, so it has no macOS entry. Linux instruments more compiler-generated branches for the same source; set a few points below the macOS measurement, to be settled from CI.",
+        "branch": 86,
+        "reason": "Linux, inspected per edge (AUTOMATION-1545). 44 of the 50 branches ran in every CI report; the other six are the two sides of an await in DebouncedWork.fs, which depend on whether the awaited task had finished. Line 97 (admitHead, await worker.SubmitAsync) varies. Line 105 (admitHead, await change) was missed in every report. Line 137 (expire, await delayTask) was missed until a test finished the timer first. Line 143 (expire, await change) was missed in every report. Line 181 (Post, await store.ChangeAsync) was missed in every report. Line 230 (Close, await change) varies. Measured on .NET SDK 10.0.404 / runtime 10.0.15: 44, 45 and 46 of 50, and one sha measured 46 and 45 in the same CI job, so these are scheduling outcomes rather than behaviour a test can pin. Floor 86 is 43 of 50: the worst measurement with the current tests is 45 of 50, so this leaves a margin of two branches for a normal scheduling swing. Whether the 10.0.404 release triggered this is unverified.",
         "platform": "linux"
       },
       {

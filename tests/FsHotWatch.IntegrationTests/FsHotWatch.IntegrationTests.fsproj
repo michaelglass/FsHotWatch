@@ -49,6 +49,7 @@
     <Compile Include="CheckRecordsRestartTests.fs" />
     <Compile Include="OutputIdentityBuildTests.fs" />
     <Compile Include="RefAssemblyBuildTests.fs" />
+    <Compile Include="DeterministicPdbPathTests.fs" />
     <Compile Include="CrossTmpdirDaemonTests.fs" />
   </ItemGroup>
 

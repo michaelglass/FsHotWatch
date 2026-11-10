@@ -108,6 +108,45 @@ let ``a peer that hangs up while a frame is written is a frame error, not an exc
 
     test <@ (writeFrame stream "héllo" CancellationToken.None).Result = Error(FrameError.HungUp "Broken pipe") @>
 
+/// A stream whose every write and flush stays pending until the test releases it, so each
+/// await in `writeFrame` suspends on any runtime. A real pipe decides that by timing.
+type private PendingWriteStream() =
+    inherit MemoryStream()
+
+    let pending =
+        new Collections.Concurrent.BlockingCollection<Threading.Tasks.TaskCompletionSource>()
+
+    let enqueue () =
+        let gate = Threading.Tasks.TaskCompletionSource()
+        pending.Add gate
+        gate.Task
+
+    member _.ReleaseNext() =
+        let mutable gate = null
+        Assert.True(pending.TryTake(&gate, TimeSpan.FromSeconds 4.0), "writeFrame never reached its next await")
+        gate.SetResult()
+
+    override this.WriteAsync(buffer: ReadOnlyMemory<byte>, _: CancellationToken) =
+        this.Write(buffer.Span)
+        Threading.Tasks.ValueTask(enqueue ())
+
+    override _.FlushAsync(_: CancellationToken) = enqueue ()
+
+[<Fact(Timeout = 5000)>]
+let ``a frame written through awaits that all suspend arrives whole`` () =
+    use stream = new PendingWriteStream()
+
+    let written = writeFrame stream "héllo" CancellationToken.None
+
+    // The length, the payload, then the flush.
+    for _ in 1..3 do
+        test <@ not written.IsCompleted @>
+        stream.ReleaseNext()
+
+    test <@ written.Result = Ok() @>
+    stream.Position <- 0L
+    test <@ (readFrame stream CancellationToken.None).Result = Ok "héllo" @>
+
 [<Fact(Timeout = 5000)>]
 let ``a cancelled write still raises: cancellation is the caller's, not a hang-up`` () =
     use stream = new MemoryStream()
