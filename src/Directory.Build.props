@@ -3,6 +3,23 @@
        must be imported explicitly or every src/ project silently loses it. -->
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
+  <!-- Release builds are the shipped ones, so they are deterministic. Without this, each
+       assembly's CodeView entry names the pdb by the packing checkout's absolute path. A
+       coverage collector on the same machine then finds that pdb, instruments the package,
+       and reports the checkout's source paths as the consumer's own. TestPrune.Core 16.1.0
+       failed a consumer's coverage gate this way. Deterministic paths map the checkout to
+       `/_/`, which resolves nowhere. DeterministicPdbPathTests pins it.
+       ContinuousIntegrationBuild maps every top-level SourceRoot. With git (GitHub CI),
+       SourceLink supplies that root and maps its URLs from the same `/_/` paths. A jj
+       checkout without colocated git has no SourceLink and so no root; declare the
+       checkout itself. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Release' and !Exists('$(MSBuildThisFileDirectory)../.git')">
+    <SourceRoot Include="$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../'))" />
+  </ItemGroup>
+
   <!-- One warning set for every shipped package. Each src/ project sets
        TreatWarningsAsErrors, so a warning enabled here is a build error everywhere,
        not in whichever package happened to carry the block.
