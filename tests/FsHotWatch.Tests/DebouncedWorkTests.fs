@@ -460,3 +460,34 @@ let ``an obsolete debounce timer neither flushes nor fails later input`` () =
             delay.TrySetResult(()) |> ignore
 
         input.Close()
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a debounce timer that has already finished still admits its cohort`` () =
+    let store = Store()
+    let cohorts = Collections.Concurrent.ConcurrentQueue<int list>()
+
+    let worker =
+        SupervisedWork.Queue(
+            store,
+            "changes",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (_: int list) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state values _ _ ->
+                async {
+                    cohorts.Enqueue values
+                    return state + List.sum values
+                })
+        )
+
+    let input =
+        DebouncedWork.Queue(store, "changes", worker, (@), delayTask = (fun _ -> Task.CompletedTask))
+
+    try
+        finish (input.Post([ 1 ], TimeSpan.FromSeconds 5.0))
+        Assert.Equal<int list list>([ [ 1 ] ], List.ofSeq cohorts)
+        Assert.Equal(1, worker.State)
+    finally
+        input.Close()
