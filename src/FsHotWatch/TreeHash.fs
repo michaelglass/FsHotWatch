@@ -48,8 +48,15 @@ open System.Text
 /// v2 all of those contributed nothing, so weakening a check — lowering a floor,
 /// editing a rule, flipping `TreatWarningsAsErrors` off — left the green earned
 /// under the STRONGER check still reporting `Applies`.
+///
+/// v4: the files behind a symlinked directory under a discovery root are hashed,
+/// under the link's path (AUTOMATION-1563). Under v3 the walk skipped every such
+/// directory and recorded nothing, so compile items behind `src/Shared -> …` could
+/// change under a verdict that still applied. And a checkout under a directory named
+/// `bin` or `obj` hashes its sources (the generated-output test reads the path
+/// relative to the repository).
 [<Literal>]
-let Algorithm = "fshw-tree-sha256-v3"
+let Algorithm = "fshw-tree-sha256-v4"
 
 /// The content address of a tree, with the number of files that went into it and
 /// the number of directories the walk could not see (a bare hash is unfalsifiable;
@@ -123,6 +130,65 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
     let walked =
         Discovery.discoveryRoots repoRoot
         |> List.map (fun root -> SafeWalk.walk SafeWalk.SourceExcludedDirs "*" root)
+
+    // SYMLINKED DIRECTORIES under a discovery root (AUTOMATION-1563). The walk never
+    // descends one (a portal out of the tree, possibly into a cycle), and the hash used
+    // to record nothing for it. Now every one is accounted for:
+    //
+    //   * a link whose target lies INSIDE the repository is walked once, as a root of its
+    //     own, its files named under the link's path. A link inside a linked directory is
+    //     not followed (the walk's own guarantee).
+    //   * a link whose target lies OUTSIDE the repository (or contains it) is NEVER
+    //     followed. It is a recorded hole: the walk says what it did not see instead of
+    //     going there. `.devenv/` links into a 160K-file nix store; a walk that follows
+    //     links out of the tree is how tooling has hung here before. (`verdictInputs`
+    //     cannot declare a path outside the repository, so no declaration can ask for one.)
+    //   * a dangling link is absent, as a dangling discovery root is.
+    //
+    // The target is resolved LEXICALLY against the link's own directory and compared with
+    // the repository root as given, so a checkout under a linked path (`/var` ->
+    // `/private/var`) is judged in the same spelling as its links.
+    let linkedWalks =
+        // Each symlinked directory with its target as written. No depth cap is needed: links
+        // are not descended, so the recursion follows only the real tree, which is finite.
+        let rec linksUnder (dir: string) : (string * string) list =
+            match SafeWalk.subdirectories dir with
+            // A directory that cannot be listed is a hole the main walk already records.
+            | Error _ -> []
+            | Ok subdirectories ->
+                subdirectories
+                |> Array.toList
+                |> List.collect (fun sub ->
+                    match DirectoryInfo(sub).LinkTarget with
+                    | _ when SafeWalk.SourceExcludedDirs.Contains(Path.GetFileName sub) -> []
+                    | null -> linksUnder sub
+                    | written -> [ sub, written ])
+
+        let root = Path.TrimEndingDirectorySeparator(Path.GetFullPath repoRoot)
+
+        let strictlyInsideRepo (target: string) =
+            target.StartsWith(root + string Path.DirectorySeparatorChar, StringComparison.Ordinal)
+
+        let hole (link: string) (reason: string) : SafeWalk.WalkResult =
+            { Files = []
+              Skipped =
+                [ { Path = link
+                    Reason = SafeWalk.Unreadable reason } ] }
+
+        Discovery.existingDiscoveryRoots repoRoot
+        |> List.collect linksUnder
+        |> List.map (fun (link, written) ->
+            let target =
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(Path.GetDirectoryName link, written)))
+
+            if strictlyInsideRepo target then
+                SafeWalk.walk SafeWalk.SourceExcludedDirs "*" link
+            else
+                hole
+                    link
+                    $"a symlink to %s{target}, outside the repository, is not followed — its contents were never seen")
+
+    let walked = walked @ linkedWalks
 
     let filePaths =
         walked

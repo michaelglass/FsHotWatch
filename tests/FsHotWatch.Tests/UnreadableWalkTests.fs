@@ -205,3 +205,97 @@ let ``a --project directory that cannot be listed is named, never thrown or read
                             reason.Contains dir
                         | _ -> false
                     @>))
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1563: what the tree hash could not see without saying so
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a checkout under a directory named bin still hashes its sources`` () =
+    // A: `/bin/` was matched in the ABSOLUTE path, so a repository at `…/bin/repo`
+    // hashed no source at all and an edit left the hash unchanged.
+    withTempDir "treehash-bin" (fun scratch ->
+        let repo = Path.Combine(scratch, "bin", "repo")
+        write repo "src/A.fs" "module A\nlet x = 1\n"
+        let before = TreeHash.compute repo []
+        write repo "src/A.fs" "module A\nlet x = 2\n"
+        let after = TreeHash.compute repo []
+        test <@ before.FileCount > 0 @>
+        test <@ before.Hash <> after.Hash @>)
+
+[<Fact>]
+let ``an edit under a symlinked source subdirectory that points inside the repository moves the tree hash`` () =
+    // B: the walk skips every symlinked directory, and the tree hash recorded nothing for
+    // one. `src/Shared -> ../shared/Shared` holding compile items could change freely
+    // under a verdict that still applied.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "treehash-link-inside" (fun repo ->
+            write repo "src/App.fs" "module App\n"
+            write repo "shared/Shared/a.fs" "module Shared\nlet y = 1\n"
+
+            File.CreateSymbolicLink(Path.Combine(repo, "src", "Shared"), Path.Combine(repo, "shared", "Shared"))
+            |> ignore
+
+            let before = TreeHash.compute repo []
+            write repo "shared/Shared/a.fs" "module Shared\nlet y = 2\n"
+            let after = TreeHash.compute repo []
+
+            test
+                <@
+                    (TreeHash.files repo []).Files
+                    |> List.map fst
+                    |> List.contains "src/Shared/a.fs"
+                @>
+
+            test <@ before.Hash <> after.Hash @>)
+
+[<Fact>]
+let ``a symlinked source subdirectory pointing outside the repository is a recorded hole, never followed`` () =
+    // A link out of the tree is not walked (`.devenv/` links into a 160K-file nix store),
+    // and it is not silence either: it is a hole, named in `Skipped`.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "treehash-link-outside" (fun scratch ->
+            let repo = Path.Combine(scratch, "repo")
+            let common = Path.Combine(scratch, "common")
+            write repo "src/App.fs" "module App\n"
+            write common "Shared/a.fs" "module Shared\nlet y = 1\n"
+
+            File.CreateSymbolicLink(Path.Combine(repo, "src", "Shared"), Path.Combine(common, "Shared"))
+            |> ignore
+
+            let walked = TreeHash.files repo []
+            test <@ walked.Skipped = [ "src/Shared" ] @>
+
+            test
+                <@
+                    walked.Files
+                    |> List.map fst
+                    |> List.forall (fun rel -> not (rel.StartsWith "src/Shared/"))
+                @>
+
+            test <@ (TreeHash.ofWalked walked).SkippedCount = 1 @>)
+
+[<Fact>]
+let ``a dangling symlinked source subdirectory is absent, and one under build output is never looked at`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "treehash-link-dangling" (fun scratch ->
+            let repo = Path.Combine(scratch, "repo")
+            write repo "src/App.fs" "module App\n"
+            write repo "src/obj/Debug/App.AssemblyInfo.fs" "module Generated\n"
+
+            File.CreateSymbolicLink(Path.Combine(repo, "src", "Gone"), Path.Combine(scratch, "nowhere"))
+            |> ignore
+
+            File.CreateSymbolicLink(Path.Combine(repo, "src", "obj", "Linked"), Path.Combine(scratch, "elsewhere"))
+            |> ignore
+
+            let walked = TreeHash.files repo []
+            test <@ List.isEmpty walked.Skipped @>
+            // Nothing under build output, and no link followed or holed there. (The walk lists
+            // the dangling link itself as a file entry, as it always has.)
+            test
+                <@
+                    walked.Files
+                    |> List.map fst
+                    |> List.forall (fun rel -> not (rel.StartsWith "src/obj/"))
+                @>)
