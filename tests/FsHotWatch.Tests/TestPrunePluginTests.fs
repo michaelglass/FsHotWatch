@@ -6380,3 +6380,72 @@ let ``a timeout headline with no other failure names only the timeout`` () =
     let tally = FsHotWatch.TestPrune.RunOutcomeReport.tallyRun results 2
 
     test <@ FsHotWatch.TestPrune.RunOutcomeReport.timeoutHeadline tally " (note)" = "1 timed out: Slow (note)" @>
+
+// --- a run-tests reply lists only the results a model change left standing (AUTOMATION-1569 E) ---
+
+let private passedPQ: Map<string, TestResult> =
+    Map.ofList
+        [ "P", TestsPassed("P ok", false, TimeSpan.Zero)
+          "Q", TestsPassed("Q ok", false, TimeSpan.Zero) ]
+
+let private completedPQ: TestRunCompleted =
+    { RunId = Guid.NewGuid()
+      TotalElapsed = TimeSpan.Zero
+      Outcome = Normal
+      Results = passedPQ
+      Verification = RunVerification.ofResults passedPQ }
+
+let private replyProjects (json: string) =
+    use doc = JsonDocument.Parse json
+
+    doc.RootElement.GetProperty("projects").EnumerateArray()
+    |> Seq.map (fun p -> p.GetProperty("project").GetString(), p.GetProperty("status").GetString())
+    |> List.ofSeq
+
+[<Fact(Timeout = 15000)>]
+let ``a model change revokes the changed projects, or the whole run when nothing can show what changed`` () =
+    let revoked = FsHotWatch.TestPrune.ReceiptTransitions.revokedProjects
+
+    test
+        <@
+            revoked (FsHotWatch.TestPrune.ReceiptTransitions.ModelCarry.Revoked(Set.ofList [ "P" ])) completedPQ = Set.ofList
+                [ "P" ]
+        @>
+
+    test
+        <@ revoked FsHotWatch.TestPrune.ReceiptTransitions.ModelCarry.Unprovable completedPQ = Set.ofList [ "P"; "Q" ] @>
+
+    test
+        <@
+            revoked FsHotWatch.TestPrune.ReceiptTransitions.ModelCarry.Carried completedPQ
+            |> Set.isEmpty
+        @>
+
+    test
+        <@
+            revoked FsHotWatch.TestPrune.ReceiptTransitions.ModelCarry.SameModel completedPQ
+            |> Set.isEmpty
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a run-tests reply does not report a revoked project as passed`` () =
+    let results: TestResults =
+        { Results = passedPQ
+          Elapsed = TimeSpan.Zero }
+
+    let reply =
+        FsHotWatch.TestPrune.RunResults.formatStandingResultsJson (Set.ofList [ "P" ]) None Map.empty results
+
+    test <@ replyProjects reply = [ "Q", "passed" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a run-tests reply with nothing revoked lists every project`` () =
+    // POSITIVE CONTROL: the reply is the plain report when the model did not move.
+    let results: TestResults =
+        { Results = passedPQ
+          Elapsed = TimeSpan.Zero }
+
+    let reply =
+        FsHotWatch.TestPrune.RunResults.formatStandingResultsJson Set.empty None Map.empty results
+
+    test <@ replyProjects reply = [ "P", "passed"; "Q", "passed" ] @>

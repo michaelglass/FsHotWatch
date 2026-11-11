@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a `run-tests` reply no longer reports a project whose result a mid-run model change revoked (AUTOMATION-1569). The reply
+  was built from the run's raw results before the fold took back the projects whose compile inputs changed, so the CLI read
+  `passed` for a result the daemon had discarded. The reply is now built after the fold and leaves revoked projects out (every
+  project, when no per-project identity can show what changed); no new wire status is added.
+
 - fix: a run's timeout status also names the projects that failed without timing out (AUTOMATION-1569). With any timeout the
   status read `N timed out: <projects>` and left an ordinary failure in the same run unnamed; it now adds `; N failed: <projects>`.
   The run was already red.
