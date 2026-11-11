@@ -1510,6 +1510,11 @@ let private publishVerdictWithReason
     // misses exactly the case the double-hash exists to catch: the file said
     // `incomplete`/2 and the process returned 0, which is what CI reads.
     : int =
+    // The exit code this function has DECIDED so far. It starts as the caller's own and
+    // is replaced the moment a downgrade below is decided, so a write that fails after
+    // that point still returns the downgrade instead of the caller's clean code.
+    let mutable decidedExitCode = CheckVerdict.exitCode outcome
+
     try
         // EVERY batch this check has evidence from, not just the one the
         // daemon's receipt names — see `Verdict.runSuites`.
@@ -1656,6 +1661,8 @@ let private publishVerdictWithReason
                     Verdict.outcomeOfCheck (DaemonConfig.DaemonLog.forRepo repoRoot) outcome,
                     CheckVerdict.exitCode outcome,
                     []
+
+        decidedExitCode <- exitCode
 
         let command = Verdict.Command.ofCheckMode checkMode
 
@@ -1856,15 +1863,18 @@ let private publishVerdictWithReason
 
         exitCode
     with
-    // Nothing was written, so there is no code "it wrote" to hand back. Fall back to
-    // the caller's own outcome — today's behaviour exactly — rather than inventing a
-    // red: a verdict file we could not save is a reporting failure, not a verdict.
+    // Nothing was written, so there is no file to agree with. Return what this function
+    // had DECIDED by the time it failed, never the caller's outcome alone: a downgrade
+    // decided above (the tree moved, or no receipt vouches for the green) is still the
+    // answer, and dropping it turned a refused green into exit 0 whenever the write
+    // failed. A verdict file we could not save is a reporting failure, not a verdict, so
+    // nothing here invents a red.
     | :? System.IO.IOException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
-        CheckVerdict.exitCode outcome
+        decidedExitCode
     | :? System.UnauthorizedAccessException as ex ->
         FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
-        CheckVerdict.exitCode outcome
+        decidedExitCode
 
 /// Publish the ordinary check outcome, owned by one explicit CLI invocation. This
 /// stable wrapper keeps the many normal terminal paths unable to accidentally invent

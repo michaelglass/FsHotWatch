@@ -2602,6 +2602,44 @@ let ``publishVerdict RETURNS the exit code it wrote, so a caller cannot compute 
             | other -> failwithf "publishVerdict must leave a READABLE verdict, got %A" other)
 
 [<Fact>]
+let ``a verdict that cannot be written keeps the downgrade publishVerdict decided`` () =
+    // The defect: the tree-moved downgrade is decided inside `publishVerdictWithReason`,
+    // and an IOException while writing `verdict.json` fell back to the CALLER's outcome.
+    // A clean outcome over a tree that moved under the check then returned exit 0: the
+    // write failed, so no file said otherwise, and the shell said "pass".
+    withTempDir "verdict-io-keeps-downgrade" (fun root ->
+        let src = Path.Combine(root, "src")
+        Directory.CreateDirectory(src) |> ignore
+        let tracked = Path.Combine(src, "Tracked.fs")
+        File.WriteAllText(tracked, "module Tracked\nlet value = 1")
+        let settled = IpcOutput.SettledTree.capture root []
+        File.WriteAllText(tracked, "module Tracked\nlet value = 2")
+
+        // `.fshw` as a FILE: every write under it throws an IOException.
+        let fshw = Path.Combine(root, ".fshw")
+
+        if Directory.Exists fshw then
+            Directory.Delete(fshw, true)
+
+        File.WriteAllText(fshw, "not a directory")
+
+        let exitCode =
+            IpcOutput.publishVerdict
+                root
+                []
+                CheckVerdict.InnerLoop
+                false
+                (BaselineFixtures.reportOf (FullSuite(6, None)))
+                Verdict.NoReading
+                Map.empty
+                []
+                ProjectModelFixtures.available
+                settled
+                (CheckVerdict.CheckOutcome.Clean BaselineFixtures.baseline)
+
+        test <@ exitCode = 2 @>)
+
+[<Fact>]
 let ``an escalated confirm records what the impact-scoped run concluded, and that they AGREED`` () =
     withTempDir "verdict-259-agreed" (fun root ->
         // The observed shape: a warm daemon whose last run was 5 of 6 projects and clean,
