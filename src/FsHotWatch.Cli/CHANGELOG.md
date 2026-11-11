@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- BREAKING: `.fshw.json` is refused, with a config error naming the key, when it carries a top-level key nothing reads
+  (AUTOMATION-1564). An ignored key let a typo switch a gate off: `"test"` for `"tests"` configured no tests, and `check`
+  went green having run none. Comments stay allowed: a key starting with `_` (e.g. `"_comment_build"`) and `"$schema"`
+  are not configuration and are never refused.
+- BREAKING: a `fileCommands` entry must name a non-blank `command` (AUTOMATION-1564). A missing one used to default to
+  `echo`, which always succeeds.
+- BREAKING: a top-level `beforeRun`/`afterRun` must be a command string or `false`, and `tests.beforeRun` a command
+  string, an array of command strings, or `false` (AUTOMATION-1564). Any other shape used to read as no hook, so the step
+  never ran.
+- BREAKING: two `tests.projects` entries with the same `project` are refused (AUTOMATION-1564). Results and reports are
+  keyed by the name, so the first entry's result hid the second's.
+
 ## 0.14.0-alpha.141 - 2026-11-11
 
 - fix: the ADR-059 shadow files a baseline for every project that passed the run today's watermark records (AUTOMATION-1536). A
