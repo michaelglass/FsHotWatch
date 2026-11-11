@@ -9,6 +9,17 @@ open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
+/// An empty repository root. A FileChanged key hashes every file the trigger pattern
+/// matches under its root (AUTOMATION-1557), so a fixture rooted at `/tmp` with a
+/// match-everything pattern would hash the whole of `/tmp` on every event.
+let private emptyRoot =
+    lazy
+        (let dir =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fc-empty-root-" + Guid.NewGuid().ToString("N"))
+
+         System.IO.Directory.CreateDirectory(dir) |> ignore
+         dir)
+
 let private fileTrigger (filter: string -> bool) : CommandTrigger =
     { FilePattern = Some filter
       AfterTests = None }
@@ -36,14 +47,14 @@ let ``plugin has correct name`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command runs when matching files change`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -51,7 +62,7 @@ let ``command runs when matching files change`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -77,7 +88,7 @@ let ``command runs when matching files change`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command does not run for non-matching files`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -85,7 +96,7 @@ let ``command does not run for non-matching files`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -102,7 +113,7 @@ let ``command does not run for non-matching files`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command captures stdout output`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -110,7 +121,7 @@ let ``command captures stdout output`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "captured-output"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -133,7 +144,7 @@ let ``command captures stdout output`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command with environment variables`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -141,7 +152,7 @@ let ``command with environment variables`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "env-test-output"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -167,7 +178,7 @@ let ``command with environment variables`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command runs on ProjectChanged with matching files`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -175,7 +186,7 @@ let ``command runs on ProjectChanged with matching files`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsproj")))
             "echo"
             "project changed"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -201,7 +212,7 @@ let ``command runs on ProjectChanged with matching files`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command ignores SolutionChanged`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -209,7 +220,7 @@ let ``command ignores SolutionChanged`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -226,7 +237,7 @@ let ``command ignores SolutionChanged`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command reports Failed status on command failure`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -234,7 +245,7 @@ let ``command reports Failed status on command failure`` () =
             (fileTrigger (fun _ -> true))
             "false"
             ""
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -260,7 +271,7 @@ let ``command reports Failed status on command failure`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``command reports Failed status on exception`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -268,7 +279,7 @@ let ``command reports Failed status on exception`` () =
             (fileTrigger (fun _ -> true))
             "this-command-does-not-exist-xyz"
             ""
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -297,7 +308,7 @@ let ``command reports Failed status on exception`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the status command declares its reply schema`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -305,7 +316,7 @@ let ``the status command declares its reply schema`` () =
             (fileTrigger (fun _ -> false))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -317,7 +328,7 @@ let ``the status command declares its reply schema`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status command returns not run when no files matched`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -325,7 +336,7 @@ let ``status command returns not run when no files matched`` () =
             (fileTrigger (fun _ -> false))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -344,7 +355,7 @@ let ``status command returns not run when no files matched`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``status command returns false when command failed`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -352,7 +363,7 @@ let ``status command returns false when command failed`` () =
             (fileTrigger (fun _ -> true))
             "false"
             ""
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -374,7 +385,7 @@ let ``status command returns false when command failed`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``emits CommandCompleted on success`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
     let (getCommand, recorder) = commandRecorder ()
     host.RegisterHandler(recorder)
 
@@ -384,7 +395,7 @@ let ``emits CommandCompleted on success`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -411,7 +422,7 @@ let ``emits CommandCompleted on success`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``emits CommandCompleted on failure`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
     let (getCommand, recorder) = commandRecorder ()
     host.RegisterHandler(recorder)
 
@@ -421,7 +432,7 @@ let ``emits CommandCompleted on failure`` () =
             (fileTrigger (fun _ -> true))
             "false"
             ""
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -448,14 +459,20 @@ let ``emits CommandCompleted on failure`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects fires when ALL listed projects have results`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger =
         { FilePattern = None
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed")
+            trigger
+            "echo"
+            "ran"
+            emptyRoot.Value
+            None
 
     host.RegisterHandler(handler)
 
@@ -484,14 +501,20 @@ let ``afterTests TestProjects fires when ALL listed projects have results`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects does not fire when only some listed projects have completed`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger =
         { FilePattern = None
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial") trigger "echo" "ran" "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial")
+            trigger
+            "echo"
+            "ran"
+            emptyRoot.Value
+            None
 
     host.RegisterHandler(handler)
 
@@ -508,14 +531,20 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects does not fire when no listed project matches`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger =
         { FilePattern = None
           AfterTests = Some(TestProjects(Set.ofList [ "Intelligence.Tests.Unit" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss")
+            trigger
+            "echo"
+            "ran"
+            emptyRoot.Value
+            None
 
     host.RegisterHandler(handler)
 
@@ -532,7 +561,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects fires exactly once across progressive deltas`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
     let (getCount, counter) = commandCounter "afterTests-once"
     host.RegisterHandler(counter)
 
@@ -541,7 +570,13 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-once") trigger "echo" "ran" "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "afterTests-once")
+            trigger
+            "echo"
+            "ran"
+            emptyRoot.Value
+            None
 
     host.RegisterHandler(handler)
 
@@ -565,7 +600,7 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests TestProjects fires again on a fresh batch`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
     let (getCount, counter) = commandCounter "afterTests-rebatch"
     host.RegisterHandler(counter)
 
@@ -574,7 +609,13 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch") trigger "echo" "ran" "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch")
+            trigger
+            "echo"
+            "ran"
+            emptyRoot.Value
+            None
 
     host.RegisterHandler(handler)
 
@@ -602,7 +643,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
 [<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style plugin`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let json =
         """{"fileCommands": [{"name": "cov-r", "afterTests": ["ProjA"], "command": "echo", "args": "ok"}]}"""
@@ -630,7 +671,13 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
           AfterTests = fc.AfterTests }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create fc.PluginName)
+            trigger
+            fc.Command
+            fc.Args
+            emptyRoot.Value
+            None
 
     // Without both subscriptions, dispatch never routes events to Update.
     test
@@ -685,14 +732,14 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger =
         { FilePattern = None
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" "/tmp" None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" emptyRoot.Value None
 
     host.RegisterHandler(handler)
     // Subscribe-before-emit, used by every test in this file that awaits a terminal
@@ -714,14 +761,14 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin with both pattern and afterTests fires on file change`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger: CommandTrigger =
         { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" "/tmp" None
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" emptyRoot.Value None
 
     host.RegisterHandler(handler)
     let completion = beginAwaitTerminal host "combined-a"
@@ -737,14 +784,14 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin with both pattern and afterTests fires on test completion`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger: CommandTrigger =
         { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" "/tmp" None
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" emptyRoot.Value None
 
     host.RegisterHandler(handler)
     let completion = beginAwaitTerminal host "combined-b"
@@ -1005,7 +1052,7 @@ let ``a command refused as busy is started again once the refusal passes`` () =
     let calls = ref 0
 
     let status, pauses =
-        fireWith "busy-twice" (refusingFirst 2 textFileBusy calls) ignore "true" "/tmp"
+        fireWith "busy-twice" (refusingFirst 2 textFileBusy calls) ignore "true" emptyRoot.Value
 
     test <@ calls.Value = 3 @>
     test <@ pauses.Length = 2 @>
@@ -1022,7 +1069,7 @@ let ``a command that stays busy fails after a bounded number of tries`` () =
     let calls = ref 0
 
     let status, pauses =
-        fireWith "busy-always" (refusingFirst Int32.MaxValue textFileBusy calls) ignore "true" "/tmp"
+        fireWith "busy-always" (refusingFirst Int32.MaxValue textFileBusy calls) ignore "true" emptyRoot.Value
 
     test <@ pauses.Length >= 1 @>
     test <@ calls.Value = pauses.Length + 1 @>
@@ -1048,7 +1095,7 @@ let ``a command refused for any other reason is not started again`` (refusal: st
     let calls = ref 0
 
     let status, pauses =
-        fireWith refusal (refusingFirst Int32.MaxValue (otherRefusal refusal) calls) ignore "true" "/tmp"
+        fireWith refusal (refusingFirst Int32.MaxValue (otherRefusal refusal) calls) ignore "true" emptyRoot.Value
 
     test <@ calls.Value = 1 @>
     test <@ List.isEmpty pauses @>
@@ -1099,14 +1146,14 @@ let ``a script still open for writing when its command fires runs once the handl
 // and config rejects an empty `afterTests` list: an incidental guard nothing pinned.
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``afterTests command does not fire for a run that executed nothing`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let trigger =
         { FilePattern = None
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "env-empty-run") trigger "echo" "ran" "/tmp" None
+        create (FsHotWatch.PluginFramework.PluginName.create "env-empty-run") trigger "echo" "ran" emptyRoot.Value None
 
     host.RegisterHandler(handler)
 
@@ -1206,7 +1253,7 @@ let ``afterTests events are never cacheable across runs, whether filtered or ful
             trigger
             "coverage-gate"
             "counts.json"
-            "/tmp"
+            emptyRoot.Value
             None
 
     let key = handler.CacheKey.Value handler.Init
@@ -1247,11 +1294,11 @@ let private cacheKeyFnFor (command: string) (args: string) =
             (fileTrigger (fun _ -> true))
             command
             args
-            "/tmp"
+            emptyRoot.Value
             None
 
     // Drive one run so the cold-start guard flips; CacheKey returns None until then.
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "trigger.txt" ])
 
@@ -1277,10 +1324,10 @@ let ``cache key is independent of commit_id`` () =
                 (fileTrigger (fun _ -> true))
                 "echo"
                 "args"
-                "/tmp"
+                emptyRoot.Value
                 None
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
         host.RegisterHandler(handler)
         host.EmitFileChanged(SourceChanged [ "trigger.txt" ])
 
@@ -1353,6 +1400,67 @@ let ``single handler: cache key reflects current file content per event`` () =
         test <@ k1.IsSome @>
         test <@ k2.IsSome @>
         test <@ k1 <> k2 @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``cache key changes when the content of the file that matched the pattern changes`` () =
+    // The defect: a FileChanged run was keyed by command, args and arg-file contents
+    // only. The file that matched `pattern` is the input the command was fired for, and
+    // was not in the key, so a breaking second edit replayed "succeeded (cached)".
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let watched = System.IO.Path.Combine(tmpDir, "schema.sql")
+
+    try
+        System.IO.File.WriteAllText(watched, "create table ok (id int);")
+        let keyFn = cacheKeyFnFor "validate" "--all"
+        let event = FileChanged(SourceChanged [ watched ])
+        let k1 = keyFn event
+
+        System.IO.File.WriteAllText(watched, "create table broken (")
+        let k2 = keyFn event
+
+        test <@ k1.IsSome @>
+        test <@ k2.IsSome @>
+        test <@ k1 <> k2 @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``a matched file that was deleted keys differently, and one that cannot be read gives no key`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let watched = System.IO.Path.Combine(tmpDir, "schema.sql")
+
+    try
+        System.IO.File.WriteAllText(watched, "create table ok (id int);")
+
+        let present =
+            computeFileChangedSaltWith (fun _ -> Some "h") tmpDir "validate" "" [ watched ]
+        // Exists, but the read fails: nothing hashed the content, so nothing may replay.
+        let unreadable =
+            computeFileChangedSaltWith (fun _ -> None) tmpDir "validate" "" [ watched ]
+
+        System.IO.File.Delete watched
+
+        let absent =
+            computeFileChangedSaltWith (fun _ -> Some "h") tmpDir "validate" "" [ watched ]
+
+        test <@ present.IsSome @>
+        test <@ unreadable = None @>
+        test <@ absent.IsSome @>
+        test <@ absent <> present @>
     finally
         try
             System.IO.Directory.Delete(tmpDir, true)
@@ -1464,12 +1572,18 @@ let ``argsStalerThan flags files modified after the reference time`` () =
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``argsStalerThan skips a token whose modification time cannot be read`` () =
     // A NUL in a path makes the stat throw; the token is skipped, not the whole list.
-    test <@ List.isEmpty (argsStalerThan "/tmp" "cfg\u0000.json" DateTime.UtcNow) @>
+    test <@ List.isEmpty (argsStalerThan emptyRoot.Value "cfg\u0000.json" DateTime.UtcNow) @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``events a file command does not act on leave its state alone`` () =
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "cmd") (fileTrigger (fun _ -> true)) "echo" "" "/tmp" None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "cmd")
+            (fileTrigger (fun _ -> true))
+            "echo"
+            ""
+            emptyRoot.Value
+            None
 
     let ignored: PluginEvent<_> list =
         [ FileChecked Unchecked.defaultof<_>
@@ -1571,7 +1685,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "no-pattern") trigger "echo" "hi" "/tmp" None
+        create (FsHotWatch.PluginFramework.PluginName.create "no-pattern") trigger "echo" "hi" emptyRoot.Value None
 
     let ctx: FsHotWatch.PluginFramework.PluginCtx<unit> =
         { ReportStatus = fun _ -> ()
@@ -1584,7 +1698,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           EmitTestRunCompleted = fun _ -> ()
           EmitCommandCompleted = fun _ -> ()
           Checker = Unchecked.defaultof<_>
-          RepoRoot = "/tmp"
+          RepoRoot = emptyRoot.Value
           Post = fun _ -> ()
           EnqueueExclusiveIntent = fun _ _ _ -> System.Threading.Tasks.Task.FromResult(())
           StartSubtask = fun _ _ -> ()
@@ -1635,7 +1749,7 @@ let ``argsStalerThan returns empty when files are older than reference`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a command that exceeds its timeout reports Failed with a timed-out verdict`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) emptyRoot.Value
 
     let handler =
         create
@@ -1643,7 +1757,7 @@ let ``a command that exceeds its timeout reports Failed with a timed-out verdict
             (fileTrigger (fun _ -> true))
             "sh"
             "-c \"sleep 30\""
-            "/tmp"
+            emptyRoot.Value
             (Some 1)
 
     host.RegisterHandler(handler)
@@ -1689,7 +1803,7 @@ let ``a cached file-command replay leaves an out-of-batch finding standing`` () 
     let cache =
         FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache
 
-    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cache)
+    let host = PluginHost(Unchecked.defaultof<_>, emptyRoot.Value, taskCache = cache)
 
     let handler =
         create
@@ -1697,7 +1811,7 @@ let ``a cached file-command replay leaves an out-of-batch finding standing`` () 
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            "/tmp"
+            emptyRoot.Value
             None
 
     host.RegisterHandler(handler)
@@ -1726,3 +1840,260 @@ let ``a cached file-command replay leaves an out-of-batch finding standing`` () 
 
     test <@ ledgerHasOutOfBatch host "run-scripts" @>
     test <@ cached = cold @>
+
+/// A FileChanged cache key over `root` for a `*.sql` trigger running `args`, with the
+/// cold-start guard flipped by one real run.
+let private sqlKeyFn (root: string) (args: string) =
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "sql-check")
+            (fileTrigger (fun path -> path.EndsWith ".sql"))
+            "true"
+            args
+            root
+            None
+
+    let host = PluginHost.create (Unchecked.defaultof<_>) root
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ System.IO.Path.Combine(root, "warmup.sql") ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("sql-check") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
+    |> ignore
+
+    handler.CacheKey.Value handler.Init
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a pattern file edited in an earlier event still moves the key of a later one`` () =
+    // The defect (AUTOMATION-1557, directory args): keying only the event's own files
+    // let `lint migrations/` replay a pass. b.sql = X passes; a.sql is broken (its run
+    // fails); b.sql goes to Y and back to X — the key for b = X replayed the pass while
+    // a.sql was still broken.
+    withTempDir "fc-dir-arg" (fun root ->
+        let migrations = System.IO.Path.Combine(root, "migrations")
+        System.IO.Directory.CreateDirectory(migrations) |> ignore
+        let a = System.IO.Path.Combine(migrations, "a.sql")
+        let b = System.IO.Path.Combine(migrations, "b.sql")
+        System.IO.File.WriteAllText(a, "good")
+        System.IO.File.WriteAllText(b, "X")
+
+        let keyFn = sqlKeyFn root "migrations/"
+        let eventB = FileChanged(SourceChanged [ b ])
+        let before = keyFn eventB
+
+        System.IO.File.WriteAllText(a, "broken")
+        let after = keyFn eventB
+
+        test <@ before.IsSome && after.IsSome @>
+        test <@ before <> after @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a file a directory or glob argument names moves the key though no pattern matches it`` () =
+    withTempDir "fc-glob-arg" (fun root ->
+        let docs = System.IO.Path.Combine(root, "docs")
+        System.IO.Directory.CreateDirectory(docs) |> ignore
+        let notes = System.IO.Path.Combine(docs, "notes.txt")
+        let trigger = System.IO.Path.Combine(root, "t.sql")
+        System.IO.File.WriteAllText(notes, "one")
+        System.IO.File.WriteAllText(trigger, "t")
+        let event = FileChanged(SourceChanged [ trigger ])
+
+        for args in [ "docs"; "docs/*.txt" ] do
+            let keyFn = sqlKeyFn root args
+            System.IO.File.WriteAllText(notes, "one")
+            let before = keyFn event
+            System.IO.File.WriteAllText(notes, "two")
+            let after = keyFn event
+            test <@ before <> after @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the key's input listing is walked once and kept current from the events`` () =
+    // Measured on a 3,776-file repository: walking it for pattern files on every
+    // FileChanged event cost a median 534 ms (AUTOMATION-1557). The listing is walked once
+    // per scope and then follows the paths events name: an added file joins it, a deleted
+    // one leaves, and nothing is walked again.
+    withTempDir "fc-listing" (fun root ->
+        let migrations = System.IO.Path.Combine(root, "migrations")
+        System.IO.Directory.CreateDirectory(migrations) |> ignore
+        let a = System.IO.Path.Combine(root, "a.sql")
+        let m1 = System.IO.Path.Combine(migrations, "001.txt")
+        System.IO.File.WriteAllText(a, "a")
+        System.IO.File.WriteAllText(m1, "1")
+
+        let walks = ref 0
+
+        let walk (dir: string) =
+            walks.Value <- walks.Value + 1
+
+            FsHotWatch.SafeWalk.bestEffortFilePaths FsHotWatch.SafeWalk.SourceExcludedDirs "*" dir
+            |> List.ofSeq
+
+        let listing =
+            InputListing([ root, (fun p -> p.EndsWith ".sql"); migrations, (fun _ -> true) ], walk)
+
+        let first = listing.Files() |> Set.ofList
+        test <@ first = set [ a; m1 ] @>
+        test <@ walks.Value = 2 @>
+
+        let b = System.IO.Path.Combine(root, "b.sql")
+        let m2 = System.IO.Path.Combine(migrations, "002.txt")
+        System.IO.File.WriteAllText(b, "b")
+        System.IO.File.WriteAllText(m2, "2")
+        System.IO.File.Delete a
+        listing.Observe(SourceChanged [ b; m2; a; System.IO.Path.Combine(root, "notes.md") ])
+
+        test <@ (listing.Files() |> Set.ofList) = set [ b; m1; m2 ] @>
+        test <@ walks.Value = 2 @>
+
+        // A solution change is a reason to look again.
+        listing.Observe SolutionChanged
+        listing.Files() |> ignore
+        test <@ walks.Value = 4 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a file of an unwatched type in a directory argument still moves the key when edited after the walk`` () =
+    // The listing caches WHICH files are in a scope, not their content: every event
+    // re-hashes every listed file. So `lint migrations/` with `migrations/.sqlfluff`
+    // edited after the walk (a type the watcher never reports) keys differently on the
+    // next event, which names only an .sql file.
+    withTempDir "fc-unwatched-type" (fun root ->
+        let migrations = System.IO.Path.Combine(root, "migrations")
+        System.IO.Directory.CreateDirectory(migrations) |> ignore
+        let b = System.IO.Path.Combine(migrations, "b.sql")
+        let rules = System.IO.Path.Combine(migrations, ".sqlfluff")
+        let settings = System.IO.Path.Combine(migrations, "lint.yml")
+        System.IO.File.WriteAllText(b, "X")
+        System.IO.File.WriteAllText(rules, "[sqlfluff]\ndialect = postgres\n")
+        System.IO.File.WriteAllText(settings, "rules: strict\n")
+
+        let keyFn = sqlKeyFn root "migrations/"
+        let eventB = FileChanged(SourceChanged [ b ])
+        let before = keyFn eventB
+
+        System.IO.File.WriteAllText(rules, "[sqlfluff]\ndialect = ansi\n")
+        let afterRules = keyFn eventB
+
+        System.IO.File.WriteAllText(settings, "rules: lax\n")
+        let afterSettings = keyFn eventB
+
+        test <@ before.IsSome && afterRules.IsSome && afterSettings.IsSome @>
+        test <@ before <> afterRules @>
+        test <@ afterRules <> afterSettings @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a glob argument with no directory reaches the repository, and a directory outside it is never walked`` () =
+    withTempDir "fc-glob-root" (fun root ->
+        let notes = System.IO.Path.Combine(root, "notes.txt")
+        let trigger = System.IO.Path.Combine(root, "t.sql")
+        System.IO.File.WriteAllText(notes, "one")
+        System.IO.File.WriteAllText(trigger, "t")
+        let event = FileChanged(SourceChanged [ trigger ])
+
+        // `*.txt` has no directory: its prefix is the repository root.
+        let globKey = sqlKeyFn root "*.txt"
+        let before = globKey event
+        System.IO.File.WriteAllText(notes, "two")
+        let after = globKey event
+        test <@ before <> after @>
+
+        // `/` is a directory, outside the repository: no walk of the machine, and a key.
+        let outside = sqlKeyFn root "/" event
+        test <@ outside.IsSome @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a glob argument whose directory does not exist yet still keys`` () =
+    withTempDir "fc-glob-missing" (fun root ->
+        let trigger = System.IO.Path.Combine(root, "t.sql")
+        System.IO.File.WriteAllText(trigger, "t")
+        let event = FileChanged(SourceChanged [ trigger ])
+        let missing = sqlKeyFn root "later/*.txt" event
+        test <@ missing.IsSome @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a key reads the files the event names and asks the content hasher for the rest`` () =
+    // Every listed file was re-read on every event: a `**/*` pattern over a large
+    // repository paid a read of the whole tree per event (AUTOMATION-1557). A file the
+    // event names is read fresh; every other one goes to the core FileContentHasher, which
+    // re-reads only when the file's stamp (change time included) moves
+    // (CheckCacheTests covers that hasher, mtime-restored rewrites included).
+    let reads = System.Collections.Generic.List<string>()
+    let hashed = System.Collections.Generic.List<string>()
+
+    let digests =
+        DigestCache(
+            (fun path ->
+                reads.Add path
+                Some("read:" + path)),
+            (fun path ->
+                hashed.Add path
+
+                match path with
+                | "gone.sql" -> "missing"
+                | "locked.sql" -> "unreadable"
+                | _ -> "hash:" + path)
+        )
+
+    test <@ digests.Digest("a.sql", true) = Some "read:a.sql" @>
+    test <@ digests.Digest("b.sql", false) = Some "hash:b.sql" @>
+    test <@ List.ofSeq reads = [ "a.sql" ] && List.ofSeq hashed = [ "b.sql" ] @>
+
+    // The hasher's "missing" and "unreadable" go to the reader, which answers for them.
+    test <@ digests.Digest("gone.sql", false) = Some "read:gone.sql" @>
+    test <@ digests.Digest("locked.sql", false) = Some "read:locked.sql" @>
+
+[<Fact>]
+let ``a listing past the large-listing bound is named in a warning`` () =
+    test <@ largeListingWarning "lint-everything" LargeListingThreshold = None @>
+
+    match largeListingWarning "lint-everything" (LargeListingThreshold + 1) with
+    | Some message ->
+        test <@ message.Contains "lint-everything" @>
+        test <@ message.Contains(string (LargeListingThreshold + 1)) @>
+    | None -> failwith "a listing past the bound must warn"
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a relative path in an event is read under the repository, never under the process's working directory`` () =
+    // Seen on Linux CI: an event naming `scripts/build.fsx` was resolved against the
+    // test host's CURRENT directory, which other tests move, so two identical events
+    // keyed differently and a cached replay was missed. The repository is the only root.
+    withTempDir "fc-relative-event" (fun root ->
+        let scripts = System.IO.Path.Combine(root, "scripts")
+        System.IO.Directory.CreateDirectory(scripts) |> ignore
+        let script = System.IO.Path.Combine(scripts, "build.sql")
+        System.IO.File.WriteAllText(script, "one")
+
+        let keyFn = sqlKeyFn root ""
+        let relative = keyFn (FileChanged(SourceChanged [ "scripts/build.sql" ]))
+        let absolute = keyFn (FileChanged(SourceChanged [ script ]))
+        // One file, one key, however the event spells it.
+        test <@ relative = absolute @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a listed file rewritten to other bytes of the same size, its mtime restored, moves the key`` () =
+    // ADR-008: mtime is not a content oracle. A digest cached on (size, mtime) kept the
+    // old digest when a same-size rewrite restored the last-write time (`cp -p`,
+    // `rsync -t`, a checkout, a formatter that restores times), and the key replayed
+    // "succeeded (cached)" over changed bytes. The event names ANOTHER file, so the
+    // listed one is not forced to a fresh read.
+    withTempDir "fc-mtime-restored" (fun root ->
+        let a = System.IO.Path.Combine(root, "a.sql")
+        let b = System.IO.Path.Combine(root, "b.sql")
+        System.IO.File.WriteAllText(a, "good")
+        System.IO.File.WriteAllText(b, "b")
+        let written = System.IO.File.GetLastWriteTimeUtc a
+
+        let keyFn = sqlKeyFn root ""
+        let eventB = FileChanged(SourceChanged [ b ])
+        let before = keyFn eventB
+
+        System.IO.File.WriteAllText(a, "evil")
+        System.IO.File.SetLastWriteTimeUtc(a, written)
+        let after = keyFn eventB
+
+        test <@ before.IsSome && after.IsSome @>
+        test <@ before <> after @>)

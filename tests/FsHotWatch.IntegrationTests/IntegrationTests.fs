@@ -1759,6 +1759,15 @@ let ``TestPrunePlugin with failing test reports failure`` () =
 // FileCommandPlugin — success and failure
 // ===========================================================================
 
+/// An empty repository root for a FileCommand plugin: its FileChanged key hashes every file
+/// its pattern matches under the root (AUTOMATION-1557), so a root of `/tmp` hashes all of it.
+let private emptyCommandRoot () =
+    let dir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fc-empty-root-" + System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(dir) |> ignore
+    dir
+
 let private fileTrigger (filter: string -> bool) : FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
     { FilePattern = Some filter
       AfterTests = None }
@@ -1768,7 +1777,13 @@ let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" "/tmp" None
+        create
+            (PluginName.create "fsx-runner")
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
+            "echo"
+            "hello"
+            (emptyCommandRoot ())
+            None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1795,7 +1810,13 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" "/tmp" None
+        create
+            (PluginName.create "fsx-runner")
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
+            "echo"
+            "hello"
+            (emptyCommandRoot ())
+            None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -1813,7 +1834,13 @@ let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "false" "" "/tmp" None
+        create
+            (PluginName.create "fsx-runner")
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
+            "false"
+            ""
+            (emptyCommandRoot ())
+            None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
