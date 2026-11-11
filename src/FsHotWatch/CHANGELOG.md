@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a CTRF report whose string literals carry raw control characters is read, not refused as invalid JSON
+  (AUTOMATION-1073). xUnit v3's JSON writer escapes only `\b \f \n \r \t` below U+0020, so one failure message with ANSI
+  colour left a raw ESC that made the project's whole report unparseable: `tryVerdictReport` failed closed and the
+  project's per-test attribution was lost. Every CTRF reader (`trySummary`, `tryVerdictReport`, `tryTestNames`) now
+  escapes such characters inside string literals before parsing; a control character outside a literal is still
+  not JSON.
+
 - fix: the deps gate's mtime probe reads the dep files of a project's whole `ProjectReference` closure, not only its own
   (AUTOMATION-697). A workspace with no deps baseline that merged a `PackageReference` added to a referenced project only
   read the referencing projects as fresh, recorded their stale assets as the baseline, and failed every later check with

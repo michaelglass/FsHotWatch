@@ -63,6 +63,40 @@ let reportsDir (repoRoot: string) : string =
 let runDir (repoRoot: string) (runId: Guid) : string =
     Path.Combine(reportsDir repoRoot, runId.ToString("N"))
 
+/// Escape the raw control characters inside a report's string literals (AUTOMATION-1073).
+///
+/// xUnit v3's JSON writer escapes only `\b \f \n \r \t` below U+0020, so a failure message
+/// carrying ANSI colour writes a raw ESC into a string literal, and one such row makes the
+/// whole report invalid JSON: the project's per-test attribution is lost. Inside a string
+/// literal such a character can only mean itself, so writing it as `\u00XX` changes no
+/// value. Outside a literal nothing is touched, so a document that is not JSON stays not
+/// JSON.
+let internal repairControlChars (json: string) : string =
+    let out = Text.StringBuilder(json.Length)
+    let mutable inString = false
+    let mutable escaped = false
+
+    for c in json do
+        if inString && not escaped && c < ' ' then
+            out.Append(sprintf "\\u%04x" (int c)) |> ignore
+        else
+            out.Append c |> ignore
+
+        if not inString then
+            inString <- c = '"'
+        elif escaped then
+            escaped <- false
+        elif c = '\\' then
+            escaped <- true
+        elif c = '"' then
+            inString <- false
+
+    out.ToString()
+
+/// Parse a CTRF report, tolerating the raw control characters xUnit v3 leaves in its
+/// string literals (`repairControlChars`). Every CTRF reader parses through this.
+let internal parseReport (json: string) : JsonNode = JsonNode.Parse(repairControlChars json)
+
 let private tryGetNumber (node: JsonNode) (key: string) : float option =
     match node.[key] with
     | null -> None
@@ -116,7 +150,7 @@ let private countingFailedRows (rows: JsonNode) (summary: Summary) : Summary =
 /// with a top-level fallback for flattened variants.
 let trySummary (json: string) : Summary option =
     try
-        match JsonNode.Parse(json) with
+        match parseReport json with
         | null -> None
         | root ->
             let body =
@@ -251,7 +285,7 @@ let private reconcile (counts: Map<string, int>) (rows: JsonNode) : Result<Verdi
 /// output, with a top-level fallback for flattened variants, as in `trySummary`.
 let tryVerdictReport (json: string) : Result<VerdictReport, string> =
     try
-        match JsonNode.Parse json |> objectOf with
+        match parseReport json |> objectOf with
         | None -> Error "the report is not a JSON object"
         | Some top ->
             let body =
@@ -339,7 +373,7 @@ let private rowStatus (row: JsonNode) : string option =
 /// be shown to have been run again.
 let tryTestNames (json: string) : TestNames option =
     try
-        match JsonNode.Parse json with
+        match parseReport json with
         | null -> None
         | root ->
             let body =

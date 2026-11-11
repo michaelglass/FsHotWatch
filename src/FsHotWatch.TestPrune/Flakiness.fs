@@ -91,7 +91,7 @@ let private ctrfTestsArray (root: JsonNode) : JsonArray =
 /// pass/fail verdict; this array is only for flakiness history.
 let internal parseCtrfTests (json: string) : TestRunRecord list =
     try
-        match JsonNode.Parse(json) with
+        match FsHotWatch.Ctrf.parseReport json with
         | null -> []
         | root ->
             match ctrfTestsArray root with
@@ -122,7 +122,7 @@ let internal parseCtrfTests (json: string) : TestRunRecord list =
 /// declares nothing.
 let internal parseCtrfDeclaredClasses (json: string) : Set<string> =
     try
-        match JsonNode.Parse(json) with
+        match FsHotWatch.Ctrf.parseReport json with
         | null -> Set.empty
         | root ->
             match ctrfTestsArray root with

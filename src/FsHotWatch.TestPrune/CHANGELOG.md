@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: flakiness history and the declared-class reader keep the rows of a CTRF report whose string literals carry raw
+  control characters, such as an ANSI-coloured xUnit v3 failure message (AUTOMATION-1073); they read it through
+  `FsHotWatch.Ctrf.parseReport`.
+
 - fix: a red unfiltered project is never counted as covered (AUTOMATION-1581). A red full-suite run earned the full-suite
   baseline when every red project had a recorded red, so a run that ended early (xUnit v3 `--stop-on-fail on` exits 2, an
   ordinary failure, and reports only the tests before the stop) vouched for tests it never ran, and a later impact-filtered
