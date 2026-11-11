@@ -736,17 +736,16 @@ let badTypeUse : int = "wrong-type"
 
         emitFileAndQuiesce host2 brokenResult
 
-        // `markUnverified` preserves a prior clean record: Phase 1's `fcsClean = true` is
-        // NOT downgraded even though the current check has Error-severity diagnostics.
-        // The trade-off is deliberate — cold-start reliability over precision on
-        // user-broke-their-code transients — and the next genuine clean check refreshes
-        // the timestamp.
+        // The dirty check DOWNGRADES Phase 1's clean record. This used to keep it
+        // (`markUnverified`), but the dirty extraction is flushed as the file's rows, and a
+        // Clean stamp over them let the recovering clean check diff against partial rows
+        // and miss a change made in the broken edit. `Dirty` makes that check widen this
+        // one file (`EverySymbolIsNew`) instead: never the phantom whole-file diff.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
-        test <@ FsHotWatch.TestPrune.FileFreshness.isClean "CB.fsx" freshness @>
+        test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "CB.fsx" freshness) @>
 
-        // The sidecar still reads clean, but `currentClean` is false for this event, so
-        // detectChanges is bypassed regardless of stored state and ChangedFiles gains no
-        // phantom entry from the poisoned check.
+        // `currentClean` is false for this event, so detectChanges is bypassed and
+        // ChangedFiles gains no phantom entry from the poisoned check.
         let changedAfterDirty =
             host2.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
@@ -2404,3 +2403,56 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
 
         test <@ cycle2Files |> List.exists (fun f -> f.Contains("ProjB")) @>
         test <@ not (cycle2Files |> List.exists (fun f -> f.Contains("ProjA"))) @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a change made in a check FCS reported errors for is still selected once the file checks clean`` () =
+    // The defect: a dirty check still queued its extraction, which the next flush wrote
+    // as the file's stored rows, while `markUnverified` kept the earlier Clean stamp. The
+    // recovering clean check then diffed against the DIRTY rows: a symbol changed in the
+    // broken edit and kept by the fix compared equal to itself, was never queued, and no
+    // test covering it ran.
+    withTempDir "tp-dirty-baseline" (fun tmpDir ->
+        let config =
+            { testConfigNamed "Lib" with
+                Command = "echo"
+                Args = "ok"
+                FilterTemplate = None }
+
+        let host = createModelHost FsHotWatch.Tests.TestHelpers.sharedChecker.Value tmpDir
+
+        host.RegisterHandler(create (Path.Combine(tmpDir, "tp.db")) tmpDir (Some [ config ]) None None None None [])
+
+        let check source =
+            checkSourceForReal tmpDir "Lib.fsx" source
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        let queued () =
+            PendingQueueHelpers.loadQueue tmpDir
+            |> Set.exists (fun symbol -> symbol.Contains "answer")
+
+        // A session build, then a clean check stamps the file Clean and flushes its rows.
+        emitBuildAndWaitTerminal host
+        emitFileAndQuiesce host (check "module Lib\nlet answer () = 1\n")
+        emitBatchAndQuiesce host [ Path.Combine(tmpDir, "Lib.fsx") ]
+        // The build discharges what no test covers, so the queue starts empty.
+        emitBuildAndWaitTerminal host
+        Assert.False(queued (), "positive control: nothing owed before the edit")
+
+        // One edit changes `answer` AND breaks the file elsewhere.
+        let dirty = check "module Lib\nlet answer () = 2\nlet bad : int = \"x\"\n"
+
+        test
+            <@
+                FsHotWatch.TestPrune.IndexMaintenance.hasFcsErrors
+                    (FileCheckResult.suppression Set.empty dirty)
+                    dirty.CheckResults
+            @>
+
+        emitFileAndQuiesce host dirty
+        emitBatchAndQuiesce host [ Path.Combine(tmpDir, "Lib.fsx") ]
+
+        // The fix removes the error and keeps the change to `answer`.
+        emitFileAndQuiesce host (check "module Lib\nlet answer () = 2\n")
+
+        test <@ queued () @>)

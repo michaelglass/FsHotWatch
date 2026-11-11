@@ -117,11 +117,23 @@ let resolvePresence (repoRoot: string) (relPath: string) : EntryPresence =
 /// rule for forgetting a file: `load` applies it to what was persisted, and the plugin
 /// applies it when the project model moves, because a file deleted together with its
 /// compile entry is unregistered and never checked again, so no `stamp` would forget it.
+/// The key under which a store records that the sidecar it was loaded from, or an entry in
+/// it, could not be read (AUTOMATION-1560). Not a repo path: none starts with `!`. While it
+/// is present, a file with no record of its own is `Dirty` (`classify`), not `Unknown`:
+/// a lost record may have said Dirty, and `Unknown` takes the narrow diff arm. It is
+/// saved with the store, so it holds for every file until that file is stamped again.
+[<Literal>]
+let UnreadableKey = "!unreadable"
+
+let private unreadableEntry =
+    { FcsClean = false
+      LastCleanCheckAt = None }
+
 let dropGone (repoRoot: string) (store: Store) : Store * string list =
     let gone =
         store
         |> Map.keys
-        |> Seq.filter (fun relPath -> resolvePresence repoRoot relPath = Gone)
+        |> Seq.filter (fun relPath -> relPath <> UnreadableKey && resolvePresence repoRoot relPath = Gone)
         |> List.ofSeq
 
     List.fold (fun kept relPath -> Map.remove relPath kept) store gone, gone
@@ -141,6 +153,10 @@ let private tryEntry (kv: Collections.Generic.KeyValuePair<string, JsonNode>) =
 let load (repoRoot: string) : Store =
     let path = sidecarPath repoRoot
 
+    // The sidecar is written atomically, so blank, null, unparseable or a bad entry is
+    // damage, not "no record": it loads as `UnreadableKey`, which widens.
+    let unreadable = Map.ofList [ UnreadableKey, unreadableEntry ]
+
     if not (File.Exists path) then
         Map.empty
     else
@@ -148,18 +164,25 @@ let load (repoRoot: string) : Store =
             let json = File.ReadAllText path
 
             if String.IsNullOrWhiteSpace json then
-                Map.empty
+                unreadable
             else
                 let root = JsonNode.Parse(json)
 
                 if root = null then
-                    Map.empty
+                    unreadable
                 else
-                    let obj = root.AsObject()
+                    let entries = root.AsObject() |> List.ofSeq
+                    let read = entries |> List.choose tryEntry
 
-                    obj |> Seq.choose tryEntry |> Map.ofSeq |> dropGone repoRoot |> fst
+                    let store =
+                        if read.Length = entries.Length then
+                            Map.ofList read
+                        else
+                            Map.ofList read |> Map.add UnreadableKey unreadableEntry
+
+                    store |> dropGone repoRoot |> fst
         with _ ->
-            Map.empty
+            unreadable
 
 /// Persist the store atomically (write to .tmp, rename over the real file).
 /// Cheap enough to call after each FileChecked update at fshw's scale.
@@ -198,13 +221,13 @@ let markDirty (relPath: string) (store: Store) : Store =
         store
 
 /// Variant of `markDirty` that refuses to downgrade a previously-clean entry.
-/// Used when the plugin can't promote a file to clean (no BuildCompleted has fired
-/// yet, or the FCS check itself reported errors) but doesn't want to erase a clean
-/// record from earlier in this session or from a prior session loaded off disk.
+/// Used when an FCS-clean check cannot promote a file to clean because no
+/// BuildCompleted has fired yet this session, without erasing a clean record from
+/// earlier in this session or from a prior session loaded off disk.
 ///
-/// Trade-off, chosen deliberately for cold-start reliability over 100%
-/// correctness: a stale "clean" record may be carried across a
-/// user-broke-their-code edit until the next genuine clean check refreshes it.
+/// NOT for a check FCS reported errors for: that check's extraction is flushed as
+/// the file's stored rows, and a Clean stamp kept over them makes the next clean
+/// check diff against partial rows (`stamp`'s `FcsErrors`).
 let markUnverified (relPath: string) (store: Store) : Store =
     match Map.tryFind relPath store with
     | Some s when s.FcsClean ->
@@ -225,19 +248,32 @@ let markUnverified (relPath: string) (store: Store) : Store =
               LastCleanCheckAt = None }
             store
 
+/// What ONE check of a file established, as far as the sidecar records it.
+type CheckStamp =
+    /// FCS reported errors. The extraction this check queued is flushed as the file's
+    /// stored rows and may be partial, so they are not a baseline.
+    | FcsErrors
+    /// FCS-clean, but no build has completed this session, so clean is not yet claimed.
+    | CleanBeforeBuild
+    /// FCS-clean after a build completed this session.
+    | VerifiedClean
+
 /// Record the outcome of ONE check of `relPath`: the plugin's single write to the store.
 ///
 ///   - `Gone`    — forget the file. A check of a path that has since
 ///                 vanished is not evidence about a file; stamping it is how a deleted
 ///                 file's record came back after being removed by hand.
-///   - `Present` — `markClean` when the check is `verifiedClean` (FCS-clean AND a build
-///                 has completed this session), otherwise `markUnverified`, which never
-///                 downgrades a prior clean record.
-let stamp (presence: EntryPresence) (verifiedClean: bool) (now: DateTime) (relPath: string) (store: Store) : Store =
-    match presence with
-    | Gone -> Map.remove relPath store
-    | Present when verifiedClean -> markClean now relPath store
-    | Present -> markUnverified relPath store
+///   - `Present` — `markClean` for `VerifiedClean`; `markDirty` for `FcsErrors`, because
+///                 the rows that check leaves behind are not a baseline, and a Clean
+///                 stamp kept over them let the recovering check diff against them and
+///                 miss a change made in the broken edit; `markUnverified` for
+///                 `CleanBeforeBuild`, which never downgrades a prior clean record.
+let stamp (presence: EntryPresence) (outcome: CheckStamp) (now: DateTime) (relPath: string) (store: Store) : Store =
+    match presence, outcome with
+    | Gone, _ -> Map.remove relPath store
+    | Present, VerifiedClean -> markClean now relPath store
+    | Present, FcsErrors -> markDirty relPath store
+    | Present, CleanBeforeBuild -> markUnverified relPath store
 
 /// What the freshness sidecar RECORDS about a file's last check. This type is the
 /// evidence, not the decision — `trustStoredRows` below owns what may be done with
@@ -269,6 +305,7 @@ let classify (relPath: string) (store: Store) : Freshness =
     match Map.tryFind relPath store with
     | Some s when s.FcsClean -> Clean
     | Some _ -> Dirty
+    | None when store.ContainsKey UnreadableKey -> Dirty
     | None -> Unknown
 
 /// What may be done with the symbol rows `test-impact.db` currently holds for one
