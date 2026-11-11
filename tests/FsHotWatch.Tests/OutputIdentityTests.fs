@@ -43,6 +43,66 @@ let ``one build in two checkouts has one identity, whatever length its paths are
     test <@ short.IsSome @>
     test <@ short = long @>
 
+/// Two quotations whose static data is the same size under `shortRoot` and a byte apart under
+/// `longRoot`: the first one's path takes a one-byte pickled length under the short root and
+/// the second one's a two-byte one, while under the long root both take two.
+let private straddlingQuotations =
+    let first = "src/A/A1.fs"
+    let second = "src/A/" + String('q', 125) + ".fs"
+    let rest = 10
+
+    let size (source: string) (after: int) =
+        (FakeFSharpAssembly.quotationData (shortRoot + "/" + source) after).Length
+
+    [ first, size second rest - size first 0; second, rest ]
+
+let private rawDataTypes (image: byte[]) =
+    use pe = new Reflection.PortableExecutable.PEReader(new MemoryStream(image))
+    let reader = Reflection.Metadata.PEReaderExtensions.GetMetadataReader pe
+
+    [ for handle in reader.TypeDefinitions do
+          let name = reader.GetString(reader.GetTypeDefinition(handle).Name)
+
+          if name.EndsWith("Bytes@", StringComparison.Ordinal) then
+              yield name ]
+
+let private withQuotations (root: string) =
+    { FakeFSharpAssembly.spec "A" root with
+        Quotations = straddlingQuotations }
+
+[<Fact>]
+let ``quotations in one build in two checkouts leave it one identity`` () =
+    // AUTOMATION-1582: a quotation's static data embeds its source file's path, and the
+    // size of that data names the value type `fsc` declares for it. The bytes were never
+    // hashed, but the type's name, its declared size and every row after it were.
+    let shortImage = FakeFSharpAssembly.build (withQuotations shortRoot)
+    let longImage = FakeFSharpAssembly.build (withQuotations longRoot)
+    // Positive control: one raw-data type under the short root, two under the long one, so
+    // every type declared after them sits a row further down.
+    test <@ rawDataTypes shortImage = [ "T_149Bytes@" ] @>
+    test <@ rawDataTypes longImage = [ "T_278Bytes@"; "T_277Bytes@" ] @>
+    let short = OutputIdentity.ofBytes [ shortRoot ] shortImage
+    test <@ short.IsSome @>
+    test <@ short = OutputIdentity.ofBytes [ longRoot ] longImage @>
+
+[<Fact>]
+let ``beside quotations, a type declared after their static data still moves the identity`` () =
+    let renamed (root: string) =
+        identityOf
+            { withQuotations root with
+                Later = "Renamed" }
+
+    test <@ renamed shortRoot = renamed longRoot @>
+    test <@ renamed shortRoot <> identityOf (withQuotations shortRoot) @>
+
+[<Fact>]
+let ``a signature the decoder cannot read is hashed as its bytes`` () =
+    // 0xFF is no element type.
+    let unreadable = both (fun s -> { s with Returns = 0xFFuy })
+    test <@ (fst unreadable).IsSome @>
+    test <@ fst unreadable = snd unreadable @>
+    test <@ fst unreadable <> fst (both id) @>
+
 [<Fact>]
 let ``what a check reads of an output moves its identity`` () =
     let baseline = fst (both id)
@@ -57,6 +117,13 @@ let ``what a check reads of an output moves its identity`` () =
               { s with
                   Sources = s.Sources @ [ "src/A/A3.fs" ] })
           "a method", (fun s -> { s with Methods = s.Methods @ [ "x" ] })
+          // A signature change: every method returns int32 instead of void.
+          "a method's signature", (fun s -> { s with Returns = 0x08uy })
+          "a type", (fun s -> { s with Later = "Renamed" })
+          "a quotation",
+          (fun s ->
+              { s with
+                  Quotations = straddlingQuotations })
           "the assembly's name", (fun s -> { s with Name = "B" })
           "a resource of its own",
           (fun s ->
@@ -368,3 +435,14 @@ let ``attributes whose constructor is not a referenced type's are hashed as they
             own 'a'
             <> withAttribute "AssemblyInformationalVersionAttribute" ("1.0.0+" + String('a', 40))
         @>
+
+[<Fact>]
+let ``real assemblies, whatever their signatures hold, have an identity`` () =
+    // CoreLib carries every signature form (pointers, pinned locals, arrays with shapes,
+    // function pointers, required modifiers, method specifications); FsHotWatch is an `fsc`
+    // output. Each reads the same twice.
+    for assembly in [ typeof<obj>.Assembly; typeof<CheckRecords.Walk>.Assembly ] do
+        let bytes = File.ReadAllBytes assembly.Location
+        let named = OutputIdentity.ofBytes [ "/r" ] bytes
+        test <@ (assembly.GetName().Name, named.IsSome) = (assembly.GetName().Name, true) @>
+        test <@ OutputIdentity.ofBytes [ "/other" ] bytes = named @>

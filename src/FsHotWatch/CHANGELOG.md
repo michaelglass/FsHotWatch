@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a referenced output with F# quotations has one identity in every checkout (AUTOMATION-1582). `fsc` stores each
+  quotation's pickle, which names its source file's absolute path, as static data of a nested value type
+  `T_<size>Bytes@`, one per distinct size. The identity never hashed those bytes, but it hashed the metadata tables and
+  heaps as laid out, so a root of another length renamed and re-sized those types, could regroup them (re-numbering every
+  type after them) and moved every heap offset after their names. Measured on a 27,768-type assembly built from the same
+  sources in two checkouts: only those names, sizes and the offsets after them differed, and every check of every
+  dependent file missed. Tables are now hashed by what each row names (strings, blobs and GUIDs by value, signatures by
+  shape, type definitions by rank, those value types and their layout rows left out), and the schema is `pe-v2`, which
+  re-keys every record that names an output once.
+
 - fix: `WaitForScan` answers with the caller's own scan request, not with a generation another scan reached first
   (AUTOMATION-1567). A client's `Scan` admits its request behind a scan already in flight; when that scan completed
   before the client's `WaitForScan G` arrived, the generation was already past G and the wait returned green at once. If

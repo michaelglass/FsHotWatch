@@ -50,6 +50,15 @@ type Spec =
         /// Also apply an attribute whose constructor this assembly defines, and one on a
         /// constructed generic type, as a project that declares its own attributes does.
         OwnAttributes: bool
+        /// Quotations, each by the source file its pickle names and how many bytes follow that
+        /// path. `fsc` stores a quotation's pickle as static data: an RVA field of the module
+        /// type, typed by a nested value type `T_<size>Bytes@` that exists only to give the
+        /// data its size, one per distinct size (AUTOMATION-1582).
+        Quotations: (string * int) list
+        /// A type declared after the module type, which a field of the module type is typed by.
+        Later: string
+        /// The element type every method returns.
+        Returns: byte
     }
 
 let spec (name: string) (root: string) =
@@ -62,7 +71,15 @@ let spec (name: string) (root: string) =
       Resources = []
       Linked = []
       Attributes = []
-      OwnAttributes = false }
+      OwnAttributes = false
+      Quotations = []
+      Later = "Later"
+      Returns = 0x01uy }
+
+/// The static data `fsc` stores for a quotation of `source`: the pickled path, then `rest`
+/// bytes.
+let quotationData (path: string) (rest: int) =
+    Array.append (pickled path) (Array.create rest 7uy)
 
 let private deflate (bytes: byte[]) =
     use output = new MemoryStream()
@@ -152,10 +169,87 @@ let build (spec: Spec) : byte[] =
     )
     |> ignore
 
+    // The module type's fields: one per quotation, then one typed by the later type. Its
+    // nested raw-data types follow it, one per distinct size, then the later type.
+    let quotations =
+        spec.Quotations
+        |> List.map (fun (source, rest) -> quotationData (path source) rest)
+
+    let sizes = quotations |> List.map Array.length |> List.distinct
+    let afterFields = MetadataTokens.FieldDefinitionHandle(quotations.Length + 2)
+    let afterMethods = MetadataTokens.MethodDefinitionHandle(spec.Methods.Length + 1)
+    let firstRaw = 3
+
+    let valueType =
+        metadata.AddTypeReference(
+            AssemblyReferenceHandle.op_Implicit runtime,
+            metadata.GetOrAddString "System",
+            metadata.GetOrAddString "ValueType"
+        )
+
+    for size in sizes do
+        let raw =
+            metadata.AddTypeDefinition(
+                TypeAttributes.NestedAssembly
+                ||| TypeAttributes.ExplicitLayout
+                ||| TypeAttributes.Sealed
+                ||| TypeAttributes.BeforeFieldInit,
+                StringHandle(),
+                metadata.GetOrAddString $"T_%d{size}Bytes@",
+                TypeReferenceHandle.op_Implicit valueType,
+                afterFields,
+                afterMethods
+            )
+
+        metadata.AddTypeLayout(raw, 0us, uint32 size)
+        metadata.AddNestedType(raw, MetadataTokens.TypeDefinitionHandle 2)
+
+    let later =
+        metadata.AddTypeDefinition(
+            TypeAttributes.Public,
+            metadata.GetOrAddString spec.Name,
+            metadata.GetOrAddString spec.Later,
+            EntityHandle(),
+            afterFields,
+            afterMethods
+        )
+
+    let fieldData = BlobBuilder()
+
+    for i, data in List.indexed quotations do
+        let raw =
+            MetadataTokens.TypeDefinitionHandle(firstRaw + List.findIndex ((=) data.Length) sizes)
+
+        let signature = BlobBuilder()
+        BlobEncoder(signature).Field().Type().Type(TypeDefinitionHandle.op_Implicit raw, true)
+
+        let field =
+            metadata.AddFieldDefinition(
+                FieldAttributes.Assembly
+                ||| FieldAttributes.Static
+                ||| FieldAttributes.HasFieldRVA,
+                metadata.GetOrAddString $"field%d{i}_1@",
+                metadata.GetOrAddBlob signature
+            )
+
+        metadata.AddFieldRelativeVirtualAddress(field, fieldData.Count)
+        fieldData.WriteBytes data
+        fieldData.Align 8
+
+    let laterSignature = BlobBuilder()
+    BlobEncoder(laterSignature).Field().Type().Type(TypeDefinitionHandle.op_Implicit later, false)
+
+    metadata.AddFieldDefinition(
+        FieldAttributes.Public ||| FieldAttributes.Static,
+        metadata.GetOrAddString "later",
+        metadata.GetOrAddBlob laterSignature
+    )
+    |> ignore
+
     let il = BlobBuilder()
     let bodies = MethodBodyStreamEncoder il
-    // static, no parameters, returns void.
-    let signature = metadata.GetOrAddBlob [| 0x00uy; 0x00uy; 0x01uy |]
+    // static, no parameters, returns `spec.Returns`.
+    let signature = metadata.GetOrAddBlob [| 0x00uy; 0x00uy; spec.Returns |]
 
     for name in spec.Methods do
         let code = InstructionEncoder(BlobBuilder())
@@ -258,6 +352,7 @@ let build (spec: Spec) : byte[] =
             MetadataRootBuilder metadata,
             il,
             managedResources = resources,
+            mappedFieldData = fieldData,
             debugDirectoryBuilder = debug,
             deterministicIdProvider =
                 Func<Collections.Generic.IEnumerable<Blob>, BlobContentId>(fun content ->
