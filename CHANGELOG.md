@@ -4,6 +4,17 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### core: a package added to a referenced project restores the projects that reference it
+
+The deps gate's mtime probe read only a project's own `.fsproj` and the dep files above
+it. A workspace with no deps baseline that merged a `PackageReference` added to a
+referenced project only (an app project its test projects reference) therefore read the
+test projects as fresh. It recorded their stale assets as the baseline, and every later
+check failed with `The namespace '…' is not defined` until somebody restored by hand. The
+probe now reads the dep files of the whole `ProjectReference` closure, so those projects
+read stale and restore. A compile-item-only edit to a referenced project is still
+suppressed by the baseline, as one to the project itself is (AUTOMATION-697).
+
 > ### ⚠️ Read this first if you run `fshw` in CI or from a script
 >
 > **`fshw stop` is not a remedy, and never was.** Months of advice — ours included —

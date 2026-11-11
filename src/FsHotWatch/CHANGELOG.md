@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the deps gate's mtime probe reads the dep files of a project's whole `ProjectReference` closure, not only its own
+  (AUTOMATION-697). A workspace with no deps baseline that merged a `PackageReference` added to a referenced project only
+  read the referencing projects as fresh, recorded their stale assets as the baseline, and failed every later check with
+  `The namespace '…' is not defined`. Those projects now read stale and restore. A compile-item-only edit to a referenced
+  project is still suppressed by the baseline.
+
 - fix: `EarnedEvidence.fromCompletion` no longer counts an unfiltered RED project as whole-project coverage (AUTOMATION-1581).
   A run that ends early reports only the tests it reached, so such a project now stays in the evidence gap, and the next
   launch runs it whole until it passes. Coverage a green whole-project run already earned is still carried through.

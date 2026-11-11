@@ -146,26 +146,6 @@ let internal describeStaleness (repoRoot: string) (reason: StaleReason) : string
 
         $"written after obj/project.assets.json (%s{stamp assets}): %s{newer}"
 
-/// Disk-backed freshness probe for one project. Reads the assets mtime and the
-/// dep-file mtimes, then defers to the pure `compareFreshness`. A `Stale` reading is
-/// logged with the inputs that caused it, so every restore it leads to (or that the
-/// content baseline suppresses) can be traced to the file that triggered it.
-let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
-    let assetsMtime = tryMtime (assetsPath fsprojPath)
-
-    let depMtimes =
-        dependencyFiles fsprojPath repoRoot
-        |> List.choose (fun file -> tryMtime file |> Option.map (fun written -> file, written))
-
-    let freshness = compareFreshness assetsMtime depMtimes
-
-    match freshness with
-    | Stale reason ->
-        Logging.info "deps" $"%s{Path.GetFileName fsprojPath}: stale by mtime — %s{describeStaleness repoRoot reason}"
-    | Fresh -> ()
-
-    freshness
-
 /// fsproj element local-names that DECLARE the dependency graph — a change to any can
 /// alter what `dotnet restore` produces in `project.assets.json`. `Import`/`Sdk` pull
 /// in external targets/props that can inject references; `TargetFramework(s)` selects
@@ -302,6 +282,37 @@ let internal projectReferenceClosure (fsprojPath: string) : string list =
             walk (visited.Add project) (rest @ (references |> List.choose (resolveReference directory)))
 
     walk Set.empty [ self ] |> Set.remove self |> Set.toList
+
+/// Disk-backed freshness probe for one project. Reads the assets mtime and the
+/// dep-file mtimes, then defers to the pure `compareFreshness`. A `Stale` reading is
+/// logged with the inputs that caused it, so every restore it leads to (or that the
+/// content baseline suppresses) can be traced to the file that triggered it.
+///
+/// The dep files are the project's own AND those of every project in its
+/// `ProjectReference` closure: a project's assets record the closure's package graph,
+/// so a referenced project written after them can have left them stale (AUTOMATION-697).
+/// Without the closure, a workspace with no durable baseline merging a package added to
+/// a referenced project only reads `Fresh`, certifies the stale assets as its baseline,
+/// and FCS reports "The namespace ... is not defined" until somebody restores by hand.
+/// A closure edit that leaves the package graph alone (a compile item) is suppressed by
+/// the content baseline in `evaluateProject`, exactly like an edit to the project itself.
+let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
+    let assetsMtime = tryMtime (assetsPath fsprojPath)
+
+    let depMtimes =
+        fsprojPath :: projectReferenceClosure fsprojPath
+        |> List.collect (fun project -> dependencyFiles project repoRoot)
+        |> List.distinct
+        |> List.choose (fun file -> tryMtime file |> Option.map (fun written -> file, written))
+
+    let freshness = compareFreshness assetsMtime depMtimes
+
+    match freshness with
+    | Stale reason ->
+        Logging.info "deps" $"%s{Path.GetFileName fsprojPath}: stale by mtime — %s{describeStaleness repoRoot reason}"
+    | Fresh -> ()
+
+    freshness
 
 /// Content signature over ONLY a project's dependency-declaring inputs: the
 /// dep-relevant digest of the fsproj AND of every project in its `ProjectReference`
