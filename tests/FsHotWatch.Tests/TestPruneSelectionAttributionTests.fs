@@ -725,3 +725,109 @@ let ``an unbarriered selection never reports the fail-safe`` () =
 
     let reply = testScope f (update f launched (finishedGreen launch))
     test <@ not (reply.Contains "composition-root-restored") @>
+
+[<Fact(Timeout = 30000)>]
+let ``a fixture edited beside a symbol edit runs every project, not only the symbol's selection`` () =
+    // The defect: the tree delta was consulted only when NOTHING was selected. A
+    // non-symbol input (a fixture under a test project) edited alongside any symbol edit
+    // ran only the symbol's classes, and the receipt that run earned spoke for the whole
+    // new tree, the fixture's readers included, though none of them ran.
+    let f = fixture ()
+    let root = f.Ctx.RepoRoot
+    let lib = Path.Combine(root, "src", "Lib.fs")
+    let data = Path.Combine(root, "tests", "ProjC", "fixtures", "data.json")
+    Directory.CreateDirectory(Path.GetDirectoryName lib) |> ignore
+    Directory.CreateDirectory(Path.GetDirectoryName data) |> ignore
+    File.WriteAllText(lib, "module Lib\nlet f () = 1\n")
+    File.WriteAllText(data, """{ "expected": 1 }""")
+
+    let tree = InputTrees.ReceiptInputTree.readTree root
+    Assert.True(tree.IsSome, "positive control: the tree is readable")
+
+    let full =
+        { fullSuiteLaunch [ "ProjA"; "ProjB"; "ProjC" ] with
+            ModelGeneration = Some 1L
+            InputTree = tree }
+
+    let state = update f f.Handler.Init (finishedGreen full)
+    Assert.True(state.Earned.IsSome, "positive control: the full run earned evidence")
+
+    File.WriteAllText(lib, "module Lib\nlet f () = 2\n")
+    File.WriteAllText(data, """{ "expected": 2 }""")
+
+    let _, launch = buildAndLaunch f (owing "Lib.f" state)
+
+    test <@ launch.Selection |> Map.tryFind "ProjC" = Some ProjectInFull @>
+
+[<Fact(Timeout = 30000)>]
+let ``a symbol edit alone stays the symbol's selection`` () =
+    // Control for the test above: an edit that moved only an F# source file is answered
+    // by its symbols, and must not widen to every project.
+    let f = fixture ()
+    let root = f.Ctx.RepoRoot
+    let lib = Path.Combine(root, "src", "Lib.fs")
+    Directory.CreateDirectory(Path.GetDirectoryName lib) |> ignore
+    File.WriteAllText(lib, "module Lib\nlet f () = 1\n")
+
+    let full =
+        { fullSuiteLaunch [ "ProjA"; "ProjB"; "ProjC" ] with
+            ModelGeneration = Some 1L
+            InputTree = InputTrees.ReceiptInputTree.readTree root }
+
+    let state = update f f.Handler.Init (finishedGreen full)
+    Assert.True(state.Earned.IsSome, "positive control: the full run earned evidence")
+
+    File.WriteAllText(lib, "module Lib\nlet f () = 2\n")
+
+    let _, launch = buildAndLaunch f (owing "Lib.f" state)
+
+    test <@ launch.Selection |> Map.containsKey "ProjC" |> not @>
+    test <@ launch.Selection |> Map.tryFind "ProjA" = Some(ProjectClasses(set [ "ProjA.FreshTests" ])) @>
+
+[<Fact(Timeout = 5000)>]
+let ``movedBesideSymbols names every moved path that is not a compiled F# source file`` () =
+    let tree (entries: (string * string) list) : InputTrees.ReceiptTree =
+        { Identity = String.concat ";" (entries |> List.map (fun (p, h) -> p + "=" + h))
+          Entries = entries }
+
+    let before =
+        tree
+            [ "src/A.fs", "1"
+              "src/Gone.fs", "1"
+              "src/Tool.fsx", "1"
+              "tests/P/data.json", "1"
+              "tests/P/old.txt", "1" ]
+
+    let after =
+        tree
+            [ "src/A.fs", "2"
+              "src/New.fs", "1"
+              "src/Script.fs", "1"
+              "src/Tool.fsx", "2"
+              "tests/P/data.json", "2" ]
+
+    let compiled =
+        Some(fun (rel: string) -> rel <> "src/Script.fs" && rel <> "src/Tool.fsx")
+
+    // The symbol index holds `Tool.fsx` (a script the diff analyses, which no project
+    // compiles), and not `Script.fs`.
+    let indexed (rel: string) = rel = "src/Tool.fsx"
+
+    // A compiled edit (`A.fs`), a compiled addition (`New.fs`), an indexed script (`Tool.fsx`)
+    // and a removed `.fs` are the symbol diff's; an uncompiled, unindexed `.fs`, a fixture
+    // and a removed non-source are not.
+    let withModel =
+        SymbolFreeEdit.movedBesideSymbols (Some before) (Some after) compiled indexed
+
+    test <@ withModel = [ "src/Script.fs"; "tests/P/data.json"; "tests/P/old.txt" ] @>
+
+    // No model publishing its files: an F# source path (`.fs`, `.fsi`, `.fsx`) is taken as
+    // compiled.
+    let withoutModel =
+        SymbolFreeEdit.movedBesideSymbols (Some before) (Some after) None indexed
+
+    test <@ withoutModel = [ "tests/P/data.json"; "tests/P/old.txt" ] @>
+
+    // A tree that is not held names nothing.
+    let notHeld = SymbolFreeEdit.movedBesideSymbols None (Some after) compiled indexed
+    test <@ List.isEmpty notHeld @>
