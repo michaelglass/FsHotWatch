@@ -147,6 +147,9 @@ let ``replay: a red test the next change does not reach is still selected, and t
     =
     withTempDir "quarantine" (fun tmpDir ->
         let dbPath = twoProjectDb tmpDir
+        // A green full suite earned earlier: a red full run never earns one (AUTOMATION-1581),
+        // so these quarantine rules are exercised against the baseline it leaves standing.
+        seedBaseline tmpDir [ "P1"; "P2" ]
 
         let configs =
             [ runner tmpDir "P1" "P1Tests.fooTest"; runner tmpDir "P2" "P2Tests.barTest" ]
@@ -184,6 +187,9 @@ let ``a red survives a daemon restart and is quarantined into a FILTERED first r
     // with the ledger DELETED (the pre-fix state) the same restart goes green over it.
     withTempDir "restart" (fun tmpDir ->
         let dbPath = twoProjectDb tmpDir
+        // A green full suite earned earlier: a red full run never earns one (AUTOMATION-1581),
+        // so these quarantine rules are exercised against the baseline it leaves standing.
+        seedBaseline tmpDir [ "P1"; "P2" ]
 
         let configs =
             [ runner tmpDir "P1" "P1Tests.fooTest"; runner tmpDir "P2" "P2Tests.barTest" ]
@@ -266,6 +272,9 @@ let ``a red full suite of per-test cancellations cannot become green through an 
     // must not report green until that red has run again and passed.
     withTempDir "canceled-red-baseline" (fun tmpDir ->
         let dbPath = twoProjectDb tmpDir
+        // A green full suite earned earlier: a red full run never earns one (AUTOMATION-1581),
+        // so these quarantine rules are exercised against the baseline it leaves standing.
+        seedBaseline tmpDir [ "P1"; "P2" ]
 
         let configs =
             [ filteringRunner tmpDir "P1" "P1Tests" "fooTest"
@@ -274,7 +283,7 @@ let ``a red full suite of per-test cancellations cannot become green through an 
         setFailing tmpDir "P2" true
         let host = session tmpDir dbPath configs
 
-        // The red full suite. It earns the baseline (its reds are carried) and files the
+        // The red full suite. It leaves the earlier baseline standing and files the
         // cancellation under the class the CTRF and the filter both name.
         test <@ isFailed (buildAndSettle host) @>
         test <@ runsOf tmpDir "P1" = 1 && runsOf tmpDir "P2" = 1 @>
@@ -402,10 +411,10 @@ let ``a baseline that never executed a newly configured project is STALE and wid
         | None -> failwith "the widened run must re-earn the baseline over both projects")
 
 [<Fact(Timeout = 60000)>]
-let ``a red full suite still records the baseline, because its reds are carried`` () =
-    // Not only a GREEN full suite: a red one proves what every other test did, and the
-    // red is quarantined. Without this the inner loop would run the whole suite until the
-    // last red was fixed instead of the impact set plus the red.
+let ``a red full suite records no baseline`` () =
+    // A red project is never counted as covered (AUTOMATION-1581): a host that ends early,
+    // as xUnit v3 does under `--stop-on-fail on`, reports only the tests it reached, so a
+    // red full suite cannot vouch for the rest. The red is still quarantined.
     withTempDir "red-baseline" (fun tmpDir ->
         let dbPath = twoProjectDb tmpDir
 
@@ -416,7 +425,22 @@ let ``a red full suite still records the baseline, because its reds are carried`
 
         let host = session tmpDir dbPath configs
         test <@ isFailed (buildAndSettle host) @>
-        test <@ (baselineOf tmpDir).IsSome @>
+        test <@ (baselineOf tmpDir).IsNone @>
+        test <@ outstandingProjects tmpDir = [ "P2" ] @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a red full suite leaves an earlier green baseline standing`` () =
+    withTempDir "red-keeps-baseline" (fun tmpDir ->
+        let dbPath = twoProjectDb tmpDir
+        seedBaseline tmpDir [ "P1"; "P2" ]
+        let earlier = baselineOf tmpDir |> Option.map _.RunId
+
+        let configs =
+            [ runner tmpDir "P1" "P1Tests.fooTest"; runner tmpDir "P2" "P2Tests.barTest" ]
+
+        setFailing tmpDir "P2" true
+        test <@ isFailed (buildAndSettle (session tmpDir dbPath configs)) @>
+        test <@ baselineOf tmpDir |> Option.map _.RunId = earlier @>
         test <@ outstandingProjects tmpDir = [ "P2" ] @>)
 
 [<Fact(Timeout = 60000)>]

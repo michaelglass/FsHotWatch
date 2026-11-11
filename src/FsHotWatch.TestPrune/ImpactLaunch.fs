@@ -261,7 +261,7 @@ let internal widenLaunch
     | Some reason when not ledgerUnreadable ->
         Logging.info
             "test-prune"
-            $"Scope: FULL SUITE (no valid full-suite baseline) — %s{reason}. Every configured test project runs in full; impact filtering resumes once this run has accounted for every project."
+            $"Scope: FULL SUITE (no valid full-suite baseline) — %s{reason}. Every configured test project runs in full; impact filtering resumes once a full-suite run has passed every project."
     | _ -> ()
 
     if ledgerUnreadable then

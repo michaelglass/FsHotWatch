@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: `EarnedEvidence.fromCompletion` no longer counts an unfiltered RED project as whole-project coverage (AUTOMATION-1581).
+  A host that ends early reports only the tests it reached, so such a project now stays in the evidence gap, and the next
+  launch runs it whole until it passes. Coverage a green whole-project run already earned is still carried through.
+
 ## 0.10.0-alpha.108 - 2026-11-11
 
 - fix: a repeated `check` on an unchanged tree no longer goes red on coverage (AUTOMATION-1530). A test run replayed from the

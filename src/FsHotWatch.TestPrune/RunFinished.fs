@@ -226,7 +226,6 @@ let internal onRunFinishedWith
                   Completed = completed
                   Launch = launch
                   RunnableProjects = runnableProjects
-                  OutstandingFailures = outstandingFailures
                   CurrentInputTree = currentInputTree
                   CurrentModelGeneration = currentModelGeneration
                   DebtDuringFullRun = debtDuringFullRun
@@ -273,20 +272,16 @@ let internal onRunFinishedWith
                     | Some tree when coveredByConstruction -> Some(tree, currentModelGeneration)
                     | _ -> None }
 
-        // `PrepareCommit` writes no sidecar while what is owed is unknown, so a
-        // baseline earned then lives only in this daemon's memory. Saying it was
-        // recorded would claim a write that never happens.
+        // A run that earns the baseline passed every configured project unfiltered, so
+        // it also discharged any unknown debt (`settleDebt`), and `PrepareCommit` writes
+        // the baseline logged here. A red full run earns none (AUTOMATION-1581), so a
+        // baseline can no longer be earned while what is owed is still unknown.
         if earnsBaseline then
             let runId = completed.RunId.ToString("N")
 
-            if debt.RecoveryOutstanding then
-                Logging.info
-                    "test-prune"
-                    $"Full-suite baseline earned by run %s{runId} but not written: what is owed is still UNKNOWN (%s{describeUnknownDebt debt.UnknownDebt}), and nothing is written until a full suite passes every configured project. Until then every run, in this daemon and the next, is the full suite."
-            else
-                Logging.info
-                    "test-prune"
-                    $"Full-suite baseline recorded: run %s{runId} accounted for every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
+            Logging.info
+                "test-prune"
+                $"Full-suite baseline recorded: run %s{runId} passed every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
 
         // The in-memory hot view must shed ONLY the committed symbols,
         // never the whole list — symbols left in the queue (mid-run

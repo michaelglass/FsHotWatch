@@ -1674,9 +1674,9 @@ let private isUnexplainedRed (v: Verdict) : bool =
 ///
 /// A green beside a baseline from an EARLIER run is the ordinary case and is what the
 /// field exists to record. That includes a FULL-SUITE green: the daemon records the
-/// baseline from the last full run whose every project was ACCOUNTED for, and a full
-/// run with a project that produced no accountable outcome (an empty test project
-/// matching zero tests) legitimately keeps the earlier one. Refusing that pair here
+/// baseline from the last full run that PASSED every project, and a full run with a red
+/// project, or one that produced no accountable outcome (an empty test project matching
+/// zero tests), legitimately keeps the earlier one. Refusing that pair here
 /// would turn an honest verdict into an exception at the one place a verdict is minted.
 let private baselineAgreesWithScope (v: Verdict) : Result<Verdict, string> =
     match v.Outcome, v.Scope with
