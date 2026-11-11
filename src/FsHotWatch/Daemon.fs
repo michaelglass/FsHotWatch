@@ -1952,7 +1952,10 @@ let internal laterFilesInOwnProjects
     [ for file in changed do
           for project in projectsOf file do
               match sourceFilesOf project |> List.skipWhile ((<>) (AbsFilePath.value file)) with
-              | _ :: later -> yield! later |> List.filter (not << PathFilter.isGeneratedPath)
+              | _ :: later ->
+                  yield!
+                      later
+                      |> List.filter (not << PathFilter.isGeneratedFor (AbsProjectPath.value project))
               | [] -> () ]
     |> List.distinct
 
@@ -2354,9 +2357,10 @@ let private processBatchAttempt
             // The pipeline's source list is authoritative for what's checkable.
             let checkableFilesOf (projects: AbsProjectPath list) =
                 projects
-                |> List.collect ctx.Graph.GetSourceFiles
-                |> List.map AbsFilePath.value
-                |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
+                |> List.collect (fun project ->
+                    ctx.Graph.GetSourceFiles project
+                    |> List.map AbsFilePath.value
+                    |> List.filter (fun f -> not (PathFilter.isGeneratedFor (AbsProjectPath.value project) f)))
                 |> List.distinct
 
             // Decide scoped vs. full. Scoped applies only when every changed

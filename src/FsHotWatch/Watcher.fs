@@ -64,7 +64,7 @@ let internal isProjectAssetsJson (path: string) =
 /// `project.assets.json` is the documented exception: it lives in obj/ but is the
 /// canonical post-`dotnet restore` signal that a project's package graph changed.
 /// See docs/fr-auto-refresh-fsproj-changes.md.
-let internal isRelevantFile (path: string) =
+let private isRelevantWith (isGenerated: string -> bool) (path: string) =
     if isProjectAssetsJson path then
         true
     else
@@ -80,7 +80,17 @@ let internal isRelevantFile (path: string) =
             || ext = ".props"
             || ext = ".targets"
 
-        isRelevantExt && not (PathFilter.isGeneratedPath path)
+        isRelevantExt && not (isGenerated path)
+
+/// `isRelevantFile` with the generated-output test read from the WHOLE path. For a
+/// repo-relative path; a watcher over a root uses `isRelevantFileUnder`.
+let internal isRelevantFile (path: string) =
+    isRelevantWith PathFilter.isGeneratedPath path
+
+/// `isRelevantFile` for a path under `root`: only the `obj/` and `bin/` below `root`
+/// are build output (`PathFilter.isGeneratedUnder`).
+let internal isRelevantFileUnder (root: string) (path: string) =
+    isRelevantWith (PathFilter.isGeneratedUnder root) path
 
 /// A root-level file fshw knows decides what every project compiles (`VerdictInputs.ToolKnownRootFileNames`:
 /// Directory.Build.props/targets, global.json, nuget.config, the dependency lock files).
@@ -166,14 +176,14 @@ module FilePattern =
 
 /// Like `isRelevantFile`, but also accepts files matching any of the given
 /// FileCommandPlugin patterns (for non-source extensions like `.ratchet.json`).
-let internal isRelevantFileOrExtra (extraPatterns: FilePattern list) (path: string) =
-    if isRelevantFile path then
+let internal isRelevantFileOrExtra (root: string) (extraPatterns: FilePattern list) (path: string) =
+    if isRelevantFileUnder root path then
         true
     else
         let matchesExtra =
             extraPatterns |> List.exists (fun p -> FilePattern.matches p path)
 
-        matchesExtra && not (PathFilter.isGeneratedPath path)
+        matchesExtra && not (PathFilter.isGeneratedUnder root path)
 
 /// Classify a file path as a solution, project, or source change.
 /// `obj/project.assets.json` routes through `ProjectChanged` so the daemon
@@ -227,11 +237,11 @@ let internal acceptsUnderRoot (root: string) (extraPatterns: FilePattern list) :
         let ext = Path.GetExtension(path).ToLowerInvariant()
 
         (discoveryRoots |> List.exists (fun d -> WatchRouter.isWithin d path)
-         && isRelevantFileOrExtra extraPatterns path)
+         && isRelevantFileOrExtra root extraPatterns path)
         || ((ext = ".sln" || ext = ".slnx") && Path.GetDirectoryName path = root)
         || isToolKnownRootFile root path
         || (extraPatterns |> List.exists (fun p -> FilePattern.matches p path)
-            && not (PathFilter.isGeneratedPath path))
+            && not (PathFilter.isGeneratedUnder root path))
 
 /// The F# inputs a must-scan of `dir` finds under `root`'s discovery roots: the part
 /// of `dir` inside one, or the whole discovery root when `dir` contains it.
@@ -258,7 +268,7 @@ let internal rescanUnderRoot (root: string) (dir: string) : string seq =
                        "project.assets.json" |] do
                     yield!
                         SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern target
-                        |> Seq.filter isRelevantFile
+                        |> Seq.filter (isRelevantFileUnder root)
             | _ -> ()
     }
 
@@ -405,14 +415,16 @@ let internal takePollingSnapshotWith
     for root in roots do
         // One source walk prunes every generated subtree. A second narrow walk
         // admits obj solely for project.assets.json while still pruning bin.
-        walk SafeWalk.SourceExcludedDirs "*" root |> collect isRelevantFile
+        walk SafeWalk.SourceExcludedDirs "*" root
+        |> collect (isRelevantFileUnder repoRoot)
 
         walk pollingAssetsExcludedDirs "project.assets.json" root
         |> collect isProjectAssetsJson
 
     for extra in extraPatterns do
         let accept path =
-            FilePattern.matches extra path && not (PathFilter.isGeneratedPath path)
+            FilePattern.matches extra path
+            && not (PathFilter.isGeneratedUnder repoRoot path)
 
         walk SafeWalk.SourceExcludedDirs (FilePattern.toString extra) repoRoot
         |> collect accept
@@ -817,7 +829,10 @@ module FileWatcher =
         (systemWatcherFactory: SystemWatcherFactory)
         : FileWatcher =
         let handle (path: string) =
-            if isRelevantFileOrExtra extraPatterns path || isToolKnownRootFile repoRoot path then
+            if
+                isRelevantFileOrExtra repoRoot extraPatterns path
+                || isToolKnownRootFile repoRoot path
+            then
                 onChange (classifyChange path)
 
         // Top level: solutions, and the root build and toolchain files.

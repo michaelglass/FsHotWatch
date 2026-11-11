@@ -10,6 +10,15 @@
   failure, whatever the generation. A request that succeeded, or an earlier failed scan superseded by one that succeeded,
   still answers at once.
 
+- fix: the tree hash accounts for every symlinked directory under `src/` or `tests/` (AUTOMATION-1563): one pointing
+  inside the repository is hashed under the link's path; one pointing outside it is never followed and is a recorded hole
+  (`skipped`). A checkout under a directory named `bin` or `obj` now hashes its sources. The algorithm is now
+  `fshw-tree-sha256-v4`: what is hashed changed, so every verdict written under v3 stops applying ONCE. A consumer's
+  first `check` after upgrading reports NO VERDICT (exit 3) until it has verified the tree again; intelligence's pin bump
+  will see exactly that once.
+- fix: the watcher, the excludes and compile-item filters read `bin/` and `obj/` relative to the repository or the project,
+  not anywhere in the absolute path (AUTOMATION-1563). A checkout under `~/bin/` was read as build output and never checked.
+
 ## 0.10.0-alpha.108 - 2026-11-11
 
 - fix: a repeated `check` on an unchanged tree no longer goes red on coverage (AUTOMATION-1530). A test run replayed from the
