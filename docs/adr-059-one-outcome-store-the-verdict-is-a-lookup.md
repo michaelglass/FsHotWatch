@@ -1438,3 +1438,63 @@ the newer analyses, and no log said so, because both callers discard `Gc`'s resu
 compressing it changes the record format and every reader. The budget alone fixes the
 measured miss. If a store at 2 GiB still evicts a tree's records in use, compressing the
 outputs is the next step. A recency that counts reads, not only filings, is another.
+
+## 32. Amendment (AUTOMATION-1583): GC reclaims from the kind over its share, superseded records first
+
+§31 raised the budget to 2 GiB, "enough for six such trees". On 2026-11-11 intelligence's
+store (on the always-on box) was over it again, and one GC evicted 13,504 check keys, 2,794
+format keys and 1,383 analysis keys to free 286 MB. The store, read with jq:
+
+| kind | records | keys | on disk |
+|---|---|---|---|
+| testprune-analysis | 18,087 | 1,335 | 2,125 MB |
+| check | 7,065 | 7,065 | 15.5 MB |
+| format | 2,781 | 2,781 | 3.1 MB |
+| options, options-inputs | 2 | 2 | 3.5 MB |
+
+§31's size estimate held: the newest analysis record of each key averages 122 KB on disk, so
+one tree of 2,781 files is about 340 MB. Its capacity estimate did not. 16,752 of the 18,087
+analysis records (92%, 1.96 GB) were **superseded**: older records of a key whose newest record
+answers every lookup. The newest records of the 1,335 keys hold 162 MB. TestPrune files an
+analysis after every live check, and each record carries its checkout and time, so the same
+analysis filed by 26 checkouts (6,906 of the records repeat a checkout already filed) is a new
+file each time. §2's "re-recording an identical outcome is a no-op" holds only when the bytes
+are equal, and an analysis record's never are. The budget filled with copies, not with six
+trees.
+
+Then GC evicted by age alone. Check and format records are filed at a scan's start and the
+analyses after them, so the oldest keys in the store were the small kinds, and check-record
+replay (§17) lost its records to pay for duplicate analyses.
+
+**Decision.** Over budget, GC reclaims only from the kinds over their fair share:
+
+- **The share.** Each kind present may hold an equal split of the budget. A kind that holds
+  less keeps all of it, and what it leaves unused is split among the larger kinds. Formally,
+  the share is the largest `cap` with `sum over kinds of min(size, cap) <= MaxBytes`. On the
+  store above, the small kinds hold 22 MB, so testprune-analysis's share is about 2.1 GB. It
+  needs no kind table: a new kind gets a share the day it is filed. The test runner's `test`
+  kind and options records are under it by orders of magnitude. A check record is about 2 KB
+  and a tree about 6 MB. Even an equal split among six kinds (341 MB) holds about 57 trees.
+- **Superseded records first.** In a kind over its share, GC deletes the superseded records
+  first, oldest first, then whole keys, those with the oldest newest record first, until the
+  kind fits. Deleting a superseded record never changes a lookup. It shortens the key's
+  history, the flakiness input, and only in a kind over its share. On the store above this
+  alone frees 1.96 GB without evicting any key.
+- The TTL still evicts every kind. Kept keys are still never touched. When kept keys hold a
+  kind above its share, GC evicts the oldest other keys until the total fits, as before.
+- The log line says how many superseded records it deleted, of which kinds, and the share.
+
+**Not chosen now, measured:**
+
+- **Compression.** A gzip of a sample of 300 analysis records is 17 times smaller (33.9 MB
+  to 2.0 MB). It would delay the problem, but it does not fix the eviction order: a kind
+  that is 17 times smaller still evicts check records first when it fills the budget. It
+  also changes the record format and every reader. It is still a valid next step if the
+  answers alone outgrow the budget, which happens at about six trees of analyses.
+- **Recency by reads.** It cannot be measured on this store: GC reads every record of every
+  key on each run, so file access times show GC's reads, not lookups. With duplicates
+  trimmed first and shares, no record in use was shown to be evicted for lack of read
+  recency.
+- **Not re-filing an analysis already filed.** This removes the duplicates at their source
+  and is worth doing. It is a TestPrune plugin change. The budget rule above must hold
+  whatever any one producer files.

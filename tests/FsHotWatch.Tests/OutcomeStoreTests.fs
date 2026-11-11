@@ -311,3 +311,163 @@ let ``gc that evicts nothing logs nothing`` () =
 let ``the default byte budget holds four intelligence-sized trees`` () =
     let oneTree = 340L * 1024L * 1024L
     test <@ defaultMaxBytes >= 4L * oneTree @>
+
+// --- AUTOMATION-1583: one byte budget across kinds must not let one kind starve another ---
+//
+// Measured on intelligence's store (thellma-and-louisa, 2026-11-11): testprune-analysis held
+// 2.12 GB on disk of a 2 GiB budget, check 15.5 MB. GC evicted the keys with the oldest newest
+// record whatever their kind, so one GC evicted 13,504 check keys to pay for analyses. And
+// 16,752 of the 18,087 analysis records (92%) were superseded history: the same key re-filed
+// by every checkout, the newest record per key holding only 162 MB.
+
+let private actionKey (kind: string) (name: string) = ActionKey.create kind [ "file", name ]
+
+let private fileAction (store: Store) (kind: string) (name: string) (outputBytes: int) (at: DateTimeOffset) =
+    let key = actionKey kind name
+    let outputs = $"""{{"blob":"%s{String('x', outputBytes)}"}}"""
+    let record = Record.ofAction key name Outcome.Pass "fshw" $"ws-%d{at.Minute}" at
+    test <@ store.RecordWithOutputs(record, Some outputs) @>
+    key
+
+let private bytesUnder (path: string) =
+    if Directory.Exists path then
+        allFilesUnder "*" path |> List.sumBy (fun f -> FileInfo(f).Length)
+    else
+        0L
+
+/// The same store directory under another byte budget.
+let private withBudget (dir: string) (maxBytes: int64) (log: string -> unit) =
+    Store(
+        { Root = dir
+          Ttl = TimeSpan.FromDays 14.0
+          MaxBytes = maxBytes
+          Log = log }
+    )
+
+[<Fact>]
+let ``gc over budget reclaims from the kind over its share and evicts no record of a kind under its share`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        // The small kinds are filed FIRST, so their newest records are the oldest in the store:
+        // a budget walk by age alone takes them before any analysis.
+        let checks =
+            [ for i in 0..5 -> fileAction store "check" $"src/C%d{i}.fs" 200 (t0.AddMinutes(float i)) ]
+
+        let format = fileAction store "format" "src/F.fs" 100 (t0.AddMinutes 6.0)
+        let options = fileAction store "options" "src/A.fsproj" 2_000 (t0.AddMinutes 7.0)
+        let small = bytesUnder (Path.Combine(dir, "records"))
+
+        let analyses =
+            [ for i in 0..7 ->
+                  fileAction store "testprune-analysis" $"src/C%d{i}.fs" 20_000 (t0.AddMinutes(10.0 + float i)) ]
+
+        let oneAnalysis = bytesUnder (store.DirectoryOf(List.head analyses))
+        let budget = small + 3L * oneAnalysis + oneAnalysis / 2L
+        let evicted = (withBudget dir budget ignore).Gc(t0.AddMinutes 30.0, Set.empty)
+
+        test <@ checks |> List.forall (fun k -> store.Lookup k <> None) @>
+        test <@ store.Lookup format <> None && store.Lookup options <> None @>
+        test <@ evicted = (analyses |> List.take 5 |> List.map _.Value) @>
+        test <@ bytesUnder (Path.Combine(dir, "records")) <= budget @>)
+
+[<Fact>]
+let ``gc trims the superseded records of the kind over its share before evicting any of its keys`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        let check = fileAction store "check" "src/C.fs" 200 t0
+
+        // One analysis re-filed by five checkouts: four superseded records and the answer.
+        let refiled =
+            [ for i in 1..5 -> fileAction store "testprune-analysis" "src/A.fs" 20_000 (t0.AddMinutes(float i)) ]
+            |> List.head
+
+        let other =
+            fileAction store "testprune-analysis" "src/B.fs" 20_000 (t0.AddMinutes 9.0)
+
+        let answer = store.Lookup refiled
+        let oneRecord = bytesUnder (store.DirectoryOf other)
+        let budget = bytesUnder (Path.Combine(dir, "records")) - 3L * oneRecord
+        let logged = Collections.Concurrent.ConcurrentQueue<string>()
+
+        let evicted =
+            (withBudget dir budget logged.Enqueue).Gc(t0.AddMinutes 30.0, Set.empty)
+
+        test <@ List.isEmpty evicted @>
+        test <@ store.Lookup refiled = answer && store.Lookup other <> None @>
+        test <@ store.Lookup check <> None @>
+        test <@ store.History refiled |> List.map _.RecordedAt = [ t0.AddMinutes 4.0; t0.AddMinutes 5.0 ] @>
+        test <@ bytesUnder (Path.Combine(dir, "records")) <= budget @>
+
+        test
+            <@
+                logged
+                |> Seq.exists (fun l -> l.Contains "evicted 0 key(s)" && l.Contains "3 superseded record(s)")
+            @>)
+
+[<Fact>]
+let ``gc reclaims a small kind that is over its own share, oldest first, and spares the others`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        let checks =
+            [ for i in 0..9 -> fileAction store "check" $"src/C%d{i}.fs" 2_000 (t0.AddMinutes(10.0 + float i)) ]
+
+        let format = fileAction store "format" "src/F.fs" 100 t0
+        let total = bytesUnder (Path.Combine(dir, "records"))
+        let oneCheck = bytesUnder (store.DirectoryOf(List.head checks))
+        let budget = total - 2L * oneCheck - oneCheck / 2L
+        let evicted = (withBudget dir budget ignore).Gc(t0.AddMinutes 30.0, Set.empty)
+
+        test <@ evicted = (checks |> List.take 3 |> List.map _.Value) @>
+        test <@ store.Lookup format <> None @>
+        test <@ bytesUnder (Path.Combine(dir, "records")) <= budget @>)
+
+[<Fact>]
+let ``the ttl still evicts every kind, including a kind under its share`` () =
+    withStore 1_000_000_000L (fun _ _ store ->
+        let oldCheck = fileAction store "check" "src/C.fs" 200 t0
+        let oldFormat = fileAction store "format" "src/F.fs" 100 t0
+        let oldAnalysis = fileAction store "testprune-analysis" "src/A.fs" 2_000 t0
+        let fresh = fileAction store "check" "src/D.fs" 200 (t0.AddDays 10.0)
+        let evicted = store.Gc(t0.AddDays 15.0, Set.empty) |> Set.ofList
+
+        test <@ evicted = Set.ofList [ oldCheck.Value; oldFormat.Value; oldAnalysis.Value ] @>
+        test <@ store.Lookup fresh <> None @>)
+
+[<Fact>]
+let ``when the kind over its share is all kept, gc still meets the total budget from the rest`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        let checks =
+            [ for i in 0..3 -> fileAction store "check" $"src/C%d{i}.fs" 200 (t0.AddMinutes(float i)) ]
+
+        let analyses =
+            [ for i in 0..3 ->
+                  fileAction store "testprune-analysis" $"src/A%d{i}.fs" 20_000 (t0.AddMinutes(10.0 + float i)) ]
+
+        let oneCheck = bytesUnder (store.DirectoryOf(List.head checks))
+        let budget = bytesUnder (Path.Combine(dir, "records")) - oneCheck - oneCheck / 2L
+        let keep = analyses |> List.map _.Value |> Set.ofList
+        let evicted = (withBudget dir budget ignore).Gc(t0.AddMinutes 30.0, keep)
+
+        test <@ evicted = (checks |> List.take 2 |> List.map _.Value) @>
+        test <@ analyses |> List.forall (fun k -> store.Lookup k <> None) @>
+        test <@ bytesUnder (Path.Combine(dir, "records")) <= budget @>)
+
+[<Fact>]
+let ``a superseded record gc cannot delete is logged, and the answer stays`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        let key =
+            [ for i in 1..2 -> fileAction store "testprune-analysis" "src/A.fs" 20_000 (t0.AddMinutes(float i)) ]
+            |> List.head
+
+        let answer = store.Lookup key
+        let keyDir = store.DirectoryOf key
+        let budget = bytesUnder (Path.Combine(dir, "records")) - 100L
+        let logged = Collections.Concurrent.ConcurrentQueue<string>()
+        let writable = File.GetUnixFileMode keyDir
+        File.SetUnixFileMode(keyDir, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+        try
+            (withBudget dir budget logged.Enqueue).Gc(t0.AddMinutes 30.0, Set.ofList [])
+            |> ignore
+        finally
+            File.SetUnixFileMode(keyDir, writable)
+
+        test <@ logged |> Seq.exists (fun l -> l.Contains "could not trim") @>
+        test <@ store.Lookup key = answer @>)
