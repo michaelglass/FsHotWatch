@@ -1498,3 +1498,47 @@ replay (§17) lost its records to pay for duplicate analyses.
 - **Not re-filing an analysis already filed.** This removes the duplicates at their source
   and is worth doing. It is a TestPrune plugin change. The budget rule above must hold
   whatever any one producer files.
+
+## 33. Amendment (AUTOMATION-1568): what the shadow requires, and two misses that are not quarantine
+
+**1. `ShadowVerdict.requirements` comes from the configuration.** §7 step 2 already says
+`R(c, T)` is computed "from the configuration, not from the run", and the shadow did not do
+that. It iterated the verdict's `plugins[]`, which leaves out a plugin that is idle with no
+run record, so a configured gate that nobody ran on the tree was not required and the line
+said `agree`. The required `plugin:<name>` set is now the plugins `.fshw.json` configures
+(`DaemonConfig.requiredPluginNames`, pinned against what `registerPlugins` registers).
+
+`plugin:test-prune` is required whenever `tests` is configured. That departs from §3's literal
+"one per configured **non-test** plugin", and the departure is deliberate. Without it the
+shadow read a real false green: a failing test-prune publication that carried no suites
+answered green from the tree's earlier passing test records, because the `test:<project>`
+requirements were all met and nothing required the plugin itself. The test plugin can fail
+with no project carrying the failure; requiring it beside its projects is what keeps that
+failure in the lookup.
+
+**2. An unreadable outcome record is a miss.** `OutcomeStore`'s key reader (`readKeyFiles`,
+which `readKeyWithOutputs` wraps) used to quarantine a record it could not READ and answer
+the key from the remaining records. An
+unreadable newest fail then returned the older pass, and permanently so once the file was
+moved aside. Now an unreadable record makes the key a miss, and nothing is moved, as
+`TestEvidenceStore.Lookup` already did. A record that reads back torn, mis-keyed or of an
+unknown schema is still quarantined: those are positive evidence that the bytes are not a
+record, where an unreadable file says nothing about what it held. GC (§32) finds no readable
+record under such a key and evicts it as expired unless it is kept: a miss either way, never
+an older answer.
+
+**3. An unreadable `.fshw.json` is a line, not a silence.** A configuration the shadow cannot
+read used to drop the shadow line. It now logs one with `direction: "not-compared"`, the
+reason, and `agree: false`, so it breaks a §8 consecutive-agreement run the way §8's counter
+reads it. Without `.fshw.json` there is no `R(c, T)`, so there is nothing to agree with, and
+an agreement run that skipped such a tree would count a comparison that never happened.
+`fshw analytics` reads the new direction.
+
+**The recount.** Under this rule, 13 of the 31 server-arm lands previously counted toward §8's
+50-consecutive-agreement criterion still agree (all on alpha.140). The 18 on alpha.136–139 read
+`stricter`, because their trees have no `plugin:changelog-gate` record. Re-derived on AUTOMATION-1568;
+the count for AUTOMATION-1536 is 13.
+
+**Open blocker for reaching 50:** §3's remedy, per-plugin input keys in place of the tree digest. While
+`plugin:<name>` is keyed by the whole tree, any tree without a record for a newly configured plugin reads
+`stricter`, and the run cannot accumulate across such a change.
