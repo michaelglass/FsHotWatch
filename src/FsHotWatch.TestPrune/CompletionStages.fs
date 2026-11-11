@@ -321,6 +321,10 @@ let internal assembleRunResults (facts: CompletionRunFacts) : AssembledRunResult
 
     let passedTests = passedTestsOfRun repoRoot completed.RunId
 
+    // A red unfiltered project clears a prior red only for a test this run's report
+    // shows passing; `coverage` itself, which `confirm` reads, is unchanged.
+    let redInFull = RunCoverage.redInFull completed.Results
+
     // The run log a project-level cause points at. Named
     // only when it is on disk: `Written` is otherwise reserved for the
     // code holding the open handle, and a message must never point at
@@ -395,10 +399,10 @@ let internal assembleRunResults (facts: CompletionRunFacts) : AssembledRunResult
             $"%d{absentFailures.Length} failure(s) from an earlier run name a test class this run selected and its project does not have (%s{OutstandingFailure.summarize absentFailures}) — retired, since no run can ever execute them"
 
     let carriedFailures =
-        OutstandingFailure.carriedOver runnableProjects coverage passedTests priorFailures
+        OutstandingFailure.carriedOver runnableProjects coverage redInFull passedTests priorFailures
 
     let outstandingFailures =
-        OutstandingFailure.carry runnableProjects coverage passedTests foundFailures priorFailures
+        OutstandingFailure.carry runnableProjects coverage redInFull passedTests foundFailures priorFailures
 
     if not carriedFailures.IsEmpty then
         Logging.info
