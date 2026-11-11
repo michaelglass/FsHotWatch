@@ -341,21 +341,48 @@ type Store(settings: Settings) =
         with ex ->
             settings.Log $"outcome store: could not quarantine %s{path}: %s{ex.Message}"
 
-    /// Every readable record filed under `keyValue` with its file and outputs, oldest
-    /// first. A file that is not a record of THAT key is quarantined and left out.
+    /// Every record filed under `keyValue` with its file and outputs, oldest first. A file
+    /// that was read and is not a record of THAT key is quarantined and left out.
+    ///
+    /// A file that could not be READ is a different case (AUTOMATION-1568): it says nothing
+    /// about what it holds, and it may be the newest fail. Answering the key from the rest
+    /// would return the older pass, and quarantining it would make that answer permanent.
+    /// So the whole key is a miss and nothing is moved, as in `TestEvidenceStore.Lookup`.
+    /// `Gc` then sees no readable record and evicts the key as expired unless it is kept: a miss
+    /// either way.
     let readKeyFiles (keyValue: ActionKey.KeyValue) : (Record * (string * string option)) list =
         let dir = directoryOf keyValue
 
-        if not (Directory.Exists dir) then
-            []
-        else
-            [ for file in Directory.GetFiles(dir, "*.json") do
-                  let text =
-                      try
-                          Ok(File.ReadAllText file)
-                      with ex ->
-                          Error ex.Message
+        let files =
+            if Directory.Exists dir then
+                Directory.GetFiles(dir, "*.json")
+            else
+                [||]
 
+        let read =
+            files
+            |> Array.map (fun file ->
+                file,
+                (try
+                    Ok(File.ReadAllText file)
+                 with ex ->
+                     Error ex.Message))
+
+        let unreadable =
+            read
+            |> Array.tryPick (fun (file, text) ->
+                match text with
+                | Error why -> Some(file, why)
+                | Ok _ -> None)
+
+        match unreadable with
+        | Some(file, why) ->
+            settings.Log
+                $"outcome store: %s{Path.GetFileName file} could not be read, so %s{keyValue.Text} is a miss: %s{why}"
+
+            []
+        | None ->
+            [ for file, text in read do
                   match text |> Result.bind decode with
                   | Ok(record, outputs) when record.Key.Value = keyValue -> yield record, (file, outputs)
                   | Ok _ -> quarantine file "the record is filed under another key"

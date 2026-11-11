@@ -129,6 +129,8 @@ let parseShadowLine (text: string) : ShadowLine option =
             // direction is not a line this schema wrote.
             let lookup =
                 match Json.tryProp o "lookup" |> Option.bind (fun l -> Json.tryString l "outcome") with
+                // A line the shadow could not compare established nothing (AUTOMATION-1568 rework).
+                | Some "not-compared" -> Some ShadowVerdict.Class.Missing
                 | Some token -> ShadowVerdict.Class.tryParse token
                 | None -> Some ShadowVerdict.Class.Missing
 

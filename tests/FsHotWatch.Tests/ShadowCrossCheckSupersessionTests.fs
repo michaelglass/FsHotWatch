@@ -19,6 +19,11 @@ let private t0 = DateTimeOffset(2026, 11, 3, 4, 0, 0, TimeSpan.Zero)
 
 let private projects = [ "A.Tests"; "B.Tests" ]
 
+/// What the configuration requires: the build the observation reports, and both projects.
+let private configured: Configured =
+    { RequiredPlugins = [ "build" ]
+      TestProjects = projects }
+
 let private named run project (failed: string list) (passed: string list) : Suite =
     { RunId = Some run
       Project = project
@@ -79,11 +84,11 @@ let private withStore (body: string -> OutcomeStore.Store -> unit) =
 [<Fact>]
 let ``a full fail of check N whose named failure check N+1 passed again on the same tree is green under check`` () =
     withStore (fun repo store ->
-        observeWith repo store None projects (checkN [ "A.x" ]) |> ignore
+        observeWith repo store None configured (checkN [ "A.x" ]) |> ignore
 
         test
             <@
-                observeWith repo store None projects (checkN1 [ named "r2" "A.Tests" [] [ "A.x" ] ]) = LookupVerdict.Answer.Green
+                observeWith repo store None configured (checkN1 [ named "r2" "A.Tests" [] [ "A.x" ] ]) = LookupVerdict.Answer.Green
             @>)
 
 // ---------------------------------------------------------------------------
@@ -91,8 +96,8 @@ let ``a full fail of check N whose named failure check N+1 passed again on the s
 // ---------------------------------------------------------------------------
 
 let private afterCheckN repo store (aFailed: string list) (n1: Observation) =
-    observeWith repo store None projects (checkN aFailed) |> ignore
-    observeWith repo store None projects n1
+    observeWith repo store None configured (checkN aFailed) |> ignore
+    observeWith repo store None configured n1
 
 [<Fact>]
 let ``a failure check N+1 failed again stays red`` () =
@@ -133,11 +138,11 @@ let ``a failure check N's report did not name is never cleared`` () =
                           FailedTests = None }
                       named "r1" "B.Tests" [] [ "B.x" ] ] }
 
-        observeWith repo store None projects n |> ignore
+        observeWith repo store None configured n |> ignore
 
         test
             <@
-                observeWith repo store None projects (checkN1 [ named "r2" "A.Tests" [] [ "A.x" ] ]) = LookupVerdict.Answer.Red
+                observeWith repo store None configured (checkN1 [ named "r2" "A.Tests" [] [ "A.x" ] ]) = LookupVerdict.Answer.Red
                     [ "test:A.Tests" ]
             @>)
 
@@ -163,7 +168,7 @@ let ``a newer full fail on the same tree is red again, though check N's was clea
                 RunOrder = [ "r3" ]
                 RecordedAt = t0.AddMinutes 9.0 }
 
-        test <@ observeWith repo store None projects n2 = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test <@ observeWith repo store None configured n2 = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
 
 [<Fact>]
 let ``confirm on the tree never reads check N's cleared fail as a pass`` () =
@@ -182,7 +187,7 @@ let ``confirm on the tree never reads check N's cleared fail as a pass`` () =
                 Scope = GradedScope.Unscoped
                 RecordedAt = t0.AddMinutes 6.0 }
 
-        test <@ observeReadWith repo store None projects read = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test <@ observeReadWith repo store None configured read = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
 
 [<Fact>]
 let ``check N+1's passed names are read from its report when it failed nothing itself`` () =

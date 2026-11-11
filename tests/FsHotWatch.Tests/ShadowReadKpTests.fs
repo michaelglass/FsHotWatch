@@ -17,6 +17,11 @@ let private t0 = DateTimeOffset(2026, 11, 1, 2, 40, 0, TimeSpan.Zero)
 
 let private projects = [ "A.Tests"; "B.Tests" ]
 
+/// What the configuration requires: the build the observation reports, and both projects.
+let private configured: Configured =
+    { RequiredPlugins = [ "build" ]
+      TestProjects = projects }
+
 let private kpA = ActionKey.create "test" [ "kp", "A"; "run-scope", "full" ]
 let private kpB = ActionKey.create "test" [ "kp", "B"; "run-scope", "full" ]
 
@@ -78,8 +83,8 @@ let ``a read right after a check that K_P records alone made green agrees green`
         kp.Record(kpRecord kpA OutcomeStore.Outcome.Pass "r1") |> ignore
         kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass "r1") |> ignore
 
-        test <@ observeWith repo store (Some kp) projects coldCheck = LookupVerdict.Answer.Green @>
-        test <@ observeReadWith repo store (Some kp) projects (readOf coldCheck) = LookupVerdict.Answer.Green @>)
+        test <@ observeWith repo store (Some kp) configured coldCheck = LookupVerdict.Answer.Green @>
+        test <@ observeReadWith repo store (Some kp) configured (readOf coldCheck) = LookupVerdict.Answer.Green @>)
 
 // ---------------------------------------------------------------------------
 // Never looser: the read finds only the keys a publication named for ITS tree and binary,
@@ -89,7 +94,7 @@ let ``a read right after a check that K_P records alone made green agrees green`
 let private published repo store (kp: OutcomeStore.Store) (outcome: OutcomeStore.Outcome) =
     kp.Record(kpRecord kpA outcome "r1") |> ignore
     kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass "r1") |> ignore
-    observeWith repo store (Some kp) projects coldCheck |> ignore
+    observeWith repo store (Some kp) configured coldCheck |> ignore
 
 [<Fact>]
 let ``a read of another tree finds no key the check named`` () =
@@ -102,7 +107,7 @@ let ``a read of another tree finds no key the check named`` () =
 
         test
             <@
-                observeReadWith repo store (Some kp) projects elsewhere = LookupVerdict.Answer.Missing
+                observeReadWith repo store (Some kp) configured elsewhere = LookupVerdict.Answer.Missing
                     [ "plugin:build"; "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>)
 
@@ -117,7 +122,7 @@ let ``a read under another fshw binary finds no key the check named`` () =
 
         test
             <@
-                observeReadWith repo store (Some kp) projects upgraded = LookupVerdict.Answer.Missing
+                observeReadWith repo store (Some kp) configured upgraded = LookupVerdict.Answer.Missing
                     [ "plugin:build"; "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>)
 
@@ -131,7 +136,7 @@ let ``a read finds a K_P fail as red`` () =
                 Today = Class.Red
                 TodayOutcome = "applies:red" }
 
-        test <@ observeReadWith repo store (Some kp) projects read = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test <@ observeReadWith repo store (Some kp) configured read = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
 
 [<Fact>]
 let ``a confirm read never reads a cleared K_P fail as a pass, and a check read does`` () =
@@ -150,15 +155,18 @@ let ``a confirm read never reads a cleared K_P fail as a pass, and a check read 
         |> Option.iter (kp.Record >> ignore)
 
         kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass "r1") |> ignore
-        test <@ observeWith repo store (Some kp) projects coldCheck = LookupVerdict.Answer.Green @>
-        test <@ observeReadWith repo store (Some kp) projects (readOf coldCheck) = LookupVerdict.Answer.Green @>
+        test <@ observeWith repo store (Some kp) configured coldCheck = LookupVerdict.Answer.Green @>
+        test <@ observeReadWith repo store (Some kp) configured (readOf coldCheck) = LookupVerdict.Answer.Green @>
 
         let confirmRead =
             { readOf coldCheck with
                 Command = Verdict.Confirm }
 
         test
-            <@ observeReadWith repo store (Some kp) projects confirmRead = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+            <@
+                observeReadWith repo store (Some kp) configured confirmRead = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>)
 
 [<Fact>]
 let ``a read with no K_P store, or a named key it cannot read back, decides nothing from K_P`` () =
@@ -167,7 +175,7 @@ let ``a read with no K_P store, or a named key it cannot read back, decides noth
 
         test
             <@
-                observeReadWith repo store None projects (readOf coldCheck) = LookupVerdict.Answer.Missing
+                observeReadWith repo store None configured (readOf coldCheck) = LookupVerdict.Answer.Missing
                     [ "test:A.Tests"; "test:B.Tests" ]
             @>
 
@@ -201,5 +209,5 @@ let ``naming the keys is not counted as recording an outcome, and a read files n
         test <@ line["recorded"].GetValue<int>() = 4 @>
 
         let before = allFilesUnder "*.json" (storeRoot repo) |> List.length
-        observeReadWith repo store (Some kp) projects (readOf coldCheck) |> ignore
+        observeReadWith repo store (Some kp) configured (readOf coldCheck) |> ignore
         test <@ allFilesUnder "*.json" (storeRoot repo) |> List.length = before @>)

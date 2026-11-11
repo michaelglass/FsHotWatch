@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: an outcome record the store cannot READ makes its key a miss, and stays where it is (AUTOMATION-1568). It was
+  quarantined and the key answered from the rest, so an unreadable newest fail returned the older pass, permanently once moved.
+  A record that reads back torn, mis-keyed or of an unknown schema is still quarantined. GC finds no readable record
+  under such a key and evicts it as expired unless it is kept: a miss either way.
+
 - fix: a check record's key no longer depends on which records existed when it was filed (AUTOMATION-1606). A record's
   `upstream` names each earlier file of its project by the API signature its check declared, but an earlier file with
   no record was named by its content instead. So a record for file k+1 filed before k had one became unreachable the
