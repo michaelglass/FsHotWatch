@@ -2125,6 +2125,57 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
 /// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
+/// The plugins `config` registers (`registerPluginsIn`), by the name each reports its status
+/// under, other than the test plugin: preprocessors, the formatter, lint, analyzers, build,
+/// file commands and coverage. ADR-059 §3 requires `plugin:<name>` once per configured
+/// non-test plugin; test projects are required as `test:<project>` instead.
+let nonTestPluginNames (config: DaemonConfiguration) : string list =
+    [ for p in config.Preprocessors do
+          p.Name
+      match config.Format with
+      | Auto -> "format"
+      | Check -> "format-check"
+      | Off -> ()
+      if config.Lint then
+          "lint"
+      if config.Analyzers.IsSome then
+          FsHotWatch.PluginActivity.AnalyzersPluginName
+      match config.Build with
+      | Some builds when not builds.IsEmpty -> "build"
+      | _ -> ()
+      for fc in config.FileCommands do
+          fc.PluginName
+      if config.Coverage.IsSome then
+          "coverage" ]
+    |> List.distinct
+
+/// The plugins a green requires of `config`: its non-test plugins, and the test plugin when tests
+/// are configured. The test plugin is required as well as `test:<project>` because it can fail
+/// with no project carrying the failure (an index flush, an impact DB that will not open, a
+/// wedged plugin). Without it, passing test records an earlier publication of the same tree
+/// filed would answer green over that failure (AUTOMATION-1568 rework).
+let requiredPluginNames (config: DaemonConfiguration) : string list =
+    nonTestPluginNames config
+    @ (if config.Tests.IsSome then
+           [ FsHotWatch.PluginActivity.TestPrunePluginName ]
+       else
+           [])
+
+/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`requiredPluginNames`), read the
+/// way `loadConfig` reads it, with the defaults when there is no file. It neither validates the
+/// test scope nor logs: it names plugins and has nothing to report about the tree.
+/// Raises ConfigErrorException when the file cannot be parsed.
+let configuredPlugins (repoRoot: string) : string list =
+    let path = FsHwPaths.configFile repoRoot
+
+    let config =
+        if File.Exists path then
+            parseConfig (File.ReadAllText path) (defaultConfig ())
+        else
+            defaultConfig ()
+
+    requiredPluginNames config
+
 /// Count the plugins that would be registered for a given configuration.
 /// Used by `fshw config check` to report how many plugins are configured.
 let countPlugins (config: DaemonConfiguration) : int =

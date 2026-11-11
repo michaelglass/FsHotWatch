@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: an outcome record the store cannot READ makes its key a miss, and stays where it is (AUTOMATION-1568). It was
+  quarantined and the key answered from the rest, so an unreadable newest fail returned the older pass, permanently once moved.
+  A record that reads back torn, mis-keyed or of an unknown schema is still quarantined. GC finds no readable record
+  under such a key and evicts it as expired unless it is kept: a miss either way.
+
 - fix: the outcome store's GC no longer evicts one kind's records to pay for another's (AUTOMATION-1583). The store
   has one byte budget, and GC evicted the keys with the oldest newest record whatever their kind. On intelligence's
   store TestPrune analyses held 2.12 GB of the 2 GiB budget and check records 15.5 MB, and one GC evicted 13,504 check
