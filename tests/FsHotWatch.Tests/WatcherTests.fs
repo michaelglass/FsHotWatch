@@ -1190,23 +1190,31 @@ let ``matchesPattern literal does not match files that merely end with the name`
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra accepts built-in extensions with no extras`` () =
-    test <@ isRelevantFileOrExtra [] "/repo/src/Lib.fs" @>
+    test <@ isRelevantFileOrExtra "/repo" [] "/repo/src/Lib.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra accepts files matching wildcard pattern`` () =
-    test <@ isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/coverage.ratchet.json" @>
+    test <@ isRelevantFileOrExtra "/repo" [ FilePattern.parse "*.ratchet.json" ] "/repo/coverage.ratchet.json" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra accepts files matching literal filename pattern`` () =
-    test <@ isRelevantFileOrExtra [ FilePattern.parse "coverage-ratchet.json" ] "/repo/coverage-ratchet.json" @>
+    test <@ isRelevantFileOrExtra "/repo" [ FilePattern.parse "coverage-ratchet.json" ] "/repo/coverage-ratchet.json" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () =
-    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.cs") @>
+    test <@ not (isRelevantFileOrExtra "/repo" [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.cs") @>
 
 [<Fact(Timeout = 15000)>]
 let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
-    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
+    test
+        <@
+            not (
+                isRelevantFileOrExtra
+                    "/repo"
+                    [ FilePattern.parse "*.ratchet.json" ]
+                    "/repo/obj/Debug/config.ratchet.json"
+            )
+        @>
 
 // === Integration tests: extra-pattern watcher fires for non-source patterns ===
 
@@ -1832,3 +1840,12 @@ let ``root-level build and toolchain files are project changes`` () =
     // A non-input at the root, and a toolchain name below the root, stay out.
     test <@ not (accepts "/repo/notes.json") @>
     test <@ not (accepts "/repo/docs/global.json") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a stream over a checkout under a bin directory accepts the repository's own sources`` () =
+    // The defect: the generated-output test read the absolute path, so a root under
+    // `~/bin/` produced no event for any of its own source files.
+    let root = "/home/dev/bin/repo"
+    let accepts = acceptsUnderRoot root []
+    test <@ accepts "/home/dev/bin/repo/src/Lib.fs" @>
+    test <@ not (accepts "/home/dev/bin/repo/src/bin/Debug/Lib.fs") @>

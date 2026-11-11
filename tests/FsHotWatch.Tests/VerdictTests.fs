@@ -5761,11 +5761,11 @@ let ``verdictInputs that is not an object is refused rather than read as an empt
 // --- The hashing scheme names itself, and a verdict from another one is refused ---
 
 [<Fact>]
-let ``the tree-hash algorithm is v3 — the recipe changed, so the name must have`` () =
+let ``the tree-hash algorithm is v4 — the recipe changed, so the name must have`` () =
     // The field exists so a consumer can tell a hash it understands from one it does
     // not. A change to WHAT IS HASHED that left the name alone would make two
     // incomparable strings look comparable, which is worse than no field at all.
-    test <@ TreeHash.Algorithm = "fshw-tree-sha256-v3" @>
+    test <@ TreeHash.Algorithm = "fshw-tree-sha256-v4" @>
 
 [<Fact>]
 let ``a verdict from an OLDER hashing scheme is inapplicable by ALGORITHM — not puzzled over as a stale tree`` () =

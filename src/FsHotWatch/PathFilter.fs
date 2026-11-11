@@ -6,10 +6,32 @@ open Ignore
 
 let private normalize (path: string) = path.Replace('\\', '/')
 
-/// True if the path is inside an obj/ or bin/ directory.
+/// True if the path is inside an obj/ or bin/ directory, read from the WHOLE path. A
+/// checkout under a directory named `bin` or `obj` reads as build output here; callers
+/// that know the repository or the project use `isGeneratedUnder` / `isGeneratedFor`.
 let isGeneratedPath (path: string) =
     let n = normalize path
     n.Contains("/obj/") || n.Contains("/bin/")
+
+/// `isGeneratedPath` read relative to `scope` (the repository root, or a project's
+/// directory). Only the `obj/` and `bin/` below `scope` count: the directories ABOVE it
+/// are where the checkout happens to live, and a checkout under `~/bin/` or `/srv/obj/`
+/// would otherwise read every one of its own files as build output. A relative `path`
+/// is read as given; a top-level `bin/` in it counts.
+let isGeneratedUnder (scope: string) (path: string) =
+    let scoped =
+        if Path.IsPathRooted path && not (System.String.IsNullOrEmpty scope) then
+            Path.GetRelativePath(scope, path)
+        else
+            path
+
+    let n = "/" + normalize scoped
+    n.Contains("/obj/") || n.Contains("/bin/")
+
+/// A compile item its project's build generated: under `obj/` or `bin/` relative to the
+/// project's own directory (an artifacts layout's `../../artifacts/obj/…` still counts).
+let isGeneratedFor (projectFile: string) (source: string) =
+    isGeneratedUnder (Path.GetDirectoryName projectFile) source
 
 /// True if `path` resolves OUTSIDE `repoRoot` — a rooted or `..`-prefixed relative
 /// path. The canonical case is a NuGet-cache compile item a package injects via
@@ -38,7 +60,7 @@ let isOutsideRepoScoped (repoRoot: string option) (path: string) : bool =
 /// to contain that segment.
 let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -> bool) =
     match excludePatterns with
-    | [] -> isGeneratedPath
+    | [] -> isGeneratedUnder repoRoot
     | patterns ->
         let ig = (Ignore(), patterns) ||> List.fold (fun ig pat -> ig.Add(pat))
 
@@ -49,7 +71,7 @@ let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -
                 Some(Path.GetRelativePath(repoRoot, path).Replace('\\', '/'))
 
         fun path ->
-            isGeneratedPath path
+            isGeneratedUnder repoRoot path
             || (match toRepoRelative path with
                 | Some rel -> ig.IsIgnored(rel)
                 | None -> false)

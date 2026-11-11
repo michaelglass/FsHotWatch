@@ -565,7 +565,7 @@ type CheckPipeline
             |> Seq.map (fun kv ->
                 kv.Value.ProjectFileName,
                 kv.Value.SourceFiles
-                |> Array.filter (not << PathFilter.isGeneratedPath)
+                |> Array.filter (not << PathFilter.isGeneratedFor kv.Value.ProjectFileName)
                 |> Array.length)
             |> Seq.toList
             |> scoped.ObserveWorkingSet
@@ -1065,7 +1065,7 @@ type CheckPipeline
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         let checkable (o: FSharpProjectOptions) =
             o.SourceFiles
-            |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f))
+            |> Array.filter (fun f -> not (PathFilter.isGeneratedFor o.ProjectFileName f))
             |> Set.ofArray
 
         let removedFiles =
@@ -1785,7 +1785,7 @@ type CheckPipeline
                 if fileToken.IsCancellationRequested then
                     logCanceled absPath
                     return None
-                elif PathFilter.isGeneratedPath absPath then
+                elif PathFilter.isGeneratedFor options.ProjectFileName absPath then
                     // MSBuild's generated compile items (obj/…AssemblyInfo.fs and the like)
                     // are compiled with their project and never checked on their own — the
                     // same rule `RegisterProject` applies, which this explicit-options
@@ -1834,7 +1834,9 @@ type CheckPipeline
                 let results = System.Collections.Generic.Dictionary<string, FileCheckResult>()
 
                 try
-                    for sourceFile in options.SourceFiles |> Array.filter (not << PathFilter.isGeneratedPath) do
+                    for sourceFile in
+                        options.SourceFiles
+                        |> Array.filter (not << PathFilter.isGeneratedFor options.ProjectFileName) do
                         let! result = this.CheckFile(AbsFilePath.create sourceFile, ?ct = ct)
 
                         match result with

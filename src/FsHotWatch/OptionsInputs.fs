@@ -178,7 +178,7 @@ let list (projects: Types.ProjectOptions list) : EvaluationInputs =
         // A compile item the design-time build generates (under obj/ or bin/) is written by
         // an evaluation and not by a replay: one a clean has removed must evaluate again.
         for source in project.SourceFiles do
-            if PathFilter.isGeneratedPath source then
+            if PathFilter.isGeneratedFor project.ProjectFileName source then
                 reads.Add(Path.GetFullPath source) |> ignore
 
         let mutable dir = Path.GetDirectoryName projectFile

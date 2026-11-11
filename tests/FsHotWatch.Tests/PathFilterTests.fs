@@ -339,3 +339,16 @@ let ``IgnoreFilterCache double-checked lock returns cached entry on contended po
         // Same Filter instance in both threads: the second thread's inner-lock check
         // returned what the first populated rather than rebuilding.
         test <@ obj.ReferenceEquals(results.[0], results.[1]) @>)
+
+// --- a checkout under a directory named bin or obj ---
+
+[<Fact(Timeout = 15000)>]
+let ``a repository checked out under a bin directory is not generated output`` () =
+    // The defect: `/bin/` and `/obj/` were matched anywhere in the ABSOLUTE path, so a
+    // checkout under `~/bin/` or `/srv/obj/` read every one of its own files as build
+    // output: excluded from discovery and from the watcher, and never checked.
+    let root = "/home/dev/bin/repo"
+    test <@ not (isExcludedPath root [] "/home/dev/bin/repo/src/Lib.fs") @>
+    // The repo's own build output still is.
+    test <@ isExcludedPath root [] "/home/dev/bin/repo/src/bin/Debug/Lib.fs" @>
+    test <@ isExcludedPath root [] "/home/dev/bin/repo/src/obj/Lib.AssemblyInfo.fs" @>
