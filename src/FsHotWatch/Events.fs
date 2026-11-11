@@ -964,13 +964,15 @@ module internal EarnedEvidence =
             ->
             let baselineProjects = carriedCoverage currentModelGeneration currentInputs baseline
 
+            // Only a project that PASSED unfiltered ran every test. A red one is never
+            // covered (AUTOMATION-1581): a host that ends early, as xUnit v3 does under
+            // `--stop-on-fail on`, reports only the tests it reached.
             let wholeProjectCoverage =
                 completed.Results
                 |> Map.toSeq
                 |> Seq.choose (fun (project, result) ->
                     match completed.Outcome, result with
-                    | Normal, TestsPassed(_, false, _)
-                    | Normal, TestsFailed(_, false, _) -> Some project
+                    | Normal, TestsPassed(_, false, _) -> Some project
                     | _ -> None)
                 |> Set.ofSeq
                 |> Set.union baselineProjects

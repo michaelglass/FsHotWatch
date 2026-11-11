@@ -584,7 +584,6 @@ type internal DebtSettlementFacts =
       Completed: TestRunCompleted
       Launch: TestRunLaunch
       RunnableProjects: Set<string>
-      OutstandingFailures: OutstandingFailure list
       CurrentInputTree: string option
       CurrentModelGeneration: int64 option
       DebtDuringFullRun: Map<string, int64>
@@ -611,7 +610,6 @@ let internal settleDebt (facts: DebtSettlementFacts) : DebtSettlement =
     let completed = facts.Completed
     let launch = facts.Launch
     let runnableProjects = facts.RunnableProjects
-    let outstandingFailures = facts.OutstandingFailures
     let currentInputTree = facts.CurrentInputTree
     let currentModelGeneration = facts.CurrentModelGeneration
     let debtDuringFullRun = facts.DebtDuringFullRun
@@ -844,30 +842,29 @@ let internal settleDebt (facts: DebtSettlementFacts) : DebtSettlement =
 
     let debt = if recovers then { debt with UnknownDebt = [] } else debt
 
-    // The full-suite WATERMARK. Written when a full-suite
-    // run has ACCOUNTED for every configured project: passed, or red with
-    // the red recorded in the durable outstanding list. Not only for a
-    // green run — a red full suite still proves what every other test did,
-    // and its reds are quarantined until they pass — so the inner loop can
-    // resume impact filtering (plus quarantine) after one full run rather
-    // than running the whole suite until the last red is fixed. A project
-    // that produced no accountable outcome (deferred, errored) is neither,
-    // and `Ran FullSuite` is already false for it.
+    // The full-suite WATERMARK. Written only when a full-suite run PASSED
+    // every configured project unfiltered. A red project is never counted as
+    // covered (AUTOMATION-1581, ADR-021 as amended): a red run proves nothing
+    // about tests it did not report as passed. A host that ends early, as
+    // xUnit v3 does under `--stop-on-fail on`, exits like any other red and
+    // reports only the tests it reached, so "red with the red recorded" used
+    // to vouch for tests that never ran. A red full run leaves the earlier
+    // baseline, if any, standing: every test it skipped last ran in that one.
+    // A project that produced no accountable outcome (deferred, errored) has
+    // `Ran FullSuite` false already.
     //
     // The same `executedFullSuite` the unreadable-ledger discharge reads: two
     // readings of what a full-suite run is would let one recover a ledger
     // the other refused to baseline.
-    let accountedFor (proj: string) =
-        projectPassed proj
-        || outstandingFailures |> List.exists (fun f -> f.Project = proj)
-
+    //
     // A project this run reused passed here only if its reuse held at
     // completion: its key was re-computed over the tree as it is now and
     // still matched a full-project green earned at exactly those inputs
     // (AUTOMATION-1508). Every test of it ran at these inputs, so it counts
     // as executed. A reuse whose key moved reports a deferral, which is
-    // neither passed nor a recorded red, so that run earns nothing.
-    let earnsBaseline = executedFullSuite && runnableProjects |> Set.forall accountedFor
+    // not a pass, so that run earns nothing.
+    let earnsBaseline =
+        executedFullSuite && runnableProjects |> Set.forall projectPassed
 
     let debt =
         if earnsBaseline then

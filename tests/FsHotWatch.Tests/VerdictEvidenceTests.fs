@@ -91,7 +91,7 @@ let ``missing and errored outcomes remain refusal evidence`` () =
     Assert.NotEmpty((earn (Some 1L) (Some 1L) 0 None missing |> Option.get).FailureReasons)
 
 [<Fact>]
-let ``accountable red full suite can support filtered recovery without laundering remaining debt`` () =
+let ``a red full suite is no whole-project baseline: a filtered recovery refuses until a whole project passes`` () =
     let red =
         completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsFailed("one failed", false, TimeSpan.Zero) ])
         |> earn (Some 1L) (Some 1L) 1 None
@@ -104,10 +104,24 @@ let ``accountable red full suite can support filtered recovery without launderin
 
     // The red run is evidence of what it ran, and it refuses a green.
     Assert.NotEmpty red.FailureReasons
-    // Once the red re-ran and passed, nothing is owed: its whole-project run is a baseline.
-    Assert.Empty((earn (Some 1L) (Some 1L) 0 (Some red) rerun |> Option.get).FailureReasons)
-    // While the red is still owed, the same filtered green refuses.
-    Assert.NotEmpty((earn (Some 1L) (Some 1L) 1 (Some red) rerun |> Option.get).FailureReasons)
+    // A red project never counts as covered (AUTOMATION-1581): a host that stopped early
+    // reported only the tests it reached, so a filtered green still lacks a baseline.
+    let afterRed = earn (Some 1L) (Some 1L) 0 (Some red) rerun |> Option.get
+    Assert.Contains(afterRed.FailureReasons, fun reason -> reason.Contains "without a whole-project baseline")
+
+    // Positive control: coverage a green whole-project run earned is carried through a
+    // later red run, so the same filtered green is accepted once nothing is owed...
+    let green =
+        fullRun (Guid.NewGuid()) |> earn (Some 1L) (Some 1L) 0 None |> Option.get
+
+    let redAfterGreen =
+        completed (Guid.NewGuid()) (Map.ofList [ "Tests.fsproj", TestsFailed("one failed", false, TimeSpan.Zero) ])
+        |> earn (Some 1L) (Some 1L) 1 (Some green)
+        |> Option.get
+
+    Assert.Empty((earn (Some 1L) (Some 1L) 0 (Some redAfterGreen) rerun |> Option.get).FailureReasons)
+    // ...and refused while the red is still owed.
+    Assert.NotEmpty((earn (Some 1L) (Some 1L) 1 (Some redAfterGreen) rerun |> Option.get).FailureReasons)
 
 [<Theory>]
 [<InlineData("aborted", "run aborted")>]

@@ -213,7 +213,7 @@ type BaselineRef =
 /// VALUE, because each is a different fact with a different remedy.
 [<RequireQualifiedAccess>]
 type BaselineReading =
-    /// A full-suite run has accounted for every configured project on this ledger.
+    /// A full-suite run has passed every configured project on this ledger.
     | Valid of BaselineRef
     /// The daemon said there is none, and why — a cold repository, or `tests.projects`
     /// grew since. The daemon widens its next run to earn one.

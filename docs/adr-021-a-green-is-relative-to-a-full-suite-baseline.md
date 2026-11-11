@@ -1,6 +1,6 @@
 # ADR-021: A green is relative to a full-suite baseline, and the reds are durable
 
-Status: Accepted (2026-09-06)
+Status: Accepted (2026-09-06); decision 2 amended 2026-11-11 (AUTOMATION-1581, see "Amendment")
 
 Relates to: [ADR-013](adr-013-the-verdict-is-a-file-content-addressed-to-its-tree.md)
 (the verdict is a file, content-addressed to its tree). ADR-013 made a green a claim
@@ -42,9 +42,11 @@ Three mechanisms existed by the time this was addressed, and none closed it:
    unreadable; `confirm` earns the evidence instead of trusting it.
 
 2. **The daemon records the baseline durably** — `.fshw/test-prune/full-suite-baseline.json`:
-   the last run that executed every configured project unfiltered and left each one
-   ACCOUNTED FOR, meaning passed, or red with the red recorded. Not only a green run: a
-   red full suite proves what every other test did, and its reds are carried. Without a
+   the last run that executed every configured project unfiltered and PASSED each one.
+   *(Amended 2026-11-11: this used to read "left each one ACCOUNTED FOR, meaning passed,
+   or red with the red recorded"; a red project is no longer counted as covered. See
+   "Amendment".)* A red full suite leaves the earlier baseline standing, and its reds are
+   carried. Without a
    valid baseline every run is widened to the full suite, exactly as an unreadable ledger
    widens it, until one is earned; a configured project the baseline
    never executed makes it stale the same way.
@@ -71,7 +73,9 @@ validity, never by silence. That is why the third requirement ("the
 ledger owes work for skipped tests") is met without a per-test ledger: adding one would
 be a second accounting of the same debt.
 
-### Why the baseline is written for a red full suite too
+### Why the baseline was written for a red full suite too (superseded 2026-11-11)
+
+*Kept as the reasoning that was accepted; the "Amendment" below shows where it fails.*
 
 The original proposal asked for the last *known-green* full suite. That is sufficient but costly:
 a repository with one persistent red would run the whole suite on every check until
@@ -98,3 +102,67 @@ inner loop.
   cause in the large private downstream repository where the 17 reds sat (every test
   project is listed there), and is no longer
   silent anywhere.
+
+## Amendment (2026-11-11, AUTOMATION-1581): a red unfiltered project is never covered
+
+### The counterexample
+
+Decision 2 and "Why the baseline is written for a red full suite too" both assume a red full
+run executed every test, so that "a red full suite carries the same information about every
+test that passed". A host that ends early breaks that. xUnit v3 under `--stop-on-fail on`
+stops at the first failure, exits 2 (an ordinary failure, not a signal or a timeout), and
+writes a coherent CTRF report listing only the tests it reached. Take project P holding
+`A.a1`, `Z.z1` and `Z.z2`, with `A.a1` and `Z.z1` red. On a cold ledger:
+
+1. The widened full suite runs P whole, stops at `A.a1`, and reports `{tests:1, failed:1}`.
+   P's only red is recorded, so P was "accounted for" and the run earned the baseline.
+2. `A.a1` is fixed. The next `check` selects `A` only (the still-owed symbol and the
+   quarantined red both point there), it passes, and the outstanding list empties.
+3. `check` is green relative to a baseline in which `Z.z1` never ran, and it stays green.
+
+"A test the run skipped was last executed in the baseline run" is false for `Z.z1`: it
+was never executed, and it is not in the red list either. The same assumption sat in
+`EarnedEvidence.fromCompletion`, which counted the red project as whole-project coverage,
+so the evidence-gap widening did not fire either. `confirm` was not fooled: it runs every
+project whole, so once `A.a1` passes it reaches `Z.z1`.
+
+### The rule
+
+**A red unfiltered project is never counted as covered.** A red run proves nothing about
+tests it did not report as passed.
+
+- The baseline is written only by a full-suite run that PASSED every configured project
+  unfiltered (`CompletionStages.settleDebt`, `earnsBaseline`).
+- An unfiltered red project contributes no whole-project coverage to earned evidence
+  (`EarnedEvidence.fromCompletion`). Coverage that an earlier green whole-project run
+  earned under the same model is still carried.
+- A red full suite leaves the earlier baseline standing. Every test it skipped last ran in
+  that baseline's run, which is the claim this ADR needs. Its reds are carried and
+  quarantined as before.
+- This applies to every red, whatever ended it. A timeout, which used to earn the baseline
+  through its project-level red, earns none either.
+
+### Cost
+
+The cost is what the superseded section feared, but only where no baseline exists yet: a
+cold ledger, or `tests.projects` grown. There, every run stays the full suite until one
+passes every project. With a baseline already earned, a red full run changes nothing for
+selection. A red project with no green whole-project run under the current model stays in
+the evidence gap, and the next launch runs it whole until it passes. The cost measured on
+the downstream repository before this change shipped is recorded with the AUTOMATION-1581 fix.
+
+### Rejected
+
+- **Witness by test-method count**: count the project as covered when its report's rows
+  cover the index's test methods for it. Rejected. The count is not available where the
+  baseline is decided (`settleDebt` has neither the report nor the index). It is also
+  fragile in both directions:
+  - a theory's data rows can match the method count of a run that stopped early;
+  - unindexed tests (C#, generated or inherited code, tests added since the last index) can
+    make a short report look complete;
+  - explicit tests, static trait filters in a project's arguments, and `checkSkipClasses`
+    can make a complete report look short.
+- **Detect `--stop-on-fail`** and refuse only those runs. Rejected: the setting can come
+  from `xunit.runner.json`, a project's own arguments or a `testconfig.json`, none of which
+  fshw parses, and other ways of ending early (MTP `--maximum-failed-tests`, a host that
+  writes a partial report and exits non-zero) would remain.

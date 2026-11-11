@@ -149,9 +149,9 @@ let private baselineVouches (m: Mint) (project: string) =
     match m.Prior with
     | Some first when (mint first).IsSome && first.Completed.Outcome = Normal ->
         let ranWhole =
+            // Only a whole PASS: a red project ran an unknown share of its tests (AUTOMATION-1581).
             match Map.tryFind project first.Completed.Results with
-            | Some(TestsPassed(_, false, _))
-            | Some(TestsFailed(_, false, _)) -> true
+            | Some(TestsPassed(_, false, _)) -> true
             | _ -> false
 
         let sameInputs () =

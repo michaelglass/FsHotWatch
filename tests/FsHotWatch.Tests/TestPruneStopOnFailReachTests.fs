@@ -1,9 +1,10 @@
-/// AUTOMATION-1581 REACH: what a stop-on-fail red full run that earns a full-suite baseline
-/// lets through, and what still catches it.
+/// AUTOMATION-1581: a red unfiltered project is never counted as covered.
 ///
-/// THESE TESTS ENCODE TODAY'S BEHAVIOUR, INCLUDING THE DEFECT. They are an investigation,
-/// not a specification: the assertions marked `DEFECT` describe what happens now and are
-/// expected to flip when AUTOMATION-1581 is fixed.
+/// A red full run used to earn the full-suite baseline (and whole-project evidence) for a
+/// red project, on the premise that it ran every test. A host that ends early, as xUnit v3
+/// does under `--stop-on-fail on`, breaks that premise: its report lists only the tests it
+/// reached, so the baseline vouched for tests that never ran, and a later filtered `check`
+/// went green over a red test (ADR-021, as amended).
 ///
 /// The shape: one test project P holding `Ns.A.a1`, `Ns.B.b1`, `Ns.Z.z1` and `Ns.Z.z2`. Its
 /// host stops at the first failure, as xUnit v3 does under `--stop-on-fail on`, and writes
@@ -28,6 +29,9 @@ open FsHotWatch.TestPrune.OutstandingFailures
 open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.CompletionStages
+open FsHotWatch.TestPrune.FailureReports
+open FsHotWatch.TestPrune.TestReports
+open FsHotWatch.TestPrune.PluginState
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open FsHotWatch.Tests.TestHelpers
@@ -36,13 +40,6 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 // ---------------------------------------------------------------------------
 // The positive control, at `settleDebt` itself.
 // ---------------------------------------------------------------------------
-
-let private redA1: OutstandingFailure =
-    { Project = "P"
-      Class = Some "Ns.A"
-      Method = Some "a1"
-      File = "<tests/P>"
-      Entry = FsHotWatch.ErrorLedger.ErrorEntry.error "failed Ns.A.a1" }
 
 let private stubDebt: CompletionDebt =
     { CommitPending = commitPending
@@ -83,7 +80,6 @@ let ``control - settleDebt earns a full-suite baseline from a stop-on-fail red r
                 { fullSuiteLaunch [ "P" ] with
                     ModelGeneration = Some 1L }
               RunnableProjects = Set.ofList [ "P" ]
-              OutstandingFailures = [ redA1 ]
               CurrentInputTree = None
               CurrentModelGeneration = Some 1L
               DebtDuringFullRun = Map.empty
@@ -92,8 +88,65 @@ let ``control - settleDebt earns a full-suite baseline from a stop-on-fail red r
               Debt = stubDebt }
 
     test <@ settled.ExecutedFullSuite @>
-    // DEFECT (AUTOMATION-1581): expected false; a red that never reached Z.z1/Z.z2 is
-    // accounted for because one outstanding red names its project.
+    // A red that never reached Z.z1/Z.z2 is not accounted for, even though an outstanding
+    // red names its project.
+    test <@ not settled.EarnsBaseline @>
+    test <@ settled.Debt.Baseline = None @>
+
+let private settleWith (state: TestPruneState) (result: TestResult) =
+    let results = Map.ofList [ "P", result ]
+
+    let completed: TestRunCompleted =
+        { RunId = Guid.NewGuid()
+          TotalElapsed = TimeSpan.FromSeconds 1.0
+          Outcome = Normal
+          Results = results
+          Verification = RunVerification.ofResults results }
+
+    completed.RunId,
+    settleDebt
+        { State = state
+          Completed = completed
+          Launch =
+            { fullSuiteLaunch [ "P" ] with
+                ModelGeneration = Some 1L }
+          RunnableProjects = Set.ofList [ "P" ]
+          CurrentInputTree = None
+          CurrentModelGeneration = Some 1L
+          DebtDuringFullRun = Map.empty
+          OwedTo = fun _ -> Set.empty
+          NoUnrunnableCoverers = lazy true
+          Debt = stubDebt }
+
+[<Fact(Timeout = 10000)>]
+let ``settleDebt - a red full run keeps the earlier green baseline instead of replacing it`` () =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ testConfigNamed "P" ]) None None None None []
+
+    let earlier: FullSuiteBaseline.Baseline =
+        { RunId = Guid.NewGuid()
+          EarnedAt = DateTime.UtcNow.AddHours -1.0
+          Projects = Set.ofList [ "P" ] }
+
+    let state =
+        { handler.Init with
+            Debt =
+                { handler.Init.Debt with
+                    Baseline = Some earlier } }
+
+    let _, settled =
+        settleWith state (TestsFailed("failed Ns.A.a1 (1ms)", false, TimeSpan.FromSeconds 1.0))
+
+    test <@ settled.Debt.Baseline = Some earlier @>
+
+[<Fact(Timeout = 10000)>]
+let ``settleDebt - a green unfiltered full run still earns the baseline`` () =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ testConfigNamed "P" ]) None None None None []
+
+    let runId, settled =
+        settleWith handler.Init (TestsPassed("passed", false, TimeSpan.FromSeconds 1.0))
+
     test <@ settled.EarnsBaseline @>
     test <@ settled.Debt.Baseline |> Option.map _.RunId = Some runId @>
 
@@ -343,8 +396,8 @@ let private zRows (tmpDir: string) =
     executed tmpDir |> List.filter (fun t -> t.StartsWith "Ns.Z.")
 
 /// The cold first check: no baseline, `Lib.foo` queued (it breaks A.a1), and Z.z1 red
-/// for a reason no queued symbol names. The run is widened to the full suite, P's host
-/// stops at A.a1, and the run earns the baseline anyway.
+/// for a reason no queued symbol names. The run is widened to the full suite and P's host
+/// stops at A.a1. That run is red, so it earns no baseline.
 let private coldRedRun (tmpDir: string) (host: PluginHost) =
     test <@ (baselineOf tmpDir).IsNone @>
     let status = build host
@@ -360,259 +413,283 @@ let private coldRedRun (tmpDir: string) (host: PluginHost) =
     test <@ launches tmpDir = [ "classes=[]" ] @>
     test <@ executed tmpDir = [ "Ns.A.a1" ] @>
     test <@ outstanding tmpDir = [ Some "Ns.A", Some "a1" ] @>
-    // DEFECT: the baseline is earned by a run that never executed B.b1, Z.z1 or Z.z2.
-    test <@ (baselineOf tmpDir) |> Option.map _.Projects = Some(Set.ofList [ "P" ]) @>
+    test <@ (baselineOf tmpDir).IsNone @>
+
+let private isFailed (status: PluginStatus) =
+    match status with
+    | Failed _ -> true
+    | _ -> false
+
+let private isCompleted (status: PluginStatus) =
+    match status with
+    | Completed _ -> true
+    | _ -> false
+
+let private redScenario (tmpDir: string) =
+    PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+    setFailing tmpDir "Ns.A.a1" true
+    setFailing tmpDir "Ns.Z.z1" true
 
 // ---------------------------------------------------------------------------
-// Q1: is there a sequence in which Z is never selected again and `check` goes green?
+// `check` after a stop-on-fail red full run
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 60000)>]
-let ``Q1 YES - fixing only A.a1 after the stop-on-fail baseline gives a green check that never ran the red Z.z1`` () =
-    withRepo "reach-q1-fix-a" false (fun tmpDir dbPath ->
-        PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
-        setFailing tmpDir "Ns.A.a1" true
-        setFailing tmpDir "Ns.Z.z1" true
-
+let ``fixing only A.a1 after a stop-on-fail red run runs P whole again and reaches the red Z.z1`` () =
+    withRepo "reach-fix-a" false (fun tmpDir dbPath ->
+        redScenario tmpDir
         let host = session tmpDir dbPath
         coldRedRun tmpDir host
 
         // Fix A.a1 only. Z.z1 stays red.
         setFailing tmpDir "Ns.A.a1" false
-        File.WriteAllText(Path.Combine(tmpDir, "src", "Lib.fs"), "module Lib\nlet foo = 2\n")
-
         let status = build host
 
-        // The filtered run took exactly Ns.A: the still-owed Lib.foo selects it, and the
-        // quarantined red selects it. Neither reaches Z.
-        test <@ List.last (launches tmpDir) = "classes=[|Ns.A|]" @>
-        test <@ executed tmpDir = [ "Ns.A.a1"; "Ns.A.a1" ] @>
-        test <@ zRows tmpDir = [] @>
-        test <@ outstanding tmpDir = [] @>
-        test <@ PendingQueueHelpers.loadQueue tmpDir = Set.empty @>
-
-        test
-            <@
-                match status with
-                | Completed _ -> true
-                | _ -> false
-            @>
-
-        let report, outcome = grade host FsHotWatch.Cli.CheckVerdict.InnerLoop
-
-        // FALSE GREEN: `check` is Clean relative to the stop-on-fail run's baseline, and
-        // the graded run's evidence refuses nothing (the red run counted P as covered whole).
-        test <@ isClean outcome @>
-        test <@ gradedEvidenceRefusals report = Some [] @>
-        test <@ zRows tmpDir = [] @>)
-
-[<Fact(Timeout = 60000)>]
-let ``Q1 NO when Z calls the owed symbol - the uncommitted Lib.foo debt selects Ns.Z and the red Z.z1 runs`` () =
-    withRepo "reach-q1-debt" true (fun tmpDir dbPath ->
-        PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
-        setFailing tmpDir "Ns.A.a1" true
-        setFailing tmpDir "Ns.Z.z1" true
-
-        let host = session tmpDir dbPath
-        coldRedRun tmpDir host
-
-        setFailing tmpDir "Ns.A.a1" false
-        File.WriteAllText(Path.Combine(tmpDir, "src", "Lib.fs"), "module Lib\nlet foo = 2\n")
-
-        let status = build host
-
-        // Lib.foo stayed queued (P was red, so it could not commit) and now selects both
-        // classes that call it. Not P in full: B.b1 is still never run.
-        test <@ List.last (launches tmpDir) = "classes=[|Ns.A||Ns.Z|]" @>
+        // No baseline, so the run is the full suite again: P whole, and stop-on-fail now
+        // reaches Z.z1. Before AUTOMATION-1581 this run was `classes=[|Ns.A|]` and green.
+        test <@ List.last (launches tmpDir) = "classes=[]" @>
         test <@ zRows tmpDir = [ "Ns.Z.z1" ] @>
-
-        test
-            <@
-                match status with
-                | Failed _ -> true
-                | _ -> false
-            @>
-
+        test <@ isFailed status @>
         test <@ outstanding tmpDir = [ Some "Ns.Z", Some "z1" ] @>
+        test <@ (baselineOf tmpDir).IsNone @>
         let _, outcome = grade host FsHotWatch.Cli.CheckVerdict.InnerLoop
         test <@ not (isClean outcome) @>)
 
-/// The false green of the first Q1 test, reached in `host`.
-let private falseGreen (tmpDir: string) (host: PluginHost) =
-    PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
-    setFailing tmpDir "Ns.A.a1" true
-    setFailing tmpDir "Ns.Z.z1" true
-    coldRedRun tmpDir host
-    setFailing tmpDir "Ns.A.a1" false
-    File.WriteAllText(Path.Combine(tmpDir, "src", "Lib.fs"), "module Lib\nlet foo = 2\n")
-    build host |> ignore
-    let _, outcome = grade host FsHotWatch.Cli.CheckVerdict.InnerLoop
-    test <@ isClean outcome @>
-
 [<Fact(Timeout = 60000)>]
-let ``Q1 YES - in the same daemon a later check over the unchanged tree launches nothing and stays green, never running Z``
-    ()
-    =
-    withRepo "reach-q1-later" false (fun tmpDir dbPath ->
+let ``once every red is fixed, one green whole-project run earns the baseline and the next check launches nothing`` () =
+    withRepo "reach-recover" false (fun tmpDir dbPath ->
+        redScenario tmpDir
         let host = session tmpDir dbPath
-        falseGreen tmpDir host
+        coldRedRun tmpDir host
+        setFailing tmpDir "Ns.A.a1" false
+        build host |> ignore
 
-        // A rebuild with nothing changed launches nothing and stays green.
+        setFailing tmpDir "Ns.Z.z1" false
+        let status = build host
+
+        test <@ List.last (launches tmpDir) = "classes=[]" @>
+        test <@ isCompleted status @>
+        test <@ List.isEmpty (outstanding tmpDir) @>
+        test <@ (baselineOf tmpDir) |> Option.map _.Projects = Some(Set.ofList [ "P" ]) @>
+        let report, outcome = grade host FsHotWatch.Cli.CheckVerdict.InnerLoop
+        test <@ isClean outcome @>
+        test <@ gradedEvidenceRefusals report = Some [] @>
+
+        // Nothing changed: the next check launches nothing and stays green.
         let launchesBefore = launches tmpDir |> List.length
         build host |> ignore
         test <@ launches tmpDir |> List.length = launchesBefore @>
         let _, quiet = grade host FsHotWatch.Cli.CheckVerdict.InnerLoop
         test <@ isClean quiet @>
 
-        test <@ zRows tmpDir = [] @>)
-
-[<Fact(Timeout = 60000)>]
-let ``Q1 NO after a restart of a daemon whose model publishes no project identities - the evidence gap runs P whole and reaches Z.z1``
-    ()
-    =
-    withRepo "reach-q1-restart" false (fun tmpDir dbPath ->
-        let host = session tmpDir dbPath
-        falseGreen tmpDir host
-
-        PendingVerification.save tmpDir (Set.ofList [ "Lib.bar" ])
-        File.WriteAllText(Path.Combine(tmpDir, "src", "Bar.fs"), "module Bar\nlet bar = 1\n")
-
-        // A new daemon over the same repository: the baseline and the (empty) red ledger
-        // are read from disk, but no whole-project evidence is restored because this
-        // fixture model publishes no compile-input identities.
-        let host2 = session tmpDir dbPath
-        let status = build host2
-
-        test <@ List.last (launches tmpDir) = "classes=[]" @>
-        test <@ zRows tmpDir = [ "Ns.Z.z1" ] @>
-
+        // Every test of P ran green in the run the baseline names.
         test
-            <@
-                match status with
-                | Failed _ -> true
-                | _ -> false
-            @>)
+            <@ executed tmpDir |> List.rev |> List.take 4 |> List.rev = [ "Ns.A.a1"; "Ns.B.b1"; "Ns.Z.z1"; "Ns.Z.z2" ] @>)
+
+// ---------------------------------------------------------------------------
+// Whole-project evidence: a red unfiltered project is not covered
+// ---------------------------------------------------------------------------
+
+let private pInputs = Map.ofList [ "/repo/tests/P/P.fsproj", "identity-1" ]
+
+let private completionOf (result: TestResult) : TestRunCompleted =
+    let results = Map.ofList [ "P", result ]
+
+    { RunId = Guid.NewGuid()
+      TotalElapsed = TimeSpan.FromSeconds 1.0
+      Outcome = Normal
+      Results = results
+      Verification = RunVerification.ofResults results }
+
+let private evidenceOf (prior: EarnedEvidence option) (completed: TestRunCompleted) =
+    EarnedEvidence.fromCompletion
+        completed.RunId
+        (Some 1L)
+        (Some 1L)
+        (Some pInputs)
+        (Map.ofList [ "P", "/repo/tests/P/P.fsproj" ])
+        (Set.ofList [ "P" ])
+        0
+        prior
+        completed
+    |> Option.get
 
 [<Fact(Timeout = 10000)>]
-let ``Q1 restart with identities - the stop-on-fail red run's whole-project evidence is restored and leaves no evidence gap for P``
+let ``a red unfiltered project earns no whole-project evidence, so a restart restores none and P stays in the evidence gap``
     ()
     =
-    // A production daemon publishes each project's compile-input identity (its options:
-    // source list, defines, references, not file contents), records the whole-project
-    // coverage of its evidence with them, and restores it at startup. That coverage counts
-    // an unfiltered RED project (`EarnedEvidence.fromCompletion`), so a restart does not
-    // force P whole while P's options are unchanged.
-    let inputs = Map.ofList [ "/repo/tests/P/P.fsproj", "identity-1" ]
-
-    let results =
-        Map.ofList [ "P", TestsFailed("failed Ns.A.a1 (1ms)", false, TimeSpan.FromSeconds 1.0) ]
-
-    let runId = Guid.NewGuid()
-
-    let completed: TestRunCompleted =
-        { RunId = runId
-          TotalElapsed = TimeSpan.FromSeconds 1.0
-          Outcome = Normal
-          Results = results
-          Verification = RunVerification.ofResults results }
-
     let earned =
-        EarnedEvidence.fromCompletion
-            runId
-            (Some 1L)
-            (Some 1L)
-            (Some inputs)
-            (Map.ofList [ "P", "/repo/tests/P/P.fsproj" ])
-            (Set.ofList [ "P" ])
-            0
-            None
-            completed
-        |> Option.get
+        evidenceOf None (completionOf (TestsFailed("failed Ns.A.a1 (1ms)", false, TimeSpan.FromSeconds 1.0)))
 
-    // DEFECT (same class, second site): the red stop-on-fail project is whole-project coverage.
-    test <@ EarnedEvidence.carriedCoverage (Some 1L) (Some inputs) (Some earned) = Set.ofList [ "P" ] @>
-    test <@ List.isEmpty earned.FailureReasons |> not @>
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) (Some pInputs) (Some earned) = Set.empty @>
+    test <@ not (List.isEmpty earned.FailureReasons) @>
 
     let restored = EarnedEvidence.restored (EarnedEvidence.wholeProjectInputs earned)
-    test <@ restored.IsSome @>
+    test <@ restored.IsNone @>
 
-    // The restarted daemon (model generation 1 again, same identity): no gap, so the next
-    // launch is impact-filtered and Z is not forced.
-    test <@ EarnedEvidence.wholeProjectGap (Some 1L) (Some inputs) (Set.ofList [ "P" ]) restored = Set.empty @>
+    test
+        <@ EarnedEvidence.wholeProjectGap (Some 1L) (Some pInputs) (Set.ofList [ "P" ]) restored = Set.ofList [ "P" ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``a green unfiltered project is whole-project evidence, and a later red run keeps the coverage the green one earned``
+    ()
+    =
+    // Positive control, and the bound on the fix's cost: the coverage of a green whole
+    // run is carried through a later red run of the same model, so the red does not
+    // reopen the evidence gap that a whole-project run would be forced to close.
+    let green =
+        evidenceOf None (completionOf (TestsPassed("passed", false, TimeSpan.FromSeconds 1.0)))
+
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) (Some pInputs) (Some green) = Set.ofList [ "P" ] @>
+
+    let red =
+        evidenceOf (Some green) (completionOf (TestsFailed("failed Ns.A.a1 (1ms)", false, TimeSpan.FromSeconds 1.0)))
+
+    test <@ EarnedEvidence.carriedCoverage (Some 1L) (Some pInputs) (Some red) = Set.ofList [ "P" ] @>
 
 // ---------------------------------------------------------------------------
-// Q2: does `confirm` report green from the earned baseline without running Z?
+// `confirm`
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 60000)>]
-let ``Q2 NO - confirm on the falsely green tree refuses the filtered scope, runs P whole and reaches the red Z.z1`` () =
-    withRepo "reach-q2" false (fun tmpDir dbPath ->
-        PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
-        setFailing tmpDir "Ns.A.a1" true
-        setFailing tmpDir "Ns.Z.z1" true
-
+let ``confirm after fixing only A.a1 runs P whole and reaches the red Z.z1`` () =
+    withRepo "reach-confirm" false (fun tmpDir dbPath ->
+        redScenario tmpDir
         let host = session tmpDir dbPath
         coldRedRun tmpDir host
-
         setFailing tmpDir "Ns.A.a1" false
-        File.WriteAllText(Path.Combine(tmpDir, "src", "Lib.fs"), "module Lib\nlet foo = 2\n")
-        build host |> ignore
 
-        let _, checkOutcome = grade host FsHotWatch.Cli.CheckVerdict.InnerLoop
-        test <@ isClean checkOutcome @>
-
-        // `confirm` reads the same state: the graded run is the filtered one, so the
-        // scope is not FullSuite and `confirm` must launch a run (`confirmNeedsFullRun`).
-        let report, confirmOutcome = grade host FsHotWatch.Cli.CheckVerdict.Confirmation
-
-        test
-            <@
-                match confirmOutcome with
-                | FsHotWatch.Cli.CheckVerdict.CheckOutcome.UnearnedScope _ -> true
-                | _ -> false
-            @>
-
-        test
-            <@ FsHotWatch.Cli.CheckVerdict.confirmNeedsFullRun FsHotWatch.Cli.CheckVerdict.Confirmation report.Scope @>
-
-        // The run it launches is P whole; with A.a1 fixed, stop-on-fail now reaches Z.z1.
         let status = confirmRun host
         test <@ List.last (launches tmpDir) = "classes=[]" @>
         test <@ zRows tmpDir = [ "Ns.Z.z1" ] @>
-
-        test
-            <@
-                match status with
-                | Failed _ -> true
-                | _ -> false
-            @>
-
+        test <@ isFailed status @>
         let _, afterConfirm = grade host FsHotWatch.Cli.CheckVerdict.Confirmation
         test <@ not (isClean afterConfirm) @>)
 
 [<Fact(Timeout = 60000)>]
-let ``Q2 corollary - a confirm while A.a1 is still red stops at A again, is red, and re-earns the baseline without Z``
-    ()
-    =
-    withRepo "reach-q2-red" false (fun tmpDir dbPath ->
-        PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
-        setFailing tmpDir "Ns.A.a1" true
-        setFailing tmpDir "Ns.Z.z1" true
-
+let ``a red confirm's stop-on-fail run writes no baseline`` () =
+    withRepo "reach-confirm-red" false (fun tmpDir dbPath ->
+        redScenario tmpDir
         let host = session tmpDir dbPath
         coldRedRun tmpDir host
-        let firstBaseline = baselineOf tmpDir |> Option.map _.RunId
 
         let status = confirmRun host
+        test <@ isFailed status @>
+        test <@ List.isEmpty (zRows tmpDir) @>
+        test <@ (baselineOf tmpDir).IsNone @>)
 
-        test
-            <@
-                match status with
-                | Failed _ -> true
-                | _ -> false
-            @>
+// ---------------------------------------------------------------------------
+// Exposure routes: other ways a red full run can end before every test ran.
+// ---------------------------------------------------------------------------
 
-        test <@ zRows tmpDir = [] @>
-        // DEFECT: the confirm's own stop-on-fail run is a new baseline too.
-        test <@ baselineOf tmpDir |> Option.map _.RunId <> firstBaseline @>
-        test <@ (baselineOf tmpDir).IsSome @>)
+let private shortRedReport =
+    """{"results":{"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Ns.A.a1","status":"failed","duration":1,"suite":["h1","h2","Ns.A","a1"]}]}}"""
+
+let private classify (evidence: ReportEvidence) (outcome: FsHotWatch.ProcessHelper.ProcessOutcome) =
+    classifyTestOutcome evidence false (TimeSpan.FromSeconds 1.0) outcome
+
+let private settleOne (result: TestResult) =
+    let handler =
+        create ":memory:" (isolatedRoot ()) (Some [ testConfigNamed "P" ]) None None None None []
+
+    settleWith handler.Init result |> snd
+
+[<Fact(Timeout = 10000)>]
+let ``exposure (b) - a host that exits non-zero after writing a short coherent report lands on the ordinary red arm and now earns no baseline``
+    ()
+    =
+    let result =
+        classify
+            (ReportRequested(FsHotWatch.Ctrf.tryVerdictReport shortRedReport))
+            (FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+                1,
+                FsHotWatch.ProcessHelper.ProcessOutput.Drained "failed Ns.A.a1 (1ms)"
+            ))
+
+    test
+        <@
+            match result with
+            | TestsFailed(_, false, _) -> true
+            | _ -> false
+        @>
+
+    let settled = settleOne result
+    test <@ settled.ExecutedFullSuite @>
+    test <@ not settled.EarnsBaseline @>
+
+[<Fact(Timeout = 10000)>]
+let ``exposure (b) - a host that exits non-zero with no usable report is errored, not a full suite`` () =
+    let result =
+        classify
+            (ReportRequested(Error "no report was written"))
+            (FsHotWatch.ProcessHelper.ProcessOutcome.Failed(1, FsHotWatch.ProcessHelper.ProcessOutput.Drained "crash"))
+
+    test
+        <@
+            match result with
+            | TestsErrored _ -> true
+            | _ -> false
+        @>
+
+    let settled = settleOne result
+    test <@ not settled.ExecutedFullSuite @>
+    test <@ not settled.EarnsBaseline @>
+
+[<Fact(Timeout = 10000)>]
+let ``exposure (c) - a timed-out unfiltered run files only a project-level red and now earns no baseline`` () =
+    let result =
+        classify
+            (ReportRequested(FsHotWatch.Ctrf.tryVerdictReport shortRedReport))
+            (FsHotWatch.ProcessHelper.ProcessOutcome.TimedOut(
+                TimeSpan.FromSeconds 30.0,
+                FsHotWatch.ProcessHelper.ProcessOutput.Drained "failed Ns.A.a1 (1ms)",
+                FsHotWatch.ProcessHelper.KillOutcome.Killed
+            ))
+
+    test
+        <@
+            match result with
+            | TestsTimedOut(_, _, false, _) -> true
+            | _ -> false
+        @>
+
+    // A timeout's reds are never class-level, so quarantine re-runs P whole and only a
+    // green whole run clears it: not a route to the false green even before the fix.
+    let reds =
+        failuresOf
+            (fun _ -> FsHotWatch.RunLog.Ref.Unavailable "test")
+            (fun _ -> ReportedFailures.none)
+            Map.empty
+            { Results = Map.ofList [ "P", result ]
+              Elapsed = TimeSpan.Zero }
+
+    test
+        <@
+            not reds.IsEmpty
+            && reds |> List.forall (fun f -> f.Class.IsNone && f.Method.IsNone)
+        @>
+
+    let settled = settleOne result
+    test <@ settled.ExecutedFullSuite @>
+    test <@ not settled.EarnsBaseline @>
+
+[<Fact(Timeout = 10000)>]
+let ``exposure (d) - a host killed by a signal is errored whatever report it flushed, so it is never a full suite`` () =
+    let result =
+        classify
+            (ReportRequested(FsHotWatch.Ctrf.tryVerdictReport shortRedReport))
+            (FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+                137,
+                FsHotWatch.ProcessHelper.ProcessOutput.Drained "failed Ns.A.a1 (1ms)"
+            ))
+
+    test
+        <@
+            match result with
+            | TestsErrored _ -> true
+            | _ -> false
+        @>
+
+    let settled = settleOne result
+    test <@ not settled.ExecutedFullSuite @>
+    test <@ not settled.EarnsBaseline @>

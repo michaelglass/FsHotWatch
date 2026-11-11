@@ -640,8 +640,8 @@ let ``a daemon that starts over an unfinished debt record names that record as t
 let private publicationMarker (root: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root root, "test-prune", "owner-publication-pending")
 
-/// A full suite of both projects in which ProjA failed: accountable, so it earns a baseline,
-/// and red, so it discharges no unknown debt.
+/// A full suite of both projects in which ProjA failed: red, so it earns no baseline
+/// (AUTOMATION-1581) and discharges no unknown debt.
 let private finishedRedFullSuite () =
     let launch =
         { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
@@ -675,7 +675,7 @@ let private redSessionOver (f: Fixture) =
         withLogLines (fun () -> update session session.Handler.Init (finishedRedFullSuite ()))
 
     test <@ red.Debt.RecoveryOutstanding @>
-    test <@ red.Debt.Baseline.IsSome @>
+    test <@ red.Debt.Baseline.IsNone @>
     publish session session.Handler.Init red
     lines
 
@@ -712,7 +712,7 @@ let ``a red session over an unfinished publication says the debt is still unreco
     test <@ causes.Head.Contains "no full suite has passed" @>
 
 [<Fact(Timeout = 30000)>]
-let ``a baseline that is not written while debt is unknown is not logged as recorded`` () =
+let ``a red session over unknown debt neither writes nor logs a baseline`` () =
     let f = fixture ()
     let marker = publicationMarker f.Ctx.RepoRoot
     Directory.CreateDirectory(Path.GetDirectoryName marker) |> ignore
@@ -727,8 +727,6 @@ let ``a baseline that is not written while debt is unknown is not logged as reco
             lines
             |> List.forall (fun line -> not (line.Contains "Full-suite baseline recorded"))
         @>
-
-    test <@ lines |> List.exists (fun line -> line.Contains "not written") @>
 
 // ---------------------------------------------------------------------------
 // Runtime coverage that did not ingest is ITS project's debt (AUTOMATION-1320). One

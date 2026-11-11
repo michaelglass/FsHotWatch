@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix: a red unfiltered project is never counted as covered (AUTOMATION-1581). A red full-suite run earned the full-suite
+  baseline when every red project had a recorded red, so a run that ended early (xUnit v3 `--stop-on-fail on` exits 2, an
+  ordinary failure, and reports only the tests before the stop) vouched for tests it never ran, and a later impact-filtered
+  `check` could go green while one of them was red. Only a full-suite run that passes every configured project unfiltered
+  earns the baseline now; a red one leaves the earlier baseline standing, and with none, the next runs stay the full suite
+  until one passes. `confirm` was not affected. Exposure: on xUnit v3 4.0.0 the only confirmed route is `--stop-on-fail on`
+  (measured: exit 2, one row). A throwing class fixture or constructor is not a route (it still reports every test, failed),
+  nor is a crashed, timed-out or killed host (`Environment.Exit` writes no report; a fail-fast or crash dies by signal; a
+  timeout files only a project-level red, which only a green whole-project run clears). intelligence configures no
+  stop-on-fail, so it had no confirmed exposure. Outside xUnit v3, a runner fshw asks for no report (exit code only) that
+  ends early also qualified.
+  A timeout used to earn the baseline too, harmlessly; it no longer does. The "baseline earned but not written" log line
+  is gone: a run that earns a baseline now always discharges unknown debt. `DebtSettlementFacts` no longer carries `OutstandingFailures`.
+
 - fix: a red whole-project run no longer clears earlier reds for tests it never reached (AUTOMATION-1569). A red unfiltered run
   counted as covering its whole project, so a stop-on-fail run (xUnit v3 `--stop-on-fail on` exits 2, an ordinary failure, and its
   report lists only the tests before the stop) retired every earlier red in the project. Such a run now clears an earlier red only

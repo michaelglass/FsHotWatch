@@ -129,7 +129,7 @@ let internal restorePersisted (repoRoot: string) : RestoredState =
             [], Some reason
 
     /// The full-suite watermark this ledger's impact-filtered greens are
-    /// relative to. `None` until a full-suite run has accounted for every configured
+    /// relative to. `None` until a full-suite run has passed every configured
     /// project; an unreadable file is the same recovery, said out loud.
     let loadedBaseline =
         match FullSuiteBaseline.load repoRoot with

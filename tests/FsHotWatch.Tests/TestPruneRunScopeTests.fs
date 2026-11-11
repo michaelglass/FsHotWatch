@@ -3679,16 +3679,21 @@ let private foldAndPublish (handler: PluginHandler<TestPruneState, TestPruneMsg>
 [<InlineData("same-session")>]
 [<InlineData("restart")>]
 [<InlineData("quiet")>]
-let ``a red full-suite baseline cannot lend a green to a filtered run that never re-ran the red`` (sequence: string) =
+let ``after a red full suite, the baseline cannot lend a green to a filtered run that never re-ran the red``
+    (sequence: string)
+    =
     withReceiptSource (fun repoRoot _ ->
         let configs = Some [ projConfig "ProjA"; projConfig "ProjB" ]
+        // A red full suite earns no baseline (AUTOMATION-1581); the one a filtered green
+        // would be graded against is an earlier green suite's, which the red leaves standing.
+        seedBaseline repoRoot [ "ProjA"; "ProjB" ]
 
         let make () =
             create ":memory:" repoRoot configs None None None None []
 
         let handler = make ()
 
-        // A full suite that FAILED ProjA: accountable, so it records a baseline.
+        // A full suite that FAILED ProjA.
         let redFullSuite =
             testsFinishedEvent
                 [ "ProjA", failedProjA; "ProjB", passed false ]
@@ -3709,8 +3714,7 @@ let ``a red full-suite baseline cannot lend a green to a filtered run that never
         let ctx, statuses, ledger = makeTestPruneRecordingCtx ()
         let afterRed = foldAndPublish handler ctx handler.Init redFullSuite
 
-        // Positive control: the red run really did earn the baseline a filtered green
-        // would be graded relative to.
+        // Positive control: a baseline a filtered green would be graded relative to stands.
         test <@ afterRed.Debt.Baseline.IsSome @>
 
         let gradedHandler, final =
@@ -3731,7 +3735,7 @@ let ``a red full-suite baseline cannot lend a green to a filtered run that never
 
             match report.Baseline with
             | FsHotWatch.Cli.IpcParsing.BaselineReading.Valid _ -> ()
-            | other -> Assert.Fail($"positive control: the red run must be the served baseline, got %A{other}")
+            | other -> Assert.Fail($"positive control: the earlier baseline must still be served, got %A{other}")
 
             // The quiet drain is the retained-receipt case: the receipt of the red run is
             // kept (it records what ran), and the outstanding red must still deny a green.

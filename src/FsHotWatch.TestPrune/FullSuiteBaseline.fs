@@ -15,9 +15,11 @@
 ///
 /// A skipped test is therefore discharged by ONE of: it passed in this run and nothing it
 /// covers has changed since; or it is queued/quarantined and will run. Never by silence.
-/// That is why the watermark is written for a full-suite run whose every project is
-/// accounted for — passed, or red and recorded — and not only for a green one: a red
-/// full suite still proves what every OTHER test did, and its reds are carried.
+/// The watermark is written only for a full-suite run that PASSED every project. A red
+/// project is never counted as covered (AUTOMATION-1581, ADR-021 as amended): a host that
+/// ends early, as xUnit v3 does under `--stop-on-fail on`, reports only the tests it
+/// reached, so a red full suite proves nothing about the rest. It leaves the earlier
+/// watermark standing, and its reds are carried.
 ///
 /// Staleness the watermark can DETECT is the configured project set growing: a project
 /// added to `tests.projects` since has never been in a full-suite run, so the watermark

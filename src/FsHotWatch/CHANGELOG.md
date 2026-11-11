@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `EarnedEvidence.fromCompletion` no longer counts an unfiltered RED project as whole-project coverage (AUTOMATION-1581).
+  A run that ends early reports only the tests it reached, so such a project now stays in the evidence gap, and the next
+  launch runs it whole until it passes. Coverage a green whole-project run already earned is still carried through.
+  Exposure: on xUnit v3 4.0.0 the only confirmed route is `--stop-on-fail on`; a throwing class fixture and a crashed,
+  timed-out or killed host are not routes. intelligence configures no stop-on-fail, so it had no confirmed exposure.
+
 - fix: an outcome record the store cannot READ makes its key a miss, and stays where it is (AUTOMATION-1568). It was
   quarantined and the key answered from the rest, so an unreadable newest fail returned the older pass, permanently once moved.
   A record that reads back torn, mis-keyed or of an unknown schema is still quarantined. GC finds no readable record
