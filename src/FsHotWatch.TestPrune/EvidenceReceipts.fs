@@ -209,6 +209,46 @@ module internal SymbolFreeEdit =
                   Fanout = SeedFanoutReading.ofSelection 0 MaxSeedsToAttribute tests.Length seeds aloneCount
                   RestoredProjects = restored }
 
+    /// The paths that moved between `evidence` and `current` which no symbol selection
+    /// answers for: anything but an F# source file the model compiles (a fixture, a
+    /// content file, a config). A symbol edit's selection covers the symbols the diff
+    /// saw; a path like these changes what tests read without changing a symbol, so a
+    /// run of that selection alone cannot speak for the tree they moved in.
+    ///
+    /// Empty when either tree is not held: nothing can be named, and this rule adds no
+    /// widening it cannot justify. An F# input (`.fs`, `.fsi`, `.fsx`) is answered when the model
+    /// compiles it or the impact index holds symbols for it (a script no project compiles is
+    /// still analysed); with no model publishing its files, every F# input is. A removed F#
+    /// input is always answered, since the current model cannot say whether it compiled it.
+    let movedBesideSymbols
+        (evidence: ReceiptTree option)
+        (current: ReceiptTree option)
+        (compiled: (string -> bool) option)
+        (indexed: string -> bool)
+        : string list =
+        match evidence, current with
+        | Some before, Some after ->
+            let delta = ReceiptInputTree.delta before.Entries after.Entries
+
+            // An F# input (`.fs`, `.fsi`, `.fsx`) the symbol diff runs over: one the model
+            // compiles, or one the impact index holds symbols for (a script no project
+            // compiles is still analysed). With no model, any F# input counts.
+            let isFSharpInput (rel: string) =
+                match (Path.GetExtension rel).ToLowerInvariant() with
+                | ".fs"
+                | ".fsi"
+                | ".fsx" -> true
+                | _ -> false
+
+            let answered (rel: string) =
+                isFSharpInput rel
+                && (indexed rel || compiled |> Option.forall (fun isCompiled -> isCompiled rel))
+
+            (delta.Changed @ delta.Added |> List.filter (answered >> not))
+            @ (delta.Removed |> List.filter (isFSharpInput >> not))
+            |> List.sort
+        | _ -> []
+
     /// Decide the narrowing for a launch whose evidence is bound to `evidence` and whose
     /// tree is now `current`. `sealedTree` is the tree the last `BatchChecked` folded
     /// its check results over; `compiled` says whether the current model compiles a

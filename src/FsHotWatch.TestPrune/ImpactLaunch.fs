@@ -468,15 +468,23 @@ let internal selectForLaunch
 
     let inputTree = ReceiptInputTree.readTree repoRoot
 
+    // The tree moved since the evidence was earned.
+    let unverified =
+        not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
+
+    // Whether the current model compiles a repo-relative path; `None` when no model
+    // publishes the files it compiles.
+    let compiledFiles () =
+        ctx.ProjectGraph.ObserveCheckableFiles()
+        |> Option.map (fun (_, files) ->
+            fun (rel: string) -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel))))
+
     // Nothing is owed and nothing was selected, but the tree moved since the
     // evidence was earned, by an edit the symbol diff saw as changing no
     // symbol. Running every project in full is what a non-source edit costs;
     // an edit confined to compiled F# source files costs the classes covering
     // their symbols (`SymbolFreeEdit`). `None` when this is not that launch.
     let symbolFreeEdit =
-        let unverified =
-            not (ReceiptInputTree.matches inputs.EvidenceTree (inputTree |> Option.map _.Identity))
-
         let nothingSelected =
             totalClasses = 0
             && Set.isEmpty forceRunProjects
@@ -490,10 +498,7 @@ let internal selectForLaunch
             && nothingOwed inputs.Debt
             && nothingSelected
         then
-            let compiled =
-                ctx.ProjectGraph.ObserveCheckableFiles()
-                |> Option.map (fun (_, files) ->
-                    fun (rel: string) -> files.Contains(AbsFilePath.create (Path.Combine(repoRoot, rel))))
+            let compiled = compiledFiles ()
 
             let index: SymbolFreeEdit.Index =
                 { SymbolsIn = fun rel -> db.GetSymbolsInFile rel |> List.map _.FullName |> List.distinct
@@ -539,6 +544,37 @@ let internal selectForLaunch
             classes, Some seeds
         | Some(SymbolFreeEdit.Refused _)
         | None -> affectedByProject, None
+
+    // A NON-SYMBOL EDIT BESIDE A SELECTION. The narrowing above reads the tree delta
+    // only when nothing was selected. When a symbol edit (or a prior red) selected
+    // classes, a fixture, content file or config that moved with it was answered by
+    // nobody: the run executed the symbol's classes, and the evidence it earned spoke
+    // for the whole new tree, including the tests that read what moved. Such a move
+    // costs what it costs alone, every project in full.
+    let affectedByProject =
+        let moved =
+            if
+                Option.isNone symbolFreeEdit
+                && unverified
+                && hasCachedResults
+                && not scopeIsFullSuite
+            then
+                SymbolFreeEdit.movedBesideSymbols
+                    inputs.EvidenceManifest
+                    inputTree
+                    (compiledFiles ())
+                    (db.GetSymbolsInFile >> List.isEmpty >> not)
+            else
+                []
+
+        match moved with
+        | [] -> affectedByProject
+        | moved ->
+            Logging.info
+                "test-prune"
+                $"The tree also moved by %d{List.length moved} path(s) no symbol selection answers for (%s{describeAll moved}); running every project in full"
+
+            fullSuiteProjects configs |> Seq.map (fun project -> project, []) |> Map.ofSeq
 
     // ALWAYS-CLASSES. Every filtered launch carries each project's declared
     // `alwaysClasses`: tests that read the source tree as data, which no
