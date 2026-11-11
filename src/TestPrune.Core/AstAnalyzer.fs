@@ -2324,6 +2324,15 @@ let private catalogEntities (allUses: FSharpSymbolUse list) : EntityCatalog =
       CollectionMemberships = collectionMemberships
       EntityAttributes = entityAttributes }
 
+/// True when `mfv` is declared on an abstract class, which xUnit never instantiates.
+let private declaredOnAbstractClass (mfv: FSharpMemberOrFunctionOrValue) : bool =
+    try
+        match mfv.DeclaringEntity with
+        | Some entity -> not entity.IsFSharpModule && entity.IsAbstractClass
+        | None -> false
+    with _ ->
+        false
+
 /// What the member definitions of a file declare, in declaration order: test methods,
 /// member attributes (with the synthetic inline marker), member -> declaring-type
 /// containment links, and test-method -> fixture edges.
@@ -2367,7 +2376,10 @@ let private memberFacts
                 with _ ->
                     ()
 
-                if isTestAttribute mfv then
+                // A test on an abstract class never runs under that class's name: xUnit
+                // runs it under each concrete class that inherits it, which index it
+                // themselves (`inheritedTestFacts`). The base's fixture edges below stay.
+                if isTestAttribute mfv && not (declaredOnAbstractClass mfv) then
                     // `mfv.FullName` can throw on un-nameable symbols — see `tryName`.
                     try
                         let fallbackClass, testMethod = extractTestClass mfv.FullName
@@ -2393,6 +2405,7 @@ let private memberFacts
                     | SymbolTraversalBudgetExceededException _ -> reraise ()
                     | _ -> ()
 
+                if isTestAttribute mfv then
                     // Direct edges from the test method to every fixture its
                     // declaring class exposes (ctor-param types + IClassFixture /
                     // ICollectionFixture interface args), plus to the synthetic
@@ -2442,6 +2455,137 @@ let private memberFacts
       Attributes = List.rev attributes
       ParentLinks = List.rev parentLinks
       FixtureEdges = List.rev fixtureEdges |> List.distinct }
+
+/// The tests a file's concrete classes inherit, indexed under those classes.
+type private InheritedTestFacts =
+    { TestMethods: TestMethodInfo list
+      Symbols: SymbolInfo list
+      Edges: Dependency list
+      Attributes: SymbolAttribute list }
+
+/// The base classes of `entity`, nearest first, up to (not including) `System.Object`.
+let private baseClassesOf (entity: FSharpEntity) : FSharpEntity list =
+    let rec walk depth (current: FSharpEntity) acc =
+        let next =
+            if depth >= MaxSymbolTraversalDepth then
+                None
+            else
+                try
+                    match current.BaseType with
+                    | Some t when t.HasTypeDefinition ->
+                        let b = t.TypeDefinition
+
+                        if b.IsFSharpModule || tryName (fun () -> b.FullName) = Some "System.Object" then
+                            None
+                        else
+                            Some b
+                    | _ -> None
+                with _ ->
+                    None
+
+        match next with
+        | Some b -> walk (depth + 1) b (b :: acc)
+        | None -> List.rev acc
+
+    walk 0 entity []
+
+/// xUnit runs a test declared on a base class under every concrete class that inherits
+/// it, and names it by that class: `Ns.PgTests.roundtrips`, so `--filter-class Ns.PgTests`
+/// runs it and `--filter-class Ns.ContractTests` runs nothing when the base is abstract
+/// (AUTOMATION-1569, measured against xUnit v3 4.0.0). So each concrete class defined in
+/// this file indexes every test it inherits, under its own class name.
+///
+/// `test_methods` is keyed by symbol, and one base method can be inherited by many
+/// classes, so each (class, test) pair gets a synthetic symbol, `<Derived>.<test>`, with
+/// edges to the base test (a change to its body, or to anything it calls, reaches every
+/// class running it) and to the derived class (a change to its constructor arguments
+/// does too). The derived file is where the inheritance is visible, including a base
+/// declared in an earlier file or another assembly. A member the derived class declares
+/// under the same name is its own and is not synthesized.
+let private inheritedTestFacts
+    (allUses: FSharpSymbolUse list)
+    (sourceFileName: string)
+    (projectName: string)
+    (testClassForEntity: string -> FSharpEntity -> string)
+    (collectFixtureTypes: FSharpEntity -> string list)
+    (collectionMemberships: Map<string, string list>)
+    : InheritedTestFacts =
+    let mutable testMethods = []
+    let mutable symbols = []
+    let mutable edges = []
+    let mutable attributes = []
+    let mutable seen = Set.empty
+
+    for u in allUses do
+        match u.Symbol with
+        | :? FSharpEntity as derived when u.IsFromDefinition ->
+            try
+                if derived.IsClass && not derived.IsAbstractClass && not derived.IsFSharpModule then
+                    let derivedName = entityName derived
+
+                    let ownNames =
+                        derived.MembersFunctionsAndValues |> Seq.map _.LogicalName |> Set.ofSeq
+
+                    let inherited =
+                        baseClassesOf derived
+                        |> List.collect (fun b ->
+                            b.MembersFunctionsAndValues |> Seq.filter isTestAttribute |> List.ofSeq)
+                        |> List.filter (fun m -> not (ownNames.Contains m.LogicalName))
+                        |> List.distinctBy _.LogicalName
+
+                    for baseTest in inherited do
+                        let baseName = memberName baseTest
+                        let _, testMethod = extractTestClass baseTest.FullName
+                        let synthName = derivedName + "." + lastNameSegment baseName
+
+                        if not (seen.Contains synthName) then
+                            seen <- seen.Add synthName
+
+                            testMethods <-
+                                { SymbolFullName = synthName
+                                  TestProject = projectName
+                                  TestClass = testClassForEntity derivedName derived
+                                  TestMethod = testMethod }
+                                :: testMethods
+
+                            symbols <-
+                                { FullName = synthName
+                                  Kind = Function
+                                  Location = InSource(sourceFileName, 0, 0, "") }
+                                :: symbols
+
+                            edges <-
+                                coreEdge Calls synthName baseName
+                                :: coreEdge UsesType synthName derivedName
+                                :: edges
+
+                            for fixtureFullName in collectFixtureTypes derived do
+                                edges <- coreEdge UsesType synthName fixtureFullName :: edges
+
+                            for name in collectionMemberships |> Map.tryFind derivedName |> Option.defaultValue [] do
+                                edges <- coreEdge UsesType synthName (SyntheticCollectionPrefix + name) :: edges
+
+                            // The base test's attributes, so an attribute-driven reader
+                            // (a skip, a declared data file) sees the class that runs it.
+                            for attr in baseTest.Attributes do
+                                try
+                                    attributes <-
+                                        { SymbolFullName = synthName
+                                          AttributeName = attr.AttributeType.DisplayName
+                                          ArgsJson = serializeAttributeArgs attr }
+                                        :: attributes
+                                with _ ->
+                                    ()
+            with
+            | SymbolTraversalDepthExceededException _ -> reraise ()
+            | SymbolTraversalBudgetExceededException _ -> reraise ()
+            | _ -> ()
+        | _ -> ()
+
+    { TestMethods = List.rev testMethods
+      Symbols = List.rev symbols
+      Edges = List.rev edges
+      Attributes = List.rev attributes }
 
 /// Every definition in a file with the text its content hash covers, and the subset
 /// that is tracked (module-level bindings, type members, types, modules, cases and
@@ -2706,8 +2850,20 @@ let private extractResults
             let members =
                 memberFacts allUses projectName testClassForEntity collectFixtureTypes collectionMemberships
 
-            let testMethods = members.TestMethods
-            let attributes = members.Attributes @ (List.rev entityAttributes)
+            let inherited =
+                inheritedTestFacts
+                    allUses
+                    sourceFileName
+                    projectName
+                    testClassForEntity
+                    collectFixtureTypes
+                    collectionMemberships
+
+            let testMethods = members.TestMethods @ inherited.TestMethods
+
+            let attributes =
+                members.Attributes @ (List.rev entityAttributes) @ inherited.Attributes
+
             let parentLinks = members.ParentLinks
             let fixtureEdges = members.FixtureEdges
 
@@ -2725,9 +2881,14 @@ let private extractResults
             // the primary dependency list.
             // Downstream consumers (DB INSERT OR IGNORE, InMemoryStore's Map.ofList) dedupe.
             let dependencies =
-                dependencies @ fixtureEdges @ collectionSynthEdges @ literalSynthEdges
+                dependencies
+                @ fixtureEdges
+                @ collectionSynthEdges
+                @ literalSynthEdges
+                @ inherited.Edges
 
-            let symbols = symbols @ collectionSynthSymbols @ literalSynthSymbols
+            let symbols =
+                symbols @ collectionSynthSymbols @ literalSynthSymbols @ inherited.Symbols
 
             let externSymbols = externPlaceholders symbols dependencies classifiedTargetKinds
 

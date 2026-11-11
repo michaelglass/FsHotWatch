@@ -468,6 +468,11 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 ///          `json loads`` `), and a class name holding a CLR-reserved character (`,` `+` `&`
 ///          `*` `[` `]` `\`) was stored unescaped, so its `--filter-class` ran no test. A
 ///          file not re-indexed would keep those names (AUTOMATION-1496).
+/// v26    — no schema text change; a REBUILD, because stored test identities changed. A test
+///          declared on an abstract base class was stored under the base class, which xUnit
+///          never runs, so its `--filter-class` ran no test; it is now stored once per
+///          concrete class that inherits it. A file not re-indexed would keep the base row
+///          and lack the derived ones (AUTOMATION-1569).
 ///
 /// A `SchemaVersion` bump rebuilds the tables core's DDL creates and nothing else
 /// (FsHotWatch ADR-059 §5). Every other table in the file (a plugin's, a host's such as FsHotWatch's)
@@ -485,7 +490,7 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 25
+let SchemaVersion = 26
 
 /// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
