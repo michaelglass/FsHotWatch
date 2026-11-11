@@ -337,6 +337,38 @@ let ``an unreadable report, or one with no test array, shows nothing`` () =
     test <@ Result.isError (Starvation.timeoutsOfReport everyClass "null") @>
 
 [<Fact>]
+let ``a failure the summary counts but no row names is not shown to be a timeout`` () =
+    // AUTOMATION-1569 D. A test that threw a raw exception is counted in `summary.failed`
+    // and gets no row (Ctrf.fs). One timeout row beside it does not show every failure was
+    // a timeout, and an assertion failure is never re-run (ADR-040).
+    let json =
+        """{"results": {"summary": {"tests": 2, "passed": 0, "failed": 2, "skipped": 0, "pending": 0, "other": 0},
+                        "tests": [{"name": "A.Slow.one", "status": "failed", "message": "Test execution timed out after 100 milliseconds"}]}}"""
+
+    match Starvation.timeoutsOfReport everyClass json with
+    | Error reason -> test <@ reason.Contains "no row" @>
+    | Ok names -> failwith $"expected an error, got %A{names}"
+
+[<Fact>]
+let ``a raw-thrown test counted under other with no row is not shown to be a timeout`` () =
+    let json =
+        """{"results": {"summary": {"tests": 2, "passed": 0, "failed": 1, "skipped": 0, "pending": 0, "other": 1},
+                        "tests": [{"name": "A.Slow.one", "status": "failed", "message": "Test execution timed out after 100 milliseconds"}]}}"""
+
+    test <@ Result.isError (Starvation.timeoutsOfReport everyClass json) @>
+
+[<Fact>]
+let ``a summary whose failures all have timeout rows still names them`` () =
+    // POSITIVE CONTROL: the count check refuses only failures without a row.
+    let json =
+        ctrfOf
+            [ timeoutRow "A.Slow" "one"
+              timeoutRow "A.Slow" "two"
+              passRow "A.Slow" "three" ]
+
+    test <@ Starvation.timeoutsOfReport everyClass json = Ok [ "A.Slow.one"; "A.Slow.two" ] @>
+
+[<Fact>]
 let ``a report with no failed row names no timeout`` () =
     match Starvation.timeoutsOfReport everyClass (ctrfOf [ passRow "A.Slow" "one" ]) with
     | Error reason -> test <@ reason.Contains "no failed test" @>
