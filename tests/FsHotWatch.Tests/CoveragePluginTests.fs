@@ -139,11 +139,13 @@ let ``gateVerdict: filtered shortfall does NOT gate (NotGatedFiltered)`` () =
     | other -> Assert.Fail $"Expected NotGatedFiltered, got {other}"
 
 [<Fact(Timeout = 5000)>]
-let ``gateVerdict: no shortfall is Passed regardless of full-suite flag`` () =
+let ``gateVerdict: no shortfall is Passed for a full suite, and a zero notice for a filtered run`` () =
+    // A filtered run gates nothing, a pass included (AUTOMATION-1558): its view of the
+    // cumulative report must not clear a full-suite red.
     test
         <@
             match Judgement.gateVerdict RunScope.Partial None with
-            | Judgement.Passed -> true
+            | Judgement.NotGatedFiltered 0 -> true
             | _ -> false
         @>
 
@@ -252,6 +254,44 @@ let ``plugin reports errors when file is below threshold`` () =
         let fileErrors = errors |> Map.tryFind "MyModule.fs"
         test <@ fileErrors.IsSome @>
         test <@ not fileErrors.Value.IsEmpty @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an impact-filtered run does not clear a full-suite coverage red`` () =
+    // The defect: `NotGatedFiltered` cleared every error and recorded a pass. A full
+    // suite that went red, followed by any filtered run whose own view was short, read
+    // green, though the filtered run gated nothing and so refuted nothing.
+    withTempDir "coverage-filtered-keeps-red" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        emitRunCompleted host
+        waitUntil (fun () -> host.GetHistory("coverage").Length >= 1) 10000
+
+        host.EmitTestRunCompleted
+            { RunId = Guid.NewGuid()
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Normal
+              Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ]
+              Verification = Ran RunScope.Partial }
+
+        waitUntil (fun () -> host.GetHistory("coverage").Length >= 2) 10000
+
+        test
+            <@
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false
+            @>
+
+        test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey "MyModule.fs" @>
+
+        let status = host.RunCommand("coverage-status", [||]) |> Async.RunSynchronously
+        test <@ status.Value.Contains "FAILED" @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a checkout under a directory named tests is still measured`` () =
@@ -427,7 +467,9 @@ let ``plugin clears errors when all files pass`` () =
 // 5s of `Async.Sleep` dilated past 10s on a saturated thread pool. Hence a bound that
 // is a multiple of the floor, not 2x it: 30s is 6x.
 [<Fact(Timeout = 45000)>]
-let ``plugin skips check when no coverage XML found`` () =
+let ``a full-suite run with no coverage XML found goes red, naming the floor file`` () =
+    // This test used to pin the opposite: a full suite that left no report reached
+    // `Completed` with no errors, a pass over zero files. It is `Unreadable` now.
     withTempDir "coverage" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, defaultThresholdsJson)
@@ -435,9 +477,8 @@ let ``plugin skips check when no coverage XML found`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
-        // Subscribe before emitting, and assert the wait: `errors.IsEmpty` below is
-        // vacuously true on the no-XML path whether or not the plugin ever ran, so a
-        // wait that merely EXPIRES would be indistinguishable from one that succeeded.
+        // Subscribe before emitting, and assert the wait: a wait that merely EXPIRES
+        // would be indistinguishable from one that succeeded.
         let completion = beginAwaitTerminal host "coverage"
 
         emitRunCompleted host
@@ -451,12 +492,11 @@ let ``plugin skips check when no coverage XML found`` () =
         test
             <@
                 match completion.Result with
-                | Completed _ -> true
+                | Failed _ -> true
                 | _ -> false
             @>
 
-        let errors = host.GetErrorsByPlugin("coverage")
-        test <@ errors.IsEmpty @>)
+        test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey configPath @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``plugin ignores aborted test runs`` () =
@@ -1560,3 +1600,78 @@ let ``coverage-status and coverage-ratchet declare their reply schemas`` () =
                 FsHotWatch.Plugin.ReplySchema.Typed FsHotWatch.Coverage.CoverageReplies.RatchetSchema
             )
         @>
+
+[<Fact(Timeout = 5000)>]
+let ``a full-suite run that left no searched report is unreadable, never a pass`` () =
+    // The defect: `SearchUnder` with no XML found was `Judged Passed`. A full suite
+    // that produced no coverage at all reported "coverage floors passed" having read
+    // nothing.
+    match
+        Judgement.judge
+            "/nowhere/floors.json"
+            (Judgement.CoverageReports.SearchUnder "/nowhere")
+            RunScope.FullSuite
+            DateTime.UtcNow
+            []
+    with
+    | Judgement.Judged(Judgement.Unreadable reason) -> test <@ reason.Contains "/nowhere" @>
+    | other -> failwith $"expected Unreadable, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``an impact-filtered run that left no searched report is not judged`` () =
+    // A filtered run gates nothing, so it gets no red for missing coverage, and no pass
+    // either.
+    match
+        Judgement.judge
+            "/nowhere/floors.json"
+            (Judgement.CoverageReports.SearchUnder "/nowhere")
+            RunScope.Partial
+            DateTime.UtcNow
+            []
+    with
+    | Judgement.NotJudged reason -> test <@ reason.Contains "/nowhere" @>
+    | other -> failwith $"expected NotJudged, got %A{other}"
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a filtered run whose own view passes does not clear a full-suite red either`` () =
+    // The searched report is the TestPrune DB's cumulative emission: a filtered run
+    // max-merges onto rows earlier runs wrote, of earlier trees. Its "every floor held"
+    // is graded partly on those rows, so it refutes a full-suite red no better than a
+    // filtered shortfall does. Only a run that gates may clear one.
+    withTempDir "coverage-filtered-pass-keeps-red" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        emitRunCompleted host
+        waitUntil (fun () -> host.GetHistory("coverage").Length >= 1) 10000
+
+        // The cumulative report now reads fully covered.
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+
+        let emitPartial () =
+            host.EmitTestRunCompleted
+                { RunId = Guid.NewGuid()
+                  TotalElapsed = TimeSpan.Zero
+                  Outcome = Normal
+                  Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.Zero) ]
+                  Verification = Ran RunScope.Partial }
+
+        emitPartial ()
+        waitUntil (fun () -> host.GetHistory("coverage").Length >= 2) 10000
+
+        test
+            <@
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false
+            @>
+
+        // A full suite that passes is what clears it.
+        emitRunCompleted host
+        waitUntil (fun () -> host.GetHistory("coverage").Length >= 3) 10000
+        test <@ host.GetErrorsByPlugin("coverage") |> Map.isEmpty @>)
