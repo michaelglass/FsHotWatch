@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the outcome store's GC no longer evicts one kind's records to pay for another's (AUTOMATION-1583). The store
+  has one byte budget, and GC evicted the keys with the oldest newest record whatever their kind. On intelligence's
+  store TestPrune analyses held 2.12 GB of the 2 GiB budget and check records 15.5 MB, and one GC evicted 13,504 check
+  keys to make room for analyses. 92% of those analysis records were superseded: the same analysis re-filed by every
+  checkout under the same key, while only the newest record answers a lookup. Over budget, GC now reclaims only from
+  the kinds over their fair share (each kind may hold up to an equal split of the budget; what a smaller kind leaves
+  unused goes to the larger ones), and from those kinds it deletes superseded records first, then the oldest keys. A
+  kind within its share loses nothing younger than the TTL, the TTL still applies to every kind, and the total budget
+  is unchanged.
+
 - fix: a referenced output with F# quotations has one identity in every checkout (AUTOMATION-1582). `fsc` stores each
   quotation's pickle, which names its source file's absolute path, as static data of a nested value type
   `T_<size>Bytes@`, one per distinct size. The identity never hashed those bytes, but it hashed the metadata tables and

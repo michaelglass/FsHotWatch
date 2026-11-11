@@ -280,6 +280,42 @@ let readAll (root: string) : Scan =
     { Records = read |> List.choose id |> chronological |> List.map fst
       Unreadable = read |> List.filter Option.isNone |> List.length }
 
+/// A superseded record: one of a key's records that is not its answer. Deleting it never
+/// changes a lookup; it only shortens the key's history (AUTOMATION-1583).
+type private SupersededRecord =
+    { File: string
+      Size: int64
+      RecordedAt: DateTimeOffset }
+
+/// A key as GC sees it.
+[<CustomEquality; NoComparison>]
+type private GcEntry =
+    { Key: ActionKey.KeyValue
+      Dir: string
+      Newest: DateTimeOffset
+      Size: int64
+      Kind: string
+      Superseded: SupersededRecord list }
+
+    override this.Equals(other) =
+        match other with
+        | :? GcEntry as e -> e.Key = this.Key
+        | _ -> false
+
+    override this.GetHashCode() = this.Key.GetHashCode()
+
+/// Each kind's share of `budget`, given the kinds' sizes (AUTOMATION-1583): the largest
+/// `cap` with `sum (min size cap) <= budget`, so a kind smaller than an equal split keeps
+/// all it holds and leaves the rest to the larger kinds. No kind table: a kind is any
+/// record kind, and a store that fits needs no share.
+let fairShare (budget: int64) (sizes: int64 list) : int64 =
+    let rec fill remaining kinds sorted =
+        match sorted with
+        | size :: rest when size * int64 kinds <= remaining -> fill (remaining - size) (kinds - 1) rest
+        | _ -> remaining / int64 (max kinds 1)
+
+    fill budget (List.length sizes) (List.sort sizes)
+
 type Store(settings: Settings) =
     let root = settings.Root
     let recordsDir = Path.Combine(root, "records")
@@ -305,9 +341,9 @@ type Store(settings: Settings) =
         with ex ->
             settings.Log $"outcome store: could not quarantine %s{path}: %s{ex.Message}"
 
-    /// Every readable record filed under `keyValue` with its outputs, oldest first. A file
-    /// that is not a record of THAT key is quarantined and left out.
-    let readKeyWithOutputs (keyValue: ActionKey.KeyValue) : (Record * string option) list =
+    /// Every readable record filed under `keyValue` with its file and outputs, oldest
+    /// first. A file that is not a record of THAT key is quarantined and left out.
+    let readKeyFiles (keyValue: ActionKey.KeyValue) : (Record * (string * string option)) list =
         let dir = directoryOf keyValue
 
         if not (Directory.Exists dir) then
@@ -321,10 +357,15 @@ type Store(settings: Settings) =
                           Error ex.Message
 
                   match text |> Result.bind decode with
-                  | Ok(record, outputs) when record.Key.Value = keyValue -> yield record, outputs
+                  | Ok(record, outputs) when record.Key.Value = keyValue -> yield record, (file, outputs)
                   | Ok _ -> quarantine file "the record is filed under another key"
                   | Error why -> quarantine file why ]
             |> chronological
+
+    /// Every readable record filed under `keyValue` with its outputs, oldest first.
+    let readKeyWithOutputs (keyValue: ActionKey.KeyValue) : (Record * string option) list =
+        readKeyFiles keyValue
+        |> List.map (fun (record, (_, outputs)) -> record, outputs)
 
     let readKey (keyValue: ActionKey.KeyValue) : Record list =
         readKeyWithOutputs keyValue |> List.map fst
@@ -394,68 +435,161 @@ type Store(settings: Settings) =
     /// `DirectoryOf` by the key itself.
     member _.DirectoryOf(key: ActionKey.ActionKey) = directoryOf key.Value
 
-    /// Evict every key whose newest record is older than the TTL at `now`, then the keys
-    /// with the oldest newest-record until the store fits `MaxBytes`. Never a key in
-    /// `keep`. Returns the evicted key values, oldest first, and says in the log what it
-    /// evicted, why and of which kinds (AUTOMATION-1506: an eviction is the one way a filed
-    /// record turns into a miss, and both callers discard the list).
+    /// Evict every key whose newest record is older than the TTL at `now`. Then, while the
+    /// store is over `MaxBytes`, reclaim only from the kinds over their fair share
+    /// (`fairShare`), each down to its share: first its superseded records, oldest first,
+    /// then its keys with the oldest newest-record. A kind within its share loses nothing
+    /// younger than the TTL (AUTOMATION-1583). Never a key in `keep`; when kept keys hold a
+    /// kind over its share, the oldest other keys go until the store fits. Returns the
+    /// evicted key values, oldest first, and says in the log what it evicted, why and of
+    /// which kinds (AUTOMATION-1506: an eviction is the one way a filed record turns into a
+    /// miss, and both callers discard the list).
     member _.Gc(now: DateTimeOffset, keep: Set<ActionKey.KeyValue>) : ActionKey.KeyValue list =
-        let keys =
+        let entries =
             if Directory.Exists recordsDir then
                 [ for shard in Directory.GetDirectories recordsDir do
                       for dir in Directory.GetDirectories shard do
                           match ActionKey.KeyValue.tryParse (ActionKey.Prefix + Path.GetFileName dir) with
                           | None -> ()
                           | Some keyValue ->
+                              let records = readKeyFiles keyValue
                               let size = Directory.GetFiles dir |> Array.sumBy (fun f -> FileInfo(f).Length)
 
-                              match readKey keyValue |> List.tryLast with
-                              | Some newest -> yield keyValue, dir, newest.RecordedAt, size, newest.Key.Kind
-                              | None -> yield keyValue, dir, DateTimeOffset.MinValue, size, "unreadable" ]
-                |> List.sortBy (fun (_, _, newest, _, _) -> newest)
+                              match List.tryLast records with
+                              | Some(newest, _) ->
+                                  let superseded =
+                                      [ for (r, (file, _)) in List.take (records.Length - 1) records ->
+                                            { File = file
+                                              Size = FileInfo(file).Length
+                                              RecordedAt = r.RecordedAt } ]
+
+                                  yield
+                                      { Key = keyValue
+                                        Dir = dir
+                                        Newest = newest.RecordedAt
+                                        Size = size
+                                        Kind = newest.Key.Kind
+                                        Superseded = superseded }
+                              | None ->
+                                  yield
+                                      { Key = keyValue
+                                        Dir = dir
+                                        Newest = DateTimeOffset.MinValue
+                                        Size = size
+                                        Kind = "unreadable"
+                                        Superseded = [] } ]
+                |> List.sortBy _.Newest
             else
                 []
 
-        let evictable =
-            keys |> List.filter (fun (k, _, _, _, _) -> not (Set.contains k keep))
-
         let expired, live =
-            evictable
-            |> List.partition (fun (_, _, newest, _, _) -> now - newest > settings.Ttl)
+            entries
+            |> List.filter (fun e -> not (Set.contains e.Key keep))
+            |> List.partition (fun e -> now - e.Newest > settings.Ttl)
 
-        let sizeOf (entries: (ActionKey.KeyValue * string * DateTimeOffset * int64 * string) list) =
-            entries |> List.sumBy (fun (_, _, _, size, _) -> size)
+        let expiredKeys = expired |> List.map _.Key |> Set.ofList
 
-        let mutable total = sizeOf keys - sizeOf expired
+        let remaining =
+            entries |> List.filter (fun e -> not (Set.contains e.Key expiredKeys))
 
-        let overBudget =
-            [ for (k, dir, newest, size, kind) in live do
-                  if total > settings.MaxBytes then
-                      total <- total - size
-                      yield k, dir, newest, size, kind ]
+        let total = ref (remaining |> List.sumBy _.Size)
+        let trimmed = Collections.Generic.HashSet<string>()
+        let overBudget = Collections.Generic.List<GcEntry>()
+        let mutable share = None
+
+        let sizeLeft (e: GcEntry) =
+            e.Size
+            - (e.Superseded
+               |> List.sumBy (fun s -> if trimmed.Contains s.File then s.Size else 0L))
+
+        let evict (e: GcEntry) =
+            total.Value <- total.Value - sizeLeft e
+            overBudget.Add e
+
+        if total.Value > settings.MaxBytes then
+            let kinds =
+                remaining
+                |> List.groupBy _.Kind
+                |> List.map (fun (kind, es) -> kind, es |> List.sumBy _.Size)
+
+            let cap = fairShare settings.MaxBytes (kinds |> List.map snd)
+            share <- Some cap
+
+            for (kind, size) in kinds |> List.filter (fun (_, size) -> size > cap) do
+                let mutable kindTotal = size
+                let own = live |> List.filter (fun e -> e.Kind = kind)
+
+                for s in own |> List.collect _.Superseded |> List.sortBy _.RecordedAt do
+                    if kindTotal > cap then
+                        kindTotal <- kindTotal - s.Size
+                        total.Value <- total.Value - s.Size
+                        trimmed.Add s.File |> ignore
+
+                for e in own do
+                    if kindTotal > cap then
+                        kindTotal <- kindTotal - sizeLeft e
+                        evict e
+
+            for e in live do
+                if total.Value > settings.MaxBytes && not (overBudget.Contains e) then
+                    evict e
+
+        let trimmedRecords =
+            [ for e in remaining do
+                  for s in e.Superseded do
+                      if trimmed.Contains s.File then
+                          try
+                              File.Delete s.File
+                              yield e.Kind, s.Size
+                          with ex ->
+                              settings.Log $"outcome store: could not trim %s{s.File}: %s{ex.Message}" ]
 
         let evicted =
-            [ for (k, dir, _, size, kind) in expired @ overBudget do
+            [ for e in expired @ List.ofSeq overBudget |> List.sortBy _.Newest do
                   try
-                      Directory.Delete(dir, true)
-                      yield k, size, kind
+                      Directory.Delete(e.Dir, true)
+
+                      yield
+                          e,
+                          (if Set.contains e.Key expiredKeys then
+                               e.Size
+                           else
+                               sizeLeft e)
                   with ex ->
-                      settings.Log $"outcome store: could not evict %s{k.Text}: %s{ex.Message}" ]
+                      settings.Log $"outcome store: could not evict %s{e.Key.Text}: %s{ex.Message}" ]
 
-        if not evicted.IsEmpty then
-            let kinds =
-                evicted
-                |> List.countBy (fun (_, _, kind) -> kind)
-                |> List.sortBy fst
-                |> List.map (fun (kind, n) -> $"%s{kind} %d{n}")
-                |> String.concat ", "
+        if not (evicted.IsEmpty && trimmedRecords.IsEmpty) then
+            // "; check 3, format 1", or nothing when no record of any kind went that way.
+            let byKind (before: string) (after: string) (kinds: string list) =
+                if kinds.IsEmpty then
+                    ""
+                else
+                    kinds
+                    |> List.countBy id
+                    |> List.sortBy fst
+                    |> List.map (fun (kind, n) -> $"%s{kind} %d{n}")
+                    |> String.concat ", "
+                    |> fun text -> before + text + after
 
-            let bytes = evicted |> List.sumBy (fun (_, size, _) -> size)
+            let bytes = (evicted |> List.sumBy snd) + (trimmedRecords |> List.sumBy snd)
 
-            settings.Log
-                $"outcome store: gc evicted %d{evicted.Length} key(s) (%d{expired.Length} past the ttl, %d{overBudget.Length} over the byte budget of %d{settings.MaxBytes}; %s{kinds}), %d{bytes} byte(s); %d{total} byte(s) remain"
+            let shareText =
+                share
+                |> Option.map (fun cap -> $"; a kind's share is %d{cap} byte(s)")
+                |> Option.defaultValue ""
 
-        evicted |> List.map (fun (k, _, _) -> k)
+            let keyKinds = evicted |> List.map (fun (e, _) -> e.Kind) |> byKind "; " ""
+            let trimmedKinds = trimmedRecords |> List.map fst |> byKind " (" ")"
+
+            settings.Log(
+                $"outcome store: gc evicted %d{evicted.Length} key(s) (%d{expired.Length} past the ttl, "
+                + $"%d{overBudget.Count} over the byte budget of %d{settings.MaxBytes}%s{shareText}"
+                + $"%s{keyKinds}) and "
+                + $"%d{trimmedRecords.Length} superseded record(s)%s{trimmedKinds}, "
+                + $"%d{bytes} byte(s); %d{total.Value} byte(s) remain"
+            )
+
+        evicted |> List.map (fun (e, _) -> e.Key)
 
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =
