@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.41 - 2026-11-11
+
+- AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered
+
+
 ## 0.7.0-alpha.40 - 2026-11-02
 
 - feat: `warnings` declares its reply schema (`lint/warnings-v1`). The new `LintReplies` module

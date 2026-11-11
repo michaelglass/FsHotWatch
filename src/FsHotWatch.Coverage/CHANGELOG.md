@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.34 - 2026-11-11
+
+- AUTOMATION-1558: Coverage: a run with no report is not a pass, and a filtered run keeps a red
+
+
 ## 0.7.0-alpha.33 - 2026-11-02
 
 - feat: `coverage-status` and `coverage-ratchet` declare their reply schemas

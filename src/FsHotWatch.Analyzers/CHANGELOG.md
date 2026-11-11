@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.56 - 2026-11-11
+
+- AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered
+
+
 ## 0.7.0-alpha.55 - 2026-11-02
 
 - feat: `diagnostics` and `analyzer-findings` declare their reply schemas

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.109 - 2026-11-11
+
 - fix: the outcome store's GC no longer evicts one kind's records to pay for another's (AUTOMATION-1583). The store
   has one byte budget, and GC evicted the keys with the oldest newest record whatever their kind. On intelligence's
   store TestPrune analyses held 2.12 GB of the 2 GiB budget and check records 15.5 MB, and one GC evicted 13,504 check

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.36 - 2026-11-11
+
+- AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered
+
+
 ## 0.7.0-alpha.35 - 2026-11-02
 
 - feat: `unformatted` declares its reply schema (`format-check/unformatted-v1`). The new

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-11-11
+
+- AUTOMATION-1557: a FileChanged run is keyed on every input it can read, not only the command and args
+
+
 ## 0.7.0-alpha.29 - 2026-11-08
 
 - fix: a command the OS refuses to start because its file is open for writing (`ETXTBSY`, "Text

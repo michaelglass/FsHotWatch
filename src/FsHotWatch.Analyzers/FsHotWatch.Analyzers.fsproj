@@ -6,7 +6,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.Analyzers</PackageId>
-    <Version>0.7.0-alpha.55</Version>
+    <Version>0.7.0-alpha.56</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for F# Analyzers SDK integration</Description>
     <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>

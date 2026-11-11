@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.142 - 2026-11-11
+
 - BREAKING: `.fshw.json` is refused, with a config error naming the key, when it carries a top-level key nothing reads
   (AUTOMATION-1564). An ignored key let a typo switch a gate off: `"test"` for `"tests"` configured no tests, and `check`
   went green having run none. Comments stay allowed: a key starting with `_` (e.g. `"_comment_build"`) and `"$schema"`

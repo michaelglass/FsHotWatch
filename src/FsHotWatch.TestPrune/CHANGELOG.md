@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.109 - 2026-11-11
+
+- AUTOMATION-1559: A non-symbol edit beside a symbol selection runs every project in full
+- AUTOMATION-1560: A check with FCS errors stamps the file dirty, so its rows are not a baseline
+
+
 ## 0.13.0-alpha.108 - 2026-11-11
 
 - fix: a dependency fanout whose projects already hold evidence at these inputs launches no run (AUTOMATION-1534). It force-ran them,
