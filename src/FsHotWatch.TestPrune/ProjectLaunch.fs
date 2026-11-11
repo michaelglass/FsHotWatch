@@ -227,11 +227,6 @@ let internal projectResultOf (launched: FinishedLaunch) : TestResult * string op
 
     let apphostMissing = detectApphostMissing processResult
 
-    // A filtered run that matched zero tests in this project is
-    // not a failure (see `isZeroTestsUnderFilter`) — treat it
-    // like an impact-skip.
-    let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
-
     let output = outputOf processResult
 
     // Read the structured report ONCE (when one was requested
@@ -254,6 +249,12 @@ let internal projectResultOf (launched: FinishedLaunch) : TestResult * string op
         | None, _ -> NoReportRequested
         | Some _, Some json -> ReportRequested(Ctrf.tryVerdictReport json)
         | Some p, None -> ReportRequested(Error $"no readable report at %s{p}")
+
+    // A filtered run that matched zero tests in this project is
+    // not a failure (see `isZeroMatchRun`) — treat it like an
+    // impact-skip. Decided AFTER the report is read: a red report
+    // outranks the zero-tests exit code and text (AUTOMATION-1569).
+    let zeroTestsUnderFilter = isZeroMatchRun wasFiltered reportEvidence processResult
 
     let result =
         if apphostMissing then

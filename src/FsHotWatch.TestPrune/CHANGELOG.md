@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a filtered run that reports a failure is red even when its output also says "Zero tests ran" (AUTOMATION-1569). The text
+  fallback for a zero-match run fired on any non-zero exit whose output held the phrase, before the CTRF report was read, so a
+  failing test that prints it (Unquote prints the quoted assertion) became a no-match and the failure was never named. A red
+  report now outranks both the zero-tests exit code and the text, and the text no longer counts when the run's summary reports
+  a failure.
+
 ## 0.13.0-alpha.109 - 2026-11-11
 
 - AUTOMATION-1559: A non-symbol edit beside a symbol selection runs every project in full

@@ -107,6 +107,18 @@ let internal buildExcludeArgs (config: TestConfig) (excluded: string list) : str
 [<Literal>]
 let internal ZeroTestsExitCode = 8
 
+/// MTP's red run summary: "Test run summary: Failed!", or a `failed: N` count above
+/// zero on a line of its own.
+let private failedSummaryLine =
+    Text.RegularExpressions.Regex(
+        @"Test run summary:\s*Failed!|^\s*failed:\s*[1-9]",
+        Text.RegularExpressions.RegexOptions.Multiline
+        ||| Text.RegularExpressions.RegexOptions.IgnoreCase
+    )
+
+/// True when a test host's output reports at least one failed test in its summary.
+let internal outputReportsFailure (text: string) : bool = failedSummaryLine.IsMatch text
+
 /// True when a *filtered* run matched no tests in this project. An explicit
 /// `--filter-*` passthrough (run-tests / test-rerun) is fanned out to EVERY test
 /// project; a project that has no test matching the filter runs zero tests and
@@ -120,6 +132,12 @@ let internal ZeroTestsExitCode = 8
 /// returns false for it. Detection is structural (the canonical exit code) with
 /// a text fallback for runners that exit non-zero without emitting code 8 but
 /// still print MTP's zero-tests summary line.
+///
+/// The text fallback never outranks a reported failure (AUTOMATION-1569): a failing
+/// test whose assertion message contains the phrase (Unquote prints the quoted
+/// expression) prints "Zero tests ran" too, but its summary says the run failed, so
+/// tests matched and one of them is red. A red CTRF report outranks both signals; see
+/// `FailureReports.isZeroMatchRun`.
 let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome) : bool =
     wasFiltered
     && match outcome with
@@ -128,5 +146,8 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
            // A text SEARCH for a marker: a capture cut short by an unfinished drain
            // can only cost us the hit (falling back to the exit code above), never
            // invent one. Sound to search the untagged text.
-           (ProcessOutput.text output).Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
+           let text = ProcessOutput.text output
+
+           text.Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
+           && not (outputReportsFailure text)
        | _ -> false
