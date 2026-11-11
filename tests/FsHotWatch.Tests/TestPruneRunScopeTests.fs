@@ -809,6 +809,38 @@ let ``non-executing and shared-infrastructure runs cannot produce exact recall e
         | Error reason -> test <@ reason.Contains "shared infrastructure" @>
         | Ok evidence -> failwithf "shared-infrastructure failures produced selector evidence: %A" evidence)
 
+/// AUTOMATION-1073: xUnit v3 leaves an ANSI escape in a string literal raw, which is not JSON.
+/// The failed-rows readers repair it, so the shared-infrastructure probe must read the same
+/// repaired text: a probe that fails to parse answers "no infrastructure", and the report's
+/// reds are then filed per test, under classes a shared outage never vindicates.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a shared-infrastructure trace carrying a raw escape is still shared infrastructure, not per-test reds`` () =
+    withTempDir "raw-escape-infrastructure" (fun repoRoot ->
+        let runId = Guid.NewGuid()
+        let project = "Database.Tests"
+        let dir = Path.Combine(repoRoot, ".fshw", "test-runs", runId.ToString("N"))
+        Directory.CreateDirectory dir |> ignore
+
+        let report =
+            """{"results":{"summary":{"tests":1,"passed":0,"failed":1,"pending":0,"skipped":0,"other":0},"tests":[{"name":"Database.Tests.Query.loads","status":"failed","duration":1,"message":"<ESC>[31mconnection failed<ESC>[0m","trace":"Npgsql.NpgsqlException: connection failed"}]}}"""
+                .Replace("<ESC>", string (char 0x1b))
+
+        // The control is real: the escape sits raw in a string literal (one coloured message,
+        // so the whole text is not JSON), and the repaired failed-rows reader names the row.
+        test <@ report.Contains(string (char 0x1b)) @>
+        test <@ failedTestsOfReport report |> Option.map List.length = Some 1 @>
+        test <@ sharedInfrastructureFailureOfReport report = Some "NpgsqlException" @>
+
+        File.WriteAllText(Path.Combine(dir, project + ".ctrf.json"), report)
+
+        let failed =
+            { Results = Map.ofList [ project, TestsFailed("failed", false, TimeSpan.Zero) ]
+              Elapsed = TimeSpan.Zero }
+
+        match failedTestsOfRun repoRoot runId failed with
+        | Error reason -> test <@ reason.Contains "shared infrastructure" @>
+        | Ok evidence -> failwithf "a raw-escape infrastructure trace was filed as per-test reds: %A" evidence)
+
 [<Fact(Timeout = 15000)>]
 let ``one typed infrastructure exception invalidates a mixed failure sample`` () =
     let mixed =

@@ -336,7 +336,10 @@ module internal ReportedFailures =
 
 let internal sharedInfrastructureFailureOfReport (json: string) : string option =
     try
-        use document = JsonDocument.Parse json
+        // The same repaired text the failed-rows readers parse (AUTOMATION-1073): a raw
+        // control character in one literal must not leave this probe blind while they
+        // still name the reds, or a shared outage is filed as per-test failures.
+        use document = JsonDocument.Parse(Ctrf.repairControlChars json)
         let mutable results = Unchecked.defaultof<JsonElement>
         let mutable tests = Unchecked.defaultof<JsonElement>
 
