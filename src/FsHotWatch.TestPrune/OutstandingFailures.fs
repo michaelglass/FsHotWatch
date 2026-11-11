@@ -104,6 +104,14 @@ module internal OutstandingFailure =
     /// run's complete CTRF receipt contains that method passing; a sibling green is
     /// not contradictory evidence. These deny an otherwise-passing run its verdict.
     ///
+    /// A project in `redInFull` (see `RunCoverage.redInFull`) ran unfiltered and went
+    /// red. Its whole-project scope is no evidence about tests the run never reached
+    /// (a stop-on-fail run lists only the tests before the stop), so a prior red there
+    /// is cleared only by a PASSED row for that exact test in this run's complete,
+    /// coherent report (`passedTests`). A class- or project-level red names no test,
+    /// so it is carried (AUTOMATION-1569). A green unfiltered run still covers the
+    /// whole project.
+    ///
     /// `configured` prunes reds for projects the daemon no longer runs (a project
     /// removed from `tests.projects` could otherwise never be covered again, and its
     /// red would wedge the verdict forever — the unconfigured-project stuck-red, rebuilt). Empty
@@ -111,20 +119,25 @@ module internal OutstandingFailure =
     let carriedOver
         (configured: Set<string>)
         (coverage: RunCoverage)
+        (redInFull: Set<string>)
         (passedTests: Map<string, Set<string * string>>)
         (prior: OutstandingFailure list)
         : OutstandingFailure list =
         let stillConfigured (f: OutstandingFailure) =
             Set.isEmpty configured || Set.contains f.Project configured
 
+        let passedHere (failure: OutstandingFailure) (cls: string) (methodName: string) =
+            passedTests
+            |> Map.tryFind failure.Project
+            |> Option.exists (Set.contains (cls, methodName))
+
         let covered (failure: OutstandingFailure) =
             match failure.Class, failure.Method, Map.tryFind failure.Project coverage with
-            | _, _, Some CoveredWholeProject -> true
+            | Some cls, Some methodName, Some CoveredWholeProject when Set.contains failure.Project redInFull ->
+                passedHere failure cls methodName
+            | _, _, Some CoveredWholeProject -> not (Set.contains failure.Project redInFull)
             | Some cls, Some methodName, Some(CoveredClasses classes) ->
-                Set.contains cls classes
-                && (passedTests
-                    |> Map.tryFind failure.Project
-                    |> Option.exists (Set.contains (cls, methodName)))
+                Set.contains cls classes && passedHere failure cls methodName
             | _, None, _ -> RunCoverage.covers failure.Project failure.Class coverage
             | _ -> false
 
@@ -138,11 +151,12 @@ module internal OutstandingFailure =
     let carry
         (configured: Set<string>)
         (coverage: RunCoverage)
+        (redInFull: Set<string>)
         (passedTests: Map<string, Set<string * string>>)
         (found: OutstandingFailure list)
         (prior: OutstandingFailure list)
         : OutstandingFailure list =
-        carriedOver configured coverage passedTests prior @ found
+        carriedOver configured coverage redInFull passedTests prior @ found
         |> List.distinctBy identity
 
     /// Human-readable "what is still red that this run did not look at", for the
