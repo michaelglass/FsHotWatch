@@ -256,6 +256,23 @@ let internal spawnRetryingBusy (pause: int -> unit) (spawn: unit -> 'T) : 'T =
 
     attempt BusyRetryPauses
 
+/// The diagnostic for a command that exited nonzero: the command line and exit code,
+/// then whatever it printed. A command may fail without printing a word, and its raw
+/// output alone was then the whole entry — a red with an empty message (AUTOMATION-888).
+let internal renderFailure (command: string) (args: string) (exitCode: int) (output: string) : string =
+    let commandLine =
+        if String.IsNullOrWhiteSpace args then
+            command
+        else
+            $"%s{command} %s{args}"
+
+    let header = $"`%s{commandLine}` exited with code %d{exitCode}"
+
+    if String.IsNullOrWhiteSpace output then
+        $"%s{header} and printed nothing"
+    else
+        $"%s{header}:\n%s{output}"
+
 /// `create`, with the spawn and the pause between refused spawns injected.
 let internal createWith
     (spawn: Spawn)
@@ -341,8 +358,10 @@ let internal createWith
                                             elapsed
                                     )
                                 )
-                            | ProcessOutcome.Failed _ ->
-                                ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
+                            | ProcessOutcome.Failed(exitCode, _) ->
+                                ctx.ReportErrors
+                                    $"<%s{nameStr}>"
+                                    [ ErrorEntry.error (renderFailure command args exitCode output) ]
 
                                 ctx.ReportStatus(
                                     PluginStatus.Failed(

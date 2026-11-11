@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a command that exits nonzero now reports its command line and exit code in the error entry, ahead of
+  whatever it printed (AUTOMATION-888). The raw output used to be the whole entry, so a command that failed
+  without printing anything reddened the run with an empty message, and a reader had a red with no cause.
+  A silent failure now reads: "`changelog-gate CHANGELOG.md` exited with code 3 and printed nothing".
+
 ## 0.7.0-alpha.29 - 2026-11-08
 
 - fix: a command the OS refuses to start because its file is open for writing (`ETXTBSY`, "Text
