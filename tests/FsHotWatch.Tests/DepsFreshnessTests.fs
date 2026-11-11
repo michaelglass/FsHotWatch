@@ -1336,3 +1336,57 @@ let ``a new daemon does not restore a project restored since its baseline moved`
 
         test <@ gateOf root runs fsproj = Proceed @>
         test <@ runs.Value = 0 @>)
+
+// ---- a contended waiter must not certify content the holder did not restore ----
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``evaluateProject: a waiter whose deps drifted again is restored, not recorded fresh`` () =
+    // The defect: a waiter behind an in-flight restore re-asked only the mtime probe. It
+    // arrived because its dep CONTENT drifted under a fresh mtime, which the probe cannot
+    // see, so the probe said Fresh again and the waiter recorded ITS drifted signature as
+    // the fresh baseline. The restore that ran was for the holder's content; the waiter's
+    // was never restored, and every later evaluation trusted it.
+    let restoreEntered = new System.Threading.ManualResetEventSlim(false)
+    let releaseRestore = new System.Threading.ManualResetEventSlim(false)
+    let restores = ref 0
+
+    let blockingRunner: RestoreRunner =
+        fun _ ->
+            System.Threading.Interlocked.Increment(&restores.contents) |> ignore
+            restoreEntered.Set()
+            releaseRestore.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+            Succeeded(ProcessOutput.Drained "restored")
+
+    let tracker = RecoveryTracker()
+    tracker.RecordFreshSignature("P.fsproj", "sig-0")
+
+    // The mtime never moves (rsync -a): the probe says Fresh throughout.
+    let probe _ = Fresh
+
+    let winner =
+        System.Threading.Tasks.Task.Run(fun () ->
+            evaluateProject probe (fun _ -> "sig-A") assetsYes blockingRunner tracker "P.fsproj")
+
+    Assert.True(restoreEntered.Wait(HangWait), "the first evaluation never reached the restore")
+
+    let loserResult = ref None
+
+    let loser =
+        System.Threading.Thread(fun () ->
+            loserResult.Value <-
+                Some(evaluateProject probe (fun _ -> "sig-B") assetsYes blockingRunner tracker "P.fsproj"))
+
+    loser.Start()
+
+    waitUntilOr
+        "the concurrent evaluation blocking at the recovery gate"
+        (fun () -> loser.ThreadState.HasFlag System.Threading.ThreadState.WaitSleepJoin)
+        HangWaitMs
+
+    releaseRestore.Set()
+    test <@ winner.Result = RecoveredOk @>
+    test <@ loser.Join(HangWait) @>
+
+    // sig-B was restored by its own attempt, not certified by sig-A's.
+    test <@ restores.Value = 2 @>
+    test <@ loserResult.Value = Some RecoveredOk @>

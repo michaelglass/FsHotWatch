@@ -687,10 +687,16 @@ let evaluateProject
 
             try
                 match probe proj with
-                | Fresh ->
+                // Fresh, AND the holder's restore was for THIS content: the baseline it
+                // recorded is our signature (or none was ever recorded). The mtime probe
+                // alone cannot say so — a waiter that came here because its content
+                // drifted under a fresh mtime would read Fresh again and certify content
+                // nobody restored.
+                | Fresh when not (tracker.HasContentDrifted(proj, sig_)) ->
                     tracker.Clear proj
                     tracker.RecordFreshSignature(proj, sig_)
                     Proceed
+                | Fresh
                 | Stale _ -> attemptRecovery sig_
             finally
                 Threading.Monitor.Exit gate
