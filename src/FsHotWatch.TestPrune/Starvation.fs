@@ -327,7 +327,20 @@ let timeoutsOfReport (policy: Policy) (json: string) : Result<string list, strin
             red
             |> List.filter (fun r -> isTimeoutRow policy r && not (Policy.covers policy (classOf r)))
 
+        // A test that threw a raw exception is counted in `summary.failed` (and
+        // `other`) with no row (see `Ctrf`), so rows alone cannot show that every
+        // failure was a timeout: a summary counting more failures than there are red
+        // rows names one that may be an assertion (AUTOMATION-1569). `failed + other`
+        // may count one test twice; that refuses a re-run, the fail-closed direction.
+        let rowless =
+            match Ctrf.trySummary json with
+            | Some s -> s.Failed + s.Other - red.Length
+            | None -> 0
+
         match red, notTimeouts, undeclared with
+        | _ when rowless > 0 ->
+            Error
+                $"its summary counts %d{rowless} failure(s) with no row, which cannot be shown to be a timeout; an assertion failure is never re-run"
         | [], _, _ -> Error "its report names no failed test"
         | _, (_ :: _), _ ->
             let names = notTimeouts |> List.map (fun r -> field r "name") |> String.concat ", "

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a starvation re-run is refused when the report's summary counts a failure that has no row (AUTOMATION-1569). A test that
+  threw a raw exception is counted in the summary with no row, so one timeout row beside it read as "every failure was a timeout"
+  and the project was re-run alone, against "an assertion failure is never re-run". The reason names how many failures had no row.
+
 - fix: a filtered run that reports a failure is red even when its output also says "Zero tests ran" (AUTOMATION-1569). The text
   fallback for a zero-match run fired on any non-zero exit whose output held the phrase, before the CTRF report was read, so a
   failing test that prints it (Unquote prints the quoted assertion) became a no-match and the failure was never named. A red
