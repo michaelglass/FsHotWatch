@@ -3336,3 +3336,56 @@ let ``parseConfig tests weight is 1 when absent, read when a positive number, an
                 |> ignore)
 
         test <@ ex.message.Contains "tests.projects[T].weight" @>
+
+// --- configuration a typo used to switch off silently ---
+
+[<Fact(Timeout = 5000)>]
+let ``an unknown top-level key is a ConfigErrorException naming it`` () =
+    // The defect: an unknown top-level key was ignored. `"test"` for `"tests"` configured
+    // no tests at all, and the check went green having run none.
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig """{"test": {"projects": []}}""" defaults |> ignore)
+
+    test <@ ex.Message.Contains "test" @>
+    // Comment keys and a schema reference are not configuration.
+    parseConfig """{"_comment_build": "why", "$schema": "x.json"}""" defaults
+    |> ignore
+
+[<Fact(Timeout = 5000)>]
+let ``a fileCommands entry with no command is a ConfigErrorException`` () =
+    // The defect: a missing `command` defaulted to `echo`, which always succeeds, so
+    // the gate the entry was written to run reported green without running.
+    Assert.Throws<ConfigErrorException>(fun () ->
+        parseConfig """{"fileCommands": [{"pattern": "*.sql", "args": "validate"}]}""" defaults
+        |> ignore)
+    |> ignore
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("""{"beforeRun": ["lock", "prep"]}""")>]
+[<InlineData("""{"beforeRun": 1}""")>]
+[<InlineData("""{"afterRun": {"command": "unlock"}}""")>]
+[<InlineData("""{"tests": {"projects": [], "beforeRun": 42}}""")>]
+[<InlineData("""{"tests": {"projects": [], "beforeRun": ["ok", 3]}}""")>]
+let ``a beforeRun or afterRun that is not a command is a ConfigErrorException`` (json: string) =
+    // The defect: a hook of any shape but a string (or a string array, for
+    // `tests.beforeRun`) was read as no hook, so the step it named never ran.
+    Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+    |> ignore
+
+[<Fact(Timeout = 5000)>]
+let ``a hook set to false is no hook`` () =
+    let config = parseConfig """{"beforeRun": false, "afterRun": false}""" defaults
+    test <@ config.BeforeRun = None && config.AfterRun = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``two tests.projects entries with the same project name are a ConfigErrorException naming it`` () =
+    // The defect (AUTOMATION-1564 D): results, CTRF paths and every selection map are
+    // keyed by project name, so of two entries named P the first result won. A passing
+    // entry hid a failing one.
+    let json =
+        """{"tests": {"projects": [{"project": "P", "command": "true"}, {"project": "P", "command": "false"}]}}"""
+
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.Message.Contains "\"P\"" || ex.Message.Contains "'P'" @>

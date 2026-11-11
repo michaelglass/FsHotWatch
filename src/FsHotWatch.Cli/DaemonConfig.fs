@@ -973,9 +973,64 @@ let resolveFormatRecords (configured: bool) (env: string -> string) : bool =
     resolveRecordFlag "FSHW_FORMAT_RECORDS" configured env
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
+/// The top-level keys `.fshw.json` may carry. Read by `parseConfig`, except `verdictInputs`
+/// (`VerdictInputs`) and `repositoryHost` (`RepositoryHostMode`), which other readers own.
+let internal KnownTopLevelKeys =
+    set
+        [ "afterRun"
+          "agent"
+          "analyzers"
+          "beforeRun"
+          "build"
+          "cache"
+          "checkRecords"
+          "checker"
+          "coverage"
+          "exclude"
+          "fileCommands"
+          "format"
+          "fsEventsLatencyMs"
+          "idleExitMin"
+          "includeOutsideRepo"
+          "lint"
+          "logDir"
+          "optionsRecords"
+          "preprocessors"
+          "pressureIdleFloorMin"
+          "repositoryHost"
+          "runHookCommands"
+          "runHookTimeoutSec"
+          "tests"
+          "timeoutSec"
+          "verdictInputs" ]
+
+/// Refuse a top-level key nothing reads. Ignoring one let a typo switch configuration off
+/// silently: `"test"` for `"tests"` configured no tests, and a check ran none and went
+/// green. A key starting with `_` is a comment and `$schema` an editor hint; neither is
+/// configuration.
+let private refuseUnknownTopLevelKeys (root: JsonElement) =
+    if root.ValueKind = JsonValueKind.Object then
+        for property in root.EnumerateObject() do
+            let name = property.Name
+
+            if
+                not (
+                    name.StartsWith("_", StringComparison.Ordinal)
+                    || name = "$schema"
+                    || KnownTopLevelKeys.Contains name
+                )
+            then
+                let expected = KnownTopLevelKeys |> Set.toList |> String.concat ", "
+
+                raise (
+                    ConfigErrorException
+                        $"unknown top-level key '%s{name}' — expected one of %s{expected} (a key starting with _ is a comment)"
+                )
+
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
+    refuseUnknownTopLevelKeys root
 
     let parseBuildEntry (v: JsonElement) =
         let cmd =
@@ -1261,12 +1316,23 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, br when br.ValueKind = JsonValueKind.Array ->
                     let steps =
                         br.EnumerateArray()
-                        |> Seq.map (fun e -> e.GetString())
+                        |> Seq.map (fun e ->
+                            if e.ValueKind = JsonValueKind.String then
+                                e.GetString()
+                            else
+                                refuseUnknown "tests.beforeRun[]" (describeValue e) [ "a command string" ])
                         |> Seq.filter (fun c -> not (String.IsNullOrWhiteSpace c))
                         |> Seq.toList
 
                     if steps.IsEmpty then None else Some steps
                 | true, br when br.ValueKind = JsonValueKind.String -> Some [ br.GetString() ]
+                | true, br when br.ValueKind = JsonValueKind.False || br.ValueKind = JsonValueKind.Null -> None
+                // Any other shape used to read as no hook, and the steps it named never ran.
+                | true, br ->
+                    refuseUnknown
+                        "tests.beforeRun"
+                        (describeValue br)
+                        [ "a command string"; "an array of command strings"; "false" ]
                 | _ -> None
 
             let extensions =
@@ -1311,6 +1377,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 match v.TryGetProperty("projects") with
                 | true, arr -> arr.EnumerateArray() |> Seq.map parseTestProject |> Seq.toList
                 | _ -> []
+
+            // Results, CTRF paths and every selection map are keyed by project name, so
+            // of two entries with one name the first result won: a passing entry hid a
+            // failing one.
+            match projects |> List.countBy _.Project |> List.filter (fun (_, n) -> n > 1) with
+            | [] -> ()
+            | duplicates ->
+                let names = duplicates |> List.map (fst >> sprintf "'%s'") |> String.concat ", "
+
+                raise (
+                    ConfigErrorException
+                        $"tests.projects: %s{names} named by more than one entry — each project may appear once (results and reports are keyed by its name)"
+                )
 
             // `tests.excluded` — first-class, and the only
             // sanctioned way a solution test project may be outside the gate's
@@ -1469,11 +1548,6 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             Some(FsHotWatch.FileCommand.FileCommandPlugin.TestProjects projects)
                     | _ -> None
 
-                let command =
-                    match fc.TryGetProperty("command") with
-                    | true, v -> v.GetString()
-                    | _ -> "echo"
-
                 let args =
                     match fc.TryGetProperty("args") with
                     | true, v -> v.GetString()
@@ -1484,6 +1558,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
                 if afterTests.IsSome && name.IsNone then
                     raise (ConfigErrorException "fileCommands entries with `afterTests` require an explicit `name`")
+
+                // Required. A missing `command` used to default to `echo`, which always
+                // succeeds: the gate the entry was written to run reported green unrun.
+                let command =
+                    match fc.TryGetProperty("command") with
+                    | true, v when
+                        v.ValueKind = JsonValueKind.String
+                        && not (String.IsNullOrWhiteSpace(v.GetString()))
+                        ->
+                        v.GetString()
+                    | true, v ->
+                        refuseUnknown "fileCommands[].command" (describeValue v) [ "a non-blank command string" ]
+                    | _ -> raise (ConfigErrorException "fileCommands entry must specify `command`")
 
                 // Validate the pattern shape at config-load so unsupported
                 // globs (embedded `*`) fail with a clean `fshw: config error:`
@@ -1761,6 +1848,9 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     let parseRunHook (key: string) : string option =
         match root.TryGetProperty(key) with
         | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+        | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> None
+        // Any other shape used to read as no hook, and the step it named never ran.
+        | true, v -> refuseUnknown key (describeValue v) [ "a command string"; "false" ]
         | _ -> None
 
     let beforeRun = parseRunHook "beforeRun"
