@@ -179,6 +179,7 @@
     <Compile Include="TestPruneIndexedIdentityTests.fs" />
     <Compile Include="AnalysisRecordsTests.fs" />
     <Compile Include="TestPruneTestNameTests.fs" />
+    <Compile Include="TestPruneStopOnFailReachTests.fs" />
     <Compile Include="TestPruneFailedLineTests.fs" />
     <Compile Include="TestPruneDiscoveryWaitTests.fs" />
     <Compile Include="ColdDaemonDiscoveryTests.fs" />
