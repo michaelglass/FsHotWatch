@@ -441,8 +441,16 @@ let ``real assemblies, whatever their signatures hold, have an identity`` () =
     // CoreLib carries every signature form (pointers, pinned locals, arrays with shapes,
     // function pointers, required modifiers, method specifications); FsHotWatch is an `fsc`
     // output. Each reads the same twice.
+    //
+    // Under two roots that occur nowhere in either assembly, so the identity has nothing to
+    // normalize and must not move. A short root is NOT that: the FsHotWatch assembly's F#
+    // resources embed the absolute paths it was built at, and "/r" occurs in
+    // "/home/runner/work/…", so on the Linux runner it was normalized and the identities
+    // rightly differed (run 43038439614).
+    let rootA, rootB = "/fshw-absent-root-3f9c1a/a", "/fshw-absent-root-3f9c1a/b"
+
     for assembly in [ typeof<obj>.Assembly; typeof<CheckRecords.Walk>.Assembly ] do
         let bytes = File.ReadAllBytes assembly.Location
-        let named = OutputIdentity.ofBytes [ "/r" ] bytes
+        let named = OutputIdentity.ofBytes [ rootA ] bytes
         test <@ (assembly.GetName().Name, named.IsSome) = (assembly.GetName().Name, true) @>
-        test <@ OutputIdentity.ofBytes [ "/other" ] bytes = named @>
+        test <@ OutputIdentity.ofBytes [ rootB ] bytes = named @>
