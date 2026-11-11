@@ -33,7 +33,8 @@ type FloorFailures =
 /// plugin's pass/fail status carries the already-gated decision.
 [<NoComparison; NoEquality>]
 type CoverageVerdict =
-    /// Every evaluated file met its floors (or no coverage XML was produced).
+    /// A full-suite run met every floor. A run that left no report to evaluate is never
+    /// `Passed` (see `judge`), and neither is a filtered run (see `gateVerdict`).
     | Passed
     /// A full-suite run found real shortfalls — these GATE (exit non-zero).
     | Failed of FloorFailures
@@ -144,7 +145,11 @@ let internal floorCheck (config: Config) (coverage: FileCoverage list) : FloorFa
 /// one — the caller has already had to decide what to do about it.
 let internal gateVerdict (scope: RunScope) (failures: FloorFailures option) : CoverageVerdict =
     match failures, scope with
-    | None, _ -> Passed
+    | None, FullSuite -> Passed
+    // A filtered run gates nothing, a pass included: the searched report is cumulative
+    // (it max-merges onto rows earlier runs wrote), so "every floor held" is graded partly
+    // on earlier trees and must not clear a full-suite red. A notice of zero shortfalls.
+    | None, Partial -> NotGatedFiltered 0
     | Some failures, FullSuite -> Failed failures
     | Some failures, Partial ->
         let files =
@@ -219,8 +224,16 @@ let internal judge
             Judged(
                 Unreadable $"coverage report(s) not written by this run (missing, or older than its start): %s{listed}"
             )
-    | None, CoverageReports.SearchUnder _ ->
-        if List.isEmpty found then
-            Judged Passed
-        else
-            Judged(verdictOf configPath scope found)
+    // No report found at all. A full suite that left nothing to read has verified
+    // nothing, so it is `Unreadable`, not a pass over zero files. A filtered run gates
+    // nothing either way, so it is not judged: no red, and no pass to clear one.
+    //
+    // There is deliberately no `runStartedAt` check here, unlike `Named`: the searched
+    // report is the TestPrune DB's cumulative emission, which a run with no raw coverage
+    // input leaves in place by design, so its age says nothing about whether it is
+    // current.
+    | None, CoverageReports.SearchUnder dir ->
+        match found, scope with
+        | [], FullSuite -> Judged(Unreadable $"no coverage report found under %s{dir} after a full-suite run")
+        | [], Partial -> NotJudged $"no coverage report found under %s{dir} after an impact-filtered run"
+        | found, _ -> Judged(verdictOf configPath scope found)

@@ -358,25 +358,43 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
 
             | Custom(CheckDone(Judged(NotGatedFiltered belowFloorCount), elapsed)) ->
                 async {
-                    // Clear any prior reds so the verdict is a deterministic ✓ on an
-                    // unchanged commit; the notice below keeps the gap visible. A real
-                    // regression is caught by the next full-suite run, which gates.
-                    ctx.ClearAllErrors()
-
                     let summary =
-                        $"%d{belowFloorCount} file(s) below floor not gated (impact-filtered run; run a full suite to gate coverage)"
+                        if belowFloorCount = 0 then
+                            "coverage floors held in the impact-filtered view, not gated (run a full suite to gate coverage)"
+                        else
+                            $"%d{belowFloorCount} file(s) below floor not gated (impact-filtered run; run a full suite to gate coverage)"
 
                     ctx.Log $"coverage: %s{summary}"
 
-                    ctx.ReportStatus(PluginStatus.Completed(System.DateTime.UtcNow, RunVerdict.create summary elapsed))
+                    match state.LastCheckPassed with
+                    // A filtered run gates nothing, so it refutes nothing: the last red
+                    // (a full-suite shortfall, or a report nobody could read) stands, its
+                    // ledger entries kept, until a run that gates replaces it. Clearing it
+                    // here turned a full-suite red green on the next filtered run.
+                    | Some false ->
+                        let reason =
+                            $"the last coverage red stands: an impact-filtered run cannot clear it (%s{summary})"
 
-                    return
-                        drainOwed
-                            ctx
-                            configPath
-                            reports
-                            { state with
-                                LastCheckPassed = Some true }
+                        ctx.ReportStatus(PluginStatus.failedNow reason "coverage red stands" elapsed)
+                        return drainOwed ctx configPath reports state
+                    | Some true
+                    | None ->
+                        // Nothing red to keep: a deterministic ✓ on an unchanged commit,
+                        // and the notice above keeps the gap visible. A real regression is
+                        // caught by the next full-suite run, which gates.
+                        ctx.ClearAllErrors()
+
+                        ctx.ReportStatus(
+                            PluginStatus.Completed(System.DateTime.UtcNow, RunVerdict.create summary elapsed)
+                        )
+
+                        return
+                            drainOwed
+                                ctx
+                                configPath
+                                reports
+                                { state with
+                                    LastCheckPassed = Some true }
                 }
 
             | Custom(CheckDone(Judged(Failed failures), elapsed)) ->
