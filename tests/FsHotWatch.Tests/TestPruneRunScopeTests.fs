@@ -1287,7 +1287,7 @@ let ``OutstandingFailure.carry: keeps an uncovered red, drops a covered-and-pass
     let coverage: RunCoverage = Map.ofList [ "ProjB", CoveredWholeProject ]
 
     let carried =
-        OutstandingFailure.carry (Set.ofList [ "ProjA"; "ProjB" ]) coverage Map.empty [] prior
+        OutstandingFailure.carry (Set.ofList [ "ProjA"; "ProjB" ]) coverage Set.empty Map.empty [] prior
 
     test <@ carried |> List.map (fun f -> f.Project) = [ "ProjA" ] @>
 
@@ -1298,7 +1298,7 @@ let ``OutstandingFailure.carry: a covered project that failed AGAIN keeps exactl
     let found = [ redIn "ProjA" (Some "ProjATests") ]
 
     let carried =
-        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) coverage Map.empty found prior
+        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) coverage Set.empty Map.empty found prior
 
     // Superseded by this run's own evidence: one entry, not two. Reds must not accumulate.
     test <@ carried.Length = 1 @>
@@ -1310,7 +1310,7 @@ let ``OutstandingFailure.carry: a red for a project no longer configured is prun
     let prior = [ redIn "Removed" None; redIn "ProjA" None ]
 
     let carried =
-        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) RunCoverage.none Map.empty [] prior
+        OutstandingFailure.carry (Set.ofList [ "ProjA" ]) RunCoverage.none Set.empty Map.empty [] prior
 
     test <@ carried |> List.map (fun f -> f.Project) = [ "ProjA" ] @>
 

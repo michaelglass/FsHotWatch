@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a red whole-project run no longer clears earlier reds for tests it never reached (AUTOMATION-1569). A red unfiltered run
+  counted as covering its whole project, so a stop-on-fail run (xUnit v3 `--stop-on-fail on` exits 2, an ordinary failure, and its
+  report lists only the tests before the stop) retired every earlier red in the project. Such a run now clears an earlier red only
+  for a test with a passed row in its complete report; every other earlier red, including one that names no test, stays
+  outstanding. A green unfiltered run still covers the whole project, and the scope `confirm` reads is unchanged.
+  `OutstandingFailure.carriedOver` and `carry` take the new `redInFull` set (`RunCoverage.redInFull`).
+
 - fix: a `run-tests` reply no longer reports a project whose result a mid-run model change revoked (AUTOMATION-1569). The reply
   was built from the run's raw results before the fold took back the projects whose compile inputs changed, so the CLI read
   `passed` for a result the daemon had discarded. The reply is now built after the fold and leaves revoked projects out (every

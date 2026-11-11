@@ -21,6 +21,7 @@ open FsHotWatch.TestPrune.TestReports
 open FsHotWatch.TestPrune.OutstandingFailures
 open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginTypes
+open FsHotWatch.TestPrune.RunResults
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 /// A test class written the way most F# suites write them.
@@ -141,7 +142,7 @@ let ``a backticked red filed from the console is retired by a class-filtered gre
 
     test
         <@
-            OutstandingFailure.carriedOver (Set.ofList [ "P" ]) coverage passed reds
+            OutstandingFailure.carriedOver (Set.ofList [ "P" ]) coverage Set.empty passed reds
             |> List.isEmpty
         @>
 
@@ -186,3 +187,107 @@ let ``a report row without a suite path declares no class`` () =
 [<InlineData("""{"results":{"tests":[{"name":".t","status":"passed","suite":["","t"]}]}}""")>]
 let ``a malformed report declares no class`` (json: string) =
     test <@ FsHotWatch.TestPrune.Flakiness.parseCtrfDeclaredClasses json = Set.empty @>
+
+// --- A red whole-project run clears only the reds its report shows passing (AUTOMATION-1569 C) ---
+//
+// Measured on xUnit v3 4.0.0: under `--stop-on-fail on` a red run exits 2, an ordinary
+// failure, and its CTRF report lists only the tests that ran before the stop. Such a run
+// says nothing about the tests it never reached.
+
+let private wholeRunOf (result: FsHotWatch.Events.TestResult) = Map.ofList [ "P", result ]
+
+let private inFull = Map.ofList [ "P", ProjectInFull ]
+
+[<Fact(Timeout = 10000)>]
+let ``a stop-on-fail red run keeps the earlier reds of tests it never reached`` () =
+    let prior =
+        [ failureIn runnerClass dottedMethod; failureIn runnerClass plainMethod ]
+
+    let results =
+        wholeRunOf (TestsFailed($"failed %s{runnerName dottedMethod} (1ms)", false, TimeSpan.Zero))
+
+    let coverage = RunCoverage.ofRun inFull results Map.empty
+    // The report a stop-on-fail run writes: only the test that failed.
+    let passed =
+        Map.ofList [ "P", passedTestsOfReport (ctrfReport [ dottedMethod, "failed" ]) ]
+
+    let carried =
+        OutstandingFailure.carriedOver (Set.ofList [ "P" ]) coverage (RunCoverage.redInFull results) passed prior
+
+    test <@ carried |> List.choose _.Method |> List.contains plainMethod @>
+
+[<Fact(Timeout = 10000)>]
+let ``a red whole-project run clears an earlier red whose test it shows passing, and only that one`` () =
+    let prior =
+        [ failureIn runnerClass dottedMethod; failureIn runnerClass plainMethod ]
+
+    let results =
+        wholeRunOf (TestsFailed($"failed %s{runnerName dottedMethod} (1ms)", false, TimeSpan.Zero))
+
+    let coverage = RunCoverage.ofRun inFull results Map.empty
+
+    let passed =
+        Map.ofList [ "P", passedTestsOfReport (ctrfReport [ dottedMethod, "failed"; plainMethod, "passed" ]) ]
+
+    let carried =
+        OutstandingFailure.carriedOver (Set.ofList [ "P" ]) coverage (RunCoverage.redInFull results) passed prior
+
+    test <@ carried |> List.choose _.Method = [ dottedMethod ] @>
+
+[<Fact(Timeout = 10000)>]
+let ``a red whole-project run carries an earlier red that names no test`` () =
+    // A class- or project-level red has no row that could show it passing.
+    let prior =
+        [ { failureIn runnerClass dottedMethod with
+              Method = None }
+          { failureIn runnerClass dottedMethod with
+              Class = None
+              Method = None } ]
+
+    let results =
+        wholeRunOf (TestsFailed($"failed %s{runnerName dottedMethod} (1ms)", false, TimeSpan.Zero))
+
+    let passed =
+        Map.ofList [ "P", passedTestsOfReport (ctrfReport [ dottedMethod, "failed"; plainMethod, "passed" ]) ]
+
+    let carried =
+        OutstandingFailure.carriedOver
+            (Set.ofList [ "P" ])
+            (RunCoverage.ofRun inFull results Map.empty)
+            (RunCoverage.redInFull results)
+            passed
+            prior
+
+    test <@ carried.Length = 2 @>
+
+[<Fact(Timeout = 10000)>]
+let ``a green whole-project run still covers the whole project`` () =
+    // POSITIVE CONTROL: nothing changes for a run that went green in full, report or not.
+    let prior =
+        [ failureIn runnerClass dottedMethod
+          { failureIn runnerClass plainMethod with
+              Class = None
+              Method = None } ]
+
+    let results =
+        wholeRunOf (TestsPassed("Test run summary: Passed!", false, TimeSpan.Zero))
+
+    let coverage = RunCoverage.ofRun inFull results Map.empty
+
+    test <@ coverage = Map.ofList [ "P", CoveredWholeProject ] @>
+    test <@ RunCoverage.redInFull results |> Set.isEmpty @>
+
+    test
+        <@
+            OutstandingFailure.carriedOver (Set.ofList [ "P" ]) coverage (RunCoverage.redInFull results) Map.empty prior
+            |> List.isEmpty
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``a red whole-project run's scope is still the whole project`` () =
+    // `confirm` reads `coverage`; this change must not alter what it counts.
+    let results =
+        wholeRunOf (TestsFailed($"failed %s{runnerName dottedMethod} (1ms)", false, TimeSpan.Zero))
+
+    test <@ RunCoverage.ofRun inFull results Map.empty = Map.ofList [ "P", CoveredWholeProject ] @>
+    test <@ RunCoverage.redInFull results = Set.ofList [ "P" ] @>

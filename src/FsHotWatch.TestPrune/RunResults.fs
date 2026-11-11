@@ -261,6 +261,21 @@ module RunCoverage =
     /// The projects this run executed at all (in full, or a class subset of).
     let coveredProjects (coverage: RunCoverage) : Set<string> = coverage |> Map.keys |> Set.ofSeq
 
+    /// The projects this run executed UNFILTERED and that did not come back green. Their
+    /// `CoveredWholeProject` still describes the run's scope (what `confirm` reads), but
+    /// it is not evidence about every test: a stop-on-fail run, or any red run whose
+    /// report stops short, exits like an ordinary failure and lists only the tests it
+    /// reached (AUTOMATION-1569). `OutstandingFailure.carriedOver` clears a prior red of
+    /// such a project only for a test with a PASSED row in this run's complete report.
+    let redInFull (results: Map<string, TestResult>) : Set<string> =
+        results
+        |> Map.filter (fun _ r ->
+            TestResult.executedTests r
+            && not (TestResult.wasFiltered r)
+            && not (TestResult.verifiedGreen r))
+        |> Map.keys
+        |> Set.ofSeq
+
     /// Did this run execute EVERY configured project, each in FULL? The only scope
     /// from which a whole-suite claim can be made — and the question `fshw confirm` is
     /// really asking. A run that filtered ANY project, or skipped one, covered less
