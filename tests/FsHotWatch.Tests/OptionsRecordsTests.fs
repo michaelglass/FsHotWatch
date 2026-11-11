@@ -1142,3 +1142,19 @@ let ``a listing's kind keys under its token, and an index naming any other kind 
                 | Missed why -> why = "the filed inputs are unreadable"
                 | Replayed _ -> false
             @>)
+
+[<Fact(Timeout = 120000)>]
+let ``a root Directory.Build.props, Directory.Build.targets or global.json edited while no daemon ran is evaluated again``
+    ()
+    =
+    // AUTOMATION-1561, the no-watcher half: the watcher now reports these root files, and
+    // a daemon that was NOT running when one changed must not replay the options either.
+    // The record key holds every import the evaluation read and every well-known file it
+    // probed above each project, so the next start evaluates again.
+    for change in
+        [ fun (t: Tree) -> File.AppendAllText(t.Path "Directory.Build.props", "<!-- edited -->\n")
+          fun (t: Tree) -> writeFile (t.Path "Directory.Build.targets") "<Project />\n"
+          fun (t: Tree) -> writeFile (t.Path "global.json") """{"sdk":{"version":"10.0.401"}}""" ] do
+        withTree (fun t ->
+            let loads, _ = restartAfter t (fun () -> change t) (request t) sameEnvironment
+            test <@ loads = 1 @>)

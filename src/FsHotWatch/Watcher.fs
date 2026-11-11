@@ -72,13 +72,26 @@ let internal isRelevantFile (path: string) =
 
         let isRelevantExt =
             ext = ".fs"
+            || ext = ".fsi"
             || ext = ".fsx"
             || ext = ".fsproj"
             || ext = ".sln"
             || ext = ".slnx"
             || ext = ".props"
+            || ext = ".targets"
 
         isRelevantExt && not (PathFilter.isGeneratedPath path)
+
+/// A root-level file fshw knows decides what every project compiles (`VerdictInputs.ToolKnownRootFileNames`:
+/// Directory.Build.props/targets, global.json, nuget.config, the dependency lock files).
+/// Outside the discovery roots, so nothing else admits it.
+let internal isToolKnownRootFile (root: string) (path: string) =
+    String.Equals(
+        Path.TrimEndingDirectorySeparator(Path.GetDirectoryName path),
+        Path.TrimEndingDirectorySeparator root,
+        StringComparison.Ordinal
+    )
+    && VerdictInputs.ToolKnownRootFileNames.Contains((Path.GetFileName path).ToLowerInvariant())
 
 /// How a FileCommandPlugin pattern string matches paths. Parsed once at
 /// config-load time via `FilePattern.parse` so downstream code never has to
@@ -171,7 +184,13 @@ let internal classifyChange (path: string) =
 
     if ext = ".sln" || ext = ".slnx" then
         SolutionChanged
-    elif ext = ".fsproj" || ext = ".props" || isProjectAssetsJson path then
+    elif
+        ext = ".fsproj"
+        || ext = ".props"
+        || ext = ".targets"
+        || isProjectAssetsJson path
+        || VerdictInputs.ToolKnownRootFileNames.Contains((Path.GetFileName path).ToLowerInvariant())
+    then
         ProjectChanged [ path ]
     else
         SourceChanged [ path ]
@@ -210,6 +229,7 @@ let internal acceptsUnderRoot (root: string) (extraPatterns: FilePattern list) :
         (discoveryRoots |> List.exists (fun d -> WatchRouter.isWithin d path)
          && isRelevantFileOrExtra extraPatterns path)
         || ((ext = ".sln" || ext = ".slnx") && Path.GetDirectoryName path = root)
+        || isToolKnownRootFile root path
         || (extraPatterns |> List.exists (fun p -> FilePattern.matches p path)
             && not (PathFilter.isGeneratedPath path))
 
@@ -228,7 +248,14 @@ let internal rescanUnderRoot (root: string) (dir: string) : string seq =
 
             match target with
             | Some target when Directory.Exists target ->
-                for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
+                for pattern in
+                    [| "*.fs"
+                       "*.fsi"
+                       "*.fsx"
+                       "*.fsproj"
+                       "*.props"
+                       "*.targets"
+                       "project.assets.json" |] do
                     yield!
                         SafeWalk.bestEffortFilePaths SafeWalk.ToolingExcludedDirs pattern target
                         |> Seq.filter isRelevantFile
@@ -433,7 +460,12 @@ type internal PollingFileWatcher
                 [ for pattern in [ "*.sln"; "*.slnx" ] do
                       yield!
                           root.GetFiles(pattern, SearchOption.TopDirectoryOnly)
-                          |> Array.map (fun file -> file.FullName) ],
+                          |> Array.map (fun file -> file.FullName)
+                  // The root-level build and toolchain files, which no discovery root holds.
+                  yield!
+                      root.GetFiles("*", SearchOption.TopDirectoryOnly)
+                      |> Array.map (fun file -> file.FullName)
+                      |> Array.filter (isToolKnownRootFile root.FullName) ],
                 Set.empty
             with
             | :? IOException
@@ -785,15 +817,16 @@ module FileWatcher =
         (systemWatcherFactory: SystemWatcherFactory)
         : FileWatcher =
         let handle (path: string) =
-            if isRelevantFileOrExtra extraPatterns path then
+            if isRelevantFileOrExtra extraPatterns path || isToolKnownRootFile repoRoot path then
                 onChange (classifyChange path)
 
+        // Top level: solutions, and the root build and toolchain files.
         let slnWatcher =
             systemWatcherFactory
                 handle
                 { Directory = repoRoot
                   IncludeSubdirectories = false
-                  Filters = [ "*.sln"; "*.slnx" ] }
+                  Filters = [ "*.sln"; "*.slnx" ] @ (VerdictInputs.ToolKnownRootFileNames |> Set.toList) }
 
         // Each FileCommandPlugin pattern gets its own recursive watcher at the
         // repo root. .NET handles wildcard and literal filter forms.
@@ -813,7 +846,14 @@ module FileWatcher =
                         handle
                         { Directory = dir
                           IncludeSubdirectories = true
-                          Filters = [ "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" ] }
+                          Filters =
+                            [ "*.fs"
+                              "*.fsi"
+                              "*.fsx"
+                              "*.fsproj"
+                              "*.props"
+                              "*.targets"
+                              "project.assets.json" ] }
                 )
             else
                 None
