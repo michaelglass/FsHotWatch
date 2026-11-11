@@ -3535,3 +3535,148 @@ let reader () = ()
             |> List.map (fun f -> f.Table, f.Column)
 
         test <@ facts = [ "schema,table", TestPrune.Sql.Column "col\"umn\\x" ] @>
+
+/// A test declared on an abstract base class runs only under the concrete classes that
+/// inherit it: xUnit v3 discovers `Ns.PgTests.roundtrips`, never `Ns.ContractTests.roundtrips`,
+/// and `--filter-class Ns.ContractTests` runs zero tests (exit 8). Indexed under the base
+/// name, the test was selected, filtered by a class that runs nothing, and its project read
+/// as verified (AUTOMATION-1569).
+[<Collection("FCS-AstAnalyzer")>]
+module ``Tests inherited from an abstract base class`` =
+
+    let private baseSource =
+        """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<AbstractClass>]
+type ContractTests() =
+    [<Fact>]
+    member _.roundtrips() = ()
+
+type PgTests() =
+    inherit ContractTests()
+
+type SqliteTests() =
+    inherit ContractTests()
+"""
+
+    let private classesOf (methods: TestMethodInfo list) (testMethod: string) =
+        methods
+        |> List.filter (fun t -> t.TestMethod = testMethod)
+        |> List.map _.TestClass
+        |> List.sort
+
+    [<Fact>]
+    let ``an inherited test is indexed under each concrete derived class, not the abstract base`` () =
+        let result = analyze baseSource
+
+        test <@ classesOf result.TestMethods "roundtrips" = [ "M+PgTests"; "M+SqliteTests" ] @>
+
+    [<Fact>]
+    let ``each derived class's inherited test is its own symbol, joined to the base method`` () =
+        // `test_methods` is keyed by symbol, so two classes cannot share the base method's
+        // row: each needs a symbol of its own, and an edge to the base method so a change
+        // to the base test's body still reaches it.
+        let result = analyze baseSource
+
+        let inherited =
+            result.TestMethods |> List.filter (fun t -> t.TestMethod = "roundtrips")
+
+        let symbolNames = result.Symbols |> List.map _.FullName |> Set.ofList
+
+        test <@ inherited |> List.map _.SymbolFullName |> List.distinct |> List.length = 2 @>
+        test <@ inherited |> List.forall (fun t -> symbolNames.Contains t.SymbolFullName) @>
+
+        test
+            <@
+                inherited
+                |> List.forall (fun t ->
+                    result.Dependencies
+                    |> List.exists (fun d ->
+                        d.FromSymbol = t.SymbolFullName && d.ToSymbol = "M.ContractTests.roundtrips"))
+            @>
+
+    [<Fact>]
+    let ``a change to the base test's body selects every derived class`` () =
+        let result = analyze baseSource
+        let store = TestPrune.InMemoryStore.fromAnalysisResults [ result ]
+
+        let changed =
+            result.Symbols
+            |> List.filter (fun s -> s.FullName = "M.ContractTests.roundtrips")
+            |> List.map (SymbolInfo.withContentHash "changed")
+
+        test <@ changed.Length = 1 @>
+        let file = changed.Head.SourceFile
+
+        match TestPrune.ImpactAnalysis.selectTests store [ file ] (Map.ofList [ file, changed ]) with
+        | TestPrune.ImpactAnalysis.RunSubset tests, _ ->
+            test <@ tests |> List.map _.TestClass |> List.distinct |> List.sort = [ "M+PgTests"; "M+SqliteTests" ] @>
+        | TestPrune.ImpactAnalysis.RunAll reason, _ ->
+            failwith $"Expected RunSubset, got RunAll: %s{TestPrune.Domain.SelectionReason.describe reason}"
+
+    [<Fact>]
+    let ``a concrete base keeps its own test and each derived class adds one`` () =
+        // POSITIVE CONTROL for the base's own row: xUnit runs a test on a concrete base under
+        // the base AND under every class that inherits it.
+        let result = analyze (baseSource.Replace("[<AbstractClass>]\n", ""))
+
+        test <@ classesOf result.TestMethods "roundtrips" = [ "M+ContractTests"; "M+PgTests"; "M+SqliteTests" ] @>
+
+    [<Fact>]
+    let ``a derived class in another file indexes the test it inherits`` () =
+        let tmpDir =
+            Path.Combine(Path.GetTempPath(), $"testprune-inherited-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let baseFile = Path.Combine(tmpDir, "Contract.fsx")
+            let derivedFile = Path.Combine(tmpDir, "Derived.fsx")
+
+            let contractSource =
+                """module Contract
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<AbstractClass>]
+type ContractTests() =
+    [<Fact>]
+    member _.roundtrips() = ()
+"""
+
+            let derivedSource =
+                """// `#load` puts the base file BEFORE this one, as a project's compile order would. A
+// script with a directive takes its module name, `Derived`, from the file name.
+#load "Contract.fsx"
+
+open Contract
+
+type PgTests() =
+    inherit ContractTests()
+"""
+
+            File.WriteAllText(baseFile, contractSource)
+            File.WriteAllText(derivedFile, derivedSource)
+
+            let analyzeFile file source =
+                let options = getScriptOptions checker file source |> Async.RunSynchronously
+
+                match analyzeSource checker file source options "IntTests" |> Async.RunSynchronously with
+                | Ok r -> r
+                | Error e -> failwith $"analysis failed: %s{e}"
+
+            let baseResult = analyzeFile baseFile contractSource
+            let derivedResult = analyzeFile derivedFile derivedSource
+
+            test <@ classesOf baseResult.TestMethods "roundtrips" |> List.isEmpty @>
+            test <@ classesOf derivedResult.TestMethods "roundtrips" = [ "Derived+PgTests" ] @>
+        finally
+            try
+                Directory.Delete(tmpDir, true)
+            with _ ->
+                ()
