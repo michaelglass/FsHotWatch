@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: `WaitForScan` answers with the caller's own scan request, not with a generation another scan reached first
+  (AUTOMATION-1567). A client's `Scan` admits its request behind a scan already in flight; when that scan completed
+  before the client's `WaitForScan G` arrived, the generation was already past G and the wait returned green at once. If
+  the request then failed, no reply carried the failure and the host rested on the earlier scan's evidence. While the
+  latest admitted request is unsettled the waiter now waits for it, and once it has failed the waiter receives that
+  failure, whatever the generation. A request that succeeded, or an earlier failed scan superseded by one that succeeded,
+  still answers at once.
+
 ## 0.10.0-alpha.108 - 2026-11-11
 
 - fix: a repeated `check` on an unchanged tree no longer goes red on coverage (AUTOMATION-1530). A test run replayed from the

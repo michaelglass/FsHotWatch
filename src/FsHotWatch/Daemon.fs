@@ -1408,6 +1408,11 @@ let private scanFailure (settled: Task<unit>) : exn =
 /// generation that request will never produce. An unbound waiter resolves when the scan
 /// generation passes the one it asked about.
 type ScanSignal(?cancellationToken: CancellationToken) =
+    // The most recently admitted request, read without the mailbox by
+    // `WaitForGeneration`'s fast path. Written before its `ObserveScan` is posted, so a
+    // caller whose request was admitted before it asked always sees it.
+    let mutable latestObserved: Task<unit> = null
+
     let satisfied afterGeneration generation =
         if afterGeneration >= 0L then
             generation > afterGeneration
@@ -1441,18 +1446,23 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                                 latestReceipt
                                 |> Option.filter (fun receipt -> not receipt.IsCompletedSuccessfully)
 
+                            // The caller's own request answers before the generation does.
+                            // A generation already past the one quoted can be another scan's,
+                            // completed while this request waited behind it; resolving on it
+                            // would hand that scan's evidence to this caller and drop this
+                            // request's failure.
                             match pending with
-                            | _ when satisfied afterGeneration latestGeneration ->
+                            | Some receipt when receipt.IsCompleted ->
+                                // A completed unsuccessful receipt failed or was cancelled;
+                                // `scanFailure` names either.
+                                tcs.TrySetException(scanFailure receipt) |> ignore
+                                return! loop latestGeneration latestReceipt waiters
+                            | None when satisfied afterGeneration latestGeneration ->
                                 Logging.debug
                                     "scan-signal"
                                     $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
 
                                 tcs.TrySetResult(()) |> ignore
-                                return! loop latestGeneration latestReceipt waiters
-                            | Some receipt when receipt.IsCompleted ->
-                                // A completed unsuccessful receipt failed or was cancelled;
-                                // `scanFailure` names either.
-                                tcs.TrySetException(scanFailure receipt) |> ignore
                                 return! loop latestGeneration latestReceipt waiters
                             | _ ->
                                 Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
@@ -1537,9 +1547,15 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
     /// If afterGeneration < 0, resolves on the next generation increment. A waiter bound
-    /// to a scan request that fails receives that failure.
+    /// to a scan request that fails receives that failure. While the latest admitted
+    /// request is unsettled or has failed, a generation already past `afterGeneration`
+    /// does not answer: the waiter is that request's.
     member _.WaitForGeneration(afterGeneration: int64, currentGeneration: int64) : Task<unit> =
-        if satisfied afterGeneration currentGeneration then
+        let observed = Volatile.Read &latestObserved
+
+        let requestSettledGreen = isNull observed || observed.IsCompletedSuccessfully
+
+        if requestSettledGreen && satisfied afterGeneration currentGeneration then
             Logging.debug
                 "scan-signal"
                 $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — already satisfied, returning immediately"
@@ -1555,6 +1571,7 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     /// Bind later waiters to an admitted scan request, and settle them with its outcome
     /// once `receipt` settles, whether or not the requesting caller is still waiting.
     member _.ObserveScan(receipt: Task<unit>, generation: unit -> int64) =
+        Volatile.Write(&latestObserved, receipt)
         agent.Post(ObserveScan receipt)
 
         receipt.ContinueWith(
