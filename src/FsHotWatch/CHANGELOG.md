@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: an options record is no longer refused because a directory above the checkout changed, and is never filed under
+  bytes it was not evaluated from (AUTOMATION-1602, AUTOMATION-1592). A probed path that was absent was judged by the
+  change time of the nearest directory above it that exists, so an absent `~/Directory.Build.targets` was judged by `~`,
+  which other processes change every few seconds, and on a busy machine most cold evaluations filed nothing. Which
+  probes are absent is now recorded before the evaluation starts; outside the checkout, a probe absent before and after
+  is unchanged (inside it the directory still judges, AUTOMATION-1438). The well-known files are probed only as far up
+  as MSBuild looks: to the first `Directory.Build.props`, `Directory.Build.targets` or `Directory.Packages.props` found,
+  further only when that file imports its parent, and to the first `global.json`. Separately, the filer read every
+  input's change time and only then hashed the inputs, so an input rewritten between the two filed the old options under
+  the new bytes' key and later starts replayed them; the inputs are now hashed before the change times are read and
+  again after, and a difference is `Moved`. A filing hashes its inputs twice; the record format does not change.
+
 ## 0.10.0-alpha.109 - 2026-11-11
 
 - fix: the outcome store's GC no longer evicts one kind's records to pay for another's (AUTOMATION-1583). The store

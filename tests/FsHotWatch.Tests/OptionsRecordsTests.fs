@@ -123,14 +123,14 @@ let private writeFile (path: string) (text: string) =
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
     File.WriteAllText(path, text)
 
-let private withTree (body: Tree -> unit) =
-    withTempDir "options-records" (fun root ->
-        // MSBuild is located the way the daemon locates it, before anything evaluates.
-        Daemon.Daemon.msbuildWorkspaceLoader root |> ignore
+let private treeAt (root: string) (body: Tree -> unit) =
+    Directory.CreateDirectory root |> ignore
+    // MSBuild is located the way the daemon locates it, before anything evaluates.
+    Daemon.Daemon.msbuildWorkspaceLoader root |> ignore
 
-        writeFile
-            (Path.Combine(root, "Directory.Build.props"))
-            """<Project>
+    writeFile
+        (Path.Combine(root, "Directory.Build.props"))
+        """<Project>
   <Import Project="$(MSBuildThisFileDirectory)build/common.props" />
   <Import Project="$(MSBuildThisFileDirectory)extra/*.props" />
   <Import Project="$(MSBuildThisFileDirectory)maybe.props" Condition="Exists('$(MSBuildThisFileDirectory)maybe.props')" />
@@ -138,41 +138,44 @@ let private withTree (body: Tree -> unit) =
 </Project>
 """
 
-        let common = Path.Combine(root, "build", "common.props")
-        writeFile common "<Project><PropertyGroup><Common>1</Common></PropertyGroup></Project>\n"
-        Directory.CreateDirectory(Path.Combine(root, "extra")) |> ignore
-        let project = Path.Combine(root, "src", "App", "App.fsproj")
+    let common = Path.Combine(root, "build", "common.props")
+    writeFile common "<Project><PropertyGroup><Common>1</Common></PropertyGroup></Project>\n"
+    Directory.CreateDirectory(Path.Combine(root, "extra")) |> ignore
+    let project = Path.Combine(root, "src", "App", "App.fsproj")
 
-        writeFile
-            project
-            """<Project Sdk="Microsoft.NET.Sdk">
+    writeFile
+        project
+        """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Lib.fs" /></ItemGroup>
 </Project>
 """
 
-        writeFile (Path.Combine(root, "src", "App", "Lib.fs")) "module Lib\n"
-        let assets = Path.Combine(root, "src", "App", "obj", "project.assets.json")
-        writeFile assets """{"version":3,"restore":1}"""
+    writeFile (Path.Combine(root, "src", "App", "Lib.fs")) "module Lib\n"
+    let assets = Path.Combine(root, "src", "App", "obj", "project.assets.json")
+    writeFile assets """{"version":3,"restore":1}"""
 
-        writeFile
-            (Path.Combine(root, "src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
-            "module AssemblyInfo\n"
+    writeFile
+        (Path.Combine(root, "src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        "module AssemblyInfo\n"
 
-        let store =
-            OutcomeStore.Store(
-                { Root = Path.Combine(root, ".store")
-                  Ttl = OutcomeStore.defaultTtl
-                  MaxBytes = OutcomeStore.defaultMaxBytes
-                  Log = ignore }
-            )
+    let store =
+        OutcomeStore.Store(
+            { Root = Path.Combine(root, ".store")
+              Ttl = OutcomeStore.defaultTtl
+              MaxBytes = OutcomeStore.defaultMaxBytes
+              Log = ignore }
+        )
 
-        body
-            { Root = root
-              Project = project
-              Common = common
-              Assets = assets
-              Store = store })
+    body
+        { Root = root
+          Project = project
+          Common = common
+          Assets = assets
+          Store = store }
+
+let private withTree (body: Tree -> unit) =
+    withTempDir "options-records" (fun root -> treeAt root body)
 
 let private request (t: Tree) : Request =
     { Root = t.Root
@@ -916,7 +919,7 @@ let ``a lookup names why it misses: nothing filed, unreadable records, gone opti
             | Replayed _ -> "replayed"
 
         test <@ missed (tryReplay store req [] DateTime.UtcNow) = "no evaluation of this request is filed" @>
-        test <@ file store req inputs projects [ "KNOB", "1" ] DateTime.MinValue never = Filed @>
+        test <@ file store req inputs projects [ "KNOB", "1" ] DateTime.MinValue Set.empty never = Filed @>
         test <@ missed (tryReplay store req [ "KNOB", "1" ] DateTime.UtcNow) = "replayed" @>
 
         // Six inputs moved: the reason names five and counts the rest.
@@ -968,7 +971,7 @@ let ``nothing is filed into a store that cannot be written`` () =
 
         test
             <@
-                file store req inputs projects [] DateTime.MinValue never = Refused
+                file store req inputs projects [] DateTime.MinValue Set.empty never = Refused
                     "the outcome store could not be written"
             @>
 
@@ -979,7 +982,7 @@ let ``nothing is filed into a store that cannot be written`` () =
                     [ { inputs.Listings.Head with
                           Recursive = true } ] }
 
-        let refused = file store req tree projects [] DateTime.MinValue never
+        let refused = file store req tree projects [] DateTime.MinValue Set.empty never
         test <@ refused = Refused $"MSBuild listed the tree under %s{root}, which is not keyed" @>)
 
 [<Fact>]
@@ -1125,7 +1128,7 @@ let ``a listing's kind keys under its token, and an index naming any other kind 
         let label = "listing:files:*:" + Path.Combine(root, "*.props")
         test <@ key.Inputs |> List.exists (fun (l, _) -> l = label) @>
 
-        test <@ file store req inputs projects [] DateTime.MinValue never = Filed @>
+        test <@ file store req inputs projects [] DateTime.MinValue Set.empty never = Filed @>
 
         let filed = (store.LookupWithOutputs(requestKey req)).Value |> snd |> Option.get
 
@@ -1158,3 +1161,221 @@ let ``a root Directory.Build.props, Directory.Build.targets or global.json edite
         withTree (fun t ->
             let loads, _ = restartAfter t (fun () -> change t) (request t) sameEnvironment
             test <@ loads = 1 @>)
+
+/// A checkout one level below a directory that stands in for the home directory, which
+/// other processes write in all the time (AUTOMATION-1602). The filer reads real change
+/// times for every path under `home`, and none above it: the temporary directory above is
+/// shared with every test running beside this one.
+let private withCheckoutUnderHome (body: string -> Tree -> unit) =
+    withTempDir "options-home" (fun home -> treeAt (Path.Combine(home, "checkout")) (fun t -> body home t))
+
+let private underHome (home: string) (path: string) : FileStamp.Stamp voption =
+    if path.StartsWith(home, StringComparison.Ordinal) then
+        FileStamp.read path
+    else
+        ValueNone
+
+let private homeLoader (home: string) (t: Tree) (during: unit -> unit) =
+    let inner =
+        CountingLoader((fun () -> [ sampleOptions t.Project t.Assets ]), during, None)
+
+    let loader =
+        CachingLoader(
+            inner,
+            OptionsInputs.list,
+            t.Store,
+            (fun _ -> request t),
+            (fun () -> sameEnvironment),
+            ignore,
+            racyWindow = TimeSpan.Zero,
+            stamp = underHome home
+        )
+
+    inner, (loader :> IWorkspaceLoader)
+
+/// Evaluate once with `during` inside the load, then start again with nothing happening:
+/// how many evaluations did each run?
+let private homeRestart (home: string) (t: Tree) (during: unit -> unit) =
+    let cold, first = homeLoader home t during
+    first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+    let counted, restarted = homeLoader home t ignore
+    restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+    cold.Loads, counted.Loads
+
+// AUTOMATION-1602 (a): the checkout has no `Directory.Build.targets`, so MSBuild looks for
+// one in the home directory too, and finds none. A file created BESIDE that absent path
+// changes the home directory, not the path: it was absent before the evaluation and is
+// absent now, so nothing the evaluation read moved. Judged by the home directory's change
+// time, as it was, every evaluation on a machine whose home directory is busy was refused.
+[<Fact(Timeout = 120000)>]
+let ``a file created beside an absent probe above the checkout does not keep the evaluation from being filed`` () =
+    withCheckoutUnderHome (fun home t ->
+        let n = ref 0
+
+        let sibling () =
+            n.Value <- n.Value + 1
+            untilFileClockReachesNow ()
+            File.WriteAllText(Path.Combine(home, $"sibling-%d{n.Value}.json"), "{}")
+
+        let cold, restarted = homeRestart home t sibling
+        test <@ (cold, restarted) = (1, 0) @>)
+
+// The control: the absent probe itself appearing is a change to what MSBuild would read.
+[<Fact(Timeout = 120000)>]
+let ``an absent probe above the checkout that appears while the projects are evaluated is never filed`` () =
+    withCheckoutUnderHome (fun home t ->
+        let targets = Path.Combine(home, "Directory.Build.targets")
+
+        let appear () =
+            if not (File.Exists targets) then
+                untilFileClockReachesNow ()
+                File.WriteAllText(targets, "<Project />\n")
+
+        let _, restarted = homeRestart home t appear
+        test <@ restarted = 1 @>)
+
+// The control: a file above the checkout that MSBuild imports (the checkout has no
+// `Directory.Build.targets` of its own) is an input like any other, and an edit to it
+// while the projects are evaluated is never filed.
+[<Fact(Timeout = 120000)>]
+let ``a file above the checkout that MSBuild imports, edited while the projects are evaluated, is never filed`` () =
+    withCheckoutUnderHome (fun home t ->
+        let targets = Path.Combine(home, "Directory.Build.targets")
+        File.WriteAllText(targets, "<Project />\n")
+        let n = ref 0
+
+        let edit () =
+            n.Value <- n.Value + 1
+            untilFileClockReachesNow ()
+            File.WriteAllText(targets, $"<Project><!-- %d{n.Value} --></Project>\n")
+
+        let cold, restarted = homeRestart home t edit
+        test <@ (cold, restarted) = (1, 1) @>)
+
+// MSBuild imports the first `Directory.Build.props` above a project and looks no further
+// unless that file does. A probe above the checkout's own one is not an input.
+[<Fact(Timeout = 120000)>]
+let ``the well-known files are probed up to the first one MSBuild finds, and past it only when that one looks further``
+    ()
+    =
+    withCheckoutUnderHome (fun home t ->
+        let aboveProps = Path.Combine(home, "Directory.Build.props")
+        let aboveTargets = Path.Combine(home, "Directory.Build.targets")
+        let options = [ sampleOptions t.Project t.Assets ]
+        let probes () = (OptionsInputs.list options).Probes
+        test <@ not (List.contains aboveProps (probes ())) @>
+        test <@ List.contains aboveTargets (probes ()) @>
+
+        writeFile
+            (t.Path "Directory.Build.props")
+            """<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+</Project>
+"""
+
+        test <@ List.contains aboveProps (probes ()) @>)
+
+// AUTOMATION-1592 item 3: an input rewritten after its change time is read and before it is
+// hashed would file the options evaluated from the old bytes under the new bytes' key, and
+// every later start would replay them. The stamp here rewrites a file it is asked about and
+// answers with the change time from before the rewrite, as a read that lost that race does.
+[<Fact>]
+let ``an input rewritten between its change time being read and its bytes being hashed is never filed`` () =
+    withSynthetic (fun root store inputs req ->
+        let a = Path.Combine(root, "a.props")
+        let before = FileStamp.read a
+        let rewritten = ref false
+
+        let racing (path: string) =
+            if not rewritten.Value then
+                rewritten.Value <- true
+                File.WriteAllText(a, "a, rewritten")
+
+            if path = a then before else FileStamp.read path
+
+        let filing = file store req inputs projects [] DateTime.MaxValue Set.empty racing
+
+        test
+            <@
+                match filing with
+                | Moved moved -> List.contains a moved
+                | _ -> false
+            @>
+
+        test
+            <@
+                match tryReplay store req [] DateTime.UtcNow with
+                | Replayed _ -> false
+                | Missed _ -> true
+            @>)
+
+// The same race on a probe and on a listing: the result names the path that appeared, and
+// the listing by its key label, which names no single path.
+[<Fact>]
+let ``a probe or a listing that changes between the change times being read and the inputs being hashed is never filed``
+    ()
+    =
+    for change in [ "probe"; "listing" ] do
+        withSynthetic (fun root store inputs req ->
+            let probe = Path.Combine(root, "missing", "deeper", "c.props")
+            let listed = Path.Combine(root, "new.props")
+            let changed = ref false
+
+            let racing (_: string) =
+                if not changed.Value then
+                    changed.Value <- true
+
+                    match change with
+                    | "probe" ->
+                        Directory.CreateDirectory(Path.GetDirectoryName probe) |> ignore
+                        File.WriteAllText(probe, "c")
+                    | _ -> File.WriteAllText(listed, "new")
+
+                ValueNone
+
+            let expected =
+                match change with
+                | "probe" -> probe
+                | _ -> "listing:files:*:" + Path.Combine(root, "*.props")
+
+            let filing = file store req inputs projects [] DateTime.MaxValue Set.empty racing
+
+            test
+                <@
+                    match filing with
+                    | Moved moved -> List.contains expected moved
+                    | _ -> false
+                @>)
+
+// A `Directory.*` file that cannot be read is taken to look further up: a probe too many only
+// moves the key more often. A `global.json` found ends its lookup whatever it holds.
+[<Fact>]
+let ``a well-known file that cannot be read is probed past, and a global.json found ends its lookup`` () =
+    withTempDir "options-walk" (fun root ->
+        let project = Path.Combine(root, "checkout", "App.fsproj")
+        writeFile project "<Project />\n"
+        writeFile (Path.Combine(root, "checkout", "Directory.Build.props")) "<Project />\n"
+        writeFile (Path.Combine(root, "checkout", "global.json")) "GetPathOfFileAbove"
+
+        let unreadable: string -> string =
+            fun path -> raise (IOException $"cannot read %s{path}")
+
+        let probes = OptionsRecords.probesAboveReading unreadable project
+        test <@ List.contains (Path.Combine(root, "Directory.Build.props")) probes @>
+        test <@ not (List.contains (Path.Combine(root, "global.json")) probes) @>)
+
+// A project with no package assets and no target framework is listed from its single
+// evaluation, without the assets read or a second, per-framework one.
+[<Fact(Timeout = 120000)>]
+let ``a project with no package assets and no target framework is listed from one evaluation`` () =
+    withTree (fun t ->
+        let bare =
+            { sampleOptions t.Project t.Assets with
+                TargetFramework = ""
+                ProjectSdkInfo =
+                    { (sampleOptions t.Project t.Assets).ProjectSdkInfo with
+                        ProjectAssetsFile = "" } }
+
+        let inputs = OptionsInputs.list [ bare ]
+        test <@ List.contains t.Project inputs.Reads @>
+        test <@ not (List.contains t.Assets inputs.Reads) @>)
