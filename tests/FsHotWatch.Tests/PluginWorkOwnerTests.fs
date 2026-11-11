@@ -1138,3 +1138,75 @@ let ``async changes posted back to back publish in posting order through the one
         )
 
     Assert.Equal<int list>(List.init 400 id, List.rev (store.Read row))
+
+// --- AUTOMATION-1601: changeAsync's await, pinned without relying on scheduling ---
+
+[<Fact(Timeout = 60000)>]
+let ``an async change posted from inside a synchronous change is pending until that change returns, then publishes``
+    ()
+    =
+    task {
+        let store = Store()
+        let outer = store.Register("synchronous outer", 0, fun _ -> idle ())
+        let inner = store.Register("async inner", 0, fun _ -> idle ())
+        let mutable posted: Task<int> = null
+        let mutable pendingInside = false
+
+        // The synchronous caller is the writer while its transition runs, so the async post
+        // only queues: its reply is incomplete when changeAsync reaches its await (the
+        // suspend arm, reached deterministically). The writer publishes it after returning.
+        store.Change(
+            outer,
+            fun _ n ->
+                posted <- store.ChangeAsync(inner, (fun _ m -> (m + 1, m + 1)))
+                pendingInside <- not posted.IsCompleted
+                (n + 1, ())
+        )
+
+        Assert.True(pendingInside, "the async change must still be queued while the synchronous one runs")
+        let! published = posted
+        Assert.Equal(1, published)
+        Assert.Equal(1, store.Read inner)
+        Assert.Equal(1, store.Read outer)
+    }
+
+[<Fact(Timeout = 60000)>]
+let ``an awaited async change whose transition throws surfaces the transition's own exception, not an AggregateException``
+    ()
+    =
+    task {
+        let store = Store()
+        let row = store.Register("throwing change", 0, fun _ -> idle ())
+
+        // ThrowsAsync matches the exact type: an AggregateException wrapping it would fail here.
+        let! thrown =
+            Assert.ThrowsAsync<InvalidOperationException>(fun () ->
+                store.ChangeAsync(row, (fun _ (_: int) -> (invalidOp "transition failed": int * unit))) :> Task)
+
+        Assert.Equal("transition failed", thrown.Message)
+
+        // The failed change published nothing, and the store still publishes the next one.
+        let! next = store.ChangeAsync(row, (fun _ n -> (n + 1, n + 1)))
+        Assert.Equal(1, next)
+        Assert.Equal(1, store.Read row)
+    }
+
+[<Fact(Timeout = 60000)>]
+let ``an async change whose transition throws OperationCanceledException ends Canceled, not Faulted`` () =
+    task {
+        let store = Store()
+        let row = store.Register("canceling change", 0, fun _ -> idle ())
+
+        // The reply is faulted with the exception (publish catches everything); the task CE
+        // that awaits it hands an OperationCanceledException to its method builder, which
+        // ends the task Canceled. A ContinueWith over the reply would end it Faulted instead,
+        // which is why AUTOMATION-1601 kept the await.
+        let change =
+            store.ChangeAsync(
+                row,
+                (fun _ (_: int) -> (raise (OperationCanceledException "transition canceled"): int * unit))
+            )
+
+        let! _ = Assert.ThrowsAnyAsync<OperationCanceledException>(fun () -> change :> Task)
+        Assert.True(change.IsCanceled, $"status was %A{change.Status}")
+    }
