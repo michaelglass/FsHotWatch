@@ -1212,6 +1212,37 @@ let ``classify: clean unfiltered zero-test report verifies nothing`` () =
     test <@ not (TestResult.verifiedGreen result) @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
+let ``zero-match: a RED report outranks a "Zero tests ran" text under a filter`` () =
+    // AUTOMATION-1569 A. The text marker must not decide before the report is read: a run
+    // whose report counts a failure matched tests and failed one, whatever its output says.
+    let report = rep 3 2 1 0 0
+
+    let outcome =
+        ProcessOutcome.Failed(2, ProcessOutput.Drained "  expected TestsNoMatch(\"Zero tests ran\")")
+
+    test <@ not (isZeroMatchRun true (ReportRequested report) outcome) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``zero-match: a red report outranks even the zero-tests exit code`` () =
+    let report = rep 3 2 0 0 1
+
+    let outcome =
+        ProcessOutcome.Failed(ZeroTestsExitCode, ProcessOutput.Drained "Zero tests ran")
+
+    test <@ not (isZeroMatchRun true (ReportRequested report) outcome) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``zero-match: a filtered run with a clean zero-test report is still a zero match`` () =
+    // POSITIVE CONTROL: the genuine fan-out case keeps reading as "this project has no
+    // test matching the filter".
+    let outcome =
+        ProcessOutcome.Failed(ZeroTestsExitCode, ProcessOutput.Drained "Test run summary: Zero tests ran")
+
+    test <@ isZeroMatchRun true (ReportRequested(rep 0 0 0 0 0)) outcome @>
+    test <@ isZeroMatchRun true (ReportRequested missingReport) outcome @>
+    test <@ isZeroMatchRun true NoReportRequested outcome @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
     let report = rep 0 0 0 0 0
 

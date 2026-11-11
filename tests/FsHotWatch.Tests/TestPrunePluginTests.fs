@@ -3386,6 +3386,20 @@ let ``isZeroTestsUnderFilter false for a genuine test failure under filter`` () 
     test <@ not (isZeroTestsUnderFilter true outcome) @>
 
 [<Fact(Timeout = 15000)>]
+let ``isZeroTestsUnderFilter false when the output ALSO reports a failure (a test that prints the phrase)`` () =
+    // AUTOMATION-1569 A. A failing test whose assertion message contains "Zero tests ran"
+    // (Unquote prints the quoted expression, e.g. one asserting on `TestsNoMatch("Zero tests
+    // ran", …)`) must stay red: the summary reports a failure, so the run matched tests.
+    let outcome =
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+            2,
+            FsHotWatch.ProcessHelper.ProcessOutput.Drained
+                "failed A.B.c (3ms)\n  expected TestsNoMatch(\"Zero tests ran\")\nTest run summary: Failed!\n  total: 3\n  failed: 1"
+        )
+
+    test <@ not (isZeroTestsUnderFilter true outcome) @>
+
+[<Fact(Timeout = 15000)>]
 let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
     let outcome =
         FsHotWatch.ProcessHelper.ProcessOutcome.Succeeded(
