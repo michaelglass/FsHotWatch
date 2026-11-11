@@ -4902,6 +4902,44 @@ let ``a model change mid-run keeps the projects it did not touch and revokes the
     test <@ rediscovering = ModelCarry.Unprovable @>
 
 [<Fact>]
+let ``a run-tests reply leaves out the projects a mid-run model change revoked`` () =
+    // AUTOMATION-1569 E. The reply used to be built from the run's raw results before the
+    // fold applied `acrossModelChange`, so the CLI read "passed" for a revoked project.
+    let finished =
+        testsFinishedEvent
+            [ "ProjA", passed false; "ProjB", passed false ]
+            (fullSuiteLaunch [ "ProjA"; "ProjB" ]
+             |> withInputs 1L [ "ProjA", "a"; "ProjB", "b" ])
+
+    let completion, launch =
+        match finished with
+        | Custom(TestsFinished(_, completed, launch)) -> completed, launch
+        | _ -> failwith "expected TestsFinished"
+
+    let replyFor current =
+        let carry, _, _ =
+            acrossModelChange (Some 2L) (Some(identitiesOf current)) completion launch
+
+        let reply =
+            formatStandingResultsJson
+                (revokedProjects carry completion)
+                None
+                Map.empty
+                { Results = completion.Results
+                  Elapsed = TimeSpan.Zero }
+
+        use doc = JsonDocument.Parse reply
+
+        doc.RootElement.GetProperty("projects").EnumerateArray()
+        |> Seq.map (fun p -> p.GetProperty("project").GetString())
+        |> List.ofSeq
+
+    test <@ replyFor [ "ProjA", "a"; "ProjB", "b2" ] = [ "ProjA" ] @>
+    test <@ replyFor [ "ProjA", "a2"; "ProjB", "b2" ] |> List.isEmpty @>
+    // POSITIVE CONTROL: a model change that touched no test project leaves the reply whole.
+    test <@ replyFor [ "ProjA", "a"; "ProjB", "b" ] = [ "ProjA"; "ProjB" ] @>
+
+[<Fact>]
 let ``a receipt speaks for a later model only while every project it covered is unchanged`` () =
     let receipt: TestEvidenceReceipt =
         { InputTreeHash = Some "tree"
