@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the deps gate's mtime probe reads the dep files of a project's whole `ProjectReference` closure, not only its own
+  (AUTOMATION-697). A workspace with no deps baseline that merged a `PackageReference` added to a referenced project only
+  read the referencing projects as fresh, recorded their stale assets as the baseline, and failed every later check with
+  `The namespace '…' is not defined`. Those projects now read stale and restore. A compile-item-only edit to a referenced
+  project is still suppressed by the baseline.
+
 - fix: `WaitForScan` answers with the caller's own scan request, not with a generation another scan reached first
   (AUTOMATION-1567). A client's `Scan` admits its request behind a scan already in flight; when that scan completed
   before the client's `WaitForScan G` arrived, the generation was already past G and the wait returned green at once. If

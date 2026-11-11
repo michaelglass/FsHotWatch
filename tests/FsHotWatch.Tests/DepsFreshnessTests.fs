@@ -1077,10 +1077,10 @@ let private restoredWorkspace (root: string) =
     let props =
         write "Directory.Build.props" "<Project><PropertyGroup><LangVersion>9</LangVersion></PropertyGroup></Project>"
 
-    write
-        "Lib/Lib.fsproj"
-        """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup></Project>"""
-    |> ignore
+    let lib =
+        write
+            "Lib/Lib.fsproj"
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="1.0.0" /></ItemGroup></Project>"""
 
     let fsproj =
         write
@@ -1089,7 +1089,7 @@ let private restoredWorkspace (root: string) =
 
     let assets = write "P/obj/project.assets.json" """{ "version": 3 }"""
 
-    for input in [ props; fsproj ] do
+    for input in [ props; lib; fsproj ] do
         File.SetLastWriteTimeUtc(input, DateTime.UtcNow.AddMinutes -10.0)
 
     File.SetLastWriteTimeUtc(assets, DateTime.UtcNow.AddMinutes -5.0)
@@ -1390,3 +1390,50 @@ let ``evaluateProject: a waiter whose deps drifted again is restored, not record
     // sig-B was restored by its own attempt, not certified by sig-A's.
     test <@ restores.Value = 2 @>
     test <@ loserResult.Value = Some RecoveredOk @>
+
+// AUTOMATION-697: a merge adds a PackageReference to a referenced project only. The
+// referencing project's own inputs are older than its assets, and a workspace with no
+// durable baseline has nothing to compare its signature with — so unless the mtime
+// probe reads the closure too, the stale assets are certified fresh, recorded as the
+// baseline, and FCS reports "The namespace ... is not defined" on every later check.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a daemon with no baseline restores when a referenced project was written after the assets`` () =
+    withTempDir "deps-no-baseline-closure-newer" (fun root ->
+        let _, fsproj, _ = restoredWorkspace root
+        let lib = Path.Combine(root, "Lib", "Lib.fsproj")
+
+        File.WriteAllText(
+            lib,
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="A" Version="1.0.0" /><PackageReference Include="B" Version="1.0.0" /></ItemGroup></Project>"""
+        )
+
+        File.SetLastWriteTimeUtc(lib, DateTime.UtcNow)
+        test <@ not (File.Exists(baselinePath root)) @>
+        test <@ isStale (detectProjectFreshness root fsproj) @>
+
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = RecoveredOk @>
+        test <@ runs.Value = 1 @>)
+
+// The other side of AUTOMATION-697: reading the closure's mtimes must not turn every
+// compile-item edit to a referenced project into a restore of everything referencing
+// it. The content baseline still vouches, exactly as it does for the project's own file.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a compile-item-only edit to a referenced project does not restore once a baseline vouches`` () =
+    withTempDir "deps-closure-compile-item" (fun root ->
+        let _, fsproj, _ = restoredWorkspace root
+        let runs = ref 0
+        test <@ gateOf root runs fsproj = Proceed @>
+
+        let lib = Path.Combine(root, "Lib", "Lib.fsproj")
+
+        File.WriteAllText(
+            lib,
+            """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Compile Include="New.fs" /><PackageReference Include="A" Version="1.0.0" /></ItemGroup></Project>"""
+        )
+
+        File.SetLastWriteTimeUtc(lib, DateTime.UtcNow)
+        test <@ isStale (detectProjectFreshness root fsproj) @>
+
+        test <@ gateOf root runs fsproj = Proceed @>
+        test <@ runs.Value = 0 @>)
