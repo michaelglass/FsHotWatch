@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a test declared on a base class is indexed under each concrete class that inherits it (AUTOMATION-1569). xUnit runs
+  such a test as `<Derived>.<test>`, and for an abstract base `--filter-class <Base>` runs zero tests (measured on xUnit v3
+  4.0.0), so the test was selected, filtered by a class that runs nothing, and its project could read as verified. Each
+  concrete class now indexes every test it inherits, under its own class name, as a synthetic `<Derived>.<test>` symbol joined
+  to the base test and to the derived class, so a change to either selects it. A test on an abstract class is no longer indexed
+  under that class; a concrete base keeps its own row. Index schema 26 (`SchemaVersion` 25 -> 26): a REBUILD, so the first run
+  after upgrading re-indexes the repository.
+
 ## 16.1.0 - 2026-11-11
 
 - feat: `Database.create(dbPath, policy, busyTimeout)` sets how long the connections wait on a held lock (AUTOMATION-784).
