@@ -153,6 +153,23 @@ let internal formatTestResultsJson
            projects = projects |}
     )
 
+/// A `run-tests` reply built from the results that stand once `revoked` is taken back by
+/// a model change (AUTOMATION-1569). A revoked project is left out rather than given a
+/// new wire status: its result no longer says anything about the current model.
+let internal formatStandingResultsJson
+    (revoked: Set<string>)
+    (activeFilter: string option)
+    (runReports: Map<string, FsHotWatch.Ctrf.Summary>)
+    (results: TestResults)
+    =
+    let standing (project: string) _ = not (Set.contains project revoked)
+
+    formatTestResultsJson
+        activeFilter
+        (Map.filter standing runReports)
+        { results with
+            Results = Map.filter standing results.Results }
+
 /// Default slot-wait budget (ms) for the manual `run-tests` command when the
 /// payload carries no `waitSec` — generous so a long `tests.beforeRun` chain
 /// (90 s+) held by a prior in-flight run can't make an explicit `test-rerun` give

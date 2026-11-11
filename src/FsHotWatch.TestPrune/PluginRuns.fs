@@ -218,7 +218,7 @@ let internal commandForceRunWith
                             InputTree = boundTree
                             TestHostStartedAt = Some testHostStartedAt },
                         reply,
-                        formatTestResultsJson filter runReports results
+                        fun revoked -> formatStandingResultsJson revoked filter runReports results
                     )
             with ex ->
                 // A `beforeRun` throw / `executeTests` fault
@@ -240,7 +240,7 @@ let internal commandForceRunWith
                         completed,
                         commandLaunch,
                         reply,
-                        JsonSerializer.Serialize({| error = ex.Message |})
+                        fun _ -> JsonSerializer.Serialize({| error = ex.Message |})
                     )
         finally
             // Cancellation — daemon teardown, or every client that asked for this run

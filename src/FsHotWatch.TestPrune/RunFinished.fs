@@ -334,7 +334,9 @@ let internal onRunFinishedWith
 
         let replies =
             match message with
-            | CommandTestsFinished(_, _, _, reply, response) -> [ reply, response ]
+            | CommandTestsFinished(_, _, _, reply, response) ->
+                // Built from the results this fold kept, not the ones the run returned.
+                [ reply, response (revokedProjects modelCarry launchedCompletion) ]
             | _ -> []
 
         return

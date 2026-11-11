@@ -282,13 +282,15 @@ type TestPruneMsg =
         reply: Tasks.TaskCompletionSource<string> option *
         opened: TestRunStarted option
     /// A `run-tests` force-run completed. Folded exactly like `TestsFinished`; `reply` is
-    /// resolved with `response` once that fold is published.
+    /// resolved with `response` once that fold is published. `response` is given the
+    /// projects a model change revoked during the fold, so the reply never reports a
+    /// result the fold took back (AUTOMATION-1569).
     | CommandTestsFinished of
         started: TestRunStarted *
         completed: TestRunCompleted *
         launch: TestRunLaunch *
         reply: Tasks.TaskCompletionSource<string> *
-        response: string
+        response: (Set<string> -> string)
     /// A run owed after the one holding the "tests" key: queued as an intent behind it,
     /// coalesced, and decided against the state it is delivered into.
     | ImpactRunRequested

@@ -281,6 +281,15 @@ let internal acrossModelChange
             carried
     | _ -> ModelCarry.Unprovable, completed, launch
 
+/// The projects whose results a model change took back (see `acrossModelChange`): the
+/// changed ones when it could tell, every project with a result when it could not.
+let internal revokedProjects (carry: ModelCarry) (completed: TestRunCompleted) : Set<string> =
+    match carry with
+    | ModelCarry.SameModel
+    | ModelCarry.Carried -> Set.empty
+    | ModelCarry.Revoked changed -> changed
+    | ModelCarry.Unprovable -> completed.Results |> Map.keys |> Set.ofSeq
+
 module ReceiptTransition =
     let private allResultsCompleted (completed: TestRunCompleted) =
         completed.Results
