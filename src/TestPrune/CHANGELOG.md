@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 16.1.0 - 2026-11-11
+
+- fix: AUTOMATION-784 a coverage write outwaits a cold indexer flush instead of failing as locked
+
+
 ## 16.0.0 - 2026-11-09
 
 - Merge: AUTOMATION-1515 attribute the composition-root fail-safe in a test selection

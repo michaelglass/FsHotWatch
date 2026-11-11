@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 16.1.0 - 2026-11-11
+
 - feat: `Database.create(dbPath, policy, busyTimeout)` sets how long the connections wait on a held lock (AUTOMATION-784).
 
 ## 16.0.0 - 2026-11-09

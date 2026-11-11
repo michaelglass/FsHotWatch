@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.2 - 2026-11-11
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.9.1 - 2026-11-09
 
 - chore: rebuild to bundle updated dependencies

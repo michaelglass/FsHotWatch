@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.108 - 2026-11-11
+
 - fix: a dependency fanout whose projects already hold evidence at these inputs launches no run (AUTOMATION-1534). It force-ran them,
   reused every receipt and still paid for `beforeRun` and the run's bookkeeping, about 2 minutes after `confirm --fresh` on a large
   repository. A project with no reusable evidence still runs in full.

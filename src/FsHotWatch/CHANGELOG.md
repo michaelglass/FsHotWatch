@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.108 - 2026-11-11
+
 - fix: a repeated `check` on an unchanged tree no longer goes red on coverage (AUTOMATION-1530). A test run replayed from the
   cache said it started "now, less its length", which could be later than the coverage report the original run wrote, so the
   report read as stale. The cache now records the run's real start and reads it back as UTC; it had come back as local time, which made every

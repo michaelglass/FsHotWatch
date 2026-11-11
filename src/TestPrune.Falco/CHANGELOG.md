@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.6 - 2026-11-11
+
 - fix: a route named in an attribute above a top-level declaration belongs to that declaration, not the one before it
   (AUTOMATION-179). Declaration spans now begin at the attribute lines directly above `^type` / `^module`, so the type it
   decorates is the one selected and carries the edge.

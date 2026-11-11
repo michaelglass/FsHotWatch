@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.141 - 2026-11-11
+
 - fix: the ADR-059 shadow files a baseline for every project that passed the run today's watermark records (AUTOMATION-1536). A
   watermark run with one red project published red, so it named no run, and its passing projects read as missing to the lookup later.
 
