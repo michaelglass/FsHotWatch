@@ -24,8 +24,10 @@ let private library =
 </Project>
 """
 
-// A record, a union, an inline function (optimization data) and an incomplete match (whose
-// failure names this file's absolute path in a method body).
+// A record, a union, an inline function (optimization data), an incomplete match (whose
+// failure names this file's absolute path in a method body) and a query, whose quotation
+// `fsc` stores as static data naming this file's absolute path, sized by a value type of
+// its own (AUTOMATION-1582).
 let private source =
     """module Lib.A
 
@@ -35,6 +37,8 @@ let inline twice x = x * 2
 let describe (shape: Shape) =
     match shape with
     | Circle r -> $"circle {r}"
+let points = [ { X = 1; Y = 2 } ]
+let near = query { for p in points do where (p.X > 0); select p.Y }
 """
 
 let private build clock (root: string) =

@@ -2227,6 +2227,20 @@
         "platform": "linux"
       }
     ],
+    "MetadataRows.fs": [
+      {
+        "line": 98,
+        "branch": 86,
+        "reason": "new file (AUTOMATION-1582: metadata tables hashed by what each row names, for OutputIdentity). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-11 on macOS by a coverage run of OutputIdentityTests: line 98.6%, branch 87.3% (89/102). Uncovered: three refusals no metadata System.Reflection.Metadata has already parsed can reach (no tables stream, a row size other than the schema's, a blob header that is no signature kind), and the provider's TypeSpec arm, which a decoder reading a TypeSpec blob with allowTypeSpecifications=false and a member signature never calls.",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 86,
+        "reason": "new file (AUTOMATION-1582). Linux mirrors macOS: the module has no platform-specific paths; refresh from the first CI run.",
+        "platform": "linux"
+      }
+    ],
     "OutputIdentity.fs": [
       {
         "line": 100,

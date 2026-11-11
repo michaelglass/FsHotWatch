@@ -8,9 +8,11 @@
 /// check record keyed on those bytes speaks for one checkout only.
 ///
 /// The identity hashes what FCS reads when it types a dependent against the output:
-///   * the metadata tables, with the columns that are file positions zeroed (a method's or
-///     field's RVA, a resource's offset);
-///   * the `#Strings`, `#Blob` and `#GUID` heaps, the module version id zeroed;
+///   * the metadata tables by what each row names (`MetadataRows`): a string, blob or GUID
+///     by its value (the module version id zeroed), a signature by its shape, a type by its
+///     rank, and no file position (a method's or field's RVA, a resource's offset). The
+///     value types `fsc` declares only to size a quotation's static data are left out:
+///     their size is the length of a path (AUTOMATION-1582);
 ///   * every manifest resource by name, an F# one inflated where it is compressed, with
 ///     each occurrence of the checkout root replaced by a placeholder and the length that
 ///     precedes it in the F# pickle re-stated without the root.
@@ -32,7 +34,7 @@ open System.Text.RegularExpressions
 
 /// The identity's own format: bumping it re-keys every record that names an output.
 [<Literal>]
-let Schema = "pe-v1"
+let Schema = "pe-v2"
 
 /// Stands for the checkout root inside an F# resource. NUL-delimited, so no path or
 /// identifier the compiler pickles contains it.
@@ -127,8 +129,6 @@ let internal normalizeResource (root: byte[]) (data: byte[]) : byte[] =
         out.Write(data, copied, data.Length - copied)
         out.ToArray()
 
-/// The metadata-table columns that are file positions, each the first four bytes of its
-/// row: they move whenever anything before the method bodies, field data or resources does.
 /// The type whose assembly-level value carries build metadata: SourceLink appends
 /// `+<commit id>` to it on a git checkout (AUTOMATION-1480).
 [<Literal>]
@@ -198,9 +198,6 @@ let private maskAll (versions: (byte[] * byte[]) list) (data: byte[]) =
 
     data
 
-let private positionTables =
-    set [ TableIndex.MethodDef; TableIndex.FieldRva; TableIndex.ManifestResource ]
-
 let private inflate (bytes: byte[]) =
     use input = new MemoryStream(bytes)
     use deflate = new DeflateStream(input, CompressionMode.Decompress)
@@ -252,27 +249,11 @@ let ofBytes (roots: string list) (bytes: byte[]) : string option =
             use hash = IncrementalHash.CreateHash HashAlgorithmName.SHA256
             hash.AppendData(Encoding.UTF8.GetBytes Schema)
 
-            for table in Enum.GetValues<TableIndex>() |> Array.distinct do
-                let rows = reader.GetTableRowCount table
-
-                if rows > 0 then
-                    let rowSize = reader.GetTableRowSize table
-                    let offset = reader.GetTableMetadataOffset table
-                    let content = slice offset (rows * rowSize)
-
-                    if positionTables.Contains table then
-                        for row in 0 .. rows - 1 do
-                            Array.fill content (row * rowSize) 4 0uy
-
-                    appendLabelled hash $"table %O{table} %d{rowSize}" (ReadOnlySpan content)
-
             let heap (index: HeapIndex) =
                 slice (reader.GetHeapMetadataOffset index) (reader.GetHeapSize index)
 
-            appendLabelled hash "strings" (ReadOnlySpan(heap HeapIndex.String))
             let blobs = heap HeapIndex.Blob
             let versions = maskBuildMetadata reader blobs
-            appendLabelled hash "blob" (ReadOnlySpan blobs)
             let guids = heap HeapIndex.Guid
             let mvid = reader.GetModuleDefinition().Mvid
 
@@ -280,7 +261,11 @@ let ofBytes (roots: string list) (bytes: byte[]) : string option =
                 let index = MetadataTokens.GetHeapOffset(GuidHandle.op_Implicit mvid)
                 Array.fill guids ((index - 1) * 16) 16 0uy
 
-            appendLabelled hash "guid" (ReadOnlySpan guids)
+            // Each table by what its rows name: the heaps count only as far as a row names
+            // them, and no offset into one does (AUTOMATION-1582).
+            for label, content in
+                MetadataRows.tables reader (metadata.AsSpan().ToArray()) (heap HeapIndex.String) blobs guids do
+                appendLabelled hash label (ReadOnlySpan content)
 
             let rootBytes =
                 roots
