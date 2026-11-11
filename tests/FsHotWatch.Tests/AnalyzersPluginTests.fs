@@ -862,6 +862,40 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
         | other -> Assert.Fail $"Expected TimedOut, got {other}"
     | None -> Assert.Fail "Expected LastRun record"
 
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the ledger entry the timeout leaves behind")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a file whose analysis timed out stays red after the next file completes`` () =
+    // The defect: a per-file timeout reported Failed but wrote no ledger entry, so the
+    // next file's Completed replaced the status and `check` read green with a file never
+    // analyzed.
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
+    let mutable calls = 0
+
+    // Only the FIRST file outlasts the 1s bound.
+    let slowFirst () =
+        if System.Threading.Interlocked.Increment(&calls) = 1 then
+            System.Threading.Thread.Sleep 3000
+
+    let handler =
+        createWithSeams None [] (Some 1) DiagnosticSeverity.Hint (Some slowFirst) runSafely
+
+    host.RegisterHandler(handler)
+    host.EmitFileChecked(fakeResult "/tmp/slow/Slow.fs")
+    host.EmitFileChecked(fakeResult "/tmp/slow/Fast.fs")
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus "analyzers" with
+            | Some(Completed _) -> true
+            | _ -> false)
+        12000
+
+    match host.GetErrorsByPlugin "analyzers" |> Map.tryFind "/tmp/slow/Slow.fs" with
+    | Some entries ->
+        test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+        test <@ entries |> List.exists (fun e -> e.Message.Contains "timed out") @>
+    | None -> Assert.Fail "the timed-out file must keep a failing ledger entry"
+
 [<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the typed timeout outcome the product reports")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``timed-out synchronous analyzer cannot overlap the next file`` () =

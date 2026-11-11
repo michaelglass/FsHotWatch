@@ -996,3 +996,38 @@ let ``a replayed format-check verdict still reports a finding that is genuinely 
         // And the summary names it, rather than passing the comparison by being a
         // constant that never mentions a finding at all.
         test <@ replayedSummary.Contains "need formatting" @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a batch whose format check timed out stays red after the next batch completes`` () =
+    // The defect (the batch form of AUTOMATION-1556): a timed-out batch reported Failed
+    // and wrote no ledger entry, so the next FileChanged batch's Completed replaced the
+    // status and nothing remembered the files that were never checked.
+    withFakePin "fmt-to-next" "7.0.5" (fun dir ->
+        let slow = Path.Combine(dir, "Slow.fs")
+        let fast = Path.Combine(dir, "Fast.fs")
+        File.WriteAllText(slow, "module Slow\n")
+        File.WriteAllText(fast, "module Fast\n")
+
+        let runner: Runner =
+            fun _ args _ _ ->
+                if args.Contains "Slow.fs" then
+                    TimedOut(
+                        TimeSpan.FromSeconds 1.0,
+                        ProcessOutput.DrainTimedOut("", TimeSpan.FromSeconds 2.0),
+                        KillOutcome.Killed
+                    )
+                else
+                    Succeeded(ProcessOutput.Drained "")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(createFormatCheckWith runner dir (Some 1))
+        host.EmitFileChanged(SourceChanged [ slow ])
+        waitForTerminalStatus host "format-check" 5000
+        host.EmitFileChanged(SourceChanged [ fast ])
+        waitCompleted host 10000
+
+        match host.GetErrorsByPlugin "format-check" |> Map.tryFind slow with
+        | Some entries ->
+            test <@ entries |> List.exists (fun e -> e.Severity = FsHotWatch.ErrorLedger.Error) @>
+            test <@ entries |> List.exists (fun e -> e.Message.Contains "timed out") @>
+        | None -> Assert.Fail "the timed-out batch's file must keep a failing ledger entry")

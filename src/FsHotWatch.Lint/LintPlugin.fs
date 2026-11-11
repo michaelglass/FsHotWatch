@@ -342,7 +342,7 @@ let create
                                         let reason = $"timed out after %d{int after.TotalSeconds}s"
                                         Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
 
-                                        PluginCtxHelpers.timedOutWith ctx "lint" reason after
+                                        PluginCtxHelpers.timedOutOnFiles ctx "lint" [ fileStr ] reason after
 
                                         return state
                                     | WorkCompleted(Result.Ok(Lint.LintResult.Success warnings)) ->

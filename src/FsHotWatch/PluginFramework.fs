@@ -2461,6 +2461,23 @@ module PluginCtxHelpers =
         let message = $"%s{what} timed out: %s{reason}"
         ctx.ReportStatus(PluginStatus.failedNow message message after)
 
+    /// `timedOutWith` for a run over particular files: one file of a per-file plugin (Lint,
+    /// Analyzers), or one batch (format check). The status alone does not last: the next
+    /// run's `Completed` replaces it, and files that were never checked would then leave
+    /// nothing failing anywhere. A failing ledger entry on each file keeps it red until a
+    /// later run of that file clears it.
+    let timedOutOnFiles
+        (ctx: PluginCtx<'Msg>)
+        (what: string)
+        (files: string list)
+        (reason: string)
+        (after: System.TimeSpan)
+        : unit =
+        for file in files do
+            ctx.ReportErrors file [ ErrorEntry.error $"%s{what} timed out: %s{reason}" ]
+
+        timedOutWith ctx what reason after
+
     /// Report or clear the per-file error scope based on whether any entries exist.
     /// Used by per-file analyzers (Lint, Analyzers, FormatCheck) so that a file
     /// transitions cleanly between "has findings" and "clean" without leaking

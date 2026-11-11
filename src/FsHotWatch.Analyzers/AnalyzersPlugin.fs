@@ -963,7 +963,13 @@ let internal createScopedWithSeams
                                                             $"Analyzers TIMED OUT for %s{fileStr}: %s{reason}"
 
                                                         ctx.EndSubtask PrimarySubtaskKey
-                                                        PluginCtxHelpers.timedOutWith ctx "analyzers" reason after
+
+                                                        PluginCtxHelpers.timedOutOnFiles
+                                                            ctx
+                                                            "analyzers"
+                                                            [ fileStr ]
+                                                            reason
+                                                            after
 
                                                         return Choice1Of3()
                                                     | WorkCompleted results ->

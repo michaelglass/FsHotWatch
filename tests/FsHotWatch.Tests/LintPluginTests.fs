@@ -125,6 +125,41 @@ let ``lint handler times out when runner exceeds TimeoutSec`` () =
         | other -> Assert.Fail($"Expected TimedOut, got {other}")
     | None -> Assert.Fail "Expected LastRun record"
 
+[<WallClock("product timeout under test: the work deliberately outlasts the product's own bound, and the assertion is the ledger entry the timeout leaves behind")>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a file whose lint timed out stays red after the next file completes`` () =
+    // The defect: a per-file timeout reported Failed but wrote no ledger entry, so
+    // the next file's Completed replaced the status and nothing anywhere remembered a
+    // file that was never linted. `check` then read green.
+    let host = createModelHost (Unchecked.defaultof<_>) "/tmp"
+
+    let runner (result: FileCheckResult) =
+        if (FsHotWatch.Events.AbsFilePath.value result.File).EndsWith "Slow.fs" then
+            System.Threading.Thread.Sleep 3000
+
+        Lint.LintResult.Success []
+
+    let handler = create None None (Some runner) (Some 1)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/slow/Slow.fs")
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/slow/Fast.fs")
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus "lint" with
+            | Some(Completed _) -> true
+            | _ -> false)
+        10000
+
+    let slowEntries = host.GetErrorsByPlugin "lint" |> Map.tryFind "/tmp/slow/Slow.fs"
+
+    match slowEntries with
+    | Some entries ->
+        test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+        test <@ entries |> List.exists (fun e -> e.Message.Contains "timed out") @>
+    | None -> Assert.Fail "the timed-out file must keep a failing ledger entry"
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let host = createModelHost (Unchecked.defaultof<_>) "/tmp"

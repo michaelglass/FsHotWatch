@@ -341,7 +341,7 @@ let internal createFormatCheckWith
                     | Error(reason, Some after) ->
                         Logging.error "format" $"Format check TIMED OUT: %s{reason}"
 
-                        PluginCtxHelpers.timedOutWith ctx "format check" reason after
+                        PluginCtxHelpers.timedOutOnFiles ctx "format check" files reason after
 
                         return state
                     | Error(reason, None) ->
