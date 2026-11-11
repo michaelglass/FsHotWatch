@@ -6940,6 +6940,86 @@ let ``a waiter bound to a scan request that is then cancelled is answered with t
     test <@ settledFaulted waiter @>
     test <@ crashed.IsEmpty @>
 
+// A client's `Scan` reply quotes generation G and admits its request R behind a scan
+// already in flight. That scan completes as G+1 before the client's `WaitForScan G`
+// arrives. The generation alone says "satisfied", but the evidence is the earlier scan's:
+// the waiter must be answered by R, or R's failure reaches nobody and the host rests on
+// the earlier scan's green.
+
+/// A pending scan receipt.
+let private pendingReceipt () =
+    TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+/// Whether `waiter` settled successfully within `HangWait`.
+let private settledGreen (waiter: Task<unit>) =
+    waiter.Wait(HangWait) && waiter.IsCompletedSuccessfully
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a waiter whose own scan failed is answered with that failure though the generation is past`` () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    signal.SignalGeneration 6L
+    let receipt = pendingReceipt ()
+    signal.ObserveScan(receipt.Task, (fun () -> 6L))
+    receipt.SetException(exn "boom")
+    test <@ signal.Drained().Wait(HangWait) @>
+
+    let waiter = signal.WaitForGeneration(5L, 6L)
+
+    test <@ settledFaulted waiter @>
+    test <@ waiter.Exception.GetBaseException().Message = "boom" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a waiter whose own scan is still pending waits for it though the generation is past`` () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    signal.SignalGeneration 6L
+    let receipt = pendingReceipt ()
+    signal.ObserveScan(receipt.Task, (fun () -> 6L))
+    let waiter = signal.WaitForGeneration(5L, 6L)
+    test <@ signal.Drained().Wait(HangWait) @>
+    test <@ not waiter.IsCompleted @>
+
+    receipt.SetException(exn "boom")
+
+    test <@ settledFaulted waiter @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a waiter whose own scan succeeded is answered at once when the generation is past`` () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    signal.SignalGeneration 6L
+    let receipt = pendingReceipt ()
+    signal.ObserveScan(receipt.Task, (fun () -> 6L))
+    receipt.SetResult(())
+    test <@ signal.Drained().Wait(HangWait) @>
+
+    test <@ settledGreen (signal.WaitForGeneration(5L, 6L)) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a waiter whose own pending scan then succeeds is answered green though the generation is past`` () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    signal.SignalGeneration 6L
+    let receipt = pendingReceipt ()
+    signal.ObserveScan(receipt.Task, (fun () -> 6L))
+    let waiter = signal.WaitForGeneration(5L, 6L)
+    test <@ signal.Drained().Wait(HangWait) @>
+
+    receipt.SetResult(())
+
+    test <@ settledGreen waiter @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``another scan's failure does not fault a waiter whose own later scan succeeded`` () =
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    let other = pendingReceipt ()
+    signal.ObserveScan(other.Task, (fun () -> 5L))
+    other.SetException(exn "another scan failed")
+    let own = pendingReceipt ()
+    signal.ObserveScan(own.Task, (fun () -> 6L))
+    own.SetResult(())
+    signal.SignalGeneration 6L
+    test <@ signal.Drained().Wait(HangWait) @>
+
+    test <@ settledGreen (signal.WaitForGeneration(5L, 6L)) @>
+
 /// A project with no `obj/project.assets.json` is restored before it is checked. The
 /// daemon restores through `DaemonOptions.Restore`, so a test daemon never runs a real
 /// `dotnet restore`.
