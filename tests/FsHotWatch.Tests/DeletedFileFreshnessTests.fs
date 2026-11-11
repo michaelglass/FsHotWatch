@@ -103,26 +103,26 @@ let ``stamp forgets a gone file and records a present one`` () =
 
     test
         <@
-            FileFreshness.stamp FileFreshness.Gone true cleanAt "src/Gone.fs" store
+            FileFreshness.stamp FileFreshness.Gone FileFreshness.VerifiedClean cleanAt "src/Gone.fs" store
             |> Map.isEmpty
         @>
 
     test
         <@
-            FileFreshness.stamp FileFreshness.Gone false cleanAt "src/Gone.fs" store
+            FileFreshness.stamp FileFreshness.Gone FileFreshness.FcsErrors cleanAt "src/Gone.fs" store
             |> Map.isEmpty
         @>
 
     // PositiveControl: the Present arms still write exactly what they did before.
     test
         <@
-            FileFreshness.stamp FileFreshness.Present true cleanAt "src/New.fs" Map.empty = Map.ofList
+            FileFreshness.stamp FileFreshness.Present FileFreshness.VerifiedClean cleanAt "src/New.fs" Map.empty = Map.ofList
                 [ "src/New.fs", cleanRecord ]
         @>
 
     test
         <@
-            FileFreshness.stamp FileFreshness.Present false cleanAt "src/New.fs" Map.empty = Map.ofList
+            FileFreshness.stamp FileFreshness.Present FileFreshness.CleanBeforeBuild cleanAt "src/New.fs" Map.empty = Map.ofList
                 [ "src/New.fs",
                   { FcsClean = false
                     LastCleanCheckAt = None } ]
@@ -263,7 +263,8 @@ let ``PositiveControl: a file one project dropped stays registered for the proje
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a sidecar that is blank, null, or holds malformed entries loads as far as it can`` () =
     // The sidecar is derivative: whatever cannot be read is treated as never checked
-    // clean, and the next clean check rewrites it. Nothing here may throw.
+    // clean, and the next clean check rewrites it. Nothing here may throw. Damage is
+    // recorded as `UnreadableKey` (AUTOMATION-1560), so files with no record read Dirty.
     withTempDir "freshness-malformed" (fun tmpDir ->
         let sidecar = FileFreshness.sidecarPath tmpDir
         Directory.CreateDirectory(Path.GetDirectoryName sidecar) |> ignore
@@ -271,11 +272,16 @@ let ``a sidecar that is blank, null, or holds malformed entries loads as far as 
         for present in [ "Partial.fsx"; "BadDate.fsx"; "NotAnObject.fsx" ] do
             File.WriteAllText(Path.Combine(tmpDir, present), "")
 
+        let unreadable =
+            FileFreshness.UnreadableKey,
+            { FileFreshness.FcsClean = false
+              FileFreshness.LastCleanCheckAt = None }
+
         File.WriteAllText(sidecar, "   ")
-        test <@ FileFreshness.load tmpDir = Map.empty @>
+        test <@ FileFreshness.load tmpDir = Map [ unreadable ] @>
 
         File.WriteAllText(sidecar, "null")
-        test <@ FileFreshness.load tmpDir = Map.empty @>
+        test <@ FileFreshness.load tmpDir = Map [ unreadable ] @>
 
         File.WriteAllText(
             sidecar,
@@ -292,5 +298,6 @@ let ``a sidecar that is blank, null, or holds malformed entries loads as far as 
                         FileFreshness.LastCleanCheckAt = None }
                       "BadDate.fsx",
                       { FileFreshness.FcsClean = true
-                        FileFreshness.LastCleanCheckAt = None } ]
+                        FileFreshness.LastCleanCheckAt = None }
+                      unreadable ]
             @>)

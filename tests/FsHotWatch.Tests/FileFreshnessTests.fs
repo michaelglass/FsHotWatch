@@ -702,9 +702,10 @@ let ``save uses atomic write — partial state never visible at sidecar path`` (
         test <@ not (File.Exists(p + ".tmp")) @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``corrupt sidecar JSON falls back to empty store rather than throwing`` () =
-    // The sidecar is derivative: losing it over-marks files dirty for one cycle,
-    // which is a better trade than crashing the plugin.
+let ``corrupt sidecar JSON loads as unreadable rather than throwing`` () =
+    // The sidecar is derivative: losing it over-marks files dirty until each is
+    // stamped again, which is a better trade than crashing the plugin. (It used to load
+    // as an EMPTY store, which marked nothing dirty: every file read Unknown.)
     withTempDir "ff-corrupt" (fun tmpDir ->
         let p = sidecarPath tmpDir
         let dir = Path.GetDirectoryName p
@@ -715,4 +716,51 @@ let ``corrupt sidecar JSON falls back to empty store rather than throwing`` () =
         File.WriteAllText(p, "{ this is not json")
 
         let loaded = load tmpDir
-        test <@ Map.isEmpty loaded @>)
+        test <@ Map.keys loaded |> List.ofSeq = [ UnreadableKey ] @>)
+
+[<Fact(Timeout = 5000)>]
+let ``a check FCS reported errors for stamps dirty over a clean record, and a pre-build clean check does not`` () =
+    let cleanAt = System.DateTime(2026, 11, 11, 0, 0, 0, System.DateTimeKind.Utc)
+    let clean = markClean cleanAt "src/A.fs" Map.empty
+
+    let afterErrors = stamp Present FcsErrors cleanAt "src/A.fs" clean
+
+    test <@ not (isClean "src/A.fs" afterErrors) @>
+
+    let beforeBuild = stamp Present CleanBeforeBuild cleanAt "src/A.fs" clean
+
+    test <@ isClean "src/A.fs" beforeBuild @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a file with no record in an unreadable sidecar is dirty, not unknown`` () =
+    // The defect (AUTOMATION-1560 B): an unreadable sidecar loaded as an empty store, so
+    // every file read `Unknown`, and `Unknown, RowsFromPriorRun` is the NARROW arm: it
+    // diffs against the stored rows, turning a file the lost sidecar had marked Dirty
+    // into a trusted baseline. What cannot be read is widened, as every other ledger is.
+    withTempDir "ff-unreadable-dirty" (fun tmpDir ->
+        let p = sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName p) |> ignore
+        File.WriteAllText(Path.Combine(tmpDir, "A.fs"), "")
+        File.WriteAllText(p, "{ this is not json")
+
+        test <@ classify "A.fs" (load tmpDir) = Dirty @>
+
+        // A store written after the damage keeps saying so for every file it has not
+        // stamped since, and a fresh stamp is believed.
+        let restamped = markClean DateTime.UtcNow "A.fs" (load tmpDir)
+        save tmpDir restamped
+        test <@ classify "A.fs" (load tmpDir) = Clean @>
+        test <@ classify "B.fs" (load tmpDir) = Dirty @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the plugin's freshness cell loads a damaged sidecar as unreadable, so its files widen`` () =
+    // The cell is what the plugin reads: it must hold the unreadable marker (and say so in
+    // the log), not an empty store.
+    withTempDir "ff-cell-unreadable" (fun tmpDir ->
+        let p = sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName p) |> ignore
+        File.WriteAllText(p, "{ broken")
+
+        let cell = FsHotWatch.TestPrune.PluginStartup.freshnessCellIn tmpDir
+
+        test <@ classify "Any.fs" (cell.Read()) = Dirty @>)

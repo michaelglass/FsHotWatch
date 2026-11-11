@@ -329,9 +329,14 @@ type internal FreshnessCell =
 ///
 /// Closure-local mutable cell + Volatile: only the Update handler reads and writes it.
 let internal freshnessCellIn (repoRoot: string) : FreshnessCell =
-    let mutable freshness: FreshnessView =
-        { Store = FileFreshness.load repoRoot
-          ReconciledAt = None }
+    let loaded = FileFreshness.load repoRoot
+
+    if loaded.ContainsKey FileFreshness.UnreadableKey then
+        Logging.warn
+            "test-prune"
+            $"%s{FileFreshness.sidecarPath repoRoot} could not be read in full; every file without a record of its own is treated as FCS-dirty, so its next clean check widens its selection instead of diffing"
+
+    let mutable freshness: FreshnessView = { Store = loaded; ReconciledAt = None }
 
     /// The sidecar as it stands.
     let freshnessStore () = (Volatile.Read(&freshness)).Store

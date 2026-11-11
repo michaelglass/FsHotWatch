@@ -122,7 +122,9 @@ let internal markUnanalysableIn
             "test-prune"
             $"%s{relPath} no longer exists; dropping it rather than reporting '%s{reason}' (%s{detail})"
 
-        updateFreshness (FileFreshness.stamp FileFreshness.Gone false DateTime.UtcNow relPath (freshnessStore ()))
+        updateFreshness (
+            FileFreshness.stamp FileFreshness.Gone FileFreshness.FcsErrors DateTime.UtcNow relPath (freshnessStore ())
+        )
 
         { state with
             AnalysisFiles = Map.remove result.File state.AnalysisFiles
@@ -367,9 +369,9 @@ let internal foldAnalysedFile
     // After analysis, not at the top, so a failed `analyzeSourceFromResults`
     // cannot lock in a clean stamp for a file we have no symbols
     // for. `markClean` only with a BuildCompleted this session
-    // (see `BuildCompletedInThisSession`) AND a clean FCS result;
-    // otherwise `markUnverified`, which will not downgrade a
-    // previously-clean entry to dirty.
+    // (see `BuildCompletedInThisSession`) AND a clean FCS result; dirty
+    // when FCS reported errors, since this check's rows are flushed
+    // and are not a baseline; otherwise `markUnverified`.
     let now = DateTime.UtcNow
 
     // A check of a path that has since vanished
@@ -378,7 +380,12 @@ let internal foldAnalysedFile
     let updatedFreshness =
         FileFreshness.stamp
             (FileFreshness.resolvePresence repoRoot relPath)
-            (currentClean && state.BuildCompletedInThisSession)
+            (if not currentClean then
+                 FileFreshness.FcsErrors
+             elif state.BuildCompletedInThisSession then
+                 FileFreshness.VerifiedClean
+             else
+                 FileFreshness.CleanBeforeBuild)
             now
             relPath
             (freshnessStore ())
