@@ -199,6 +199,25 @@ let internal tallyRun (results: TestResults) (total: int) : RunTally =
       AbortedSuffix = abortedSuffix
       AbortedNames = abortedNames }
 
+/// The status headline of a run in which a project timed out. It also names the projects
+/// that failed without timing out (AUTOMATION-1569): naming only the timeouts left a
+/// reader of the status chasing a slow project while an ordinary failure sat unnamed.
+let internal timeoutHeadline (tally: RunTally) (carriedNote: string) : string =
+    let names = tally.TimedOutProjects |> String.concat ", "
+
+    let failedNames =
+        tally.FailedList
+        |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then None else Some name)
+
+    let failedClause =
+        match failedNames with
+        | [] -> ""
+        | failed ->
+            let joined = failed |> String.concat ", "
+            $"; %d{failed.Length} failed: %s{joined}"
+
+    $"%d{tally.TimedOutProjects.Length} timed out: %s{names}%s{failedClause}%s{carriedNote}"
+
 /// Report the terminal status of a run that executed, from its tally: a timeout, or the
 /// green, carried-red, owed, deferred, aborted or failed verdict.
 let internal reportRanRun
@@ -235,12 +254,8 @@ let internal reportRanRun
         // the Failed below carries the summary (one channel).
         ctx.CompleteWithTimeout $"test project(s): {names}"
 
-        ctx.ReportStatus(
-            PluginStatus.failedNow
-                $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
-                $"%d{timedOutProjects.Length} timed out: %s{names}%s{carriedNote}"
-                results.Elapsed
-        )
+        let headline = timeoutHeadline tally carriedNote
+        ctx.ReportStatus(PluginStatus.failedNow headline headline results.Elapsed)
     else
         let runSummary =
             $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
