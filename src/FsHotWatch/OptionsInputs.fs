@@ -29,13 +29,6 @@ open Microsoft.Build.FileSystem
 open Ionide.ProjInfo
 open FsHotWatch.OptionsRecords
 
-/// The files MSBuild looks for above a project, by name.
-let wellKnownAbove =
-    [ "Directory.Build.props"
-      "Directory.Build.targets"
-      "Directory.Packages.props"
-      "global.json" ]
-
 let private propertyReference =
     Regex(@"\$\(\s*([A-Za-z_][A-Za-z0-9_\-]*)", RegexOptions.Compiled)
 
@@ -181,13 +174,8 @@ let list (projects: Types.ProjectOptions list) : EvaluationInputs =
             if PathFilter.isGeneratedFor project.ProjectFileName source then
                 reads.Add(Path.GetFullPath source) |> ignore
 
-        let mutable dir = Path.GetDirectoryName projectFile
-
-        while not (String.IsNullOrEmpty dir) do
-            for name in wellKnownAbove do
-                probes.Add(Path.Combine(dir, name)) |> ignore
-
-            dir <- Path.GetDirectoryName dir
+        for path in probesAbove projectFile do
+            probes.Add path |> ignore
 
         let frameworks =
             [ None
