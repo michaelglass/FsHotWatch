@@ -1107,6 +1107,62 @@ let ``a command refused for any other reason is not started again`` (refusal: st
             | _ -> false
         @>
 
+// AUTOMATION-888: a command that exits nonzero and prints nothing must still leave a
+// diagnostic a reader can act on. The raw output alone was the whole entry, so a silent
+// failure reddened the run with an empty message.
+
+/// The messages a fileCommand reports after its spawn answers `outcome`.
+let private messagesAfter (name: string) (command: string) (outcome: FsHotWatch.ProcessHelper.ProcessOutcome) =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler =
+        createWith
+            (fun _ _ _ _ _ -> outcome)
+            ignore
+            (FsHotWatch.PluginFramework.PluginName.create name)
+            anyTestTrigger
+            command
+            "--gate CHANGELOG.md"
+            "/tmp"
+            None
+
+    host.RegisterHandler(handler)
+    let terminal = beginAwaitTerminal host name
+    emitRunCompletedFor host [ "P", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
+    test <@ terminal.Wait HangWait @>
+
+    host.GetErrorsByPlugin name
+    |> Map.toList
+    |> List.collect (fun (_, entries) -> entries |> List.map (fun entry -> entry.Message))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a command that fails silently reports its exit code and command line`` () =
+    let messages =
+        messagesAfter
+            "silent-fail"
+            "changelog-gate"
+            (FsHotWatch.ProcessHelper.ProcessOutcome.Failed(3, FsHotWatch.ProcessHelper.ProcessOutput.Drained ""))
+
+    test <@ messages.Length = 1 @>
+    test <@ messages |> List.forall (String.IsNullOrWhiteSpace >> not) @>
+    test <@ messages.Head.Contains "exited with code 3" @>
+    test <@ messages.Head.Contains "changelog-gate --gate CHANGELOG.md" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a command that fails with output reports its exit code beside that output`` () =
+    let messages =
+        messagesAfter
+            "loud-fail"
+            "changelog-gate"
+            (FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+                1,
+                FsHotWatch.ProcessHelper.ProcessOutput.Drained "CHANGELOG.md: missing entry"
+            ))
+
+    test <@ messages.Length = 1 @>
+    test <@ messages.Head.Contains "exited with code 1" @>
+    test <@ messages.Head.Contains "CHANGELOG.md: missing entry" @>
+
 // The real ordering: the script is still open for writing when the command fires, and the
 // handle goes away during the plugin's first pause, as a forked child's copy does when the
 // child execs. Linux refuses the first exec (ETXTBSY); elsewhere the first exec runs.
