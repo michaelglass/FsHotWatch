@@ -86,6 +86,7 @@
     <Compile Include="RunGroups.fs" />
     <Compile Include="RunExecution.fs" />
     <Compile Include="AffectedSelection.fs" />
+    <Compile Include="RecordedSkip.fs" />
     <Compile Include="ImpactLaunch.fs" />
     <Compile Include="ImpactRun.fs" />
     <Compile Include="FileCheckedHandler.fs" />

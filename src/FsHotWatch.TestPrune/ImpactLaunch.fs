@@ -925,8 +925,29 @@ let internal zeroAffectedSkip
             )
     }
 
+/// Every reason a zero-affected launch is not taking the skip (`zeroAffectedWidening`),
+/// read from this run's inputs and widenings.
+let internal zeroAffectedCauses
+    (inputs: TestRunInputs)
+    (hasCachedResults: bool)
+    (widenings: LaunchWidenings)
+    (treeUnverified: bool)
+    =
+    zeroAffectedWidening
+        hasCachedResults
+        inputs.Debt.UnknownDebt
+        (Set.count inputs.Debt.PendingQueue)
+        inputs.Debt.RuntimeObligations
+        (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
+        (List.length inputs.OutstandingFailures)
+        widenings.BaselineInvalid
+        widenings.EvidenceGap
+        treeUnverified
+
 /// Log why an impact run that launches selected what it did: a zero-affected run that
 /// still launches says why its skip was refused, and every launch logs its selectivity.
+/// `answeredByRecords`: the only refusal is the missing session baseline, and the
+/// caller is answering it from the box-wide records (`RecordedSkip`), naming them itself.
 let internal logLaunchSelection
     (inputs: TestRunInputs)
     (hasCachedResults: bool)
@@ -934,9 +955,8 @@ let internal logLaunchSelection
     (selected: LaunchSelection)
     (excludedByProject: Map<string, string list>)
     (treeUnverified: bool)
+    (answeredByRecords: bool)
     =
-    let baselineInvalid = widenings.BaselineInvalid
-    let evidenceGap = widenings.EvidenceGap
     let affectedByProject = selected.AffectedByProject
     let totalClasses = selected.TotalClasses
     let symbolFreeEdit = selected.SymbolFreeEdit
@@ -949,17 +969,7 @@ let internal logLaunchSelection
         // before: the cause was hard-coded to two of five possibilities,
         // and "running all tests" was printed over runs that were a
         // couple of force-run projects.
-        let widenings =
-            zeroAffectedWidening
-                hasCachedResults
-                inputs.Debt.UnknownDebt
-                (Set.count inputs.Debt.PendingQueue)
-                inputs.Debt.RuntimeObligations
-                (inputs.Debt.CoverageNotIngested |> Map.keys |> Set.ofSeq)
-                (List.length inputs.OutstandingFailures)
-                baselineInvalid
-                evidenceGap
-                treeUnverified
+        let widenings = zeroAffectedCauses inputs hasCachedResults widenings treeUnverified
 
         // An EMPTY selection is not "a few projects": `selectionOf` reads
         // it as no selection at all and every configured project runs in
@@ -985,6 +995,7 @@ let internal logLaunchSelection
                   this cycle without running anything, yet it is running %s{willRun}. Some verification \
                   debt is being reported as outstanding while naming nothing that can select or discharge \
                   it."
+        | _ when answeredByRecords -> ()
         | causes ->
             let notNarrowed =
                 match symbolFreeEdit with

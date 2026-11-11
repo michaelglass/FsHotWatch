@@ -5,9 +5,10 @@
 /// `LastResults.IsSome`, which only a run completed in THIS process sets, so the cause
 /// "no run has completed in this session yet" runs every configured project in full,
 /// whatever the persisted evidence says. These tests pin both sides of that seam: what a
-/// restart over the verified tree should cost (the positive tests, red today), and what
-/// it must keep costing when the tree moved while the daemon was down (the negative
-/// controls, green today and after any relaxation).
+/// restart over the verified tree costs once every project holds a full-pass record at
+/// the settled inputs (nothing: the skip on records, ADR-067), and what it must keep
+/// costing when the tree, the store or the local ledger says otherwise (the negative
+/// controls). The fresh-workspace positive stays skipped until the design's step 6.
 module FsHotWatch.Tests.TestPruneRestartSkipTests
 
 open System.IO
@@ -64,24 +65,6 @@ let private setUp () =
     let f = fixture () |> withIdentities identities
     seededTree f
     f, identities
-
-// ---------------------------------------------------------------------------
-// Positive: a restart over the verified tree. RED today (AUTOMATION-1587): both run every
-// configured project in full, logging "the zero-affected skip is refused — no run has
-// completed in this session yet". Unskip when the relaxation lands.
-// ---------------------------------------------------------------------------
-
-[<Fact(Timeout = 30000,
-       Skip = "AUTOMATION-1587 (red today): a restart over the confirmed tree runs every project in full")>]
-let ``a restarted daemon over the tree its full suite passed on runs nothing`` () =
-    let f, _ = setUp ()
-    confirmedThenPublished f
-
-    let launch, lines = firstBuildAfterRestart f
-
-    test <@ not (refusedForSession lines) @>
-    test <@ Map.isEmpty launch.Selection @>
-    test <@ launch.ZeroSelection = ZeroSelection.AlreadyVerified @>
 
 // ---------------------------------------------------------------------------
 // Negative controls: the tree moved while the daemon was down, so the persisted receipt
@@ -307,3 +290,270 @@ let ``a fresh workspace one body edit from a passed tree runs only the project o
         let (launched, _), _ = firstCheckOf (fun () -> daemonOver None false store fresh)
 
         test <@ launched = [ "TZ" ] @>)
+
+// ---------------------------------------------------------------------------
+// The skip on records (AUTOMATION-1587 step 3, ADR-067). With no session baseline, a
+// zero-affected cycle whose ONLY refusal is that no run has completed in this session may
+// skip when every runnable project holds a full-scope PASS record at its K_P, keyed over
+// the tree as `beforeRun` settles it. The skip cites those records; nothing launches.
+// ---------------------------------------------------------------------------
+
+/// The line a skip on records logs, naming each record it cites.
+let private skippedOnRecords (lines: string list) =
+    lines
+    |> List.exists (fun l -> l.Contains "every runnable project holds a full-pass record at the settled inputs")
+
+[<Fact(Timeout = Ev.RunsTestCapMs)>]
+let ``a restarted daemon over the tree its full suite passed on runs nothing`` () =
+    Ev.withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        earned store root |> ignore
+
+        let (launched, completed), lines =
+            firstCheckOf (fun () -> daemonOver None false store root)
+
+        test <@ List.isEmpty launched @>
+        test <@ not (refusedForSession lines) @>
+        test <@ skippedOnRecords lines @>
+        test <@ Ev.reusedIn completed = Ev.testProjects @>
+        test <@ Ev.allGreen completed @>)
+
+[<Fact(Timeout = Ev.RunsTestCapMs)>]
+let ``a skip on records names each record it cites in the daemon log and the verdict`` () =
+    Ev.withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        let earning = (earned store root).RunId.ToString("N")
+
+        let (_, completed), lines =
+            firstCheckOf (fun () -> daemonOver None false store root)
+
+        let citation =
+            lines
+            |> List.tryFind (fun l ->
+                l.Contains "every runnable project holds a full-pass record at the settled inputs")
+
+        test <@ citation.IsSome @>
+
+        for project in Ev.testProjects do
+            test <@ citation.Value.Contains $"%s{project} <- run %s{earning}" @>
+
+        // The verdict reads the run's reports, each filed from its record and stamped
+        // with the run that earned it and the K_P it was earned under.
+        let suites = FsHotWatch.Cli.Verdict.suiteVerdicts root (Some completed.RunId)
+        test <@ suites |> List.map _.Project |> List.sort = Ev.testProjects @>
+
+        test
+            <@
+                suites
+                |> List.forall (fun s ->
+                    s.ReusedFrom
+                    |> Option.exists (fun r -> r.RunId = earning && not (System.String.IsNullOrEmpty r.Key)))
+            @>)
+
+[<Fact(Timeout = Ev.RunsTestCapMs)>]
+let ``a beforeRun that moves an input after the lookup refuses the skip on records`` () =
+    // AUTOMATION-1510's disagreement must not hide here: every record hits over the tree
+    // as the restart finds it, and `beforeRun` then regenerates a runtime file the tests
+    // read with different content. The keys the skip would rest on are the SETTLED ones,
+    // and none of them holds a record.
+    Ev.withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        let bundle = "src/S/wwwroot/app.js"
+
+        let generating text =
+            Some(fun (_: System.Guid) (_: FsHotWatch.HookStep.Tracker) -> Ev.write root bundle text)
+
+        let launchedFirst, first =
+            Ev.run (daemonOver (generating "bundle-1") true store root)
+
+        test <@ launchedFirst = Ev.testProjects @>
+        test <@ Ev.allGreen first @>
+
+        let (launched, completed), lines =
+            firstCheckOf (fun () -> daemonOver (generating "bundle-2") false store root)
+
+        test <@ not (skippedOnRecords lines) @>
+
+        test
+            <@
+                lines
+                |> List.exists (fun l -> l.Contains "no skip on records: at the settled tree")
+            @>
+
+        test <@ launched = Ev.testProjects @>
+        test <@ Ev.allGreen completed @>)
+
+[<Fact(Timeout = Ev.RunsTestCapMs)>]
+let ``a newer fail at a project's K_P refuses the skip on records and runs that project`` () =
+    // ADR-059 §25: a fail filed after the green at the same K_P (a flaky test, another
+    // checkout) is a local red the box-wide green does not outrank.
+    Ev.withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        earned store root |> ignore
+        let outcomes = outcomesBeside store
+
+        let pass =
+            (FsHotWatch.OutcomeStore.readAll outcomes.Root).Records
+            |> List.find (fun r -> r.Subject = "TX" && r.Outcome = FsHotWatch.OutcomeStore.Outcome.Pass)
+
+        outcomes.Record
+            { pass with
+                Outcome = FsHotWatch.OutcomeStore.Outcome.Fail
+                RecordedAt = pass.RecordedAt.AddSeconds 1.0
+                Producer =
+                    { pass.Producer with
+                        Worktree = "/elsewhere"
+                        RunId = Some "a-later-red-run" } }
+        |> ignore
+
+        let (launched, completed), lines =
+            firstCheckOf (fun () -> daemonOver None false store root)
+
+        test <@ not (skippedOnRecords lines) @>
+
+        test
+            <@
+                lines
+                |> List.exists (fun l -> l.Contains "no skip on records: TX: a full fail at its K_P")
+            @>
+
+        test <@ launched = [ "TX" ] @>
+        test <@ not (Ev.isReused completed.Results["TX"]) @>
+        test <@ Ev.reusedIn completed = [ "TY"; "TZ" ] @>)
+
+
+// The skip asks no reuse question of its own: it reads the plan's reuse, which the shared
+// check (`TestEvidenceRun.reuseRefusal`, ADR-059 §34) has already narrowed. The two cases
+// below are what the skip's former private check (a full-key `Lookup`) got wrong: it read
+// an unreadable record as no fail, and it never looked at the impact key.
+
+/// TX's full-pass record, filed by the run that `earned` the tree.
+let private fullPassOfTX (outcomes: FsHotWatch.OutcomeStore.Store) =
+    (FsHotWatch.OutcomeStore.readAll outcomes.Root).Records
+    |> List.find (fun r -> r.Subject = "TX" && r.Outcome = FsHotWatch.OutcomeStore.Outcome.Pass)
+
+/// The refused skip's shape: no citation, TX's refusal logged with `why`, TX alone runs.
+let private refusedForTX (why: string) (lines: string list) launched (completed: TestRunCompleted) =
+    test <@ not (skippedOnRecords lines) @>
+    test <@ lines |> List.exists (fun l -> l.Contains $"no skip on records: TX: %s{why}") @>
+    test <@ launched = [ "TX" ] @>
+    test <@ not (Ev.isReused completed.Results["TX"]) @>
+    test <@ Ev.reusedIn completed = [ "TY"; "TZ" ] @>
+
+[<Fact(Timeout = Ev.RunsTestCapMs)>]
+let ``an unreadable record at a project's K_P refuses the skip on records and runs that project`` () =
+    // The file may be the newest fail, so it is never read as no fail (AUTOMATION-1568).
+    Ev.withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        earned store root |> ignore
+        let outcomes = outcomesBeside store
+        let pass = fullPassOfTX outcomes
+
+        let file =
+            Directory.GetFiles(outcomes.DirectoryOf pass.Key, "*.json") |> Array.exactlyOne
+
+        File.SetUnixFileMode(file, UnixFileMode.None)
+
+        try
+            // The control must be real: a reader that can still read the file (root) proves nothing.
+            let readable =
+                try
+                    File.ReadAllText file |> ignore
+                    true
+                with :? System.UnauthorizedAccessException ->
+                    false
+
+            test <@ not readable @>
+
+            let (launched, completed), lines =
+                firstCheckOf (fun () -> daemonOver None false store root)
+
+            refusedForTX "its full-run record at its K_P could not be read" lines launched completed
+        finally
+            if File.Exists file then
+                File.SetUnixFileMode(file, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact(Timeout = Ev.RunsTestCapMs)>]
+let ``an impact fail newer than the full green refuses the skip on records and runs that project`` () =
+    // An impact run at the same K_P ran a subset of the tests the full green ran, over the
+    // same bytes: its fail contradicts that green, and only a later full green clears it.
+    Ev.withRepo (fun store rootNamed ->
+        let root = rootNamed "a"
+        earned store root |> ignore
+        let outcomes = outcomesBeside store
+        let pass = fullPassOfTX outcomes
+
+        let impact =
+            pass.Key.Inputs
+            |> List.map (fun (label, value) -> label, (if label = "run-scope" then "impact" else value))
+            |> FsHotWatch.ActionKey.create pass.Key.Kind
+
+        test <@ impact.Value <> pass.Key.Value @>
+
+        outcomes.Record
+            { pass with
+                Key = impact
+                Outcome = FsHotWatch.OutcomeStore.Outcome.Fail
+                RecordedAt = pass.RecordedAt.AddSeconds 1.0
+                Producer =
+                    { pass.Producer with
+                        Worktree = "/elsewhere"
+                        RunId = Some "a-later-impact-red-run" } }
+        |> ignore
+
+        let (launched, completed), lines =
+            firstCheckOf (fun () -> daemonOver None false store root)
+
+        refusedForTX "an impact fail at its K_P, filed by run a-later-impact-red-run" lines launched completed)
+// ---------------------------------------------------------------------------
+// RecordedSkip's decisions, directly.
+// ---------------------------------------------------------------------------
+
+let private provenance (runId: string) (key: string) : TestEvidenceRun.Provenance =
+    { Key = key
+      Worktree = "/elsewhere"
+      RunId = runId
+      TreeHash = "tree"
+      ProducerHash = "producer"
+      EarnedAt = System.DateTimeOffset.UnixEpoch }
+
+[<Fact>]
+let ``RecordedSkip: no plan, or no runnable project, is no skip`` () =
+    test <@ RecordedSkip.decide [ "TX" ] None |> Result.isError @>
+
+    Ev.withRepo (fun store _ ->
+        let plan: TestEvidenceRun.Plan =
+            { Wiring = Ev.wiringFor store
+              OptionsHash = fun _ -> None
+              Candidates = []
+              LaunchKeys = Map.empty
+              Reused = Map.empty
+              Misses = Map.ofList [ "TX", "no evidence for this project" ]
+              Lookups = 0
+              BytesHashed = 0L }
+
+        test <@ RecordedSkip.decide [] (Some plan) = Error "no runnable project" @>
+
+        test
+            <@
+                RecordedSkip.decide [ "TX"; "TY" ] (Some plan) = Error
+                    "TX: no evidence for this project; TY: not looked up"
+            @>)
+
+[<Fact>]
+let ``RecordedSkip: the skip settles only when every runnable project's green is held`` () =
+    let held =
+        Map.ofList
+            [ "TX", provenance "run-1" "0123456789abcdef"
+              "TY", provenance "run-1" "short" ]
+
+    test <@ RecordedSkip.settle [ "TX"; "TY"; "TZ" ] held = Error [ "TZ" ] @>
+
+    match RecordedSkip.settle [ "TX"; "TY" ] held with
+    | Ok citations ->
+        test
+            <@
+                RecordedSkip.Citation.describeMany citations = "TX <- run run-1 in /elsewhere under key 0123456789ab; \
+                                                               TY <- run run-1 in /elsewhere under key short"
+            @>
+    | Error ran -> Assert.Fail $"expected the skip to settle, %A{ran} ran"
