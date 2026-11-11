@@ -208,13 +208,194 @@ let internal computeArgsSaltWith
     FsHotWatch.TaskCache.merkleCacheKey inputs
     |> FsHotWatch.Events.ContentHash.value
 
-/// Build the salt for this plugin's cache key. Includes the command, the args
-/// string, and a content hash of every whitespace-separated token in args
-/// that resolves to an existing file (relative to repoRoot or absolute).
-/// This means editing a config file referenced in args invalidates the cache
-/// even when commit_id hasn't changed.
-let internal computeArgsSalt (repoRoot: string) (command: string) (args: string) : string =
-    computeArgsSaltWith tryHashFile repoRoot command args
+/// The files of a change that `filter` matched: the inputs a FileChanged run fires for.
+let internal matchingFiles (filter: string -> bool) (change: FileChangeKind) : string list =
+    match change with
+    | SourceChanged files
+    | ProjectChanged files -> files |> List.filter filter
+    | SolutionChanged -> []
+
+/// Every file under `dir` that is not build output or tooling state; nothing for a
+/// directory outside `repoRoot` (an absolute `/` must never walk the machine), and nothing
+/// for one that does not exist (the walk yields nothing for a missing root).
+let private filesUnder (repoRoot: string) (dir: string) : string list =
+    if not (FsHotWatch.PathFilter.isOutsideRepo repoRoot dir) then
+        FsHotWatch.SafeWalk.bestEffortFilePaths FsHotWatch.SafeWalk.SourceExcludedDirs "*" dir
+        |> List.ofSeq
+    else
+        []
+
+/// The directories a command's args reach beyond single files: a directory argument
+/// (`lint migrations/`), and for a glob argument (`docs/*.txt`) its literal directory
+/// prefix, so every file under it is an input: a superset of what the glob matches, which
+/// costs a cache miss at worst and never a replay.
+let internal argInputDirs (repoRoot: string) (args: string) : string list =
+    tokenizeArgs args
+    |> Array.toList
+    |> List.choose (fun token ->
+        match token.IndexOfAny([| '*'; '?' |]) with
+        | -1 ->
+            let resolved = resolveArgPath repoRoot token
+
+            if System.IO.Directory.Exists resolved then
+                Some resolved
+            else
+                None
+        | wildcard ->
+            let prefix = System.IO.Path.GetDirectoryName(token.Substring(0, wildcard))
+
+            if String.IsNullOrEmpty prefix then
+                Some repoRoot
+            else
+                Some(resolveArgPath repoRoot prefix))
+
+/// The files under a set of scopes (a directory and which files in it count), walked ONCE
+/// and then kept current from the paths each event names: a named file in a scope joins
+/// the listing when it exists and leaves it when it does not. Walking the repository for
+/// pattern files on every FileChanged event cost a median 534 ms on a 3,776-file
+/// repository (AUTOMATION-1557); with the listing each event pays only for hashing.
+/// A solution change drops the listing, and the next read walks again.
+///
+/// What the listing cannot see: a file added in a scope that no event names (the watcher
+/// reports F# inputs and FileCommand patterns only) joins at the next walk, not before.
+///
+/// Read and folded only from the plugin's own dispatch loop (the key is computed there, as
+/// Update runs there), so no two calls overlap; Volatile keeps the convention for plugin state.
+/// `onWalked` hears how many files each walk listed (`largeListingWarning`).
+type internal InputListing(scopes: (string * (string -> bool)) list, walk: string -> string list, onWalked: int -> unit)
+    =
+    let mutable listed: Set<string> list option = None
+
+    let excluded (dir: string) (path: string) =
+        System.IO.Path.GetRelativePath(dir, path).Replace('\\', '/').Split('/')
+        |> Array.exists FsHotWatch.SafeWalk.SourceExcludedDirs.Contains
+
+    let inScope (dir: string) (path: string) =
+        let prefix =
+            System.IO.Path.TrimEndingDirectorySeparator dir
+            + string System.IO.Path.DirectorySeparatorChar
+
+        path.StartsWith(prefix, StringComparison.Ordinal) && not (excluded dir path)
+
+    new(scopes, walk) = InputListing(scopes, walk, ignore)
+
+    /// Every file currently listed, walking each scope the first time.
+    member _.Files() : string list =
+        let sets =
+            match Volatile.Read(&listed) with
+            | Some sets -> sets
+            | None ->
+                let sets =
+                    scopes
+                    |> List.map (fun (dir, keep) -> walk dir |> List.filter keep |> Set.ofList)
+
+                Volatile.Write(&listed, Some sets)
+                onWalked (sets |> List.sumBy Set.count)
+                sets
+
+        sets |> Seq.collect id |> Seq.distinct |> List.ofSeq
+
+    /// Fold the paths `change` names into the listing.
+    member _.Observe(change: FileChangeKind) : unit =
+        match Volatile.Read(&listed), change with
+        | None, _ -> ()
+        | Some _, SolutionChanged -> Volatile.Write(&listed, None)
+        | Some sets, (SourceChanged paths | ProjectChanged paths) ->
+            let fold (dir: string, keep: string -> bool) (set: Set<string>) =
+                paths
+                |> List.fold
+                    (fun (acc: Set<string>) path ->
+                        if inScope dir path && keep path then
+                            if System.IO.File.Exists path then
+                                acc.Add path
+                            else
+                                acc.Remove path
+                        else
+                            acc)
+                    set
+
+            Volatile.Write(&listed, Some(List.map2 fold scopes sets))
+
+/// A listing past this many files is named in a warning: every event stats each one.
+[<Literal>]
+let LargeListingThreshold = 10_000
+
+/// The warning for a file command whose inputs list `count` files, or `None` within the bound.
+let internal largeListingWarning (name: string) (count: int) : string option =
+    if count > LargeListingThreshold then
+        Some(
+            $"file command %s{name}: its pattern and arguments list %d{count} files (more than %d{LargeListingThreshold}); every change event checks each one's size and modification time, and re-hashes those that moved. Narrow the pattern if events feel slow."
+        )
+    else
+        None
+
+/// Content digests of input files, reused while a file's size and last-write time hold
+/// (AUTOMATION-1557). Every listed file used to be read on every event, so a broad pattern
+/// over a large repository read the whole tree per event; now an event stats each listed
+/// file and reads only those that moved. A file the event NAMES is always read again: an
+/// edit inside one mtime tick can keep both its size and its timestamp. A file that is gone
+/// goes to the reader, which answers for it. Used from the plugin's dispatch loop only.
+type internal DigestCache(hashFile: string -> string option) =
+    let mutable digests: Map<string, int64 * DateTime * string> = Map.empty
+
+    member _.Digest(path: string, named: bool) : string option =
+        let info = System.IO.FileInfo path
+
+        if not info.Exists then
+            hashFile path
+        else
+            let size, written = info.Length, info.LastWriteTimeUtc
+
+            match Map.tryFind path (Volatile.Read(&digests)) with
+            | Some(heldSize, heldWritten, digest) when not named && heldSize = size && heldWritten = written ->
+                Some digest
+            | _ ->
+                let digest = hashFile path
+
+                digest
+                |> Option.iter (fun d -> Volatile.Write(&digests, Map.add path (size, written, d) digests))
+
+                digest
+
+/// The salt for a FileChanged run: `computeArgsSaltWith` plus the content of every input
+/// file (`InputListing`, and the files the change itself matched). Keying only the
+/// event's own files let a second, breaking edit replay a success, and let `lint
+/// migrations/` replay a pass after a different migration broke.
+///
+/// Keyed by REPO-RELATIVE path, so two checkouts of the same content agree. A deleted
+/// file is keyed as absent. A matched file that exists but cannot be read gives
+/// `None`: no key, so the command runs instead of replaying a result for content
+/// nobody hashed.
+let internal computeFileChangedSaltWith
+    (hashFile: string -> string option)
+    (repoRoot: string)
+    (command: string)
+    (args: string)
+    (matched: string list)
+    : string option =
+    let matchedHashes =
+        matched
+        |> List.distinct
+        |> List.sort
+        |> List.map (fun path ->
+            let label = "matched:" + System.IO.Path.GetRelativePath(repoRoot, path)
+
+            if System.IO.File.Exists path then
+                hashFile path |> Option.map (fun hash -> label, hash)
+            else
+                Some(label, "absent"))
+
+    if matchedHashes |> List.forall Option.isSome then
+        let inputs =
+            ("args-salt", computeArgsSaltWith hashFile repoRoot command args)
+            :: List.choose id matchedHashes
+
+        Some(
+            FsHotWatch.TaskCache.merkleCacheKey inputs
+            |> FsHotWatch.Events.ContentHash.value
+        )
+    else
+        None
 
 /// How the plugin starts its command: `runProcess`'s shape, so a test can stand in for it.
 type internal Spawn = string -> string -> string -> (string * string) list -> ProcessBounds -> ProcessOutcome
@@ -399,6 +580,26 @@ let internal createWith
             | _ -> return state
         }
 
+    // The FileChanged key's inputs beyond the event's own files: every file the pattern
+    // matches, and every file under a directory or glob argument, walked once and kept
+    // current from the events (`InputListing`).
+    let inputListing =
+        InputListing(
+            (match trigger.FilePattern with
+             | Some fileFilter -> [ repoRoot, fileFilter ]
+             | None -> [])
+            @ (argInputDirs repoRoot args
+               |> List.map (fun dir -> dir, (fun (_: string) -> true))),
+            filesUnder repoRoot,
+            fun count ->
+                largeListingWarning nameStr count
+                |> Option.iter (FsHotWatch.Logging.warn "file-command")
+        )
+
+    // The digests the key hashes with: a listed file is read again only when it moved or the
+    // event names it (`DigestCache`).
+    let digests = DigestCache tryHashFile
+
     { Name = name
       Init =
         { LastResult = NeverRun
@@ -409,18 +610,12 @@ let internal createWith
             async {
                 match event with
                 | FileChanged change ->
+                    inputListing.Observe change
+
                     match trigger.FilePattern with
                     | None -> return state
                     | Some fileFilter ->
-                        let files =
-                            match change with
-                            | SourceChanged f -> f
-                            | ProjectChanged f -> f
-                            | SolutionChanged -> []
-
-                        let matching = files |> List.filter fileFilter
-
-                        match matching with
+                        match matchingFiles fileFilter change with
                         | [] -> return state
                         | first :: _ ->
                             let! result = runCommand ctx (FileMatched first) []
@@ -471,7 +666,8 @@ let internal createWith
       Subscriptions = CommandTrigger.subscriptions trigger
       CacheKey =
         // Pure-content cache key: merkle of (command, args, content of every
-        // arg-file that exists on disk). No jj commit_id — two daemons on the
+        // arg-file that exists on disk, content of every file the change matched).
+        // No jj commit_id — two daemons on the
         // same inputs hash the same regardless of working-copy state. Recomputed
         // per event so mid-session edits to a referenced config invalidate it.
         //
@@ -484,7 +680,24 @@ let internal createWith
         // task caching, provides the side-effect-at-most-once rule for afterTests.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with
-            | FileChanged _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
+            | FileChanged change ->
+                inputListing.Observe change
+
+                let matched =
+                    (trigger.FilePattern
+                     |> Option.map (fun fileFilter -> matchingFiles fileFilter change)
+                     |> Option.defaultValue [])
+                    @ inputListing.Files()
+
+                let named = matchingFiles (fun _ -> true) change |> Set.ofList
+
+                computeFileChangedSaltWith
+                    (fun path -> digests.Digest(path, named.Contains path))
+                    repoRoot
+                    command
+                    args
+                    matched
+                |> Option.map ContentHash.create
             | _ -> None
 
         Some(fun _state event -> cacheKey event)

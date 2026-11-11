@@ -47,6 +47,15 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
             | _ -> false
         @>
 
+/// An empty repository root for a FileCommand plugin: its FileChanged key hashes every file
+/// its pattern matches under the root (AUTOMATION-1557), so a root of `/tmp` hashes all of it.
+let private emptyCommandRoot () =
+    let dir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fc-empty-root-" + System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(dir) |> ignore
+    dir
+
 [<Fact(Timeout = 2 * SyncHangBackstopMs)>]
 let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -58,7 +67,7 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
               AfterTests = None }
             "sleep"
             "10"
-            "/tmp"
+            (emptyCommandRoot ())
             (Some 1)
 
     host.RegisterHandler(handler)
