@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a run's timeout status also names the projects that failed without timing out (AUTOMATION-1569). With any timeout the
+  status read `N timed out: <projects>` and left an ordinary failure in the same run unnamed; it now adds `; N failed: <projects>`.
+  The run was already red.
+
 - fix: a starvation re-run is refused when the report's summary counts a failure that has no row (AUTOMATION-1569). A test that
   threw a raw exception is counted in the summary with no row, so one timeout row beside it read as "every failure was a timeout"
   and the project was re-run alone, against "an assertion failure is never re-run". The reason names how many failures had no row.

@@ -6348,3 +6348,35 @@ let ``the scope and run commands declare their reply schemas`` () =
 
         test <@ schemaOf "run-tests" [| "{}" |] = typed FsHotWatch.TestPrune.TestPruneReplies.RunSchema @>
         waitForQuiescent host 10000)
+
+// --- the timeout headline names every failing project (AUTOMATION-1569 F) ---
+
+[<Fact(Timeout = 15000)>]
+let ``a timeout headline also names the projects that failed`` () =
+    let results: TestResults =
+        { Results =
+            Map.ofList
+                [ "Slow", TestsTimedOut("killed", TimeSpan.FromSeconds 60.0, false, TimeSpan.FromSeconds 60.0)
+                  "Red", TestsFailed("failed Red.T.t", false, TimeSpan.FromSeconds 1.0)
+                  "Green", TestsPassed("ok", false, TimeSpan.FromSeconds 1.0) ]
+          Elapsed = TimeSpan.FromSeconds 60.0 }
+
+    let tally = FsHotWatch.TestPrune.RunOutcomeReport.tallyRun results 3
+    let headline = FsHotWatch.TestPrune.RunOutcomeReport.timeoutHeadline tally ""
+
+    test <@ headline.Contains "1 timed out: Slow" @>
+    test <@ headline.Contains "1 failed: Red" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a timeout headline with no other failure names only the timeout`` () =
+    // POSITIVE CONTROL: no failure beside the timeout, no failure clause.
+    let results: TestResults =
+        { Results =
+            Map.ofList
+                [ "Slow", TestsTimedOut("killed", TimeSpan.FromSeconds 60.0, false, TimeSpan.FromSeconds 60.0)
+                  "Green", TestsPassed("ok", false, TimeSpan.FromSeconds 1.0) ]
+          Elapsed = TimeSpan.FromSeconds 60.0 }
+
+    let tally = FsHotWatch.TestPrune.RunOutcomeReport.tallyRun results 2
+
+    test <@ FsHotWatch.TestPrune.RunOutcomeReport.timeoutHeadline tally " (note)" = "1 timed out: Slow (note)" @>
