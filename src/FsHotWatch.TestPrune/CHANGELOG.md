@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a restarted daemon over a tree whose every project passed in full skips on the box-wide records (AUTOMATION-1587, ADR-067).
+  When the only refusal is that no run has completed in this session, and every runnable project has a full-pass record at its K_P
+  over the tree as `beforeRun` settles it, the cycle launches nothing. The log and `verdict.json` name each record by run and key.
+  Before, it logged a refused skip and ran a full-suite launch. A record that does not survive `beforeRun` or the completion
+  re-check runs its project. So does a missing record, a local outstanding failure, or any reuse `TestEvidenceRun.reuseRefusal`
+  refuses: a newer full or impact fail at the project's K_P, or a record there that cannot be read.
+
 - fix: a test-evidence reuse is refused when the outcome store holds a newer fail at the project's K_P (AUTOMATION-1615,
   ADR-059 §34). Ordinary reuse read only the evidence store, which holds greens, so when another checkout (or a
   cleared local ledger) had since failed the project on the same bytes, a fresh checkout reused the older green. Each

@@ -2289,6 +2289,20 @@
         "branch": 70,
         "reason": "new file (AUTOMATION-1424 reclaiming unused shared task-cache namespaces). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-05 on macOS by NamespaceReclaimTests with coverage: line 100%, branch 75% (36/48). Every uncovered branch is the other exception-type arm of a handler (IOException vs UnauthorizedAccessException) that a permission failure on one platform does not reach; which arm a platform takes may differ, so the branch floor is 70, not the measured 75."
       }
+    ],
+    "RecordedSkip.fs": [
+      {
+        "line": 100,
+        "branch": 96,
+        "reason": "new file (AUTOMATION-1587 step 3, ADR-067: the zero-affected skip on box-wide records). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down, on macOS by the unit suite (mise run test-direct) 2026-11-12: line 100.0%, branch 96.2% (25/26).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 96,
+        "reason": "new file (AUTOMATION-1587 step 3, ADR-067). The code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 96.2% (25/26).",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

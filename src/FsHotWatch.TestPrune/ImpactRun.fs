@@ -177,7 +177,52 @@ let internal runTestsWithImpactWith
             else
                 let launch = priceSelection launch
 
-                logLaunchSelection inputs hasCachedResults widenings selected excludedByProject treeUnverified
+                // THE SKIP ON RECORDS (ADR-067). The only refusal is that no run has
+                // completed in this session: nothing is owed, the full-suite baseline
+                // stands, nothing is forced. That refusal stands in for "has anything
+                // verified THIS tree", which the box-wide records can answer. Asked once
+                // here over the tree as it is, so a miss costs no `beforeRun`; decided
+                // only from what holds once `beforeRun` has settled the tree and the
+                // completion re-check has run. A skip on records is a run that launched
+                // nothing, each green filed from the record that earned it.
+                let onlyNoSessionBaseline =
+                    nothingForced
+                    && not alwaysOnly
+                    && selected.NarrowedSeeds.IsNone
+                    && zeroAffectedCauses inputs hasCachedResults widenings treeUnverified = [ ZeroAffectedWidening.NoSessionBaseline ]
+
+                let runnable = configs |> List.map _.Project
+
+                let recordsAnswer =
+                    if onlyNoSessionBaseline then
+                        env.Launch.EvidencePlanFor ctx configs (fun _ -> true) true inputs.OutstandingFailures
+                        |> RecordedSkip.decide runnable
+                        |> Some
+                    else
+                        None
+
+                let answeredByRecords =
+                    match recordsAnswer with
+                    | Some(Ok citations) ->
+                        Logging.info
+                            "test-prune"
+                            $"No affected classes and no session baseline, but every runnable project holds a full-pass record at the inputs found before beforeRun \
+                              (%s{RecordedSkip.Citation.describeMany citations}); settling the tree before skipping on them"
+
+                        true
+                    | Some(Error why) ->
+                        Logging.info "test-prune" $"no skip on records: %s{why}"
+                        false
+                    | None -> false
+
+                logLaunchSelection
+                    inputs
+                    hasCachedResults
+                    widenings
+                    selected
+                    excludedByProject
+                    treeUnverified
+                    answeredByRecords
 
                 let! results, started, completed, boundTree, testHostStartedAt, evidenceHeld =
                     executeTests
@@ -208,6 +253,32 @@ let internal runTestsWithImpactWith
                 // Completed for cache replay.
                 ignore results
 
+                // The skip on records holds only if every runnable project's green was
+                // filed from its record over the SETTLED tree and still held at
+                // completion: nothing launched. A record that did not survive `beforeRun`
+                // (AUTOMATION-1510) or the re-check ran its project, and that is no skip.
+                let zeroSelection =
+                    if not answeredByRecords then
+                        launch.ZeroSelection
+                    else
+                        match RecordedSkip.settle runnable evidenceHeld with
+                        | Ok citations ->
+                            Logging.info
+                                "test-prune"
+                                $"Zero-affected skip with no session baseline: every runnable project holds a full-pass \
+                                  record at the settled inputs, nothing launched — %s{RecordedSkip.Citation.describeMany citations}"
+
+                            ZeroSelection.AlreadyVerified
+                        | Error ran ->
+                            let names = String.concat ", " ran
+
+                            Logging.info
+                                "test-prune"
+                                $"no skip on records: at the settled tree (after beforeRun and the completion re-check) \
+                                  %d{ran.Length} project(s) held no record and ran: %s{names}"
+
+                            launch.ZeroSelection
+
                 return
                     TestsFinished(
                         started,
@@ -215,7 +286,8 @@ let internal runTestsWithImpactWith
                         { launch with
                             InputTree = boundTree
                             TestHostStartedAt = Some testHostStartedAt
-                            Reused = evidenceHeld }
+                            Reused = evidenceHeld
+                            ZeroSelection = zeroSelection }
                     )
         with ex ->
             Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
