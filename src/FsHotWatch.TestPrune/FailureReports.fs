@@ -400,6 +400,23 @@ type ReportEvidence =
     /// truncated report, malformed counters, a clean summary its rows do not account for).
     | ReportRequested of report: Result<Ctrf.VerdictReport, string>
 
+/// True when a filtered run matched no tests in this project (see
+/// `TestFilters.isZeroTestsUnderFilter`) AND its structured report does not say
+/// otherwise. A report counting a failed or raw-thrown test is red evidence that tests
+/// matched, so it outranks both the zero-tests exit code and the "Zero tests ran" text
+/// (AUTOMATION-1569): deciding "no match" first would hide that failure from
+/// `classifyTestOutcome`, which is where the report is read.
+let internal isZeroMatchRun (wasFiltered: bool) (evidence: ReportEvidence) (outcome: ProcessOutcome) : bool =
+    let reportIsRed =
+        match evidence with
+        | ReportRequested(Ok report) ->
+            let r = Ctrf.VerdictReport.summary report
+            r.Failed > 0 || r.Other > 0
+        | ReportRequested(Error _)
+        | NoReportRequested -> false
+
+    not reportIsRed && TestFilters.isZeroTestsUnderFilter wasFiltered outcome
+
 /// The lead sentence for a test host that died of `signal`, on macOS or not.
 ///
 /// SIGABRT is the host aborting ITSELF: on .NET, the runtime ending the process when its
