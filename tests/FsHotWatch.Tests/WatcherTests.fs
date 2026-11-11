@@ -1802,3 +1802,33 @@ let ``tests move the process working directory only through TestHelpers`` () =
         |> List.map Path.GetFileName
 
     test <@ List.isEmpty offenders @>
+
+// === Inputs that produced no event ===
+
+[<Fact(Timeout = 15000)>]
+let ``an F# signature file is a relevant source change`` () =
+    // The defect: `.fsi` was not a relevant extension, so editing a signature file
+    // produced no event and nothing was re-checked.
+    test <@ isRelevantFile "/repo/src/Lib.fsi" @>
+    test <@ acceptsUnderRoot "/repo" [] "/repo/src/Lib.fsi" @>
+    test <@ classifyChange "/repo/src/Lib.fsi" = SourceChanged [ "/repo/src/Lib.fsi" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``root-level build and toolchain files are project changes`` () =
+    // The defect: a stream accepted only F# inputs under `src/` and `tests/` and
+    // solutions at the top level, so a root Directory.Build.props, Directory.Build.targets
+    // or global.json, each of which decides what every project compiles, produced no event.
+    let accepts = acceptsUnderRoot "/repo" []
+
+    for name in
+        [ "Directory.Build.props"
+          "Directory.Build.targets"
+          "global.json"
+          "Directory.Packages.props" ] do
+        let path = "/repo/" + name
+        test <@ accepts path @>
+        test <@ classifyChange path = ProjectChanged [ path ] @>
+
+    // A non-input at the root, and a toolchain name below the root, stay out.
+    test <@ not (accepts "/repo/notes.json") @>
+    test <@ not (accepts "/repo/docs/global.json") @>
