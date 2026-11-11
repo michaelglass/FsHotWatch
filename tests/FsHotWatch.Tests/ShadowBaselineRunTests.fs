@@ -17,6 +17,11 @@ let private t0 = DateTimeOffset(2026, 11, 1, 2, 40, 0, TimeSpan.Zero)
 
 let private projects = [ "A.Tests"; "B.Tests" ]
 
+/// What the configuration requires: the build the observation reports, and both projects.
+let private configured: Configured =
+    { RequiredPlugins = [ "build" ]
+      TestProjects = projects }
+
 let private suite run project (failed: string list) (passed: string list) : Suite =
     { RunId = Some run
       Project = project
@@ -67,7 +72,7 @@ let private withStore (body: string -> OutcomeStore.Store -> unit) =
 [<Fact>]
 let ``the check's own full-suite run that earned the watermark files each passing project's baseline`` () =
     withStore (fun repo store ->
-        test <@ observeWith repo store None projects (coldCheck bothPassed) = LookupVerdict.Answer.Green @>)
+        test <@ observeWith repo store None configured (coldCheck bothPassed) = LookupVerdict.Answer.Green @>)
 
 // ---------------------------------------------------------------------------
 // Never looser.
@@ -84,7 +89,7 @@ let ``a project the watermark run failed earns no baseline, and its fail stays r
     withStore (fun repo store ->
         let r1 = [ suite "r1" "A.Tests" [] [ "A.x" ]; suite "r1" "B.Tests" [ "B.x" ] [] ]
         test <@ baselinesIn (recordsOf (coldCheck r1) projects) = [ "A.Tests" ] @>
-        test <@ observeWith repo store None projects (coldCheck r1) = LookupVerdict.Answer.Red [ "test:B.Tests" ] @>)
+        test <@ observeWith repo store None configured (coldCheck r1) = LookupVerdict.Answer.Red [ "test:B.Tests" ] @>)
 
 [<Fact>]
 let ``a watermark run the publication does not hold, or no watermark at all, files no baseline`` () =
@@ -116,7 +121,7 @@ let ``the graded run is never filed as the watermark's full run as well`` () =
 [<Fact>]
 let ``confirm, another tree and another binary find nothing the watermark run filed for this tree`` () =
     withStore (fun repo store ->
-        observeWith repo store None projects (coldCheck bothPassed) |> ignore
+        observeWith repo store None configured (coldCheck bothPassed) |> ignore
 
         let readOf (o: Observation) =
             { o with
@@ -134,7 +139,7 @@ let ``confirm, another tree and another binary find nothing the watermark run fi
 
         test
             <@
-                observeReadWith repo store None projects confirmRead = LookupVerdict.Answer.Missing
+                observeReadWith repo store None configured confirmRead = LookupVerdict.Answer.Missing
                     [ "test:A.Tests"; "test:B.Tests" ]
             @>
 
@@ -144,7 +149,7 @@ let ``confirm, another tree and another binary find nothing the watermark run fi
 
         test
             <@
-                observeReadWith repo store None projects otherTree = LookupVerdict.Answer.Missing
+                observeReadWith repo store None configured otherTree = LookupVerdict.Answer.Missing
                     [ "plugin:build"; "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>
 
@@ -154,6 +159,6 @@ let ``confirm, another tree and another binary find nothing the watermark run fi
 
         test
             <@
-                observeReadWith repo store None projects otherBinary = LookupVerdict.Answer.Missing
+                observeReadWith repo store None configured otherBinary = LookupVerdict.Answer.Missing
                     [ "plugin:build"; "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>)

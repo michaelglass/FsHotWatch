@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: an outcome record the store cannot READ makes its key a miss, and stays where it is (AUTOMATION-1568). It was
+  quarantined and the key answered from the rest, so an unreadable newest fail returned the older pass, permanently once moved.
+  A record that reads back torn, mis-keyed or of an unknown schema is still quarantined.
+
 ## 0.10.0-alpha.108 - 2026-11-11
 
 - fix: a repeated `check` on an unchanged tree no longer goes red on coverage (AUTOMATION-1530). A test run replayed from the

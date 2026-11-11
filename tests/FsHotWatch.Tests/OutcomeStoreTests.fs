@@ -311,3 +311,61 @@ let ``gc that evicts nothing logs nothing`` () =
 let ``the default byte budget holds four intelligence-sized trees`` () =
     let oneTree = 340L * 1024L * 1024L
     test <@ defaultMaxBytes >= 4L * oneTree @>
+
+// AUTOMATION-1568 (B): a record that could not be READ is not a record that was read and found
+// wrong. A torn or mis-keyed file is evidence of nothing and is moved aside; an unreadable one
+// (a transient IO error, a GC's `Directory.Delete` mid-flight) may well be the newest fail, so
+// answering the key from the rest would return the older pass, and quarantining it would make
+// that answer permanent. `TestEvidenceStore.Lookup` already separates the two: unreadable is a
+// miss, and nothing is moved.
+let private unreadable (file: string) (body: unit -> unit) =
+    File.SetUnixFileMode(file, UnixFileMode.None)
+
+    try
+        // The control must be real: a reader that can still read the file (root) proves nothing.
+        let readable =
+            try
+                File.ReadAllText file |> ignore
+                true
+            with :? UnauthorizedAccessException ->
+                false
+
+        test <@ not readable @>
+        body ()
+    finally
+        // A store that quarantines it has moved it aside; then there is nothing to restore.
+        if File.Exists file then
+            File.SetUnixFileMode(file, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+
+[<Fact>]
+let ``an unreadable newest fail is a miss for its key, not the older pass, and is not quarantined`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        store.Record(recordOf key Outcome.Pass t0) |> ignore
+        let passFile = recordFiles dir |> List.exactlyOne
+        store.Record(recordOf key Outcome.Fail (t0.AddMinutes 1.0)) |> ignore
+        let failFile = recordFiles dir |> List.except [ passFile ] |> List.exactlyOne
+
+        unreadable failFile (fun () ->
+            test <@ store.Lookup key = None @>
+            test <@ store.LookupWithOutputs key = None @>
+            test <@ List.isEmpty (store.History key) @>
+            test <@ File.Exists failFile @>
+            test <@ not (Directory.Exists(Path.Combine(dir, "quarantine"))) @>)
+
+        // Once it reads again, the fail it always was is the answer.
+        test <@ store.Lookup key |> Option.map _.Outcome = Some Outcome.Fail @>)
+
+[<Fact>]
+let ``a key whose records are all readable still answers with its newest beside an unreadable other key`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let good = keyFor "sha256:good"
+        let bad = keyFor "sha256:bad"
+        store.Record(recordOf good Outcome.Pass t0) |> ignore
+        let goodFile = recordFiles dir |> List.exactlyOne
+        store.Record(recordOf bad Outcome.Fail t0) |> ignore
+        let badFile = recordFiles dir |> List.except [ goodFile ] |> List.exactlyOne
+
+        unreadable badFile (fun () ->
+            test <@ store.Lookup good |> Option.map _.Outcome = Some Outcome.Pass @>
+            test <@ store.Lookup bad = None @>))

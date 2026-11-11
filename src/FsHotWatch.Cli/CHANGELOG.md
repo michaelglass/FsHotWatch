@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the ADR-059 shadow requires `plugin:<name>` for every non-test plugin `.fshw.json` configures, not for the ones the
+  verdict happened to report (AUTOMATION-1568). A configured plugin that never ran is left out of `plugins[]`, so the lookup
+  agreed green without it. It is now missing (`stricter`). The test plugin is required beside its configured projects, so a
+  test-prune failure no project carries stays red. An unreadable `.fshw.json` logs a line with direction `not-compared` and
+  the reason; it carries `agree: false`, so it breaks a consecutive-agreement run as ADR-059 §8 counts one.
+
 ## 0.14.0-alpha.141 - 2026-11-11
 
 - fix: the ADR-059 shadow files a baseline for every project that passed the run today's watermark records (AUTOMATION-1536). A

@@ -74,6 +74,9 @@ type Direction =
     | Stricter
     /// Neither is green, and they differ.
     | RedVsMissing
+    /// No comparison was made: the requirement set could not be read. Never agreement, so it
+    /// breaks a consecutive-agreement run as ADR-059 §8 counts one (`select(.agree | not)`).
+    | NotCompared
 
 module Direction =
     /// The direction as a shadow line names it.
@@ -83,6 +86,7 @@ module Direction =
         | Direction.Looser -> "looser"
         | Direction.Stricter -> "stricter"
         | Direction.RedVsMissing -> "red-vs-missing"
+        | Direction.NotCompared -> "not-compared"
 
     /// The direction a shadow line names; `None` for any other token.
     let tryParse =
@@ -91,6 +95,7 @@ module Direction =
         | "looser" -> Some Direction.Looser
         | "stricter" -> Some Direction.Stricter
         | "red-vs-missing" -> Some Direction.RedVsMissing
+        | "not-compared" -> Some Direction.NotCompared
         | _ -> None
 
 /// The scope of the run a publication was graded from.
@@ -250,13 +255,24 @@ let FullScope = "full"
 [<Literal>]
 let ImpactScope = "impact"
 
-/// R(c, T): what a green for this command over this tree requires (ADR-059 §3). Plugins
-/// are the ones the daemon reported; test projects are the configured ones.
-let requirements (o: Observation) (testProjects: string list) : LookupVerdict.Requirement list =
-    [ for (name, _) in o.Plugins do
+/// What R(c, T) is computed from: the configuration, never the run (ADR-059 §7 step 2).
+type Configured =
+    {
+        /// The plugins the configuration registers (`DaemonConfig.requiredPluginNames`).
+        RequiredPlugins: string list
+        /// The configured test projects, by the name their reports carry.
+        TestProjects: string list
+    }
+
+/// R(c, T): what a green for this command over this tree requires (ADR-059 §3). Plugins and
+/// test projects are both the configured ones. A plugin idle with no run record is left out
+/// of today's `plugins[]` (`Verdict.pluginVerdicts`), so a requirement set read from the run
+/// could not miss a configured gate nobody ran on the tree (AUTOMATION-1568).
+let requirements (o: Observation) (configured: Configured) : LookupVerdict.Requirement list =
+    [ for name in configured.RequiredPlugins do
           LookupVerdict.Requirement.single ("plugin:" + name) (pluginKey o name)
       LookupVerdict.Requirement.single "diagnostics" (diagnosticsKey o)
-      for project in testProjects do
+      for project in configured.TestProjects do
           let full = [ (testKey o project FullScope).Value ]
 
           // The record the test runner filed under this project's K_P, when the daemon named
@@ -403,6 +419,26 @@ let direction (today: Class) (lookup: Class) : Direction =
     | Class.Green, _ -> Direction.Stricter
     | _ -> Direction.RedVsMissing
 
+/// A log line: what today said, the `lookup` object, and how the two relate.
+let private lineWith (command: string) (o: Observation) (lookup: JsonObject) (dir: Direction) (recorded: int) =
+    let today = JsonObject()
+    today["outcome"] <- o.TodayOutcome
+    today["class"] <- Class.token o.Today
+    today["exit"] <- o.ExitCode
+
+    let root = JsonObject()
+    root["schema"] <- LogSchema
+    root["at"] <- o.RecordedAt.ToString("o")
+    root["command"] <- command
+    root["tree"] <- o.Tree
+    root["producer"] <- o.Producer
+    root["today"] <- today
+    root["lookup"] <- lookup
+    root["agree"] <- (dir = Direction.Agree)
+    root["direction"] <- Direction.token dir
+    root["recorded"] <- recorded
+    root.ToJsonString()
+
 /// The log line for one comparison, under the command label `command`.
 let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
     let strings (items: string list) =
@@ -430,24 +466,22 @@ let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (re
             | _ -> []
         )
 
-    let today = JsonObject()
-    today["outcome"] <- o.TodayOutcome
-    today["class"] <- Class.token o.Today
-    today["exit"] <- o.ExitCode
+    lineWith command o lookup (direction o.Today (classOf answer)) recorded
 
-    let dir = direction o.Today (classOf answer)
-    let root = JsonObject()
-    root["schema"] <- LogSchema
-    root["at"] <- o.RecordedAt.ToString("o")
-    root["command"] <- command
-    root["tree"] <- o.Tree
-    root["producer"] <- o.Producer
-    root["today"] <- today
-    root["lookup"] <- lookup
-    root["agree"] <- (dir = Direction.Agree)
-    root["direction"] <- Direction.token dir
-    root["recorded"] <- recorded
-    root.ToJsonString()
+/// The log line for a publication or read the shadow could not compare, and why
+/// (AUTOMATION-1568 rework). A silently absent line would make a gap in the count look like no
+/// land at all. It is not agreement (`agree: false`) and names no disagreement direction.
+let notComparedLineAs (command: string) (o: Observation) (reason: string) : string =
+    let lookup = JsonObject()
+    lookup["outcome"] <- "not-compared"
+    lookup["reason"] <- reason
+    lineWith command o lookup Direction.NotCompared 0
+
+/// Append one line to `repoRoot`'s shadow log.
+let appendLine (repoRoot: string) (text: string) =
+    let path = logPath repoRoot
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.AppendAllText(path, text + "\n")
 
 /// The log line for one publication: labelled with its own command.
 let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
@@ -526,15 +560,15 @@ let private fileRecords (store: OutcomeStore.Store) (o: Observation) (records: O
     List.length filed
 
 /// File `o`'s records, look the tree up, and append the comparison to the shadow log.
-/// Returns the lookup's answer. `testProjects` are the configured test projects.
+/// Returns the lookup's answer. `configured` is what the configuration requires.
 let observeWith
     (repoRoot: string)
     (store: OutcomeStore.Store)
     (kpStore: OutcomeStore.Store option)
-    (testProjects: string list)
+    (configured: Configured)
     (o: Observation)
     =
-    let records = recordsOf o testProjects
+    let records = recordsOf o configured.TestProjects
     let recorded = fileRecords store o records
 
     // Not counted in `recorded`: they name keys, not outcomes this publication established.
@@ -543,13 +577,11 @@ let observeWith
     for record, outputs in named do
         store.RecordWithOutputs(record, Some outputs) |> ignore
 
-    let required = requirements o testProjects
+    let required = requirements o configured
 
     let answer = LookupVerdict.decide required (lookupIn o.Command store kpStore)
 
-    let path = logPath repoRoot
-    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
-    File.AppendAllText(path, line o answer recorded + "\n")
+    appendLine repoRoot (line o answer recorded)
 
     let keep =
         required
@@ -567,17 +599,15 @@ let observeReadWith
     (repoRoot: string)
     (store: OutcomeStore.Store)
     (kpStore: OutcomeStore.Store option)
-    (testProjects: string list)
+    (configured: Configured)
     (o: Observation)
     =
-    let o = withRecordedOutcomeKeys store testProjects o
+    let o = withRecordedOutcomeKeys store configured.TestProjects o
 
     let answer =
-        LookupVerdict.decide (requirements o testProjects) (lookupIn o.Command store kpStore)
+        LookupVerdict.decide (requirements o configured) (lookupIn o.Command store kpStore)
 
-    let path = logPath repoRoot
-    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
-    File.AppendAllText(path, lineAs "verdict" o answer 0 + "\n")
+    appendLine repoRoot (lineAs "verdict" o answer 0)
     answer
 
 /// The shadow store of `repoRoot`, with the default TTL and byte budget.
@@ -601,15 +631,29 @@ let kpStoreFor (repoRoot: string) (o: Observation) : OutcomeStore.Store option =
 let configuredTestProjects (repoRoot: string) : Result<string list, string> =
     TestEvidenceKey.configsOf repoRoot |> Result.map (Map.keys >> List.ofSeq)
 
+/// What `repoRoot`'s configuration requires of a green: its non-test plugins and its test
+/// projects. An error when either cannot be read: the shadow never guesses a requirement set.
+let configuredOf (repoRoot: string) : Result<Configured, string> =
+    configuredTestProjects repoRoot
+    |> Result.bind (fun projects ->
+        try
+            Ok
+                { RequiredPlugins = DaemonConfig.configuredPlugins repoRoot
+                  TestProjects = projects }
+        with DaemonConfig.ConfigErrorException message ->
+            Error message)
+
 /// The shadow for one publication. Never throws and never changes anything a gate reads:
 /// a failure is logged and the publication goes on exactly as it would have.
 let observe (repoRoot: string) (o: Observation) : unit =
     if enabledBy (Environment.GetEnvironmentVariable KillSwitchEnvVar) then
         try
-            match configuredTestProjects repoRoot with
-            | Error reason -> Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
-            | Ok projects ->
-                observeWith repoRoot (storeAt repoRoot) (kpStoreFor repoRoot o) projects o
+            match configuredOf repoRoot with
+            | Error reason ->
+                Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
+                appendLine repoRoot (notComparedLineAs (Verdict.Command.token o.Command) o reason)
+            | Ok configured ->
+                observeWith repoRoot (storeAt repoRoot) (kpStoreFor repoRoot o) configured o
                 |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"
@@ -761,17 +805,22 @@ let ofRead
 let observeRead (repoRoot: string) (report: Verdict.Report) (currentTree: TreeHash.Tree option) : unit =
     if enabledBy (Environment.GetEnvironmentVariable KillSwitchEnvVar) then
         try
-            match currentTree, configuredTestProjects repoRoot with
+            match currentTree, configuredOf repoRoot with
             | None, _ -> ()
-            | _, Error reason -> Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
-            | Some tree, Ok projects ->
+            | Some tree, Error reason ->
+                Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
+                let producer = DaemonIdentity.BinaryIdentity.render (Verdict.Producer.current ())
+
+                ofRead repoRoot report tree.Hash producer DateTimeOffset.UtcNow
+                |> Option.iter (fun o -> appendLine repoRoot (notComparedLineAs "verdict" o reason))
+            | Some tree, Ok configured ->
                 let producer = DaemonIdentity.BinaryIdentity.render (Verdict.Producer.current ())
 
                 match ofRead repoRoot report tree.Hash producer DateTimeOffset.UtcNow with
                 | None -> ()
                 | Some o ->
                     let store = storeAt repoRoot
-                    let o = withRecordedOutcomeKeys store projects o
-                    observeReadWith repoRoot store (kpStoreFor repoRoot o) projects o |> ignore
+                    let o = withRecordedOutcomeKeys store configured.TestProjects o
+                    observeReadWith repoRoot store (kpStoreFor repoRoot o) configured o |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"
