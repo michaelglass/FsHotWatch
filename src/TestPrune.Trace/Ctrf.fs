@@ -26,13 +26,40 @@ let private rowOf (node: JsonNode) =
                 { Name = name.GetValue<string>()
                   Outcome = outcomeOf (status.GetValue<string>()) }
 
+/// Escape raw control characters inside string literals (AUTOMATION-1073). xUnit v3's JSON
+/// writer escapes only `\b \f \n \r \t` below U+0020, so an ANSI-coloured failure message
+/// leaves a raw ESC that makes the whole report invalid JSON. Inside a literal such a
+/// character can only mean itself; outside one nothing is touched. The same repair as
+/// `FsHotWatch.Ctrf.repairControlChars`, which this package does not reference.
+let private repairControlChars (json: string) : string =
+    let out = Text.StringBuilder(json.Length)
+    let mutable inString = false
+    let mutable escaped = false
+
+    for c in json do
+        if inString && not escaped && c < ' ' then
+            out.Append(sprintf "\\u%04x" (int c)) |> ignore
+        else
+            out.Append c |> ignore
+
+        if not inString then
+            inString <- c = '"'
+        elif escaped then
+            escaped <- false
+        elif c = '\\' then
+            escaped <- true
+        elif c = '"' then
+            inString <- false
+
+    out.ToString()
+
 /// The per-test rows of a CTRF report (`results.tests`, or a top-level `tests`). A real
 /// MTP report omits rows for tests that threw a raw exception; such a test simply gets
 /// no outcome here, which ingestion records as `NoOutcome`, never as passed. An
 /// unreadable report has no rows.
 let parse (json: string) : TestOutcome list =
     try
-        let root = JsonNode.Parse json
+        let root = JsonNode.Parse(repairControlChars json)
 
         let rows =
             match root.["results"] with

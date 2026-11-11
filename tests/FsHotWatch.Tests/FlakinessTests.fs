@@ -318,6 +318,38 @@ let ``verdict evidence rejects a partial clean report`` () =
 
     test <@ Result.isError (parseVerdictSummary json) @>
 
+// --- Raw control characters (AUTOMATION-1073) ---
+//
+// xUnit v3's JSON writer escapes only \b \f \n \r \t below U+0020, so a failure message
+// carrying ANSI colour writes a raw ESC into a string literal and the whole report is
+// invalid JSON. The readers repair such characters inside string literals rather than
+// lose the project's per-test attribution.
+
+let private ansiFailure =
+    let esc = string (char 0x1b)
+    let nul = string (char 0)
+
+    $"""{{"results":{{"summary":{{"tests":2,"passed":1,"failed":1,"pending":0,"skipped":0,"other":0}},"tests":[{{"name":"Mod.Ansi","status":"failed","message":"%s{esc}[31mexpected%s{esc}[0m %s{nul}\u001b"}},{{"name":"Mod.Row%s{esc}","status":"passed"}}]}}}}"""
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a report whose strings carry raw control characters still parses and names its failure`` () =
+    test <@ (parseVerdictSummary ansiFailure |> Result.map _.Failed) = Ok 1 @>
+
+    test
+        <@
+            FsHotWatch.Ctrf.tryTestNames ansiFailure = Some
+                { Failed = [ "Mod.Ansi" ]
+                  Passed = set [ "Mod.Row" + string (char 0x1b) ] }
+        @>
+
+    test <@ (FsHotWatch.Ctrf.trySummary ansiFailure |> Option.map _.Failed) = Some 1 @>
+    test <@ parseCtrfTests ansiFailure |> List.map _.Name = [ "Mod.Ansi"; "Mod.Row" + string (char 0x1b) ] @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a control character outside a string literal is still not JSON`` () =
+    let bare = cleanOneRow.Replace("{\"results\"", string (char 0x1b) + "{\"results\"")
+    test <@ Result.isError (parseVerdictSummary bare) @>
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``verdict evidence requires all counters to be nonnegative integers`` () =
     for key in [ "tests"; "passed"; "failed"; "pending"; "skipped"; "other" ] do

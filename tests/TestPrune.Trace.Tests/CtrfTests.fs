@@ -45,3 +45,14 @@ let ``an unreadable report has no outcomes`` () =
     test <@ List.isEmpty (Ctrf.parse """{"results":{"tests":{"name":"x"}}}""") @>
     test <@ List.isEmpty (Ctrf.parse "{}") @>
     test <@ List.isEmpty (Ctrf.parse """{"results":{"tests":[{"name":1,"status":"passed"}]}}""") @>
+
+[<Fact>]
+let ``a raw control character in a string literal does not cost the report its rows`` () =
+    // xUnit v3 leaves ESC unescaped, so an ANSI-coloured failure message used to make the
+    // whole report unreadable (AUTOMATION-1073).
+    let esc = string (char 0x1b)
+
+    let json =
+        $"""{{"results":{{"tests":[{{"name":"N.C.a","status":"failed","message":"%s{esc}[31mno%s{esc}[0m"}}]}}}}"""
+
+    test <@ Ctrf.parse json = [ { Name = "N.C.a"; Outcome = Failed } ] @>

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: flakiness history and the declared-class reader keep the rows of a CTRF report whose string literals carry raw
+  control characters, such as an ANSI-coloured xUnit v3 failure message (AUTOMATION-1073); they read it through
+  `FsHotWatch.Ctrf.parseReport`.
+
 ## 0.13.0-alpha.108 - 2026-11-11
 
 - fix: a dependency fanout whose projects already hold evidence at these inputs launches no run (AUTOMATION-1534). It force-ran them,
