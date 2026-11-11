@@ -33,13 +33,13 @@ open FsHotWatch.TestPrune.CoverageArtifacts
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
-let private counts: FsHotWatch.ProjectModel.Counts =
+let internal counts: FsHotWatch.ProjectModel.Counts =
     { Discovered = 2
       Loaded = 2
       OptionsMapped = 2
       Registered = 2 }
 
-let private config (project: string) : TestConfig =
+let internal config (project: string) : TestConfig =
     { Project = project
       Command = "sh"
       Args = "-c \"exit 0\""
@@ -55,18 +55,18 @@ let private config (project: string) : TestConfig =
       Weight = 1.0
       AlwaysClasses = [] }
 
-let private configs = [ config "ProjA"; config "ProjB" ]
+let internal configs = [ config "ProjA"; config "ProjB" ]
 
 /// A plugin over a symbol index in which `Lib.f` is covered by `ProjATests` only, and a
 /// ctx whose project model is whatever `generation` holds when asked. Launches are
 /// captured rather than started, so a test decides when (and whether) one executes.
-type private Fixture =
+type internal Fixture =
     { Handler: PluginHandler<TestPruneState, TestPruneMsg>
       Ctx: PluginCtx<TestPruneMsg>
       Generation: int64 ref
       Scheduled: (SharedResourceState -> Async<TestPruneMsg>) option ref }
 
-let private fixture () =
+let internal fixture () =
     let root = isolatedRoot ()
     let dbPath = Path.Combine(root, "tp.db")
     let db = Database.create dbPath
@@ -112,13 +112,13 @@ let private fixture () =
       Generation = generation
       Scheduled = scheduled }
 
-let private update (f: Fixture) state event =
+let internal update (f: Fixture) state event =
     f.Handler.Update f.Ctx state event |> Async.RunSynchronously
 
 /// A completion over `selection`: a project that ran in full passed unfiltered, a
 /// filtered one passed filtered, and a skipped one has no result — what a green run of
 /// exactly that launch reports.
-let private finishedGreen (launch: TestRunLaunch) =
+let internal finishedGreen (launch: TestRunLaunch) =
     let results =
         launch.Selection
         |> Map.map (fun _ selection ->
@@ -157,7 +157,7 @@ let private verifiedUnderModelOne (f: Fixture) =
 
 /// Deliver a build and execute the launch it schedules, returning the launch and the
 /// state the build left. The runner commands exit 0 at once; only the launch is inspected.
-let private buildAndLaunch (f: Fixture) state =
+let internal buildAndLaunch (f: Fixture) state =
     f.Scheduled.Value <- None
     let launched = update f state (BuildCompleted BuildSucceeded)
     Assert.True(f.Scheduled.Value.IsSome, "the build must reach a launch")
@@ -327,11 +327,11 @@ let ``with current evidence a change no test covers runs nothing`` () =
 // on any one daemon's model generation, so a record of it can outlive the daemon.
 // ---------------------------------------------------------------------------
 
-let private fsprojOf (project: string) = $"/repo/%s{project}.fsproj"
+let internal fsprojOf (project: string) = $"/repo/%s{project}.fsproj"
 
 /// The fixture, with a model that publishes `identities` as each project's compile-input
 /// identity under whatever generation it holds.
-let private withIdentities (identities: Map<string, string> ref) (f: Fixture) =
+let internal withIdentities (identities: Map<string, string> ref) (f: Fixture) =
     { f with
         Ctx =
             { f.Ctx with
@@ -342,7 +342,7 @@ let private withIdentities (identities: Map<string, string> ref) (f: Fixture) =
 
 /// What the host does with a state the handler produced: make its durable record the one a
 /// restart reads.
-let private publish (f: Fixture) (prior: TestPruneState) (candidate: TestPruneState) =
+let internal publish (f: Fixture) (prior: TestPruneState) (candidate: TestPruneState) =
     match f.Handler.PrepareCommit with
     | Some prepare ->
         let prepared = prepare prior candidate |> Async.RunSynchronously
@@ -351,14 +351,14 @@ let private publish (f: Fixture) (prior: TestPruneState) (candidate: TestPruneSt
 
 /// A new daemon over the same checkout: a fresh handler, whose model starts again at
 /// generation 1, reading whatever the previous one left on disk.
-let private restarted (f: Fixture) =
+let internal restarted (f: Fixture) =
     f.Generation.Value <- 1L
     f.Scheduled.Value <- None
 
     { f with
         Handler = create (Path.Combine(f.Ctx.RepoRoot, "tp.db")) f.Ctx.RepoRoot (Some configs) None None None None [] }
 
-let private identitiesOf (pairs: (string * string) list) =
+let internal identitiesOf (pairs: (string * string) list) =
     ref (
         pairs
         |> List.map (fun (project, identity) -> fsprojOf project, identity)
@@ -569,7 +569,7 @@ let ``one project's launch stall costs only that project's evidence`` () =
 // ---------------------------------------------------------------------------
 
 /// Run `body` with this context's log lines collected.
-let private withLogLines (body: unit -> 'T) : 'T * string list =
+let internal withLogLines (body: unit -> 'T) : 'T * string list =
     let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
 
     let result =

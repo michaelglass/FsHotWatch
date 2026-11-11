@@ -34,7 +34,7 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 /// and fails when `src/<lib>/fail` exists, or `flake-<project>` at the root (outside every
 /// closure, so the failure does not move the project's key: a flake). `edit-during-<project>` at the root names a
 /// library the runner appends to while it runs: an edit made mid-run.
-let private runner =
+let internal runner =
     """#!/bin/sh
 proj="$1"; shift
 name=''; dir=''; cov=''
@@ -60,25 +60,25 @@ fi
 exit $code
 """
 
-let private write (root: string) (rel: string) (text: string) =
+let internal write (root: string) (rel: string) (text: string) =
     let path = Path.Combine(root, rel)
     Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
     File.WriteAllText(path, text)
 
-let private libs = [ "X"; "Y"; "Z"; "S" ]
-let private testProjects = [ "TX"; "TY"; "TZ" ]
+let internal libs = [ "X"; "Y"; "Z"; "S" ]
+let internal testProjects = [ "TX"; "TY"; "TZ" ]
 
 /// TX and TY reference the shared library S as well as their own.
-let private referencesOf =
+let internal referencesOf =
     Map.ofList [ "TX", [ "X"; "S" ]; "TY", [ "Y"; "S" ]; "TZ", [ "Z" ] ]
 
-let private fsprojOf (root: string) (name: string) =
+let internal fsprojOf (root: string) (name: string) =
     if name.StartsWith "T" then
         Path.Combine(root, "tests", name, name + ".fsproj")
     else
         Path.Combine(root, "src", name, name + ".fsproj")
 
-let private populate (root: string) =
+let internal populate (root: string) =
     write root "runner.sh" runner
 
     for lib in libs do
@@ -89,7 +89,7 @@ let private populate (root: string) =
         write root $"tests/%s{t}/%s{t}.fsproj" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
         write root $"tests/%s{t}/Tests.fs" $"module %s{t}\n"
 
-let private configs =
+let internal configs =
     testProjects
     |> List.map (fun t ->
         { Project = t
@@ -110,7 +110,7 @@ let private configs =
 /// The model the host publishes: every project, its references, and an identity per
 /// project that is the same in every checkout (the options do not change in these tests;
 /// what changes is content, which the key hashes itself).
-let private graphOf (root: string) : ProjectGraphAccessor =
+let internal graphOf (root: string) : ProjectGraphAccessor =
     let all = (libs @ testProjects) |> List.map (fsprojOf root)
 
     { ProjectGraphAccessor.none with
@@ -123,22 +123,22 @@ let private graphOf (root: string) : ProjectGraphAccessor =
                 |> Option.defaultValue []
                 |> List.map (fsprojOf root) }
 
-let private identitiesOf (root: string) =
+let internal identitiesOf (root: string) =
     (libs @ testProjects)
     |> List.map (fun name -> fsprojOf root name, "identity:" + name)
     |> Map.ofList
 
 /// One checkout: its root, its daemon, and what it completed.
-type private Checkout =
+type internal Checkout =
     { Root: string
       Host: PluginHost
       Completions: Collections.Concurrent.ConcurrentQueue<TestRunCompleted> }
 
 /// Every result any TestProgress carried, in arrival order.
-let private progressSeen =
+let internal progressSeen =
     Collections.Concurrent.ConcurrentDictionary<string, Collections.Concurrent.ConcurrentQueue<TestResult>>()
 
-let private completionRecorder () =
+let internal completionRecorder () =
     let completions = Collections.Concurrent.ConcurrentQueue<TestRunCompleted>()
     let progress = Collections.Concurrent.ConcurrentQueue<TestResult>()
 
@@ -165,7 +165,7 @@ let private completionRecorder () =
 
     completions, progress, handler
 
-let private wiringFor (store: TestEvidenceStore.Store) : TestEvidenceRun.Wiring =
+let internal wiringFor (store: TestEvidenceStore.Store) : TestEvidenceRun.Wiring =
     { Store = store
       Configs =
         testProjects
@@ -184,7 +184,7 @@ let private wiringFor (store: TestEvidenceStore.Store) : TestEvidenceRun.Wiring 
 /// checkout: one that earned a full-suite baseline before these runs, the way the default
 /// checkout has by the time anything lands in it. (A checkout owed a baseline consults no
 /// evidence at all; `a checkout owed a full-suite baseline` below pins that.)
-let private checkoutSetUp
+let internal checkoutSetUp
     (coverage: (string -> string option) option)
     (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
     (seeded: bool)
@@ -240,17 +240,17 @@ let private checkoutSetUp
       Host = host
       Completions = completions }
 
-let private checkoutFull coverage = checkoutSetUp coverage None
+let internal checkoutFull coverage = checkoutSetUp coverage None
 
-let private checkoutWith = checkoutFull None
+let internal checkoutWith = checkoutFull None
 
-let private checkout = checkoutWith true
+let internal checkout = checkoutWith true
 
 /// Every test project's coverage graded, its baseline under `coverage/<project>/`.
-let private coverageIn (root: string) =
+let internal coverageIn (root: string) =
     Some(fun (project: string) -> Some(Path.Combine(root, "coverage", project, BaselineName)))
 
-let private launches (c: Checkout) =
+let internal launches (c: Checkout) =
     let log = Path.Combine(c.Root, "runs.log")
 
     if File.Exists log then
@@ -261,10 +261,10 @@ let private launches (c: Checkout) =
 /// The xUnit cap of a test here: up to three `run`s, each two `HangWaitMs` waits over in-process
 /// work and a trivial child, so only a hang reaches it (AUTOMATION-1461).
 [<Literal>]
-let private RunsTestCapMs = 3 * SyncHangBackstopMs
+let internal RunsTestCapMs = 3 * SyncHangBackstopMs
 
 /// Run one check and return the projects it LAUNCHED and the results it completed with.
-let private run (c: Checkout) =
+let internal run (c: Checkout) =
     let before = launches c |> List.length
     let completedBefore = c.Completions.Count
     emitBuildAndWaitTerminal c.Host
@@ -273,12 +273,12 @@ let private run (c: Checkout) =
     let completed = c.Completions |> Seq.last
     launched, completed
 
-let private isReused (result: TestResult) =
+let internal isReused (result: TestResult) =
     match result with
     | TestsPassed(output, false, _) -> output.StartsWith("reused:", StringComparison.Ordinal)
     | _ -> false
 
-let private reusedIn (completed: TestRunCompleted) =
+let internal reusedIn (completed: TestRunCompleted) =
     completed.Results
     |> Map.filter (fun _ r -> isReused r)
     |> Map.keys
@@ -287,14 +287,14 @@ let private reusedIn (completed: TestRunCompleted) =
 
 /// Every project verified green, in a run that selected at least one: the run-level
 /// guard is the run's own verification, since `forall` over no results is vacuously true.
-let private allGreen (completed: TestRunCompleted) =
+let internal allGreen (completed: TestRunCompleted) =
     let selectedAny = completed.Verification <> NoProjectsSelected
 
     selectedAny
     && completed.Results |> Map.forall (fun _ r -> TestResult.verifiedGreen r)
 
 /// A store in its own directory, and a root per checkout, all cleaned up together.
-let private withRepo (body: TestEvidenceStore.Store -> (string -> string) -> unit) =
+let internal withRepo (body: TestEvidenceStore.Store -> (string -> string) -> unit) =
     withTempDir "evrun" (fun dir ->
         let store =
             TestEvidenceStore.Store(
@@ -313,11 +313,11 @@ let private withRepo (body: TestEvidenceStore.Store -> (string -> string) -> uni
 
         body store rootNamed)
 
-let private edit (root: string) (lib: string) (line: string) =
+let internal edit (root: string) (lib: string) (line: string) =
     File.AppendAllText(Path.Combine(root, "src", lib, "Lib.fs"), line + "\n")
 
 /// The run a checkout's full-suite baseline names, when it has one.
-let private baselineRunOf (root: string) =
+let internal baselineRunOf (root: string) =
     match FullSuiteBaseline.load root with
     | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> Some baseline.RunId
     | _ -> None
@@ -684,7 +684,7 @@ let ``a run whose tree moved writes no evidence for any project`` () =
 
 /// A `beforeRun` that writes `rel` (repo-relative) with the text `contentOf root`: the
 /// setup step that generates what the tests read at run time (a bundle) before they start.
-let private generating (rel: string) (contentOf: string -> string) (root: string) =
+let internal generating (rel: string) (contentOf: string -> string) (root: string) =
     Some(fun (_: Guid) (_: HookStep.Tracker) -> write root rel (contentOf root))
 
 /// A seeded checkout of `root` whose `beforeRun` is `generating rel contentOf`.
