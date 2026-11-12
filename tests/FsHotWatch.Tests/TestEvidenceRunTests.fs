@@ -31,7 +31,8 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 // ---------------------------------------------------------------------------
 
 /// Logs the project it was started for, writes a one-row CTRF report where fshw asked,
-/// and fails when `src/<lib>/fail` exists. `edit-during-<project>` at the root names a
+/// and fails when `src/<lib>/fail` exists, or `flake-<project>` at the root (outside every
+/// closure, so the failure does not move the project's key: a flake). `edit-during-<project>` at the root names a
 /// library the runner appends to while it runs: an edit made mid-run.
 let private runner =
     """#!/bin/sh
@@ -48,7 +49,7 @@ done
 printf '%s\n' "$proj" >> runs.log
 if [ -f "edit-during-$proj" ]; then printf '// edited\n' >> "src/$(cat "edit-during-$proj")/Lib.fs"; fi
 lib="src/${proj#T}"
-if [ -f "$lib/fail" ]; then status=failed; passed=0; failed=1; code=1; else status=passed; passed=1; failed=0; code=0; fi
+if [ -f "$lib/fail" ] || [ -f "flake-$proj" ]; then status=failed; passed=0; failed=1; code=1; else status=passed; passed=1; failed=0; code=0; fi
 if [ -n "$dir" ] && [ -n "$name" ]; then
   printf '{"results":{"summary":{"tests":1,"passed":%s,"failed":%s,"pending":0,"skipped":0,"other":0},"tests":[{"name":"%s.t","status":"%s"}]}}' "$passed" "$failed" "$proj" "$status" > "$dir/$name"
 fi
@@ -526,6 +527,73 @@ let ``an outstanding failure blocks reuse until the project earns a green itself
         test <@ List.contains "TX" launched2 @>
         test <@ not (List.contains "TX" (reusedIn completed2)) @>
         test <@ TestResult.verifiedGreen completed2.Results["TX"] @>)
+
+[<Fact(Timeout = RunsTestCapMs,
+       Skip =
+           "AUTOMATION-1615: red today. Ordinary reuse reads only TestEvidenceStore (TestEvidenceRun.plan) and never the outcome store's newest record, so C reuses A's green. Unskip with the fix.")>]
+let ``a newer full fail at a project's key is not answered by an older green under that key`` () =
+    // ADR-059 §2: the answer for a key is its NEWEST record, and §25 keeps a newer fail at
+    // the same key red. Checkout A earns TX's green under K_P; checkout B, on the same bytes,
+    // runs TX in full under confirm and it fails (a flake: the marker is outside every
+    // closure, so the key does not move). A fresh checkout C of those bytes, with no local
+    // ledger of B's failure, must run TX rather than reuse A's green.
+    withTempDir "evkpfail" (fun dir ->
+        let store =
+            TestEvidenceStore.Store(
+                { Root = Path.Combine(dir, "store")
+                  Ttl = TimeSpan.FromHours 72.0
+                  MaxBytes = 64L * 1024L * 1024L
+                  Now = fun () -> DateTimeOffset.UtcNow
+                  Log = ignore }
+            )
+
+        let outcomes =
+            OutcomeStore.Store(
+                { Root = Path.Combine(dir, "outcomes")
+                  Ttl = TimeSpan.FromDays 14.0
+                  MaxBytes = 100_000_000L
+                  Log = ignore }
+            )
+
+        let wiring =
+            Some
+                { wiringFor store with
+                    Outcomes = Some outcomes }
+
+        let rootNamed (name: string) =
+            let root = Path.Combine(dir, name)
+            Directory.CreateDirectory root |> ignore
+            populate root
+            root
+
+        let launchedA, completedA = run (checkout (rootNamed "a") wiring false)
+        test <@ List.contains "TX" launchedA @>
+        test <@ TestResult.verifiedGreen completedA.Results["TX"] @>
+
+        let b = rootNamed "b"
+        write b "flake-TX" ""
+        let launchedB, completedB = run (checkout b wiring true)
+        test <@ List.contains "TX" launchedB @>
+
+        test
+            <@
+                match completedB.Results["TX"] with
+                | TestsFailed _ -> true
+                | _ -> false
+            @>
+
+        // Positive control: both runs are on file under ONE full key, and its answer is the fail.
+        let tx =
+            (OutcomeStore.readAll outcomes.Root).Records
+            |> List.filter (fun r -> r.Subject = "TX" && r.Key.Inputs |> List.contains ("run-scope", "full"))
+
+        test <@ tx |> List.map _.Outcome = [ OutcomeStore.Outcome.Pass; OutcomeStore.Outcome.Fail ] @>
+        test <@ tx |> List.map _.Key.Value |> List.distinct |> List.length = 1 @>
+        test <@ (outcomes.Lookup tx.Head.Key) |> Option.map _.Outcome = Some OutcomeStore.Outcome.Fail @>
+
+        let launchedC, completedC = run (checkout (rootNamed "c") wiring false)
+        test <@ not (List.contains "TX" (reusedIn completedC)) @>
+        test <@ List.contains "TX" launchedC @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]
 let ``a reused project whose closure moves mid-run is withdrawn and launched next`` () =
