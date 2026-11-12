@@ -7,7 +7,9 @@
   cleared local ledger) had since failed the project on the same bytes, a fresh checkout reused the older green. Each
   hit now asks `TestEvidenceRun.reuseRefusal`: a newest full fail with no §25 clearance, an impact fail filed after the
   full green, or a record at either key that cannot be read, each launches the project and logs why. Fail-then-pass
-  still reuses; a fail under a different K_P does not bear.
+  still reuses; a fail under a different K_P does not bear. After the upgrade, a test project whose inputs have a
+  recorded failure newer than its last pass is run rather than reused; expect an occasional extra project run after a
+  flaky failure.
 
 - fix: a workspace whose TestPrune task cache answers a file now still files that file's analysis box-wide, so a fresh
   workspace at the same tree replays it instead of demanding a live check (AUTOMATION-1609). A task-cache hit skipped the
