@@ -119,16 +119,25 @@ module CacheMissReason =
 /// key degrades the reason to `InputsNotComparable`; it can never turn a miss into a
 /// hit.
 module KeyFingerprints =
-    open System.Collections.Concurrent
+    open System.Collections.Generic
 
     /// Bounded, because a long-lived daemon mints a key per file per event and this
-    /// map would otherwise grow without limit. On overflow the whole map is dropped
-    /// rather than evicted one entry at a time: losing a fingerprint costs a less
-    /// specific miss reason and nothing else, so the simplest bound is the right one.
+    /// map would otherwise grow without limit. On overflow the LEAST RECENTLY USED
+    /// fingerprint goes, one at a time. The registry is process-wide, so it must never
+    /// drop everything at once: a clear-all made every caller's miss reason depend on
+    /// whether some unrelated work happened to cross the bound between its key being
+    /// minted and looked up (AUTOMATION-1647). Under LRU a fingerprint is lost only
+    /// after `Capacity` other keys have been minted or read since it was last used.
     [<Literal>]
     let internal Capacity = 8192
 
-    let private fingerprints = ConcurrentDictionary<string, (string * string) list>()
+    let private gate = obj ()
+
+    /// Most recently used at the front.
+    let private recency = LinkedList<struct (string * (string * string) list)>()
+
+    let private byHash =
+        Dictionary<string, LinkedListNode<struct (string * (string * string) list)>>()
 
     /// Digest of one input VALUE. Truncated: the fingerprint is stored in every cache
     /// entry, and 16 hex characters is far past the point where two genuinely
@@ -138,16 +147,32 @@ module KeyFingerprints =
 
     /// Remember the labelled digests behind `hash`.
     let record (hash: string) (labelDigests: (string * string) list) =
-        if fingerprints.Count >= Capacity then
-            fingerprints.Clear()
+        lock gate (fun () ->
+            match byHash.TryGetValue hash with
+            | true, node -> recency.Remove node
+            | false, _ ->
+                if byHash.Count >= Capacity then
+                    let oldest = recency.Last
+                    let struct (oldestHash, _) = oldest.Value
+                    recency.RemoveLast()
+                    byHash.Remove oldestHash |> ignore
 
-        fingerprints[hash] <- labelDigests
+            byHash[hash] <- recency.AddFirst(struct (hash, labelDigests)))
 
-    /// The labelled digests behind `hash`, if this process minted it.
+    /// How many fingerprints the registry holds now.
+    let internal count () = lock gate (fun () -> byHash.Count)
+
+    /// The labelled digests behind `hash`, if this process minted it. A read counts
+    /// as a use: a key still being asked about is not the one to forget.
     let tryGet (hash: string) =
-        match fingerprints.TryGetValue hash with
-        | true, inputs -> Some inputs
-        | false, _ -> None
+        lock gate (fun () ->
+            match byHash.TryGetValue hash with
+            | true, node ->
+                recency.Remove node
+                recency.AddFirst node
+                let struct (_, inputs) = node.Value
+                Some inputs
+            | false, _ -> None)
 
     /// The labels on which two fingerprints disagree — including labels present in
     /// only one of them, because an input APPEARING or DISAPPEARING is exactly as

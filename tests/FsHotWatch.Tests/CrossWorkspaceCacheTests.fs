@@ -766,7 +766,7 @@ let ``a corrupt entry file is a miss that says so`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``the fingerprint registry is bounded and forgetting one only costs a reason`` () =
-    // Overflow drops the whole map. Losing a fingerprint must degrade the REASON and
+    // Overflow evicts the oldest fingerprint. Losing one must degrade the REASON and
     // never the decision, so the same key still hits.
     let cache = InMemoryTaskCache()
 

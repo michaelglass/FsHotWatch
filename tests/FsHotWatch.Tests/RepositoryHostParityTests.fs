@@ -687,7 +687,7 @@ let private runHostedBesideASibling (root: string) =
 /// An entry is keyed more than once over the scenario (the edit re-keys the build), so
 /// each of its labels is compared as the set of digests it was minted with. An entry
 /// recording no inputs is left out: `KeyFingerprints` is a bounded process-wide registry,
-/// and an entry minted across its reset records none, which says nothing about the mode.
+/// and an entry whose fingerprint it evicted records none, which says nothing about the mode.
 /// `StateFiles` still compares every entry's name and key hash.
 let private divergentKeyInputs (expected: KeyInputs) (actual: KeyInputs) : string list =
     let recorded (entries: KeyInputs) =
