@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- fix: a check record's key no longer depends on which records existed when it was filed (AUTOMATION-1606). A record's
+  `upstream` names each earlier file of its project by the API signature its check declared, but an earlier file with
+  no record was named by its content instead. So a record for file k+1 filed before k had one became unreachable the
+  moment k's record was filed: a reader then named k by its signature. Measured on intelligence, one late-filed record
+  missed every later file of its project and of every project downstream (1,625 misses in one fresh workspace). An
+  earlier file is now named only from its record, or from a pending check that would file it; a file the walk cannot
+  name that way is unknown, and every key after it, in its project and downstream, is provisional: never read and never
+  filed. A check behind an unknown file stays pending while its inputs hold, and is filed once that file is. An API
+  change upstream still moves every key after it, and a body edit still moves only its own file's key (the early
+  cutoff, unchanged). Records keyed with a content-named earlier file are no longer read, so after the upgrade a
+  project with such records re-checks and re-files the files after that file once.
+
+- fix: a scan checks a file compiled into several projects in each of them (AUTOMATION-1606). The scan claimed such a
+  file for the first project to reach it (AUTOMATION-1432), so it was checked, and filed, in that project's context
+  only: on intelligence each of 38 linked files had a record in exactly one of its 2–7 projects, and a forced rescan
+  filed nothing more. Every other project of the file had no record of it, which under the key above leaves nothing
+  after it there filable. The claiming project still publishes the file once; each other project now checks it too,
+  unpublished, for its own record. A cold scan costs one more check per extra project of a shared file; a warm one
+  replays them.
+
 ## 0.10.0-alpha.109 - 2026-11-11
 
 - fix: the outcome store's GC no longer evicts one kind's records to pay for another's (AUTOMATION-1583). The store

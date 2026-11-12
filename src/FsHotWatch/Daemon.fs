@@ -2005,9 +2005,9 @@ module ScanCheckOutcome =
 /// downstream one is checked in the project that owns it. Either project's options
 /// would type-check the file; ordering makes WHICH of them deterministic rather than
 /// "whichever tier happened to run last". Within a tier the first project in ordinal path
-/// order wins (`ProjectGraph.GetParallelTiers`), so every daemon picks the same one: the
-/// file's check record is filed under that project, and a restart that picked another
-/// missed it (AUTOMATION-1432).
+/// order wins (`ProjectGraph.GetParallelTiers`), so every daemon picks the same one to
+/// publish it (AUTOMATION-1432). Each other project compiling it checks it for its own
+/// check record only (`claimForScan`, AUTOMATION-1606).
 ///
 /// Pure, and threaded by the caller, so the cross-tier invariant is testable without
 /// a daemon, a checker or a project graph.
@@ -2024,6 +2024,37 @@ let internal freshForTier
                 (file :: fresh, Set.add file seen))
 
     (List.rev fresh, seen)
+
+/// One project's share of a scan's files (`claimForScan`).
+type internal ScanClaim =
+    {
+        /// The files this project claimed first: checked here and published.
+        Published: AbsFilePath list
+        /// The files another project claimed first: checked here too, for this project's
+        /// check record only, and never published.
+        RecordOnly: AbsFilePath list
+        /// Every file claimed so far, this project's included.
+        Claimed: Set<AbsFilePath>
+    }
+
+/// A project's files in a scan, given the files claimed before it (`freshForTier`). A file
+/// another project claimed is checked once more here, unpublished: a check record is keyed
+/// by the API signature of every earlier file of ITS project, so without a check in this
+/// project's context nothing after the file here could be filed (AUTOMATION-1606).
+let internal claimForScan (claimed: Set<AbsFilePath>) (candidates: AbsFilePath list) : ScanClaim =
+    let fresh, seen = freshForTier claimed candidates
+    let published = Set.ofList fresh
+
+    { Published = fresh
+      RecordOnly = candidates |> List.filter (published.Contains >> not) |> List.distinct
+      Claimed = seen }
+
+/// What one of a scan's checks returned: a result to publish, or a check made only so its
+/// project's context has a record (`ScanClaim.RecordOnly`).
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type internal ScanCheck =
+    | Published of FileCheckResult
+    | RecordOnly
 
 /// One project's share of a scan or change batch (ADR-056): its key, the projects whose
 /// checks must all finish before any of its own start, and its files.
@@ -4899,10 +4930,17 @@ let private performScan
 
                 // Each checkable file's check thunk, honouring the deps-freshness gate and
                 // per-project options. A thunk is re-runnable (an Async description), so a
-                // retry round can re-invoke it on a cancelled result. Every file is claimed
-                // by one project at most (`freshForTier`), so the keys are unique.
+                // retry round can re-invoke it on a cancelled result. Every file is claimed,
+                // and published, by one project at most (`claimForScan`); another project
+                // compiling it checks it for its own record only.
                 let thunks =
-                    System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
+                    System.Collections.Generic.Dictionary<AbsProjectPath * AbsFilePath, Async<ScanCheck option>>()
+
+                let published (check: Async<FileCheckResult option>) =
+                    async {
+                        let! result = check
+                        return result |> Option.map ScanCheck.Published
+                    }
 
                 // Each dispatched file with its project, declared to the pipeline before any
                 // check starts: a file whose record misses only for want of an earlier file's
@@ -4943,22 +4981,40 @@ let private performScan
                                   // Claimed only where the file is actually dispatched, so a
                                   // file whose project the deps gate refuses stays available
                                   // to a later project that passes it.
-                                  let fresh, extended =
-                                      projFiles |> List.map AbsFilePath.create |> freshForTier claimedInScan
+                                  let claim = projFiles |> List.map AbsFilePath.create |> claimForScan claimedInScan
 
-                                  claimedInScan <- extended
+                                  claimedInScan <- claim.Claimed
 
-                                  for absFile in fresh do
-                                      thunks[absFile] <-
+                                  for absFile in claim.Published do
+                                      thunks[(proj, absFile)] <-
                                           match projectOptions with
                                           | Some options ->
                                               expected.Add((absFile, options.ProjectFileName))
-                                              pipeline.CheckFileWithOptions(absFile, options, ct)
-                                          | None -> pipeline.CheckFile(absFile, ct)
+                                              published (pipeline.CheckFileWithOptions(absFile, options, ct))
+                                          | None -> published (pipeline.CheckFile(absFile, ct))
+
+                                  // A file another project claimed, checked here for this
+                                  // project's record only: never published, retried or
+                                  // counted unchecked. A miss costs a later check, not a verdict.
+                                  match projectOptions with
+                                  | Some options ->
+                                      for absFile in claim.RecordOnly do
+                                          expected.Add((absFile, options.ProjectFileName))
+
+                                          thunks[(proj, absFile)] <-
+                                              async {
+                                                  let! _ = pipeline.CheckFileWithOptions(absFile, options, ct)
+                                                  return Some ScanCheck.RecordOnly
+                                              }
+                                  | None -> ()
 
                                   { Key = proj
                                     After = after
-                                    Files = fresh }
+                                    Files =
+                                      projFiles
+                                      |> List.map AbsFilePath.create
+                                      |> List.distinct
+                                      |> List.filter (fun file -> thunks.ContainsKey((proj, file))) }
                               else
                                   skippedCount <- skippedCount + projFiles.Length
                                   depsGatedCount <- depsGatedCount + projFiles.Length
@@ -5022,8 +5078,10 @@ let private performScan
                                 runDependentChecks
                                     scanRetryBudget
                                     ctx.Pipeline.CheckConcurrencyBound
-                                    (fun _ f -> thunks[f])
-                                    emitChecked
+                                    (fun proj f -> thunks[(proj, f)])
+                                    (function
+                                    | ScanCheck.Published result -> emitChecked result
+                                    | ScanCheck.RecordOnly -> async.Return())
                                     work
                                 |> CheckCaller.withinBulk "scan"
                         finally
