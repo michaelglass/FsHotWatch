@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a configured test project the project model does not name is named, not silently dropped (AUTOMATION-1617).
+  `PluginSteps.evidenceCandidates` warns that it cannot be vouched for by test evidence, runs in full on every run, and
+  is never carried as covered; `TestEvidenceRun.currentOutcomeKeys` logs each project whose K_P key failed, with the
+  error, where it used to leave it out without a word.
+
 - feat: every step a run takes after its last test host exits logs its start and its end (AUTOMATION-1660). A measured
   edit check spent 48.5 s between the last host exit and `Tests complete`, 35.6 s of it with no log line at all. Each
   step now logs `post-run <runId> <step>: start` and `post-run <runId> <step>: end after <n>ms` (or `failed after

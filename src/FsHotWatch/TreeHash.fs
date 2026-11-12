@@ -55,8 +55,22 @@ open System.Text
 /// change under a verdict that still applied. And a checkout under a directory named
 /// `bin` or `obj` hashes its sources (the generated-output test reads the path
 /// relative to the repository).
+///
+/// v5: the configured test projects (`tests.projects`) and their `ProjectReference`
+/// closures are hashed wherever they live, and one that cannot be located is an entry
+/// (AUTOMATION-1617). Under v4 a configured project under `bench/` was in no hash, so an
+/// edit to it left a green earned before the edit applying.
 [<Literal>]
-let Algorithm = "fshw-tree-sha256-v4"
+let Algorithm = "fshw-tree-sha256-v5"
+
+/// The key prefix of a configured test project that could not be located: a key no
+/// real path produces.
+[<Literal>]
+let UnlocatedPrefix = "!configured-test-project:"
+
+/// The value an unlocated configured test project hashes to.
+[<Literal>]
+let UnlocatedTestProject = "unlocated"
 
 /// The content address of a tree, with the number of files that went into it and
 /// the number of directories the walk could not see (a bare hash is unfalsifiable;
@@ -96,6 +110,9 @@ type Walked =
         Roots: string list
         /// How many of `Files` are tool-known root inputs (`.fshw.json`, toolchain files).
         ToolKnownCount: int
+        /// Configured test projects (`tests.projects`) whose location could not be established, each
+        /// with why (AUTOMATION-1617). Carried, never dropped: each is an entry of the hash.
+        Unlocated: (string * string) list
     }
 
 /// Everything that makes up "the tree fshw verifies", INCLUDING the holes in it.
@@ -110,6 +127,11 @@ type Walked =
 /// (`Discovery.existingDiscoveryRoots`, `SafeWalk`, `PathFilter.isExcludedPath`), so
 /// the hashed set cannot drift away from the checked set. The other two halves come
 /// from `VerdictInputs`, which owns the rule for what else belongs.
+///
+/// The roots are the discovery roots PLUS where the configured test projects and their
+/// `ProjectReference` closures live (`ConfiguredTestRoots`, AUTOMATION-1617): what a check
+/// builds and runs is an input wherever it sits. A configured project that cannot be
+/// located is `Unlocated`, an entry of the hash, never a silent zero.
 ///
 /// `exclude` filters the WALK only. A declared input outranks it: `exclude` says
 /// "do not go looking here", a declaration says "changing this changes the answer",
@@ -188,7 +210,17 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
                     link
                     $"a symlink to %s{target}, outside the repository, is not followed — its contents were never seen")
 
-    let walked = walked @ linkedWalks
+    // CONFIGURED TEST PROJECTS outside the roots, and their closures (AUTOMATION-1617).
+    let located =
+        walked
+        |> List.collect (fun w -> w.Files |> List.map (fun f -> f.FullName))
+        |> List.filter (fun f -> f.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
+        |> ConfiguredTestRoots.locate repoRoot
+
+    let configuredWalks =
+        located.Directories |> List.map (SafeWalk.walk SafeWalk.SourceExcludedDirs "*")
+
+    let walked = walked @ linkedWalks @ configuredWalks
 
     let filePaths =
         walked
@@ -214,7 +246,9 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
         |> sorted
       AbsentDeclarations = resolved.Absent
       DeclaredCount = List.length declaredOnly
-      Roots = Discovery.existingDiscoveryRoots repoRoot |> List.map relativeTo
+      Roots =
+        Discovery.existingDiscoveryRoots repoRoot @ located.Directories
+        |> List.map relativeTo
       ToolKnownCount =
         toolKnown
         |> List.filter (fun f -> not (List.contains f filePaths))
@@ -228,7 +262,8 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
         // a declaration outranks it (see above).
         |> List.append resolved.Unreadable
         |> List.distinct
-        |> List.sortWith (fun a b -> String.CompareOrdinal(a, b)) }
+        |> List.sortWith (fun a b -> String.CompareOrdinal(a, b))
+      Unlocated = located.Unlocated }
 
 /// The content address of `entries` — the pure half, so the recipe is testable
 /// without a filesystem.
@@ -274,8 +309,14 @@ let ofWalked (walked: Walked) : Tree =
         walked.AbsentDeclarations
         |> List.map (fun rel -> VerdictInputs.SentinelPrefix + rel, VerdictInputs.AbsentDeclaration)
 
+    // A configured test project that could not be located is an ENTRY too, by name only:
+    // the reason names absolute paths, and the hash must not differ between checkouts.
+    let hashedUnlocated =
+        walked.Unlocated
+        |> List.map (fun (project, _) -> UnlocatedPrefix + project, UnlocatedTestProject)
+
     let entries =
-        hashedFiles @ hashedHoles @ hashedAbsent
+        hashedFiles @ hashedHoles @ hashedAbsent @ hashedUnlocated
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
 
     { Hash = hashEntries entries
@@ -309,6 +350,8 @@ type Coverage =
         /// Top-level directories no file in the key lives under, other than those the
         /// repo's .gitignore names (tool output, not source).
         Outside: string list
+        /// Configured test projects that could not be located, with why (`Walked.Unlocated`).
+        Unlocated: (string * string) list
     }
 
 /// Read `Coverage` off a walk. Only the top-level directory listing is new I/O; every
@@ -339,7 +382,12 @@ let coverage (repoRoot: string) (walked: Walked) : Coverage =
         |> Array.map Path.GetFileName
         |> Array.filter (fun name ->
             not (name.StartsWith(".", StringComparison.Ordinal))
-            && not (List.contains name walked.Roots)
+            // A configured root below the top level (`bench/X`) is reported as a root, not
+            // its top-level directory as outside the key.
+            && not (
+                walked.Roots
+                |> List.exists (fun r -> r = name || r.StartsWith(name + "/", StringComparison.Ordinal))
+            )
             && not (SafeWalk.SourceExcludedDirs.Contains name))
         |> Array.sortWith (fun a b -> String.CompareOrdinal(a, b))
         |> Array.toList
@@ -354,7 +402,8 @@ let coverage (repoRoot: string) (walked: Walked) : Coverage =
         |> List.choose (fun d -> perDirectory |> Map.tryFind d |> Option.map (fun n -> d, n))
       Outside =
         others
-        |> List.filter (fun d -> not (Map.containsKey d perDirectory || gitignored d)) }
+        |> List.filter (fun d -> not (Map.containsKey d perDirectory || gitignored d))
+      Unlocated = walked.Unlocated }
 
 /// The human lines for a `Coverage`: what the key holds, then what lies outside it.
 let describeCoverage (c: Coverage) : string list =
@@ -379,4 +428,8 @@ let describeCoverage (c: Coverage) : string list =
     [ $"key: %d{c.FileCount} file(s) — everything under %s{roots}, %d{c.ToolKnownCount} toolchain file(s)%s{declared}"
       if not (List.isEmpty outside) then
           let listed = String.concat ", " outside
-          $"not in the key: %s{listed} — a change there does not make this verdict stale" ]
+          $"not in the key: %s{listed} — a change there does not make this verdict stale"
+      yield!
+          c.Unlocated
+          |> List.map (fun (project, why) ->
+              $"configured test project %s{project} could not be located (%s{why}) — it is an entry of the key by name, but its sources are not") ]

@@ -2389,7 +2389,21 @@
       "line": 100,
       "branch": 95,
       "reason": "new file (AUTOMATION-1633, ADR-059 §36: the clean-recompute audit). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by the audit tests (RecordAuditTests, CliTests, CheckRecordsTests) with coverage: line 100%, branch 95.9% (71/74). Uncovered: one compiler-generated edge on each of the three for-loops inside the list expression of render (kinds, mismatches, unmatched), whose bodies and empty cases both run. Pure comparison and file IO, platform-neutral."
-    }
+    },
+    "ConfiguredTestRoots.fs": [
+      {
+        "line": 100,
+        "branch": 95,
+        "reason": "new file (AUTOMATION-1617: where configured test projects outside the discovery roots live, and their ProjectReference closures). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by OutOfRootTestProjectTests: line 100%, branch 96.2% (51/53); floor less ~1pp for load wobble. The two uncovered edges are the compiler-generated rethrow arm of `with :? JsonException` and the null-check of `use doc = doc`, the same pair VerdictInputs.parse carries.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 95,
+        "reason": "new file (AUTOMATION-1617). Pure path and JSON/XML logic, platform-independent; the same unit tests cover it on Linux. Set from the macOS measurement (51/53); refresh from a CI run if Linux differs.",
+        "platform": "linux"
+      }
+    ]
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [

@@ -154,7 +154,7 @@ type Resolution =
 /// `ContentHash` marks it unhashable and no prior verdict matches; a root that cannot
 /// be listed is reported as a hole by the discovery walk. Throwing here would only make
 /// hashing a tree a new way to crash.
-let private tryRead (fallback: 'a) (read: unit -> 'a) : 'a =
+let internal tryRead (fallback: 'a) (read: unit -> 'a) : 'a =
     try
         read ()
     with ex when (ex :? IOException) || (ex :? UnauthorizedAccessException) ->

@@ -200,6 +200,7 @@
     <Compile Include="TestPruneSupersededModelLogTests.fs" />
     <Compile Include="AnalysisEvidenceTests.fs" />
     <Compile Include="VerdictEvidenceTests.fs" />
+    <Compile Include="OutOfRootTestProjectTests.fs" />
     <Compile Include="EvidencePropertyTests.fs" />
     <Compile Include="TestPruneCheckReachSeamTests.fs" />
     <Compile Include="TestPruneSelectionSoundnessTests.fs" />

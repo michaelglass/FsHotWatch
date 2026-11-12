@@ -459,7 +459,10 @@ let currentOutcomeKeys
     |> List.choose (fun (project, key) ->
         match key with
         | Ok key -> Some(project, (testActionKey key "full").Value.Text)
-        | Error _ -> None)
+        | Error why ->
+            // Named, never silently dropped (AUTOMATION-1617): no lookup can stand in for it.
+            Logging.info "test-prune" $"%s{project}: no K_P key — %s{why}; no outcome record can stand in for it"
+            None)
     |> Map.ofList
 
 /// The outcome record a completed project run files (ADR-059 §11 step 7): a pass or a fail,

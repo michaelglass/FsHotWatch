@@ -118,7 +118,8 @@ let internal awaitDiscoveryBeforeLaunch (ctx: PluginCtx<TestPruneMsg>) =
     }
 
 /// The evidence candidates of `configs`: each project the model knows a `.fsproj` for, with
-/// its reference closure and keyed configuration.
+/// its reference closure and keyed configuration. A configured project the model does not
+/// name is left out with a warning naming it (AUTOMATION-1617).
 let internal evidenceCandidates
     (graph: ProjectGraphAccessor)
     (configs: TestConfig list)
@@ -127,12 +128,21 @@ let internal evidenceCandidates
 
     configs
     |> List.choose (fun config ->
-        Map.tryFind config.Project files
-        |> Option.map (fun fsproj ->
-            { TestEvidenceRun.Candidate.Project = config.Project
-              ProjectFile = fsproj
-              Closure = TestEvidenceRun.closureOf graph.GetProjectReferences fsproj
-              TestConfig = canonicalTestConfig config }))
+        match Map.tryFind config.Project files with
+        | Some fsproj ->
+            Some
+                { TestEvidenceRun.Candidate.Project = config.Project
+                  ProjectFile = fsproj
+                  Closure = TestEvidenceRun.closureOf graph.GetProjectReferences fsproj
+                  TestConfig = canonicalTestConfig config }
+        | None ->
+            // Named, never silently dropped (AUTOMATION-1617): a configured project the model
+            // does not name has no K_P, so no evidence is filed or reused for it.
+            Logging.warn
+                "test-prune"
+                $"%s{config.Project}: a configured test project the project model does not name (outside the discovery roots, or not yet discovered) — no test evidence can vouch for it, so it runs in full on every run and is never carried as covered"
+
+            None)
 
 /// A launch, named by the model it was selected under and what it selected, so the
 /// completion line (`describeCompletionEvidence`) can be read against it.

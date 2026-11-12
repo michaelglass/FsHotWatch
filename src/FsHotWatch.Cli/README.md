@@ -408,7 +408,7 @@ sufficient.
   "producer": { "binary": "FsHotWatch.Cli.dll", "hash": "sha256 of the fshw that made this claim" },
   "runId": "24bf66063d004decb0447e3cc3ece719",
   "treeHash": "sha256:24bf6606…",
-  "treeHashAlgorithm": "fshw-tree-sha256-v3",
+  "treeHashAlgorithm": "fshw-tree-sha256-v5",
   "treeFileCount": 144,
   "treeDeclaredCount": 29,
   "treeAbsentDeclarationCount": 0,
@@ -644,11 +644,17 @@ Three rules this obeys:
 
 See [ADR-019](../../docs/adr-019-a-verdict-is-current-only-when-no-other-run-is-in-flight.md).
 
-If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v3`) is:
+If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v5`) is:
 
 - take every file under `src/` and `tests/`, excluding `bin/`, `obj/`, tooling
   dirs, and your `.fshw.json` `exclude` patterns — **sources _and_ content/fixture
   files**;
+- **plus every file under the directory of each `tests.projects` entry, and of every
+  project in its `ProjectReference` closure, that lies outside `src/` and `tests/`**
+  (located by its `--project` path, or by `<project>.fsproj` under the roots), with the
+  same exclusions. What a check builds and runs is an input wherever it lives;
+- **plus the files behind a symlinked directory under those roots that points inside the
+  repository**, under the link's path (a link out of the repository is a hole, below);
 - **plus the tool-known inputs**: `.fshw.json` itself, and the root-level toolchain
   and dependency files (`Directory.Build.props`, `Directory.Build.targets`,
   `Directory.Packages.props`, `global.json`, `nuget.config`, `paket.lock`,
@@ -666,6 +672,8 @@ If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v3`) is
   `"!verdict-input:" + declaredPath + NUL + "declared-but-absent" + LF`. A
   declaration that resolved to nothing must not contribute nothing, or a typo would
   silently return you to the older, narrower hash;
+- **plus one entry per configured test project that could not be located**, emitted as
+  `"!configured-test-project:" + project + NUL + "unlocated" + LF`;
 - `treeHash = "sha256:" + sha256hex(utf8(that))`.
 
 Fixtures are in the hash on purpose. A changed JSON fixture that MSBuild declined
