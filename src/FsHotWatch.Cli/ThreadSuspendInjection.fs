@@ -145,16 +145,20 @@ let inheritByChildren (isMacOS: bool) (getEnv: string -> string) (setEnv: string
 /// before it changes the environment children inherit.
 let mutable private own: Setting option = None
 
+/// The setting a process describes itself by: the one `install` `recorded`, else what
+/// `getEnv` says now, since a process that never installed changed nothing.
+let internal ownSettingFrom (recorded: Setting option) (getEnv: string -> string) : Setting =
+    match recorded with
+    | Some setting -> setting
+    | None -> Setting.read getEnv
+
 /// The setting `startupLine` describes this process from.
 let ownSetting () : Setting =
-    match own with
-    | Some setting -> setting
-    | None -> Setting.read Environment.GetEnvironmentVariable
+    ownSettingFrom own Environment.GetEnvironmentVariable
+
+let private setInThisProcess (name: string) (value: string) =
+    Environment.SetEnvironmentVariable(name, value)
 
 /// `inheritByChildren` on this process, once, before it starts anything.
 let install () : unit =
-    own <-
-        Some(
-            inheritByChildren (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable (fun name value ->
-                Environment.SetEnvironmentVariable(name, value))
-        )
+    own <- Some(inheritByChildren (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable setInThisProcess)

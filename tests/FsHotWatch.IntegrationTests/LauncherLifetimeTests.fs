@@ -1,3 +1,8 @@
+/// The production launcher, through its REAL detached-launch helper.
+///
+/// Integration suite, not FsHotWatch.Tests (AUTOMATION-1651): the helper is a copy of the
+/// coverage-instrumented CLI, so what it executed was graded as unit coverage that came and
+/// went with the helper's timing.
 module FsHotWatch.Tests.LauncherLifetimeTests
 
 open System

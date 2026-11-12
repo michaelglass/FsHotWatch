@@ -2175,3 +2175,40 @@ let ``forceScanAndWait falls back to the next completed scan when the reply name
 
     forceScanAndWait ipc "pipe" None |> ignore
     test <@ waitedFor.Value = Some -1L @>
+
+// ---------------------------------------------------------------------------
+// The CLI's argument dispatch, in process (AUTOMATION-1651). Its only callers were CLI
+// processes the tests started, and whether such a process's hits reached the coverage
+// report depended on its timing. Every case here returns before a repository is looked
+// up, so nothing exits the test host.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``no arguments, or only help tokens, print the global help`` () =
+    test <@ runCli [||] = 0 @>
+    test <@ runCli [| "--help" |] = 0 @>
+    test <@ runCli [| "-h"; "help" |] = 0 @>
+
+[<Fact>]
+let ``a request for a command's help or the version is answered without a repository`` () =
+    test <@ runCli [| "status"; "--help" |] = 0 @>
+    test <@ runCli [| "--version" |] = 0 @>
+
+[<Fact>]
+let ``a flag the CLI does not know fails before any repository is looked up`` () =
+    test <@ runCli [| "status"; "--no-such-flag" |] <> 0 @>
+
+[<Fact>]
+let ``the host verb is dispatched with the root it is told, never one found from the cwd`` () =
+    test <@ runCli [| "host"; "/definitely/not/here" |] = 2 @>
+
+// The daemon launch's own line, in process: the working directory does not exist, so the
+// start fails here and no copy of the CLI runs. The launch through a real helper is in
+// FsHotWatch.IntegrationTests (LauncherLifetimeTests).
+[<Fact>]
+let ``a daemon launch from a directory that does not exist fails before any helper runs`` () =
+    let missing = "/nonexistent/fshw-daemon-launch-directory"
+
+    Assert.ThrowsAny<ComponentModel.Win32Exception>(fun () ->
+        launchDaemonProcess "/bin/true" "" missing "" (Path.Combine(missing, "daemon.log")))
+    |> ignore
