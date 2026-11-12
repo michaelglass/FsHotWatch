@@ -83,6 +83,7 @@
     <Compile Include="FileStamp.fs" />
     <Compile Include="Interruption.fs" />
     <Compile Include="RepositoryIdentity.fs" />
+    <Compile Include="PathToken.fs" />
     <Compile Include="AttachHandshake.fs" />
     <Compile Include="WatchRouter.fs" />
     <Compile Include="CheckCache.fs" />
@@ -129,6 +130,7 @@
     <Compile Include="CheckRecords.fs" />
     <Compile Include="OptionsRecords.fs" />
     <Compile Include="OptionsInputs.fs" />
+    <Compile Include="OptionsPortable.fs" />
     <Compile Include="LookupVerdict.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="CommandPreprocessor.fs" />

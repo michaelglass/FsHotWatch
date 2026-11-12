@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `.fshw.json` `optionsRecordsPortable: "off" | "shadow"` (AUTOMATION-1602 (b)), default `"off"`, and
+  `FSHW_OPTIONS_PORTABLE` to override it. `"shadow"` logs what an options record filed in another checkout
+  of the same tree would have replayed, and whether it agrees with the evaluation, without serving it; see
+  the FsHotWatch core changelog. `"on"` is refused until the shadow has earned it.
+
 - feat: `.fshw.json` `coverage` may be an array of floor sets, and a set may name `projects`
   instead of `searchDir` / `reports`: each project's report as the full-suite run being judged
   kept it in its own run directory (AUTOMATION-1642). A project that is not a coverage-collecting

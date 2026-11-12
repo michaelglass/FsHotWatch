@@ -784,7 +784,13 @@ build reads the assets file after evaluation, so that is added explicitly.
 - **The checkout root is in the request key**, so options are never shared between checkouts.
   Every path in them belongs to one checkout, and sharing would mean betting that nothing else
   in an evaluation depends on where the checkout is. One evaluation per workspace is cheap next
-  to that bet.
+  to that bet. *AUTOMATION-1602 (b) measures that bet before taking it:* behind
+  `optionsRecordsPortable: "shadow"`, each filed evaluation is also filed with the root as the
+  token `${repo}` under two new kinds whose keys name no root (`OptionsPortable`), and a later
+  evaluation in another checkout logs to `shadow/options-portable.jsonl`, beside the store,
+  whether that record's key matched and whether its options equal the evaluated ones, field by
+  field. Nothing is served from it. Serving is a later release decision on that log, landed with
+  the one re-key that drops `root` from this key.
 - **`AllProperties` and `AllItems` are not filed.** They are the evaluation's full dumps, which
   fshw never reads, and they would make a record many times larger. A replay carries them empty.
 

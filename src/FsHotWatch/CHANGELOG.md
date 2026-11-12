@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat: options records that replay across checkouts, in SHADOW only (AUTOMATION-1602 (b)). Behind
+  `optionsRecordsPortable: "shadow"` (with `optionsRecords`), each filed evaluation is filed a second time
+  with the checkout root as the token `${repo}` (`PathToken`), under two new record kinds
+  (`options-portable-inputs`, `options-portable`) whose keys name no root: files under the root are keyed
+  by their bytes with the root tokenized (so `project.assets.json` is the same in every checkout), and
+  generated compile items by the bytes filed with them (so a fresh checkout that has not written them yet
+  still matches). Before an evaluation the root-keyed lookup missed, the portable lookup runs; the
+  evaluation runs anyway, and one line of `<store>/../shadow/options-portable.jsonl` records whether the
+  portable key matched, which inputs moved, and every field where the filed options differ from the
+  evaluated ones. Nothing is served from a portable record. The existing kinds and keys are untouched, so
+  this re-keys nothing. A root reached through a symlink or spelled in another case, an option naming a
+  temporary directory, a value the root survives tokenizing in, and a path into a nested checkout are
+  never filed portably.
 - fix: a wait takes one reading of its clock per sample (AUTOMATION-1646). `waitForAllTerminal`'s loop read its clock
   three times a tick (the wedge sample, the deadline, the log cadence), so a clock moved between them was seen by the
   deadline and log reads but not by the wedge sample. Declared work outlasting the stall threshold could then be charged

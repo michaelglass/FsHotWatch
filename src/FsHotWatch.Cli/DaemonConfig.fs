@@ -479,6 +479,11 @@ type DaemonConfiguration =
         /// on a restart whose every input is byte-identical (ADR-059 §18, AUTOMATION-1372).
         /// Off when absent.
         OptionsRecords: bool
+        /// `"optionsRecordsPortable": "shadow"` also files each evaluation through the checkout-root
+        /// token and logs what such a record would have replayed in another checkout, serving none
+        /// (AUTOMATION-1602 (b)). Only with `optionsRecords`. `"off"` when absent; `"on"` is refused
+        /// until the shadow period has run.
+        OptionsPortable: FsHotWatch.OptionsPortable.Mode
         Analyzers:
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity
@@ -609,6 +614,7 @@ let private defaultConfig () =
       Cache = NoCache
       CheckRecords = false
       OptionsRecords = false
+      OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -996,6 +1002,15 @@ let resolveCheckRecords (configured: bool) (env: string -> string) : bool =
 let resolveOptionsRecords (configured: bool) (env: string -> string) : bool =
     resolveRecordFlag "FSHW_OPTIONS_RECORDS" configured env
 
+/// The portable options mode (AUTOMATION-1602 (b)): `FSHW_OPTIONS_PORTABLE` (`off` or `shadow`)
+/// overrides `optionsRecordsPortable`; any other value keeps it.
+let resolveOptionsPortable (configured: FsHotWatch.OptionsPortable.Mode) (env: string -> string) =
+    match env "FSHW_OPTIONS_PORTABLE" with
+    | null -> configured
+    | value ->
+        FsHotWatch.OptionsPortable.Mode.tryParse (value.Trim().ToLowerInvariant())
+        |> Option.defaultValue configured
+
 /// Whether the format preprocessor files its records (AUTOMATION-1436), ON unless
 /// `FSHW_FORMAT_RECORDS` turns it off. Unlike check and options records it has no config
 /// key: a record only says "the pinned tool left these bytes unchanged", and the variable
@@ -1026,6 +1041,7 @@ let internal KnownTopLevelKeys =
           "lint"
           "logDir"
           "optionsRecords"
+          "optionsRecordsPortable"
           "preprocessors"
           "pressureIdleFloorMin"
           "repositoryHost"
@@ -1141,6 +1157,27 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> false
         | true, v -> raise (ConfigErrorException $"optionsRecords: %s{describeValue v} is not true or false")
         | false, _ -> false
+
+    let optionsPortable =
+        match root.TryGetProperty("optionsRecordsPortable") with
+        | true, v when v.ValueKind = JsonValueKind.Null -> FsHotWatch.OptionsPortable.Mode.Off
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString() with
+            | "on" ->
+                raise (
+                    ConfigErrorException
+                        "optionsRecordsPortable: \"on\" is not built yet: options records replay across checkouts only once the shadow has earned it (AUTOMATION-1602); use \"shadow\""
+                )
+            | text ->
+                match FsHotWatch.OptionsPortable.Mode.tryParse text with
+                | Some mode -> mode
+                | None ->
+                    raise (
+                        ConfigErrorException $"optionsRecordsPortable: %s{describeValue v} is not \"off\" or \"shadow\""
+                    )
+        | true, v ->
+            raise (ConfigErrorException $"optionsRecordsPortable: %s{describeValue v} is not \"off\" or \"shadow\"")
+        | false, _ -> FsHotWatch.OptionsPortable.Mode.Off
 
     let cache =
         let refuse (detail: string) =
@@ -2000,6 +2037,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Cache = cache
       CheckRecords = checkRecords
       OptionsRecords = optionsRecords
+      OptionsPortable = optionsPortable
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands

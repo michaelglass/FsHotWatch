@@ -101,6 +101,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       Cache = NoCache
       CheckRecords = false
       OptionsRecords = false
+      OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
       Analyzers = None
       Tests =
         if testProjects.IsEmpty then
