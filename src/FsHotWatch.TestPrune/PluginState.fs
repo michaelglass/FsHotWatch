@@ -598,9 +598,10 @@ type TestRunInputs =
         /// The tree the last `BatchChecked` folded its check results over: the symbol
         /// diff has run over this tree.
         SealedTree: string option
-        /// A run has completed this session, so the daemon holds evidence of its own. A
-        /// launch held on a checkout baseline has none yet (AUTOMATION-1587).
-        SessionRan: bool
+        /// The launch selects against a checkout baseline a held launch waited on, with no
+        /// run of this session behind it: the daemon holds no evidence of its own yet
+        /// (AUTOMATION-1587).
+        OnCheckoutBaselineOnly: bool
     }
 
 module TestRunInputs =
@@ -634,4 +635,4 @@ module TestRunInputs =
             | HeldReceipt.NoneYet
             | HeldReceipt.Revoked _ -> state.CheckoutBaseline |> Option.map _.Manifest
           SealedTree = state.SealedTree
-          SessionRan = state.LastResults.IsSome }
+          OnCheckoutBaselineOnly = state.LastResults.IsNone && state.CheckoutBaseline.IsSome }
