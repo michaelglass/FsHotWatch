@@ -2324,6 +2324,20 @@
         "branch": 100,
         "reason": "new file (AUTOMATION-1621: which SDK MSBuild evaluates with). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by the unit suite (mise run check on f9b0a213 + this change): every line and branch, once the missing-SDK refusal test covers the `dotnet --version` error arm. The choice is pure and the two process-backed tests run on both platforms, so the floor is the same on Linux; the first Linux CI run on this change verifies it."
       }
+    ],
+    "IndexSeal.fs": [
+      {
+        "line": 90,
+        "branch": 75,
+        "reason": "new file (AUTOMATION-1587 steps 4-5: the seal of the impact index, beside it on disk). Explicit so that a report which drops this file fails coverage-check. Every line is reached by TestPruneBaselineWaitTests (read back, cleared, blank, unreadable, unwritable and uncleared seals); floor set below that pending a measured report, which the next coverage-ratchet tightens.",
+        "platform": "macos"
+      },
+      {
+        "line": 90,
+        "branch": 75,
+        "reason": "new file (AUTOMATION-1587 steps 4-5). No platform-specific path in the unit suite, so the macOS floor stands for Linux until a Linux CI coverage report refreshes it.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

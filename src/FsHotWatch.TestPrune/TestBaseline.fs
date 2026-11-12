@@ -2,9 +2,11 @@
 /// full-scope on tree T", filed box-wide in the ADR-059 outcome store under T's receipt
 /// identity, with what a neighbour tree would need to diff against T.
 ///
-/// STEP 2 IS A SHADOW. These records are WRITTEN and logged, and nothing reads them for a
-/// decision: no selection, skip, cache or verdict consults them. Their purpose is to be
-/// counted and measured (records per land, bytes) before anything is allowed to rest on one.
+/// Step 2 wrote these records in shadow, to be counted and measured (records per land,
+/// bytes). Their one reader is `checkoutRecordFor` (steps 4-5): a restarted daemon whose
+/// own checkout last passed in full at T, with its index still sealed at T, holds its first
+/// launch for the cold scan's diff T to T' and selects from it, with T's manifest as the
+/// evidence the tree moved from. No skip, cache or verdict consults them.
 ///
 /// A record is filed only when all of these hold at a run's completion:
 ///   * the completion EARNED the full-suite baseline (`earnsBaseline`: a full run that passed
@@ -153,6 +155,73 @@ let readIndex (store: OutcomeStore.Store) : IndexEntry list =
     match store.LookupWithOutputs indexKey with
     | Some(_, Some outputs) -> parseIndex outputs
     | _ -> []
+
+/// A checkout's own baseline, as its `test-baseline` record names it: what a restarted daemon
+/// may diff its tree from (AUTOMATION-1587).
+type CheckoutRecord =
+    {
+        Tree: string
+        /// The record's key, as the log and the launch cite it.
+        Key: string
+        /// The run that filed it.
+        RunId: string
+        /// T's manifest: each path and its content hash.
+        Entries: (string * string) list
+    }
+
+/// A filed record's outputs: always JSON, since the store files nothing else.
+let private parseRecord (tree: string) (key: string) (outputs: string) : Result<CheckoutRecord, string> =
+    use doc = JsonDocument.Parse outputs
+    let o = doc.RootElement
+
+    let field name =
+        Json.tryString o name |> Option.defaultValue ""
+
+    let schema = field "schema"
+    let named = field "tree"
+
+    if schema <> Schema then
+        Error $"the record is of schema %s{schema}, not %s{Schema}"
+    elif not (String.Equals(named, tree, StringComparison.Ordinal)) then
+        Error $"the record names tree %s{named}"
+    elif field "analyzer" <> AnalysisRecords.analyzerIdentity then
+        Error "the record was filed by a different analyser build"
+    else
+        match Json.tryString o "runId", Json.tryProp o "manifest" with
+        | Some runId, Some manifest when manifest.ValueKind = JsonValueKind.Array ->
+            let row (r: JsonElement) =
+                if r.ValueKind = JsonValueKind.Array && r.GetArrayLength() >= 2 then
+                    match r[0].ValueKind, r[1].ValueKind with
+                    | JsonValueKind.String, JsonValueKind.String -> Some(r[0].GetString(), r[1].GetString())
+                    | _ -> None
+                else
+                    None
+
+            let rows = [ for r in manifest.EnumerateArray() -> row r ]
+
+            if rows |> List.exists Option.isNone then
+                Error "the record's manifest has a malformed row"
+            else
+                Ok
+                    { Tree = tree
+                      Key = key
+                      RunId = runId
+                      Entries = List.choose id rows }
+        | _ -> Error "the record has no run or no manifest"
+
+/// The `test-baseline` record for exactly `tree`, when it is still the store's passing
+/// answer for that tree, was filed by this analyser build, and carries a readable manifest;
+/// otherwise why not. READ-ONLY. Every failure is a miss. The store's reads never throw: a
+/// record it cannot read is one it does not hold.
+let checkoutRecordFor (store: OutcomeStore.Store) (tree: string) : Result<CheckoutRecord, string> =
+    let key = keyOf tree
+
+    match store.LookupWithOutputs key with
+    | None -> Error "no test-baseline record for that tree"
+    | Some(record, _) when record.Outcome <> OutcomeStore.Outcome.Pass ->
+        Error "the test-baseline record for that tree is not a pass"
+    | Some(_, None) -> Error "the test-baseline record for that tree has no outputs"
+    | Some(_, Some outputs) -> parseRecord tree key.Value.Text outputs
 
 let private indexOutputs (entries: IndexEntry list) : string =
     let o = JsonObject()

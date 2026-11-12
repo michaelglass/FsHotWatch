@@ -70,9 +70,49 @@ type LaunchScope =
     | LaunchedFullSuite
     | LaunchedSelection
 
+/// This checkout's own last full pass, as a restarted daemon may diff from it
+/// (AUTOMATION-1587): the tree T the durable full-suite ledger records, with the impact index
+/// still sealed at T and a passing `test-baseline` record for exactly T. The cold scan's diff
+/// against the index's rows is then the diff T to T'.
+type CheckoutBaseline =
+    {
+        Tree: string
+        /// The `test-baseline` record's key.
+        Key: string
+        /// The run that passed T in full.
+        RunId: string
+        /// T's manifest, the evidence a moved tree is compared with: a path that moved
+        /// beside the symbols still forces the wide run (AUTOMATION-1559, ADR-039).
+        Manifest: ReceiptTree
+    }
+
+/// The baseline a build's launch has in hand, which is what makes its diff worth waiting
+/// for (`DiffWait`).
+[<RequireQualifiedAccess>]
+type WaitBasis =
+    /// Neither a run completed this session nor a checkout baseline the tree moved from.
+    | NoBaseline
+    /// A run has completed this session.
+    | SessionBaseline
+    /// No run has completed this session, and the tree MOVED from this checkout's own last
+    /// full pass (`CheckoutBaseline`). An unchanged tree is not one: the skip on records
+    /// answers it without a diff (ADR-067), so waiting would only cost time.
+    | CheckoutBaseline of baseline: CheckoutBaseline
+
+module WaitBasis =
+    /// The `reason=` token of a `diff-wait:` line.
+    let describe (basis: WaitBasis) =
+        match basis with
+        | WaitBasis.NoBaseline -> "none"
+        | WaitBasis.SessionBaseline -> "session-baseline"
+        | WaitBasis.CheckoutBaseline b -> $"checkout-baseline tree=%s{b.Tree} record=%s{b.Key} run=%s{b.RunId}"
+
 /// A launch `BuildSucceeded` held back because the symbol diff of the tree it built was
-/// not folded yet (`DiffWait`).
-type AwaitedDiff = { Id: Guid; Since: DateTime }
+/// not folded yet (`DiffWait`), and the baseline that made it wait.
+type AwaitedDiff =
+    { Id: Guid
+      Since: DateTime
+      Basis: WaitBasis }
 
 /// Holding a build's launch until the check results of the tree it built are folded.
 ///
@@ -81,6 +121,13 @@ type AwaitedDiff = { Id: Guid; Since: DateTime }
 /// then selects from a diff that does not have them yet: with nothing owed, zero classes
 /// are affected, the tree has moved since the last evidence, and the run widens to every
 /// project in full, for an edit the diff would have narrowed to one.
+///
+/// A restarted daemon's first launch is the same race over its cold scan: it took its
+/// inputs before the diff folded, and the edit ran only in a queued re-run behind a full
+/// suite. When the tree MOVED from this checkout's own last full pass (`CheckoutBaseline`),
+/// that launch waits too, and then selects from the diff T to T' as a warm session would
+/// (AUTOMATION-1587). On expiry it launches what it would have launched without waiting:
+/// the full suite, and a later diff queues a re-run.
 module internal DiffWait =
     /// How long a held launch waits for the next `BatchChecked` before it launches
     /// without it. Longer than a warm scan of a large repository.
@@ -90,8 +137,9 @@ module internal DiffWait =
     /// that decide whether the diff is in hand.
     type Launch =
         {
-            /// A run has completed this session, so the launch is not the baseline run.
-            HasSessionBaseline: bool
+            /// The baseline in hand: a run completed this session, or the checkout baseline
+            /// the tree moved from. With neither, the launch is the baseline run.
+            Basis: WaitBasis
             /// The host publishes a project model. Without one every seal is ignored, so
             /// none could release the wait.
             HasModel: bool
@@ -118,7 +166,7 @@ module internal DiffWait =
     /// which the zero-affected skip already answers. A tree that cannot be read is never
     /// waited on.
     let awaits (launch: Launch) : bool =
-        launch.HasSessionBaseline
+        launch.Basis <> WaitBasis.NoBaseline
         && launch.HasModel
         && launch.OwesNothing
         && Set.isEmpty launch.RunsInFullAnyway
@@ -130,6 +178,20 @@ module internal DiffWait =
                 launch.SealedTree <> Some current
                 && not (ReceiptInputTree.matches launch.EvidenceTree launch.CurrentTree)
             | None -> false)
+
+    /// The one line saying when a build's launch took its inputs: `waitedMs` after the
+    /// build (0 when it did not wait), on what baseline, and whether the bound ran out.
+    /// Every line starts `diff-wait:`, so a land's log shows the added wait by grep.
+    let describe (held: bool) (basis: WaitBasis) (waitedMs: int64) (timedOut: bool) =
+        let heldText = if held then "yes" else "no"
+        let timedOutText = if timedOut then "yes" else "no"
+
+        $"diff-wait: held=%s{heldText} waited-ms=%d{waitedMs} reason=%s{WaitBasis.describe basis} timed-out=%s{timedOutText}"
+
+    /// The line for a held launch that takes its inputs now.
+    let released (awaited: AwaitedDiff) (timedOut: bool) =
+        let waited = int64 (DateTime.UtcNow - awaited.Since).TotalMilliseconds
+        describe true awaited.Basis waited timedOut
 
 /// The run holding the "tests" key, as its launch here claimed it.
 type InFlightRun =
@@ -215,6 +277,11 @@ type TestPruneState =
         /// A build's launch held back for its tree's check results (`DiffWait`). Cleared
         /// by the next `BatchChecked`, by any launch, or by its expiry.
         AwaitingDiff: AwaitedDiff option
+        /// The checkout baseline a held launch waits on (`WaitBasis.CheckoutBaseline`), until
+        /// this session's first run completes. While held, the launch the fold releases
+        /// selects as with a session baseline, with T's manifest as its evidence. Cleared on
+        /// expiry (that launch is today's full suite) and by any completion.
+        CheckoutBaseline: CheckoutBaseline option
         /// A launch this session's mode held back since a command last asked for one: the
         /// session launches only requested runs (`TestMode.launchesOwedRuns`), and a build
         /// left a run owed. `OwedRunRequested` launches it.
@@ -395,6 +462,10 @@ type TestPruneState =
         RestoredEvidence: EarnedEvidence option
     }
 
+    /// A baseline a launch may select against: a run completed this session, or the
+    /// checkout baseline a held launch waited on.
+    member this.HasBaselineInHand = this.LastResults.IsSome || this.CheckoutBaseline.IsSome
+
     /// The standing receipt, if one stands.
     member this.EvidenceReceipt =
         match this.Receipt with
@@ -523,6 +594,9 @@ type TestRunInputs =
         /// The tree the last `BatchChecked` folded its check results over: the symbol
         /// diff has run over this tree.
         SealedTree: string option
+        /// A run has completed this session, so the daemon holds evidence of its own. A
+        /// launch held on a checkout baseline has none yet (AUTOMATION-1587).
+        SessionRan: bool
     }
 
 module TestRunInputs =
@@ -541,7 +615,12 @@ module TestRunInputs =
           Seeds = state.LastSeeds
           SeedFanout = state.LastSeedFanout
           Earned = TestPruneState.coverageEvidence state
-          EvidenceTree = state.EvidenceReceipt |> Option.bind (fun receipt -> receipt.InputTreeHash)
+          // With no receipt standing, a held checkout baseline's tree and manifest are the
+          // evidence the tree moved from (AUTOMATION-1587).
+          EvidenceTree =
+            state.EvidenceReceipt
+            |> Option.bind (fun receipt -> receipt.InputTreeHash)
+            |> Option.orElse (state.CheckoutBaseline |> Option.map _.Tree)
           EvidenceManifest =
             match state.Receipt with
             | HeldReceipt.Standing(receipt, manifest) ->
@@ -549,5 +628,6 @@ module TestRunInputs =
                 |> Option.filter (fun manifest ->
                     ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity))
             | HeldReceipt.NoneYet
-            | HeldReceipt.Revoked _ -> None
-          SealedTree = state.SealedTree }
+            | HeldReceipt.Revoked _ -> state.CheckoutBaseline |> Option.map _.Manifest
+          SealedTree = state.SealedTree
+          SessionRan = state.LastResults.IsSome }

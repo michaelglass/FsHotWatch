@@ -50,6 +50,10 @@ type Baseline =
         /// The configured projects that run covered. Validity for a later run is
         /// `runnable ⊆ Projects` — see `staleness`.
         Projects: Set<string>
+        /// The receipt identity of the tree that run passed, when the impact index was sealed
+        /// at exactly that tree at completion; `None` otherwise, and for a record written
+        /// before it was kept. A restarted daemon diffs from it (AUTOMATION-1587).
+        Tree: string option
     }
 
 [<RequireQualifiedAccess>]
@@ -99,13 +103,19 @@ let load (repoRoot: string) : LoadedBaseline =
                     | null -> None
                     | node -> node.AsArray() |> Seq.map (fun n -> n.GetValue<string>()) |> Set.ofSeq |> Some
 
+                let tree =
+                    match obj.["tree"] with
+                    | null -> None
+                    | node -> Some(node.GetValue<string>())
+
                 match runId, earnedAt, projects with
                 | Some runId, Some earnedAt, Some projects ->
                     LoadedBaseline.Loaded(
                         Some
                             { RunId = runId
                               EarnedAt = earnedAt
-                              Projects = projects }
+                              Projects = projects
+                              Tree = tree }
                     )
                 | _ ->
                     LoadedBaseline.Unreadable
@@ -123,6 +133,11 @@ let save (repoRoot: string) (baseline: Baseline) : unit =
         arr.Add(JsonValue.Create(p))
 
     obj.["projects"] <- arr
+
+    match baseline.Tree with
+    | Some tree -> obj.["tree"] <- JsonValue.Create(tree)
+    | None -> ()
+
     FsHwPaths.atomicWriteAllText (sidecarPath repoRoot) (obj.ToJsonString())
 
 /// Why `baseline` cannot vouch for the tests a run over `runnable` skips — `None` when it
