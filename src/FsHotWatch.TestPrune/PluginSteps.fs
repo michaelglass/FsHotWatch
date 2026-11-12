@@ -62,15 +62,18 @@ open FsHotWatch.TestPrune.PluginFold
 
 /// Hold a build's launch for its tree's check results (`DiffWait`), and post its
 /// expiry. The mailbox is not blocked: the `BatchChecked` it waits for is delivered
-/// through it.
-let internal holdForDiff (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+/// through it. `basis` is the baseline that makes the diff worth the wait.
+let internal holdForDiff (basis: WaitBasis) (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
     let held =
         { Id = Guid.NewGuid()
-          Since = DateTime.UtcNow }
+          Since = DateTime.UtcNow
+          Basis = basis }
 
     Logging.info
         "test-prune"
         $"BuildSucceeded: the check results for the tree this build compiled are not folded yet, so its symbol diff is unknown — holding the launch for the next BatchChecked (at most %.0f{DiffWait.bound.TotalSeconds}s)"
+
+    Logging.info "test-prune" $"diff-wait: holding reason=%s{WaitBasis.describe basis}"
 
     Tasks.Task
         .Delay(DiffWait.bound)
@@ -561,7 +564,52 @@ let internal currentOutcomeKeyResultsIn
     | None, _ -> refuseAll "no test-evidence store is wired"
     | Some _, None -> refuseAll "the project model publishes no compile-input identities"
 
-/// File the shadow `test-baseline` record) a completion may earn (AUTOMATION-1587 step 2) and
+/// This checkout's own last full pass, when a restarted daemon may diff from it
+/// (AUTOMATION-1587): the ledger records the tree T that pass was earned on, the current
+/// tree MOVED from T, the impact index beside `dbPath` is still sealed at T, and the
+/// box-wide `test-baseline` record for exactly T is a pass from this analyser build whose
+/// manifest hashes to T. Otherwise why not: every failure is a miss, and a miss is today's
+/// launch. An unchanged tree is a miss on purpose: the skip on records answers it at once.
+let internal checkoutBaselineIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (dbPath: string)
+    (ledger: FullSuiteBaseline.Baseline option)
+    (current: string)
+    : Result<CheckoutBaseline, string> =
+    match ledger with
+    | None -> Error "this checkout's ledger records no full-suite baseline"
+    | Some baseline ->
+        match baseline.Tree with
+        | None ->
+            let runId = baseline.RunId.ToString "N"
+
+            Error
+                $"the ledger's full-suite baseline (run %s{runId}) records no tree it passed with the index sealed there"
+        | Some tree when String.Equals(tree, current, StringComparison.Ordinal) ->
+            Error "the tree has not moved from the ledger's full-suite baseline (the skip on records answers it)"
+        | Some tree ->
+            match IndexSeal.load dbPath with
+            | sealedAt when sealedAt <> Some tree ->
+                let sealedText = sealedAt |> Option.defaultValue "no tree"
+                Error $"the index is sealed at %s{sealedText}, not at the baseline's tree %s{tree}"
+            | _ ->
+                match evidence |> Option.bind (fun wiring -> wiring.Outcomes) with
+                | None -> Error "no outcome store is wired"
+                | Some store ->
+                    TestBaseline.checkoutRecordFor store tree
+                    |> Result.bind (fun record ->
+                        if TreeHash.hashEntries record.Entries <> tree then
+                            Error "the test-baseline record's manifest does not hash to its tree"
+                        else
+                            Ok
+                                { Tree = tree
+                                  Key = record.Key
+                                  RunId = record.RunId
+                                  Manifest =
+                                    { Identity = tree
+                                      Entries = record.Entries } })
+
+/// File the shadow `test-baseline` record a completion may earn (AUTOMATION-1587 step 2) and
 /// log one line saying whether it did, and if not, which conditions refused it. The K_P keys
 /// are those `test-scope` reports, with why a project has none (`currentOutcomeKeyResultsIn`), and the per-file analysis
 /// identities are the index's `file_keys`. Never fails the completion: a baseline that
@@ -762,7 +810,7 @@ let internal launchHeldWith
             { state with
                 PendingForceRunProjects = Set.empty }
 
-        match launchImpactRun ctx configs launchState state.LastResults.IsSome fanout with
+        match launchImpactRun ctx configs launchState state.HasBaselineInHand fanout with
         | Some launched -> launched
         | None when joinsFullRun state false -> attachToFullRun state
         | None ->

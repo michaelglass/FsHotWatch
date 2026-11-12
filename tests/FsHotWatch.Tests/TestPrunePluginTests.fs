@@ -4705,7 +4705,7 @@ let ``a build waits for its tree's check results only when the diff alone would 
     // the tree moved to "t2" past the last fold ("t1"). Launching now would select from a
     // diff that has not arrived.
     let held: DiffWait.Launch =
-        { HasSessionBaseline = true
+        { Basis = WaitBasis.SessionBaseline
           HasModel = true
           OwesNothing = true
           RunsInFullAnyway = Set.empty
@@ -4729,7 +4729,27 @@ let ``a build waits for its tree's check results only when the diff alone would 
     // Anything that runs regardless of the diff launches now: the baseline run, owed
     // debt, a project run in full (fanout, or no evidence under a new model), failures
     // or analysis gaps, a full-suite scope.
-    test <@ not (DiffWait.awaits { held with HasSessionBaseline = false }) @>
+    test
+        <@
+            not (
+                DiffWait.awaits
+                    { held with
+                        Basis = WaitBasis.NoBaseline }
+            )
+        @>
+    // The checkout baseline the tree moved from is a baseline in hand too (AUTOMATION-1587).
+    let checkout: CheckoutBaseline =
+        { Tree = "t0"
+          Key = "k"
+          RunId = "r"
+          Manifest = { Identity = "t0"; Entries = [] } }
+
+    test
+        <@
+            DiffWait.awaits
+                { held with
+                    Basis = WaitBasis.CheckoutBaseline checkout }
+        @>
     // With no model published, every seal is ignored: none could release the wait.
     test <@ not (DiffWait.awaits { held with HasModel = false }) @>
     test <@ not (DiffWait.awaits { held with OwesNothing = false }) @>

@@ -522,6 +522,7 @@ let internal createWithEvidenceAndQueries
           TestConfigs = testConfigs
           Launch = launchSteps
           HoldForDiff = holdForDiff
+          FindCheckoutBaseline = checkoutBaselineIn evidence dbPath
           JoinRefresh = joinRefresh
           LaunchScopeOf = launchScopeOf
           ObserveModelGeneration = observeModelGeneration }
@@ -538,7 +539,8 @@ let internal createWithEvidenceAndQueries
           LaunchHeld = launchHeld
           LogRedStands = logRedStands
           OwedDescription = owedDescription
-          OnlyRetriesRed = onlyRetriesRed }
+          OnlyRetriesRed = onlyRetriesRed
+          SaveSeal = IndexSeal.save (Logging.warn "test-prune") dbPath }
 
     let onBatchChecked ctx state modelGeneration batch =
         onBatchCheckedWith batchCheckedEnv ctx state modelGeneration batch

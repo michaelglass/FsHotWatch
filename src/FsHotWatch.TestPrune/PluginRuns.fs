@@ -513,6 +513,11 @@ let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (st
 
     let indexedSomething = not state.PendingAnalysis.IsEmpty
 
+    // Rows written here describe a tree no seal has read yet: the index is unsealed until
+    // the next `BatchChecked` seals it again (`IndexSeal`).
+    if indexedSomething then
+        IndexSeal.save (Logging.warn "test-prune") dbPath None
+
     // A refresh still running beside the fold reads the index this flush would write.
     let state = joinRefresh ctx state
 

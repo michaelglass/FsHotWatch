@@ -180,8 +180,10 @@ let private completionRecorder (completions: Collections.Concurrent.ConcurrentQu
 
 /// A long-lived checkout (it holds a full-suite baseline already), so its first run is
 /// the ordinary full run that earns one.
-let private checkoutHiding (hidden: string list) (stores: Stores) (root: string) =
-    seedBaseline root testProjects
+let private checkoutSeeding (seed: bool) (hidden: string list) (stores: Stores) (root: string) =
+    if seed then
+        seedBaseline root testProjects
+
     let lines = Collections.Concurrent.ConcurrentQueue<string>()
 
     let sink: Logging.LogSink =
@@ -222,7 +224,12 @@ let private checkoutHiding (hidden: string list) (stores: Stores) (root: string)
       Completions = completions
       Lines = lines }
 
+let private checkoutHiding = checkoutSeeding true
+
 let private checkout = checkoutHiding []
+
+/// A new daemon over a checkout an earlier one left, its ledger as that one wrote it.
+let private restartOf = checkoutSeeding false []
 
 let private launches (c: Checkout) =
     let log = Path.Combine(c.Root, "runs.log")
@@ -430,3 +437,32 @@ let ``a configured project the project model does not name files no baseline, an
                 lines.Head.Contains "project TY"
                 && lines.Head.Contains "not in the project model"
             @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1587, end to end: a restarted daemon over the very tree its checkout's last
+// full suite passed does NOT wait for the scan's fold. The skip on records answers that
+// tree from the records at its inputs, so a wait would only cost time.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a restarted daemon over the unchanged tree its full suite passed skips at once, without waiting`` () =
+    withRepo (fun stores rootNamed ->
+        let root = rootNamed "a"
+        let first = checkout stores root
+        seal first
+        let _, earned = run first
+        test <@ (baselineLine first earned).Head.Contains "test-baseline: written" @>
+
+        // A new daemon over the same checkout. No fold arrives: it must not need one.
+        let restarted = restartOf stores root
+        let launched, completed = run restarted
+
+        test <@ List.isEmpty launched @>
+        test <@ FsHotWatch.Tests.TestEvidenceRunTests.allGreen completed @>
+
+        let waits =
+            restarted.Lines |> Seq.filter (fun l -> l.Contains "diff-wait:") |> List.ofSeq
+
+        test <@ waits |> List.exists (fun l -> l.Contains "held=no") @>
+        test <@ not (waits |> List.exists (fun l -> l.Contains "holding")) @>
+        test <@ waits |> List.exists (fun l -> l.Contains "the tree has not moved") @>)

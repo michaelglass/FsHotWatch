@@ -246,6 +246,23 @@ let internal onRunFinishedWith
         let executedFullSuite = settled.ExecutedFullSuite
         let earnsBaseline = settled.EarnsBaseline
 
+        // The tree the baseline was earned on, kept only when the index was sealed at exactly
+        // that tree: a restarted daemon diffs its cold scan from it (AUTOMATION-1587).
+        let debt =
+            match debt.Baseline with
+            | Some baseline when earnsBaseline ->
+                let sealedReceiptTree =
+                    receipt.CurrentTree
+                    |> Option.map _.Identity
+                    |> Option.filter (fun tree -> state.SealedTree = Some tree)
+
+                { debt with
+                    Baseline =
+                        Some
+                            { baseline with
+                                Tree = sealedReceiptTree } }
+            | _ -> debt
+
         let earned =
             earnedEvidenceOf
                 ctx
@@ -272,6 +289,8 @@ let internal onRunFinishedWith
                 Debt = debt
                 Earned = earned
                 PendingForceRunProjects = Set.difference state.PendingForceRunProjects absorbedProjects
+                // A completed run is this session's baseline from now on.
+                CheckoutBaseline = None
                 CoveredFullSuite =
                     match launch.InputTree with
                     | Some tree when coveredByConstruction -> Some(tree, currentModelGeneration)

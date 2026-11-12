@@ -126,7 +126,8 @@ let ``settleDebt - a red full run keeps the earlier green baseline instead of re
     let earlier: FullSuiteBaseline.Baseline =
         { RunId = Guid.NewGuid()
           EarnedAt = DateTime.UtcNow.AddHours -1.0
-          Projects = Set.ofList [ "P" ] }
+          Projects = Set.ofList [ "P" ]
+          Tree = None }
 
     let state =
         { handler.Init with

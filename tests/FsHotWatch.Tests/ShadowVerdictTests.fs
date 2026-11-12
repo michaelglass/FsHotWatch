@@ -856,7 +856,8 @@ let ``a red publication names the run the watermark records`` () =
             repo
             { RunId = runId
               EarnedAt = DateTime.UtcNow
-              Projects = Set.ofList projects }
+              Projects = Set.ofList projects
+              Tree = None }
 
         let observation = ofVerdict repo (publishedRed ())
         let expected = Some(runId.ToString "N")
