@@ -106,7 +106,8 @@ type Request =
         Root: string
         /// The project files asked for.
         Projects: string list
-        /// The fshw and Ionide builds evaluating them.
+        /// The Ionide and MSBuild builds evaluating them, and fshw's options-record schema
+        /// (`OptionsInputs.toolchain`).
         Toolchain: string
         /// The SDK whose MSBuild evaluates them: its resolved location, which names its
         /// version and what global.json resolved to.

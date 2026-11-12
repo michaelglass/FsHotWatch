@@ -190,3 +190,54 @@ let ``GOLDEN: the check-record key of a fixture project and every component it i
             "The in-memory check cache key's options half"
             (Some "3bfa4190c87b01f75468411f7ea8fd75571b1e8e68a5efb44609b4198b81174b")
             memoryKey)
+
+// --- the golden options-record key ---
+
+let private goldenOptionsToolchain =
+    "Ionide.ProjInfo@0.74.2.0/55555555-5555-5555-5555-555555555555;\
+     Microsoft.Build@15.1.0.0/66666666-6666-6666-6666-666666666666;\
+     fshw-options-schema=fshw-options-semantics-v1"
+
+[<Fact(Timeout = 15000)>]
+let ``GOLDEN: the options-record keys of a fixed request and every component they are folded from`` () =
+    let toolchain =
+        OptionsInputs.toolchainOf
+            "Ionide.ProjInfo@0.74.2.0/55555555-5555-5555-5555-555555555555"
+            "Microsoft.Build@15.1.0.0/66666666-6666-6666-6666-666666666666"
+            OptionsInputs.OptionsRecordSchema
+
+    golden "The toolchain an options record is keyed by" goldenOptionsToolchain toolchain
+
+    let request: OptionsRecords.Request =
+        { Root = "/golden/repo"
+          Projects = [ "/golden/repo/A.fsproj" ]
+          Toolchain = toolchain
+          Sdk = "/sdk/10.0.401"
+          GlobalProperties = [ "Configuration", "Debug" ] }
+
+    let requestKey = OptionsRecords.requestKey request
+
+    golden
+        "The options-inputs request key's components"
+        [ "global-properties", "4dc2ad2376bfe544d9e4e970336e875be9a7838400c1e87530bf2edaa4bbc553"
+          "projects", "a8bd81deda5d3cf8ab75a57120f3217a4a42f01c80064dfe3d107f67f939d625"
+          "root", "/golden/repo"
+          "sdk", "/sdk/10.0.401"
+          "toolchain", goldenOptionsToolchain ]
+        requestKey.Inputs
+
+
+    let optionsKey =
+        OptionsRecords.optionsKey
+            request
+            { Reads = []
+              Probes = []
+              Listings = []
+              EnvNames = [] }
+            []
+
+    golden
+        "The options-inputs request key and the options-record key"
+        ("ak1:5d27b2fa53c41b9ee7f7c0c9aa47f96a1f706bbd317debf3010ffaa08fc826e3",
+         "ak1:5041e894015bfdec089ad7242230414053e82970b9a1ce97ace1cc437c536b49")
+        (requestKey.Value.Text, optionsKey.Value.Text)

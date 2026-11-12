@@ -1093,11 +1093,16 @@ let ``the recording file system answers as the real one and records every questi
         recordingFileSystemAnswersAsTheRealOne root)
 
 [<Fact(Timeout = 120000)>]
-let ``the toolchain names fshw, Ionide and MSBuild, and a file names what it reads from the environment`` () =
+let ``the toolchain names Ionide, MSBuild and the options-record schema, not fshw's build, and a file names what it reads from the environment``
+    ()
+    =
     withTempDir "options-toolchain" (fun root ->
         Daemon.Daemon.msbuildWorkspaceLoader root |> ignore
         let toolchain = OptionsInputs.toolchain ()
-        test <@ toolchain.Contains "FsHotWatch@" @>
+        // fshw's own build moves every release; the schema constant carries its duty
+        // (AUTOMATION-1616).
+        test <@ not (toolchain.Contains "FsHotWatch@") @>
+        test <@ toolchain.Contains "fshw-options-schema=" @>
         test <@ toolchain.Contains "Ionide.ProjInfo@" @>
         test <@ toolchain.Contains "Microsoft.Build@" @>)
 
