@@ -239,6 +239,8 @@ switch criterion is measured on the K_P keys.
 
 ## 8. The switch criterion
 
+Replaced by §35 (Change 2).
+
 The switch needs **0 disagreements over 50 consecutive intelligence lands** (server side)
 **or**, laptop side, all of the following:
 
@@ -1587,3 +1589,143 @@ on the same bytes; the cost of blocking is a run, never a false green.
 main) carried its own newer-fail check (`newerFails`, a full-key `Lookup`), which read an
 unreadable record as no fail and did not see impact fails. It reads `plan.Reused`, which now has
 every refused project removed with the reason in `plan.Misses`, so it needs no check of its own.
+
+## 35. Amendment (AUTOMATION-1632): verify keys mechanically; the switch is an audit criterion; tests become records; key changes ship together
+
+**Accepted** 2026-11-12: Changes 1–4 of AUTOMATION-1632, and from its Part 2 the type changes
+T1–T3 and Shake's S1 (the key is the trace) and S2 (oracles). **Not accepted yet**, each needing
+its own decision: S3–S5, R1–R3, N1–N7. This amendment is the first step of a re-architecture
+accepted the same day as a rolling programme (below). The working plan, with its measurements,
+is kept in the consuming repository.
+
+**Why.** §14–§34 almost all patch a key that missed an input. A key built from *declared*
+inputs drifts from the code that reads them. Two manual audits found 14 and then 6 false
+greens, and nothing in this ADR's plan would have found the next one. Keys have to be checked
+by a machine, and the switch has to wait on that check.
+
+**Change 1: verify keys mechanically.**
+
+- (a) A **clean-recompute audit** for every record kind: nightly, it recomputes a sample of
+  records from scratch and compares them with what the store holds; `fshw audit` runs the same
+  on demand (AUTOMATION-1633, extending 1442).
+- (b) A **read-set audit** on Linux CI: an action that reads a file outside its declared inputs
+  fails (AUTOMATION-1634).
+
+**Change 2: the switch criterion. This REPLACES §8's.** Switch after **14 consecutive nights**
+of the clean-recompute audit with **0 mismatches** over **≥ 200 sampled records per kind per
+night** (every record, for a kind with fewer), **plus** the read-set audit green on FsHotWatch's
+own CI. A mismatch resets the count. §8's shadow agreement stays, as a secondary signal only:
+agreement with today's verdict is not correctness, because today's verdict is what had the
+false greens.
+
+**Change 3: tests become records.** A test class is an action keyed by the content digest of
+what its recorded trace read, filed in the one store and verified Shake-style. Selection is the
+set of test-class records that miss. AUTOMATION-975 is reframed to this; its recall and mutation
+harness is kept as the shadow gate (recall 1.0 and a mutation miss-rate of 0, for 2 weeks). A
+class whose trace is incomplete falls back to today's selection rule. AUTOMATION-1587 step 6 is
+cancelled; the AUTOMATION-1450 shadow folds into 975.
+
+**Change 4: key-schema changes ship together.** They ride the .NET 11 release (AUTOMATION-1622),
+so consumers pay one cold scan: 1629, 1613, 1585 and 1602b. 1588's machine-independent keys get
+their own later re-key, with the shared store. Hard cap: a key change not landed and gated within
+three working days of the start of 1622's tool step ships without it.
+
+**Types and traces.** T1–T3 and S1/S2 as written in AUTOMATION-1632 (AUTOMATION-1635, 1636), in a
+new `FsHotWatch.Core` project that references no FCS. `FsHotWatch.Core` compiles with
+`--reflectionfree`, which refuses `%A` and reflection-based printing at compile time; the trim/AOT
+analyzers do not run for F# projects, so an AOT-publish smoke check is part of experiment E5.
+
+**Order.** The audit (1a, then 1b) → T1–T3 with an S1/S2 pilot → .NET 11 with the batched
+re-keys → the switch and §9's deletions → test-class records in shadow → the shared store →
+setup steps (AUTOMATION-1630).
+
+### The target
+
+fshw becomes a small build engine: a demand-driven scheduler over verifying and constructive
+traces in one content-addressed store. Every unit of work is an action, a pure function from the
+inputs it needed to its outputs, run in a worker process that can be killed, sized, moved or
+skipped because its record exists. A verdict is a lookup; nothing correct depends on a daemon
+being alive. The property it is built and tested against: for every tree `T` and configuration
+`c`, `lookupVerdict(store, T, c)` equals the verdict of a clean, from-scratch run of `T` under
+`c`, under any interleaving of edits, concurrent engines, kills, crashes and restarts.
+
+**Layers.** Dependencies point down only; L0–L2 reference no FCS, MSBuild or xUnit.
+
+- **L0 types:** distinct digest newtypes, `RepoRelativePath` as the only path a key accepts,
+  `ActionKey<'Kind>` / `Outcome<'Kind>` with the schema version in the type, `Purity`, `Verdict`.
+- **L1 store:** immutable content-addressed blobs and immutable records (key → outcome, outputs,
+  needs-trace); a record is valid iff every recorded need re-evaluates to the same digest; GC by
+  roots, not per-kind byte budgets.
+- **L2 engine:** `require(T, c)` → actions → look up and verify → schedule → record, with early
+  cutoff on output digests and box-wide resource grants; single-threaded on a virtual clock so
+  it can be simulated.
+- **L3 workers:** processes speaking one framed protocol (compile, typed-unit, lint/format, test,
+  traced setup commands, database templates); a crash or OOM costs one action.
+- **L4 front ends:** `check`, `confirm`, `verdict` keep their meaning; new `audit`, `explain`
+  and `gc`; the daemon is only engine + watcher + speculation + warm workers.
+- **L5 distribution:** signed records, a shared store and remote execution of pure actions,
+  last and behind 14 clean audit nights.
+
+**A constraint the shape follows.** FCS's typed check results live only in the process that
+produced them; FCS cannot persist or reload them. The only type information that survives a
+process is what is compiled into a DLL or reference assembly. So the rehydratable unit is the
+compiled project; a record holds only what was derived from typed results (diagnostics,
+signature digests, analyzer findings, symbol digests), never the results; and any consumer that
+needs a typed tree forces a fresh check of the files before it in that project. Checking,
+analyzers and symbol digests therefore run as one composite action per unit in one FCS-holding
+worker.
+
+### Phases and their gates
+
+- **Phase 0, accepted and in flight:** the audits (1633, 1634), the types (1635), the `Need`
+  pilot (1636), and .NET 11 with the batched re-keys (Change 4). Its gates are this amendment's.
+- **Phase 1, extract the core; the verdict becomes a lookup:** L0–L2 into `FsHotWatch.Core`
+  under a deterministic simulation harness; the switch (Change 2) for check, analyze, lint,
+  format and build only; §9 items 1–5. Gate: 14 clean audit nights; the simulation suite green
+  with 0 violations of the property above; `fshw verdict` ≤ 150 ms and ≤ 120 MB.
+- **Phase 2, workers and the broker:** test execution, lint/format, analyzers and build behind
+  the worker protocol; one box-wide resource broker replaces the admission constants; idle exit;
+  §9 item 7. Gate: no timing slower; ≥ 4 concurrent replay-dominated gates on one box with free
+  memory ≥ 15%.
+- **Phase 3, tests are records:** test-class actions in shadow (Change 3), then the selection
+  machinery and §9 item 6 deleted. Gate: recall 1.0 and mutation miss-rate 0 for 2 weeks; median
+  body-edit run ≤ 300 tests.
+- **Phase 4, constructive outputs:** traced setup, restore and build outputs in the store, so a
+  fresh workspace materialises instead of building (AUTOMATION-1630). Gate: a fresh replayed gate
+  ≤ 60 s; the hazard detector clean for 14 nights.
+- **Phase 5, the unit of compilation:** run E2, then E1, E3 and E7 and act on them; splitting a
+  large project is a first-class option. Its gates are those experiments' adoption criteria.
+- **Phase 6, distribution:** signed records, the shared store, then remote execution. Gate: a
+  tree checked on either machine replays on the other with 0 audit mismatches for 14 nights.
+- **Phase 7, delete:** the plugin lifecycle, the remaining ledgers and memos, `CheckCache`,
+  `FileTaskCache`, the impact database, the guard constants and every daemon-required path. A
+  release note states what was removed and the line count.
+
+**Acceptance: a rolling programme.** Phase 0 is accepted; Phases 1–7 are accepted as a rolling
+programme. A phase starts only when the previous one met its written gate **and** showed a
+measured benefit: a number against a target fixed before the phase starts (time, memory, tests
+executed, concurrent agents, audit mismatches or lines deleted). Being cleaner alone does not count.
+A missed gate stops the programme for a decision; a gate is never softened to pass. A change that
+slows any timing is rejected and written up, not shipped behind a flag (AUTOMATION-1626).
+
+### Experiments (criteria fixed before any data)
+
+E2 runs before E1: E1's memory win needs the whole-tree FCS instance gone, and only E2 removes it.
+
+- **E2:** can `typed-unit` run per project, with upstreams as DLL/reference-assembly references,
+  and can the same process emit the DLL? Adopt if cold wall drops ≥ 20% with identical findings
+  and symbol digests over 100 replayed commits, and (for the compile) outputs are byte-identical
+  to MSBuild's.
+- **E1:** is the persisted unit the project rather than the file? Adopt if box peak drops ≥ 4 GB
+  on a cold gate and no timing is slower.
+- **E3:** do reference assemblies cut off correctly on .NET 11? Adopt (delete our repair, enable
+  `ProduceReferenceAssembly`) if AUTOMATION-1498's repro no longer reproduces.
+- **E4:** idle exit versus resident, as AUTOMATION-1623 is written.
+- **E5:** is the engine cheap enough in .NET? A pure-lookup `verdict` ≤ 150 ms and ≤ 120 MB
+  (Native AOT first, with an AOT-publish smoke check of `FsHotWatch.Core`); otherwise revisit
+  the engine's language.
+- **E6:** database tests as pure actions via a template clone per class. Adopt if per-class
+  overhead ≤ 150 ms with 0 result differences over 20 full runs.
+- **E7:** do signature files cut off checking within a project? On a consumer repository's
+  655-file project, adopt if a body-edit recheck or cold peak improves ≥ 20% with no timing slower
+  and identical diagnostics, weighed against maintaining `.fsi` files by hand.

@@ -137,6 +137,10 @@ them.
 The sections above are about USING fshw. This one is the rule for changing FsHotWatch
 itself (`CLAUDE.md` is gitignored here, so the rule lives in this file).
 
+**Superseded for landings on 2026-11-12** by "Landing on the fast gate" below. The full
+`mise run ci` and `mise run ci-linux` described here now run in the post-land spot check and
+before a release, not before every push.
+
 Before every push to `main` — a merge, a re-land, a revert — run BOTH:
 
 1. `mise run ci` — the full-suite `confirm` plus the integration suite, on this machine.
@@ -163,3 +167,19 @@ cancellation tests — and all four reverts of that period were Linux-only failu
   x64 when it might.
 - After pushing, watch the commit's GitHub CI run to the end anyway. A local green is
   strong evidence, not the verdict; if GitHub goes red, revert first and diagnose after.
+
+## Landing on the fast gate
+
+Decided by the maintainer 2026-11-12. It replaces the pre-push requirement above.
+
+- **Land on the fast gate:** compile, plus fshw's filtered `check` on the exact tree being
+  landed. No full `mise run ci` and no per-commit hosted Linux run before landing.
+- **Post-land spot check:** the full `mise run ci` runs on `main` after landings, coalesced,
+  one at a time.
+- **A red spot check stops landings** until it is bisected and fixed forward, or reverted,
+  within the hour.
+- **Releases** only from a commit with a green full run plus green Linux CI on that exact sha.
+- **Every spot-check failure the fast gate did not select is filed as a selection miss.** A
+  wall-clock flake under load is its own class, not a miss.
+- **Coverage floors** are graded by `confirm` in the spot check and before releases, not by the
+  landing gate.
