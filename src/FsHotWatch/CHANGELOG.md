@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the daemon evaluates projects only with an SDK whose MSBuild its own runtime can host (AUTOMATION-1621). With no
+  `global.json`, `dotnet` resolves the newest installed SDK; once a .NET 11 SDK is installed (GitHub's ubuntu-26.04 image
+  20261111.196 ships 11.0.100), a .NET 10 daemon loaded its MSBuild and every evaluation failed with "Could not load file
+  or assembly 'System.Runtime, Version=11.0.0.0'", so no project loaded. New `SdkChoice`: the SDK `dotnet` resolves is
+  still used whenever this runtime can host it, so a `global.json` and its rollForward still decide. A newer major that
+  no `global.json` asked for is replaced by the newest installed SDK this runtime can host, and logged. A `global.json`
+  that selects a newer major is refused, never overridden, naming both versions and the file. No record key changes and
+  no schema constant moves: an options record is already keyed by the MSBuild path it was evaluated from (`Sdk`), which
+  names the chosen SDK, so a different choice is a different key, and a check record follows its options hash.
+
 ## 0.10.0-alpha.111 - 2026-11-12
 
 - perf: a new fshw build no longer re-keys every options record (AUTOMATION-1616). `OptionsInputs.toolchain` named

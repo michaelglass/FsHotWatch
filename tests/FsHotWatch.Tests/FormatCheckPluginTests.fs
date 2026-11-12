@@ -34,8 +34,9 @@ let private thisRepoPin =
     | Ok p -> p
     | Error e -> failwith $"this repository must pin fantomas for the format tests to run: %A{e}"
 
-/// A temp repository that pins the SAME fantomas this repository pins.
-let private withPinnedRepo (prefix: string) (body: string -> 'a) : 'a =
+/// A temp repository with this repository's tool manifest and nothing else: what a real
+/// checkout with no `global.json` looks like.
+let private withManifestOnly (prefix: string) (body: string -> 'a) : 'a =
     withTempDir prefix (fun dir ->
         Directory.CreateDirectory(Path.Combine(dir, ".config")) |> ignore
 
@@ -44,6 +45,17 @@ let private withPinnedRepo (prefix: string) (body: string -> 'a) : 'a =
             Path.Combine(dir, ".config", "dotnet-tools.json")
         )
 
+        body dir)
+
+/// A temp repository that pins the SAME fantomas this repository pins, under the SAME SDK.
+/// The tool is restored by this repository's own `dotnet tool restore`, under the SDK its
+/// `global.json` selects, and an SDK of another major does not see that restore (`Run
+/// "dotnet tool restore" to make the "fantomas" command available`; AUTOMATION-1621, on
+/// GitHub's ubuntu-26.04 image 20261111.196, which also ships SDK 11.0.100). So the fixture
+/// copies the `global.json` too: it mirrors this repository, not a different checkout.
+let private withPinnedRepo (prefix: string) (body: string -> 'a) : 'a =
+    withManifestOnly prefix (fun dir ->
+        File.Copy(Path.Combine(thisRepoRoot, "global.json"), Path.Combine(dir, "global.json"))
         body dir)
 
 /// A temp repository whose manifest pins a version that exists nowhere — for the
@@ -679,6 +691,36 @@ let ``an unparseable file keeps the format pass failed while it is unchanged, an
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``positive control: a new well-formatted file passes the format pass`` () =
     withPinnedRepo "fmt-new-good" (fun dir ->
+        let good = Path.Combine(dir, "Good.fs")
+        File.WriteAllText(good, wellFormatted)
+        let host = preprocessorHost dir
+
+        let run = host.RunPreprocessors [ good ]
+
+        test <@ List.isEmpty run.Failures @>
+        test <@ List.isEmpty run.Refused @>
+
+        test
+            <@
+                match host.GetStatus "format" with
+                | Some(PluginStatus.Completed(_, verdict)) ->
+                    verdict.Summary.StartsWith "format: rewrote 0 of 1 file(s)"
+                | _ -> false
+            @>)
+
+/// A checkout with no `global.json` runs fantomas under whatever SDK `dotnet` resolves
+/// there; restored in place, under that same SDK, the format pass works end to end
+/// (AUTOMATION-1621). The plugin never restores, so it cannot split the restore and the
+/// run across two SDKs: only a fixture that restores elsewhere can.
+[<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``a checkout with no global.json, restored in place, passes the format pass`` () =
+    withManifestOnly "fmt-no-globaljson" (fun dir ->
+        test <@ not (File.Exists(Path.Combine(dir, "global.json"))) @>
+
+        match runProcess "dotnet" "tool restore" dir [] (ProcessBounds.silent (TimeSpan.FromMinutes 5.0)) with
+        | Succeeded _ -> ()
+        | other -> failwith $"`dotnet tool restore` in the checkout failed: %A{other}"
+
         let good = Path.Combine(dir, "Good.fs")
         File.WriteAllText(good, wellFormatted)
         let host = preprocessorHost dir

@@ -5460,7 +5460,26 @@ module Daemon =
             Paths.dotnetRoot.Value
             |> Option.map (fun exe -> FileInfo(ProcessHelper.installedDotnet exe.FullName))
 
-        Init.init (DirectoryInfo(repoRoot)) muxer
+        match muxer with
+        | None -> Init.init (DirectoryInfo(repoRoot)) None
+        | Some exe ->
+            // MSBuild runs in this process, so it must come from an SDK this runtime can
+            // host (AUTOMATION-1621): `SdkChoice` keeps `dotnet`'s own pick unless that is a
+            // newer major no global.json asked for. `Init.init` would take that pick as is.
+            let evaluateWith (sdk: SdkChoice.Sdk) =
+                Init.setupForSdkVersion (DirectoryInfo sdk.Path) exe
+                Types.ToolsPath(Path.Combine(sdk.Path, "MSBuild.dll"))
+
+            match SdkChoice.forCheckout Environment.Version.Major exe repoRoot with
+            | SdkChoice.Resolved sdk -> evaluateWith sdk
+            | SdkChoice.Substituted(sdk, resolved) ->
+                Logging.info
+                    "discover"
+                    $"`dotnet` resolves SDK %O{resolved} at %s{repoRoot}, whose MSBuild this .NET %d{Environment.Version.Major} \
+                      process cannot host, and no global.json selects it: evaluating with SDK %O{sdk.Version} instead"
+
+                evaluateWith sdk
+            | SdkChoice.Refused reason -> raise (InvalidOperationException reason)
 
     /// The MSBuild workspace loader a daemon evaluates `repoRoot`'s projects with when none
     /// is injected. A test that wraps it holds a real evaluation where it chooses.

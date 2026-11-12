@@ -2317,6 +2317,13 @@
         "reason": "new file (AUTOMATION-1587 step 2). The code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 98.8% (165/167), branch 90.7% (78/86).",
         "platform": "linux"
       }
+    ],
+    "SdkChoice.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1621: which SDK MSBuild evaluates with). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by the unit suite (mise run check on f9b0a213 + this change): every line and branch, once the missing-SDK refusal test covers the `dotnet --version` error arm. The choice is pure and the two process-backed tests run on both platforms, so the floor is the same on Linux; the first Linux CI run on this change verifies it."
+      }
     ]
   },
   "countFloors": {
