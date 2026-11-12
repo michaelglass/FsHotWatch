@@ -51,6 +51,10 @@
     <Compile Include="RefAssemblyBuildTests.fs" />
     <Compile Include="DeterministicPdbPathTests.fs" />
     <Compile Include="CrossTmpdirDaemonTests.fs" />
+    <Compile Include="RepositoryHostProcessTests.fs" />
+    <Compile Include="DetachedLaunchProcessTests.fs" />
+    <Compile Include="SpawnHelperProcessTests.fs" />
+    <Compile Include="LauncherLifetimeTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

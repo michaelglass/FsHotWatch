@@ -99,8 +99,14 @@ extern int private replaceProcess([<MarshalAs(UnmanagedType.LPUTF8Str)>] string 
 /// The real native helper. Only ever runs inside the dedicated helper process: in
 /// any other process a successful call would move that process into a new session
 /// and then replace it with a shell.
-let private runHelper (command: string) : HelperFailure =
-    runHelperWith createSession replaceProcess Marshal.GetLastPInvokeError command
+///
+/// A value, bound when this module is first used in any process, and not a function
+/// whose body only the helper process runs: what that body did was the native calls
+/// wired into `runHelperWith`, which `runHelperWith`'s own tests drive with fakes, and
+/// the helper process's coverage reached the report on some runs and not on others
+/// (AUTOMATION-1651).
+let private runHelper: string -> HelperFailure =
+    runHelperWith createSession replaceProcess Marshal.GetLastPInvokeError
 
 /// Route a helper invocation, or `None` for every ordinary command line. Checked
 /// before normal CLI parsing so the hidden flag never reaches the command tree.
@@ -243,22 +249,12 @@ let internal helperStartInfo
 /// a process the launch command left holding the stream keeps it open.
 let private stderrDrainBound = TimeSpan.FromSeconds 5.0
 
-/// Run `command` through the helper from `workingDirectory` and wait at most `bound`
+/// Start the helper `psi` describes, which launches `command`, and wait at most `bound`
 /// for it. Raises when the helper cannot be started, fails, or has to be killed; the
 /// exception carries the helper's stderr. A helper that succeeds hands what it wrote to
-/// stderr, if anything, to `report`.
-let internal launchWithin
-    (report: string -> unit)
-    (bound: TimeSpan)
-    (workingDirectory: string)
-    (command: string)
-    : unit =
-    let host =
-        helperHost Environment.ProcessPath (RuntimeEnvironment.GetRuntimeDirectory()) File.Exists
-
-    let psi =
-        helperStartInfo (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable host workingDirectory command
-
+/// stderr, if anything, to `report`. `launchWithin` passes the real helper; a test passes
+/// a stand-in, since the real one is a copy of this CLI (AUTOMATION-1651).
+let internal launchThrough (report: string -> unit) (bound: TimeSpan) (command: string) (psi: ProcessStartInfo) : unit =
     // FSHW-SPAWN-001 ok: the helper is started here rather than through ProcessHelper
     // because its environment passes, unmodified, to the shell it execs and so to the
     // daemon. ProcessHelper strips `DOTNET_ROOT_<arch>` and may force
@@ -299,6 +295,19 @@ let internal launchWithin
     match launchFailure bound command stderr observation with
     | Some failure -> raise failure
     | None -> stderr |> Option.filter (String.IsNullOrEmpty >> not) |> Option.iter report
+
+/// Run `command` through the helper from `workingDirectory`, as `launchThrough` does.
+let internal launchWithin
+    (report: string -> unit)
+    (bound: TimeSpan)
+    (workingDirectory: string)
+    (command: string)
+    : unit =
+    let host =
+        helperHost Environment.ProcessPath (RuntimeEnvironment.GetRuntimeDirectory()) File.Exists
+
+    helperStartInfo (OperatingSystem.IsMacOS()) Environment.GetEnvironmentVariable host workingDirectory command
+    |> launchThrough report bound command
 
 /// Launch `command` detached from this process's session and group.
 let launch (workingDirectory: string) (command: string) : unit =

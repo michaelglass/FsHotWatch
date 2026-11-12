@@ -1,6 +1,6 @@
 /// The CLI's side of the repository host: who opts in, how commands parse, how a
-/// worktree attaches — and that a host killed outright leaves every worktree
-/// recoverable by the next command.
+/// worktree attaches. That a host killed outright leaves every worktree recoverable by
+/// the next command is proven through real CLI processes in FsHotWatch.IntegrationTests.
 module FsHotWatch.Tests.RepositoryHostModeTests
 
 open System
@@ -560,218 +560,59 @@ let private withRepository (body: string -> string -> unit) =
         File.WriteAllText(Path.Combine(root, ".fshw.json"), config)
         body root (Path.Combine(Path.GetDirectoryName root, "state")))
 
-/// The built CLI, run in `root` as an opted-in shell would run it, under the `dotnet`
-/// host of the runtime this test runs on. Its apphost would need a runtime it can
-/// find on its own, which a test host started by `dotnet exec` does not guarantee.
-/// Returns its exit code and everything it printed, stdout and stderr interleaved.
-let private runCli (stateHome: string) (root: string) (args: string list) : int * string =
-    let cli = typeof<HostLink>.Assembly.Location
-
-    let host =
-        DetachedLaunch.helperHost
-            Environment.ProcessPath
-            (Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory())
-            File.Exists
-
-    let psi = ProcessStartInfo(host)
-    psi.ArgumentList.Add cli
-
-    for a in args do
-        psi.ArgumentList.Add a
-
-    psi.WorkingDirectory <- root
-    psi.Environment["FSHW_STATE_HOME"] <- stateHome
-    psi.Environment[RepositoryHostMode.EnvVar] <- "1"
-    psi.UseShellExecute <- false
-    psi.RedirectStandardError <- true
-    psi.RedirectStandardOutput <- true
-    let output = Collections.Concurrent.ConcurrentQueue<string>()
-    use p = new Process(StartInfo = psi)
-
-    p.OutputDataReceived.Add(fun e ->
-        if not (isNull e.Data) then
-            output.Enqueue e.Data)
-
-    p.ErrorDataReceived.Add(fun e ->
-        if not (isNull e.Data) then
-            output.Enqueue e.Data)
-
-    p.Start() |> ignore
-    p.BeginErrorReadLine()
-    p.BeginOutputReadLine()
-
-    if not (p.WaitForExit 180000) then
-        p.Kill true
-        failwith $"fshw %A{args} did not finish:\n%s{String.concat Environment.NewLine output}"
-
-    // The parameterless wait returns once both redirected streams have drained.
-    p.WaitForExit()
-    p.ExitCode, String.concat Environment.NewLine output
-
-/// The log and event log of the repository host serving `root`'s repository under
-/// `stateHome`. The failure a host explains is reported from inside a scratch tree that
-/// is deleted with the test, so a failure message that only names the log names a file
-/// nobody can read.
-let private hostLogs (stateHome: string) (root: string) : string =
-    match resolveWorktree root with
-    | Error e -> $"(no repository identity: %s{IdentityError.describe e})"
-    | Ok worktree ->
-        let control = repositoryControlPaths stateHome worktree.Repository
-
-        [ control.HostLog; HostLifecycle.eventLogPath control ]
-        |> List.map (fun f ->
-            let text =
-                if File.Exists f then
-                    try
-                        File.ReadAllText f
-                    with ex ->
-                        $"(unreadable: %s{ex.Message})"
-                else
-                    "(absent)"
-
-            $"--- %s{f}\n%s{text}")
-        |> String.concat "\n"
-
-/// `runCli`, failing with everything the CLI printed, and the repository host's logs,
-/// unless it exits 0.
-let private runCliOk (stateHome: string) (root: string) (args: string list) : unit =
-    let exitCode, output = runCli stateHome root args
-
-    if exitCode <> 0 then
-        Assert.Fail $"fshw %A{args} exited %d{exitCode}:\n%s{output}\n%s{hostLogs stateHome root}"
-
-/// Kill every host this test may have started for `root`: the pids it saw, and the one
-/// the repository's pid file names now, which a command that failed part-way leaves
-/// unseen. A pid file can outlive its host and its pid be reused, so only a dotnet
-/// process started since `since` is taken for the host. Fails if one survives; returns
-/// the pids it killed.
-let private reapHosts (since: DateTime) (stateHome: string) (root: string) (seen: int seq) =
-    let named =
-        match resolveWorktree root with
-        | Ok w ->
-            let pidFile = (repositoryControlPaths stateHome w.Repository).PidFile
-
-            match
-                Int32.TryParse(
-                    try
-                        File.ReadAllText(pidFile).Trim()
-                    with _ ->
-                        ""
-                )
-            with
-            | true, pid -> [ pid ]
-            | _ -> []
-        | Error _ -> []
-
-    let ours (pid: int) =
-        try
-            use p = Process.GetProcessById pid
-
-            not p.HasExited
-            && p.ProcessName.StartsWith "dotnet"
-            && p.StartTime >= since.ToLocalTime()
-        with _ ->
-            false
-
-    let candidates =
-        Seq.append seen named |> Seq.distinct |> Seq.filter ours |> List.ofSeq
-
-    for pid in candidates do
-        try
-            use p = Process.GetProcessById pid
-            p.Kill true
-            p.WaitForExit 30000 |> ignore
-        with _ ->
-            // Gone between the look and the kill.
-            ()
-
-    let survivors = candidates |> List.filter ours
-    Assert.True(List.isEmpty survivors, $"host process(es) %A{survivors} outlived the test")
-    candidates
-
-[<Fact(Timeout = 600000)>]
-let ``a host killed outright leaves the worktree to the next command, which starts a new host`` () =
-    if not (OperatingSystem.IsWindows()) then
-        withRepository (fun root stateHome ->
-            let worktree =
-                match resolveWorktree root with
-                | Ok w -> w
-                | Error e -> failwith (IdentityError.describe e)
-
-            let control = repositoryControlPaths stateHome worktree.Repository
-
-            let hostPid () =
-                int (File.ReadAllText(control.PidFile).Trim())
-
-            let seen = Collections.Generic.HashSet<int>()
-            let since = DateTime.UtcNow.AddSeconds -1.0
-
-            try
-                runCliOk stateHome root [ "scan" ]
-                let first = hostPid ()
-                seen.Add first |> ignore
-
-                let firstSession =
-                    (RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive root).Value
-
-                test <@ firstSession.HostPid = first @>
-
-                // SIGKILL: no shutdown path runs, nothing is cleaned up.
-                use killed = Process.GetProcessById first
-                killed.Kill()
-                test <@ killed.WaitForExit HangWaitMs @>
-
-                // What the dead host left behind says so.
-                test
-                    <@
-                        RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive root
-                        |> Option.isNone
-                    @>
-
-                runCliOk stateHome root [ "scan" ]
-                let second = hostPid ()
-                seen.Add second |> ignore
-                test <@ second <> first @>
-
-                let secondSession =
-                    RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive root
-
-                test
-                    <@
-                        secondSession
-                        |> Option.exists (fun r -> r.HostPid = second && r.Session <> firstSession.Session)
-                    @>
-
-                // A clean stop hands the worktree back.
-                runCliOk stateHome root [ "stop"; "--repository" ]
-                test <@ waitUntilTrue (fun () -> not (RepositoryHost.processAlive second)) 30000 @>
-                use relock = (RepositoryHost.tryLockWorktree root).Value
-                ()
-            finally
-                // Not only the pids seen: the incident this guards against was a first
-                // `scan` that failed after launching its host, before any pid was seen.
-                reapHosts since stateHome root seen |> ignore)
-
-[<Fact(Timeout = 600000)>]
-let ``a host the test never saw is reaped all the same`` () =
-    if not (OperatingSystem.IsWindows()) then
-        withRepository (fun root stateHome ->
-            let since = DateTime.UtcNow.AddSeconds -1.0
-
-            let reaped = ref []
-
-            try
-                // The command succeeds here; in the incident it failed after launching
-                // the host. Either way the test holds no pid for it.
-                runCliOk stateHome root [ "scan" ]
-            finally
-                reaped.Value <- reapHosts since stateHome root []
-
-            test <@ reaped.Value.Length = 1 @>)
-
 // ---------------------------------------------------------------------------
 // The host verb, in process
 // ---------------------------------------------------------------------------
+
+/// Serve `root`'s session through the host verb in this process, check it end to end, and
+/// stop it on request. `logged` is what the session's log must say about its virtual root
+/// and import store.
+let private serveInProcessAndStop (root: string) (stateHome: string) (logged: string) =
+    let run = Task.Run(fun () -> runHostVerb defaultGlobalOptions root)
+
+    // A failed assertion still stops the host before the process moves
+    // back and the scratch tree goes: the host stood the process in its
+    // control directory, inside that tree, and a host left serving keeps
+    // evaluating there (AUTOMATION-1295).
+    try
+        let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
+
+        let endpoint, session =
+            match RepositoryHostMode.attach stateHome ignore (TimeSpan.FromSeconds 60.0) root config with
+            | RepositoryHostMode.Attach.Serving(endpoint, session) -> endpoint, session
+            | other -> failwith $"%A{other}"
+
+        let link: HostLink =
+            { Endpoint = endpoint
+              Session = fun () -> session
+              Reattach = fun () -> true }
+
+        let ipc = sessionIpcOps link
+        test <@ ipc.IsRunning "ignored" @>
+
+        test <@ not (String.IsNullOrWhiteSpace(ipc.GetStatus "ignored" |> Async.RunSynchronously)) @>
+
+        test <@ not (String.IsNullOrWhiteSpace(ipc.ScanStatus "ignored" |> Async.RunSynchronously)) @>
+
+        test <@ repositoryStatus false root = 0 @>
+        test <@ repositoryStatus true root = 0 @>
+
+        // The session's own log names the host behind it.
+        let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
+        test <@ log.Contains $"session=%s{SessionId.render session}" @>
+        // …and whether it checks under the repository's virtual root.
+        test <@ log.Contains $"virtualRoot=%s{logged}" @>
+        // …and whether it reads in-repository references from the store.
+        test <@ log.Contains $"importStore=%s{logged}" @>
+
+        test <@ stopRepositoryHost root = 0 @>
+        test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
+        test <@ repositoryStatus false root = 0 @>
+        test <@ stopRepositoryHost root = 0 @>
+    finally
+        if not run.IsCompleted then
+            stopRepositoryHost root |> ignore
+            run.Wait(TimeSpan.FromSeconds 60.0) |> ignore
 
 /// `fshw host` run in this process (it pins the process working directory and reads
 /// the state home from the environment, so the test restores both).
@@ -789,73 +630,7 @@ type HostVerbInProcess() =
                 withEnv RepositoryHostMode.ImportStoreEnvVar switch (fun () ->
                     withEnv "FSHW_STATE_HOME" (Some stateHome) (fun () ->
                         // The host verb stands the process in its control directory.
-                        withProcessWorkingDirectory None (fun () ->
-                            let run = Task.Run(fun () -> runHostVerb defaultGlobalOptions root)
-
-                            // A failed assertion still stops the host before the process moves
-                            // back and the scratch tree goes: the host stood the process in its
-                            // control directory, inside that tree, and a host left serving keeps
-                            // evaluating there (AUTOMATION-1295).
-                            try
-                                let config = File.ReadAllText(Path.Combine(root, ".fshw.json"))
-
-                                let endpoint, session =
-                                    match
-                                        RepositoryHostMode.attach
-                                            stateHome
-                                            ignore
-                                            (TimeSpan.FromSeconds 60.0)
-                                            root
-                                            config
-                                    with
-                                    | RepositoryHostMode.Attach.Serving(endpoint, session) -> endpoint, session
-                                    | other -> failwith $"%A{other}"
-
-                                let link: HostLink =
-                                    { Endpoint = endpoint
-                                      Session = fun () -> session
-                                      Reattach = fun () -> true }
-
-                                let ipc = sessionIpcOps link
-                                test <@ ipc.IsRunning "ignored" @>
-
-                                test
-                                    <@
-                                        not (
-                                            String.IsNullOrWhiteSpace(
-                                                ipc.GetStatus "ignored" |> Async.RunSynchronously
-                                            )
-                                        )
-                                    @>
-
-                                test
-                                    <@
-                                        not (
-                                            String.IsNullOrWhiteSpace(
-                                                ipc.ScanStatus "ignored" |> Async.RunSynchronously
-                                            )
-                                        )
-                                    @>
-
-                                test <@ repositoryStatus false root = 0 @>
-                                test <@ repositoryStatus true root = 0 @>
-
-                                // The session's own log names the host behind it.
-                                let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
-                                test <@ log.Contains $"session=%s{SessionId.render session}" @>
-                                // …and whether it checks under the repository's virtual root.
-                                test <@ log.Contains $"virtualRoot=%s{logged}" @>
-                                // …and whether it reads in-repository references from the store.
-                                test <@ log.Contains $"importStore=%s{logged}" @>
-
-                                test <@ stopRepositoryHost root = 0 @>
-                                test <@ run.Wait(TimeSpan.FromSeconds 60.0) && run.Result = 0 @>
-                                test <@ repositoryStatus false root = 0 @>
-                                test <@ stopRepositoryHost root = 0 @>
-                            finally
-                                if not run.IsCompleted then
-                                    stopRepositoryHost root |> ignore
-                                    run.Wait(TimeSpan.FromSeconds 60.0) |> ignore)))))
+                        withProcessWorkingDirectory None (fun () -> serveInProcessAndStop root stateHome logged)))))
 
     [<Fact(Timeout = 60000)>]
     member _.``the host verb refuses a root it cannot resolve``() =
@@ -1056,143 +831,6 @@ let ``an attach reply the host cannot have written is a stop, naming why`` () =
             cts.Cancel()
             server.Wait(TimeSpan.FromSeconds 10.0) |> ignore)
 
-[<Fact(Timeout = 600000)>]
-let ``a scan whose host stops answering during the attach starts this worktree's own daemon`` () =
-    // AUTOMATION-1333. The fallback said "using this worktree's own daemon", and then
-    // `scan` sent its call to a pipe nothing had started: it timed out connecting
-    // ("Could not connect to daemon: The operation has timed out."), where every other
-    // command that falls back brings that daemon up first.
-    if not (OperatingSystem.IsWindows()) then
-        withRepository (fun root stateHome ->
-            let worktree =
-                match resolveWorktree root with
-                | Ok w -> w
-                | Error e -> failwith (IdentityError.describe e)
-
-            let control = repositoryControlPaths stateHome worktree.Repository
-
-            // A host that reads every attach and hangs up without answering.
-            let opener: Ipc.IpcServer.ConnectionOpener =
-                fun pipe _ ->
-                    async {
-                        do!
-                            RepositoryIpc.readFrame pipe CancellationToken.None
-                            |> Async.AwaitTask
-                            |> Async.Ignore
-
-                        return None
-                    }
-
-            use cts = new CancellationTokenSource()
-
-            let server =
-                Async.StartImmediateAsTask(
-                    Ipc.IpcServer.serveConnections (TimeSpan.FromSeconds 5.0) control.Endpoint opener cts
-                )
-
-            let since = DateTime.UtcNow.AddSeconds -1.0
-
-            try
-                test <@ Ipc.IpcServer.acceptsConnection control.Endpoint @>
-
-                let exitCode, output = runCli stateHome root [ "scan" ]
-
-                Assert.True(
-                    (exitCode = 0
-                     && output.Contains "using this worktree's own daemon"
-                     && output.Contains "stopped answering during attach"),
-                    $"fshw scan exited %d{exitCode}:\n%s{output}"
-                )
-            finally
-                cts.Cancel()
-                server.Wait(TimeSpan.FromSeconds 10.0) |> ignore
-
-                // The worktree's own daemon, which the scan started.
-                let pidFile = Path.Combine(root, ".fshw", "daemon.pid")
-
-                match
-                    Int32.TryParse(
-                        try
-                            File.ReadAllText(pidFile).Trim()
-                        with _ ->
-                            ""
-                    )
-                with
-                | true, pid -> reapHosts since stateHome root [ pid ] |> ignore
-                | _ -> ())
-
-// ---------------------------------------------------------------------------
-// Plugin passthrough
-// ---------------------------------------------------------------------------
-
-/// Configure `worktree` for the smallest session, with one plugin command of its own:
-/// `<name>-status`, which a file command named `name` registers.
-let private withPluginCommand (worktree: string) (name: string) =
-    File.WriteAllText(
-        Path.Combine(worktree, ".fshw.json"),
-        $"""{{ "build": false, "format": false, "lint": false, "repositoryHost": true,
-              "fileCommands": [ {{ "name": "%s{name}", "pattern": "*.probe", "command": "true" }} ] }}"""
-    )
-
-[<Fact(Timeout = 600000)>]
-let ``a plugin command reaches the session of the worktree it is run in, and no other`` () =
-    if not (OperatingSystem.IsWindows()) then
-        withRepository (fun root stateHome ->
-            // A second worktree of the same repository, with its own project and a plugin
-            // command its sibling does not have.
-            let sibling = Path.Combine(Path.GetDirectoryName root, "b")
-            let siblingJj = Path.Combine(sibling, ".jj")
-            Directory.CreateDirectory siblingJj |> ignore
-
-            File.WriteAllText(
-                Path.Combine(siblingJj, "repo"),
-                Path.GetRelativePath(siblingJj, Path.Combine(root, ".jj", "repo"))
-            )
-
-            let siblingLib = Path.Combine(sibling, "src", "Lib")
-            Directory.CreateDirectory siblingLib |> ignore
-
-            for file in [ "Lib.fsproj"; "Lib.fs" ] do
-                File.Copy(Path.Combine(root, "src", "Lib", file), Path.Combine(siblingLib, file))
-
-            withPluginCommand root "alpha"
-            withPluginCommand sibling "beta"
-            let since = DateTime.UtcNow.AddSeconds -1.0
-
-            try
-                runCliOk stateHome root [ "scan" ]
-                runCliOk stateHome sibling [ "scan" ]
-
-                let record worktree =
-                    match RepositoryHost.HostSessionRecord.tryReadLive RepositoryHost.processAlive worktree with
-                    | Some r -> r
-                    | None -> failwith $"no host session serves %s{worktree}:\n%s{hostLogs stateHome worktree}"
-
-                // One host serves both worktrees, each as its own session.
-                test <@ (record root).HostPid = (record sibling).HostPid @>
-                test <@ (record root).Session <> (record sibling).Session @>
-
-                // Each worktree's command is recognised and answered by its own session: its file
-                // command has not run (no `.probe` file changed), which is its status's answer,
-                // no verdict (3). An unrecognised command would exit 1 naming it.
-                for worktree, command in [ root, "alpha-status"; sibling, "beta-status" ] do
-                    let exitCode, output = runCli stateHome worktree [ command ]
-
-                    Assert.True(
-                        (exitCode = 3 && output.Contains "the command has not run yet"),
-                        $"fshw %s{command} exited %d{exitCode}:\n%s{output}"
-                    )
-
-                // The sibling's session has no `alpha` command: the command is not served
-                // by another worktree's session, it fails as an unknown command.
-                let unknown =
-                    (CommandTree.renderParseError commandTree (UnknownCommand("alpha-status", [||], [])) cliName)
-                        .Split('\n')[0]
-
-                let exitCode, output = runCli stateHome sibling [ "alpha-status" ]
-                Assert.True((exitCode = 1 && output.Contains unknown), $"exited %d{exitCode}:\n%s{output}")
-            finally
-                reapHosts since stateHome root [] |> ignore)
 
 [<Fact(Timeout = 5000)>]
 let ``the repository status says which projects each worktree checks at its own paths, and why`` () =

@@ -5202,7 +5202,7 @@ let private chooseLink
         Error 2
     | _ -> ownDaemon
 
-let private runCli (args: string array) : int =
+let internal runCli (args: string array) : int =
     let argList = args |> Array.toList
 
     // Bare `--help` / `-h` / `help` (no subcommand) prints global help with global flags.

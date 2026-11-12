@@ -197,3 +197,24 @@ let ``the setting is read once: the variable the runtime honours, and a non-blan
                                                                                                                OptOut =
                                                                                                                  None }
         @>
+
+// ---------------------------------------------------------------------------
+// The setting a process describes itself by (AUTOMATION-1651). Only the CLI's entry point
+// installs, so before this a recorded setting was described only in a CLI process a test
+// had started, and whether that process's hits reached the coverage report depended on
+// its timing. Both cases are decided here, in process.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a process that installed describes itself by the setting it recorded, not its environment now`` () =
+    let recorded = { Configured = None; OptOut = Some "1" }
+
+    test <@ ownSettingFrom (Some recorded) (envOf [ RuntimeVariable, "0" ]) = recorded @>
+
+[<Fact>]
+let ``a process that never installed describes itself by its environment`` () =
+    test
+        <@
+            ownSettingFrom None (envOf [ RuntimeVariable, "0" ]) = { Configured = Some(RuntimeVariable, "0")
+                                                                     OptOut = None }
+        @>
