@@ -1,5 +1,5 @@
 /// `mise run ci` and GitHub Actions must run the same commands, and the integration
-/// suite must be in both while staying out of `check`.
+/// suite must be in both while staying out of `check` and `land-check`.
 ///
 /// `.fshw.json` declares FsHotWatch.IntegrationTests out of the daemon's test slot, so
 /// neither verb runs it and something else has to. For a long time that "something" was
@@ -63,7 +63,9 @@ let ``the inner loop never runs the integration suite`` () =
     let mise = miseToml root
 
     let running =
-        dependencyClosure mise "check"
+        // The landing gate (`land-check`) is the inner loop's command too; AUTOMATION-1614 keeps
+        // the integration suite out of both, and the post-land spot check (`ci`) runs it.
+        Set.union (dependencyClosure mise "check") (dependencyClosure mise "land-check")
         |> Set.filter (fun task -> (commandLines mise task).Contains "FsHotWatch.IntegrationTests")
 
     test <@ Set.isEmpty running @>

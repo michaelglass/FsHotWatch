@@ -90,7 +90,9 @@ let ``daemon-backed task list matches the tasks whose run invokes the CLI`` () =
     let cliTasks =
         taskNames mise
         |> List.filter (fun name -> (taskBlock mise name).Contains("dotnet run --project src/FsHotWatch.Cli"))
-        |> List.filter (fun name -> name <> "ci") // `ci` builds the whole solution via `compile`
+        // `ci` and `land-check` build the whole solution via `compile`, which holds every
+        // analyzer project (FsHotWatch.slnx), rather than naming each one.
+        |> List.filter (fun name -> name <> "ci" && name <> "land-check")
 
     test <@ Set.ofList cliTasks = Set.ofList daemonBackedTasks @>
 

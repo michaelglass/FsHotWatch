@@ -102,6 +102,30 @@ depends = ["build", "lint-project", "coverage-check"]
 # instability is the auto-loosen described above; without it a flake is a red gate, which
 # is the honest report and the one that gets the test moved.
 
+[tasks.land-check]
+description = "The fast LANDING gate: compile the solution, then fshw's impact-filtered check. No direct coverage run."
+# The landing gate under the 2026-11-12 fast-gate rule. Same command as `check`, without
+# `check`'s `coverage-check` → `test-direct`, which runs the whole FsHotWatch.Tests suite
+# under coverage (~420 s) before the daemon's own filtered run even starts.
+#
+# Coverage floors are NOT graded here. They are graded with `confirm` in the post-land spot
+# check (`mise run ci`: `confirm` plus `coverage-check` and `tp-coverage-check`) and before
+# every release. A floor regression a land lets through is therefore caught by the spot
+# check after it, not before it — that is the trade the fast-gate rule makes.
+#
+# The IntegrationTests are not run by `check` either: `.fshw.json` declares them in
+# `tests.excluded` (AUTOMATION-1614), and they run in the spot check, after `confirm`.
+#
+# `compile`, not `build`: FsHotWatch.slnx holds the CLI and every `analyzers.paths`
+# project, so one solution build provides what `--no-build` and the daemon's analyzer
+# loading need. Listing `build` beside it would run two MSBuilds over the same outputs in
+# parallel (the race `test-direct`'s comment describes).
+#
+# GatePurityTests pins this task's closure: no writing `coverageratchet` verb, and none of
+# `test-direct`, `coverage-check` or `tp-test`.
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
+depends = ["compile", "lint-project"]
+
 [tasks.cache-clear]
 description = "Clear the check result cache (BOTH the workspace store and the box-wide shared one)"
 # Not `rm -rf .fshw/cache/` alone: since the cross-workspace shared cache, the pure-content

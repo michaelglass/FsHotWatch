@@ -40,6 +40,15 @@ open FsHotWatch.Tests.RepoTasks
 /// is the shape it took.
 let private gateTasks = [ "check"; "ci" ]
 
+/// The fast LANDING gate (2026-11-12 fast-gate rule): `check`'s command without its direct
+/// coverage run. It consults no coverage at all — floors are graded by the post-land spot
+/// check — so it is held to every purity rule below except the ones that require coverage
+/// to be PRESENT.
+let private landingGate = "land-check"
+
+/// Every task that decides a merge, the landing gate included.
+let private everyGate = gateTasks @ [ landingGate ]
+
 /// `coverageratchet` verbs that only READ the floors file. Everything else the tool
 /// offers (`ratchet`, `loosen`, `loosen-from-ci`, `baseline-lines`, `refresh-baseline`)
 /// writes, and writing is what a gate may not do to its own inputs.
@@ -95,7 +104,7 @@ let private writesTo (line: string) (path: string) =
 let ``no task a gate depends on invokes a coverageratchet verb that writes`` () =
     let mise = miseToml (repoRoot ())
 
-    for gate in gateTasks do
+    for gate in everyGate do
         let verbs =
             dependencyClosure mise gate |> Set.toList |> List.collect (ratchetVerbsIn mise)
 
@@ -103,8 +112,13 @@ let ``no task a gate depends on invokes a coverageratchet verb that writes`` () 
         // to do it, so a graph that dropped the check entirely cannot pass this by
         // saying nothing. `ci` grades in its own `confirm` (pinned by the next test);
         // `check` runs an impact-filtered suite, which grades nothing, so it keeps the
-        // direct run.
-        test <@ not (List.isEmpty verbs) || (gate = "ci" && runsConfirm mise gate) @>
+        // direct run. The landing gate consults none, by design.
+        test
+            <@
+                not (List.isEmpty verbs)
+                || (gate = "ci" && runsConfirm mise gate)
+                || gate = landingGate
+            @>
 
         let writing =
             verbs |> List.filter (fun v -> not (Set.contains v readOnlyRatchetVerbs))
@@ -125,7 +139,7 @@ let ``the writing ratchet tasks exist, and no gate depends on them`` () =
 
     test <@ List.isEmpty missing @>
 
-    for gate in gateTasks do
+    for gate in everyGate do
         let closure = dependencyClosure mise gate
         let reachable = writers |> List.filter (fun w -> Set.contains w closure)
         test <@ List.isEmpty reachable @>
@@ -190,7 +204,7 @@ let ``no gate task redirects, tees or copies onto a declared verdict input`` () 
     test <@ not (List.isEmpty declared) @>
 
     let violations =
-        [ for gate in gateTasks do
+        [ for gate in everyGate do
               for taskName in dependencyClosure mise gate do
                   for line in (commandLines mise taskName).Split('\n') do
                       for path in declared do
@@ -198,6 +212,28 @@ let ``no gate task redirects, tees or copies onto a declared verdict input`` () 
                               yield $"%s{taskName}: %s{path} in %s{line.Trim()}" ]
 
     test <@ List.isEmpty violations @>
+
+[<Fact>]
+let ``the landing gate runs check's command without any direct test or coverage run`` () =
+    // `check`'s `coverage-check` → `test-direct` runs the whole FsHotWatch.Tests suite under
+    // coverage (~420 s) before the daemon's filtered run starts. The landing gate exists to
+    // drop exactly that; one `depends` entry would quietly put it back.
+    let mise = miseToml (repoRoot ())
+    let closure = dependencyClosure mise landingGate
+
+    let direct =
+        [ "test-direct"; "coverage-check"; "tp-test"; "tp-coverage-check" ]
+        |> List.filter (fun task -> Set.contains task closure)
+
+    test <@ List.isEmpty direct @>
+
+    let runLine task =
+        (commandLines mise task).Split('\n')
+        |> Array.tryFind (fun line -> line.StartsWith("run =", System.StringComparison.Ordinal))
+
+    test <@ (runLine "check").IsSome @>
+    test <@ runLine landingGate = runLine "check" @>
+    test <@ Set.contains "compile" closure @>
 
 /// The directory `test-direct` writes its Cobertura report into, relative to the repo root.
 let private testDirectReportDir mise =
