@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- perf: upgrading fshw no longer cold-scans every workspace when the release changed nothing a check computes
+  (AUTOMATION-1616). The check-record, options-record and test-prune analysis-record keys named fshw's own assembly
+  builds, which move every release; each now names an explicit schema constant instead, bumped by hand when a change
+  makes older records wrong, and still names FCS, FSharp.Core, Ionide, MSBuild and TestPrune.Core's release. **This
+  release (0.14.0-alpha.144) changes those keys once more, since the term is removed, so its first scan is cold; the
+  saving starts at alpha.145.** See the FsHotWatch core and FsHotWatch.TestPrune changelogs.
+
 ## 0.14.0-alpha.143 - 2026-11-12
 
 - fix: the ADR-059 shadow requires `plugin:<name>` for every non-test plugin `.fshw.json` configures, not for the ones the
