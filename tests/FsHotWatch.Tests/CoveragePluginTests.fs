@@ -1675,3 +1675,348 @@ let ``a filtered run whose own view passes does not clear a full-suite red eithe
         emitRunCompleted host
         waitUntil (fun () -> host.GetHistory("coverage").Length >= 3) 10000
         test <@ host.GetErrorsByPlugin("coverage") |> Map.isEmpty @>)
+
+// ---------------------------------------------------------------------------
+// Run-scoped reports (AUTOMATION-1642). A full-suite run keeps each project's raw
+// coverage in its OWN run directory, `.fshw/test-runs/<runId>/`, which no other run —
+// and no other daemon — ever writes. A floor set that names projects is graded on
+// exactly those files, so the gate's report cannot be rewritten between the run and
+// the check: the incident that made `mise run ci` run the suite a second time (a live
+// daemon from an earlier gate rewrote the shared report; the check graded 113 files
+// instead of 134, and passed).
+// ---------------------------------------------------------------------------
+
+/// A Cobertura report measuring each of `files` with two lines, both covered.
+let private fullyCoveredReport (files: string list) =
+    let classes =
+        files
+        |> List.map (fun f ->
+            $"""<class filename="{f}" name="{f}" line-rate="1" branch-rate="1"><lines><line number="1" hits="1" /><line number="2" hits="1" /></lines></class>""")
+        |> String.concat ""
+
+    $"""<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1" branch-rate="1" version="1.9"><packages><package name="pkg" line-rate="1" branch-rate="1"><classes>{classes}</classes></package></packages></coverage>"""
+
+/// Floors that require every one of `files` to be measured at 100% lines.
+let private floorsFor (files: string list) =
+    let overrides =
+        files
+        |> List.map (fun f -> $""" "{f}": {{ "line": 100, "branch": 0 }}""")
+        |> String.concat ","
+
+    $"""{{ "overrides": {{ {overrides} }} }}"""
+
+let private writeRunReport (repoRoot: string) (runId: Guid) (project: string) (files: string list) =
+    let dir = FsHotWatch.Ctrf.runDir repoRoot runId
+    Directory.CreateDirectory dir |> ignore
+    File.WriteAllText(FsHotWatch.Ctrf.coverageReportPath dir project, fullyCoveredReport files)
+
+let private emitFullRun (host: PluginHost) (runId: Guid) =
+    host.EmitTestRunStarted
+        { RunId = runId
+          StartedAt = DateTime.UtcNow.AddMinutes -1.0 }
+
+    host.EmitTestRunCompleted
+        { RunId = runId
+          TotalElapsed = TimeSpan.FromMinutes 1.0
+          Outcome = Normal
+          Results = Map.ofList [ "p1", TestsPassed("ok", false, TimeSpan.Zero) ]
+          Verification = Ran RunScope.FullSuite }
+
+let private terminalStatus (host: PluginHost) =
+    waitUntil
+        (fun () ->
+            match host.GetStatus("coverage") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        10000
+
+    host.GetStatus("coverage")
+
+[<Fact(Timeout = 5000)>]
+let ``a run-scoped floor set reads each project's report from that run's own directory`` () =
+    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let runId = Guid.NewGuid()
+    let runDir = FsHotWatch.Ctrf.runDir root runId
+
+    let resolved =
+        Judgement.reportsForRun runId (Judgement.CoverageReports.OfRun(root, [ "A.Tests"; "B.Tests" ]))
+
+    test
+        <@
+            resolved = Judgement.CoverageReports.Named
+                [ Path.Combine(runDir, "A.Tests.coverage.cobertura.xml")
+                  Path.Combine(runDir, "B.Tests.coverage.cobertura.xml") ]
+        @>
+
+    // The same file the test plugin keeps for the run: one name, not two spellings.
+    test
+        <@
+            FsHotWatch.TestPrune.CoverageArtifacts.runCoveragePath runDir "A.Tests" = FsHotWatch.Ctrf.coverageReportPath
+                runDir
+                "A.Tests"
+        @>
+
+    // Searched and named reports do not depend on the run.
+    let named = Judgement.CoverageReports.Named [ "/x/report.xml" ]
+    test <@ Judgement.reportsForRun runId named = named @>
+
+[<Fact(Timeout = 5000)>]
+let ``an impact-filtered run is not judged by run-scoped reports`` () =
+    let reports = Judgement.CoverageReports.OfRun("/nowhere", [ "A.Tests" ])
+    test <@ (Judgement.notJudgedReason reports RunScope.Partial).IsSome @>
+    test <@ (Judgement.notJudgedReason reports RunScope.FullSuite).IsNone @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``POSITIVE CONTROL: another daemon's later run cannot change the report a full-suite run is graded on`` () =
+    withTempDir "coverage-run-scoped" (fun root ->
+        let files = [ "A.fs"; "B.fs"; "C.fs" ]
+        let configPath = Path.Combine(root, "floors.json")
+        File.WriteAllText(configPath, floorsFor files)
+
+        let gateRun = Guid.NewGuid()
+        writeRunReport root gateRun "A.Tests" files
+
+        // A second daemon alive in the same checkout runs AFTER the gate's run: an
+        // impact-filtered run that measured one file, written into its own run directory
+        // and over the shared per-project and run-wide reports the old gate read.
+        let otherRun = Guid.NewGuid()
+        writeRunReport root otherRun "A.Tests" [ "A.fs" ]
+        let shared = Path.Combine(root, "coverage")
+        Directory.CreateDirectory(Path.Combine(shared, "A.Tests")) |> ignore
+        File.WriteAllText(Path.Combine(shared, "coverage.cobertura.xml"), fullyCoveredReport [ "A.fs" ])
+
+        File.WriteAllText(
+            Path.Combine(shared, "A.Tests", "coverage.baseline.cobertura.xml"),
+            fullyCoveredReport [ "A.fs" ]
+        )
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(CovPlugin.createWith configPath (Judgement.CoverageReports.OfRun(root, [ "A.Tests" ])))
+
+        emitFullRun host gateRun
+
+        match terminalStatus host with
+        | Some(Completed _) -> ()
+        | other -> failwith $"expected the gate's own full report to pass, got %A{other}")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a full-suite run whose own directory holds no report is unreadable, whatever another run wrote`` () =
+    withTempDir "coverage-run-scoped-missing" (fun root ->
+        let files = [ "A.fs" ]
+        let configPath = Path.Combine(root, "floors.json")
+        File.WriteAllText(configPath, floorsFor files)
+
+        // Another run — the same daemon's earlier one, or another daemon's — has a report.
+        writeRunReport root (Guid.NewGuid()) "A.Tests" files
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(CovPlugin.createWith configPath (Judgement.CoverageReports.OfRun(root, [ "A.Tests" ])))
+
+        emitFullRun host (Guid.NewGuid())
+
+        match terminalStatus host with
+        | Some(Failed _) -> test <@ host.GetErrorsByPlugin("coverage") |> Map.containsKey configPath @>
+        | other -> failwith $"expected Failed, got %A{other}")
+
+// ---------------------------------------------------------------------------
+// Several floor sets (AUTOMATION-1642). This repository grades three floors files,
+// one per test project's own module filter; the gate's own run must grade all three.
+// ---------------------------------------------------------------------------
+
+let private floorSet (configPath: string) (reports: Judgement.CoverageReports) : CovPlugin.FloorSet =
+    { ConfigPath = configPath
+      Reports = reports }
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``every floor set is graded, and a shortfall in any one fails the check naming its file`` () =
+    withTempDir "coverage-floor-sets" (fun root ->
+        let runId = Guid.NewGuid()
+        let firstFloors = Path.Combine(root, "floors-first.json")
+        let secondFloors = Path.Combine(root, "floors-second.json")
+        File.WriteAllText(firstFloors, floorsFor [ "First.fs" ])
+        File.WriteAllText(secondFloors, floorsFor [ "Second.fs"; "Unmeasured.fs" ])
+        writeRunReport root runId "First.Tests" [ "First.fs" ]
+        writeRunReport root runId "Second.Tests" [ "Second.fs" ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(
+            CovPlugin.createSets
+                [ floorSet firstFloors (Judgement.CoverageReports.OfRun(root, [ "First.Tests" ]))
+                  floorSet secondFloors (Judgement.CoverageReports.OfRun(root, [ "Second.Tests" ])) ]
+        )
+
+        emitFullRun host runId
+
+        match terminalStatus host with
+        | Some(Failed _) ->
+            let errors = host.GetErrorsByPlugin("coverage")
+            test <@ errors |> Map.containsKey "Unmeasured.fs" @>
+            test <@ not (errors |> Map.containsKey "First.fs") @>
+        | other -> failwith $"expected Failed, got %A{other}")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``every floor set holding passes the check`` () =
+    withTempDir "coverage-floor-sets-pass" (fun root ->
+        let runId = Guid.NewGuid()
+        let firstFloors = Path.Combine(root, "floors-first.json")
+        let secondFloors = Path.Combine(root, "floors-second.json")
+        File.WriteAllText(firstFloors, floorsFor [ "First.fs" ])
+        File.WriteAllText(secondFloors, floorsFor [ "Second.fs" ])
+        writeRunReport root runId "First.Tests" [ "First.fs" ]
+        writeRunReport root runId "Second.Tests" [ "Second.fs" ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(
+            CovPlugin.createSets
+                [ floorSet firstFloors (Judgement.CoverageReports.OfRun(root, [ "First.Tests" ]))
+                  floorSet secondFloors (Judgement.CoverageReports.OfRun(root, [ "Second.Tests" ])) ]
+        )
+
+        emitFullRun host runId
+
+        match terminalStatus host with
+        | Some(Completed _) -> ()
+        | other -> failwith $"expected Completed, got %A{other}")
+
+[<Fact(Timeout = 5000)>]
+let ``combining floor sets: unreadable beats failed beats passed, and nothing judged stays not judged`` () =
+    let failure file : Judgement.FloorFailures =
+        { Files = []
+          Counts = []
+          Unmeasured =
+            [ { File = file
+                HasPercentageFloor = true
+                HasCountFloor = false } ] }
+
+    let passed = Judgement.Judged Judgement.Passed
+
+    let failed f =
+        Judgement.Judged(Judgement.Failed(failure f))
+
+    match Judgement.combine [ "a.json", passed; "b.json", Judgement.Judged(Judgement.Unreadable "gone") ] with
+    | Judgement.Judged(Judgement.Unreadable reason) -> test <@ reason.Contains "b.json" && reason.Contains "gone" @>
+    | other -> failwith $"expected Unreadable, got %A{other}"
+
+    match Judgement.combine [ "a.json", failed "X.fs"; "b.json", failed "Y.fs"; "c.json", passed ] with
+    | Judgement.Judged(Judgement.Failed f) -> test <@ f.Unmeasured |> List.map _.File = [ "X.fs"; "Y.fs" ] @>
+    | other -> failwith $"expected Failed, got %A{other}"
+
+    match Judgement.combine [ "a.json", passed; "b.json", passed ] with
+    | Judgement.Judged Judgement.Passed -> ()
+    | other -> failwith $"expected Passed, got %A{other}"
+
+    match
+        Judgement.combine
+            [ "a.json", Judgement.NotJudged "filtered"
+              "b.json", Judgement.NotJudged "filtered" ]
+    with
+    | Judgement.NotJudged _ -> ()
+    | other -> failwith $"expected NotJudged, got %A{other}"
+
+    match
+        Judgement.combine
+            [ "a.json", Judgement.Judged(Judgement.NotGatedFiltered 2)
+              "b.json", Judgement.Judged(Judgement.NotGatedFiltered 1) ]
+    with
+    | Judgement.Judged(Judgement.NotGatedFiltered n) -> test <@ n = 3 @>
+    | other -> failwith $"expected NotGatedFiltered, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``a plugin with no floor set is refused`` () =
+    raises<ArgumentException> <@ CovPlugin.createSets [] @>
+
+[<Fact(Timeout = 5000)>]
+let ``an impact-filtered run that no floor set judges claims no check`` () =
+    let handler =
+        CovPlugin.createSets
+            [ floorSet "/tmp/a.json" (Judgement.CoverageReports.OfRun("/tmp", [ "A.Tests" ]))
+              floorSet "/tmp/b.json" (Judgement.CoverageReports.Named [ "/tmp/b.xml" ]) ]
+
+    let mutable claimed = 0
+
+    let state =
+        handler.Update
+            (stubCoverageCtx (fun _ _ ->
+                claimed <- claimed + 1
+                PF.Claimed))
+            handler.Init
+            (runCompleted RunScope.Partial)
+        |> Async.RunSynchronously
+
+    test <@ claimed = 0 @>
+    test <@ state.Owed = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``an impact-filtered run that any floor set judges claims one check`` () =
+    let handler =
+        CovPlugin.createSets
+            [ floorSet "/tmp/a.json" (Judgement.CoverageReports.OfRun("/tmp", [ "A.Tests" ]))
+              floorSet "/tmp/b.json" (Judgement.CoverageReports.SearchUnder "/tmp/nowhere") ]
+
+    let mutable claimed = 0
+
+    handler.Update
+        (stubCoverageCtx (fun _ _ ->
+            claimed <- claimed + 1
+            PF.Claimed))
+        handler.Init
+        (runCompleted RunScope.Partial)
+    |> Async.RunSynchronously
+    |> ignore
+
+    test <@ claimed = 1 @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``coverage-ratchet on a run-scoped floor set names no run, so it rewrites nothing`` () =
+    withTempDir "coverage-ratchet-run-scoped" (fun root ->
+        let configPath = Path.Combine(root, "floors.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+        writeRunReport root (Guid.NewGuid()) "A.Tests" [ "A.fs" ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(
+            CovPlugin.createSets
+                [ floorSet (Path.Combine(root, "other.json")) (Judgement.CoverageReports.SearchUnder root)
+                  floorSet configPath (Judgement.CoverageReports.OfRun(root, [ "A.Tests" ])) ]
+        )
+
+        let reply =
+            host.RunCommand("coverage-ratchet", [| configPath |]) |> Async.RunSynchronously
+
+        test
+            <@
+                reply.Value = FsHotWatch.Coverage.CoverageReplies.RatchetReply.serialize
+                    FsHotWatch.Coverage.CoverageReplies.RatchetReply.NoNamedReportExists
+            @>
+
+        test <@ File.ReadAllText(configPath) = defaultThresholdsJson @>)
+
+[<Fact(Timeout = 5000)>]
+let ``run-scoped reports are read only for a named run`` () =
+    let reports = Judgement.CoverageReports.OfRun("/nowhere", [ "A.Tests" ])
+    test <@ List.isEmpty (Judgement.existingReports reports) @>
+
+    match Judgement.judge "/nowhere/floors.json" reports RunScope.FullSuite DateTime.UtcNow [] with
+    | Judgement.Judged(Judgement.Unreadable reason) -> test <@ reason.Contains "without the run" @>
+    | other -> failwith $"expected Unreadable, got %A{other}"
+
+[<Fact(Timeout = 5000)>]
+let ``combining a set not judged with a judged one is the judged one's verdict`` () =
+    match
+        Judgement.combine
+            [ "a.json", Judgement.NotJudged "filtered"
+              "b.json", Judgement.Judged Judgement.Passed ]
+    with
+    | Judgement.Judged Judgement.Passed -> ()
+    | other -> failwith $"expected Passed, got %A{other}"
+
+    match Judgement.combine [ "a.json", Judgement.NotJudged "x"; "b.json", Judgement.NotJudged "y" ] with
+    | Judgement.NotJudged reason -> test <@ reason = "a.json: x; b.json: y" @>
+    | other -> failwith $"expected NotJudged, got %A{other}"

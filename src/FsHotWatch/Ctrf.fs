@@ -63,6 +63,12 @@ let reportsDir (repoRoot: string) : string =
 let runDir (repoRoot: string) (runId: Guid) : string =
     Path.Combine(reportsDir repoRoot, runId.ToString("N"))
 
+/// Where a run keeps its own copy of the raw coverage `project` wrote, beside its CTRF
+/// report: `<runDir>/<Project>.coverage.cobertura.xml`. Only the run that owns `runDir`
+/// writes it, so a check that reads it grades that run and no later one.
+let coverageReportPath (runDir: string) (project: string) : string =
+    Path.Combine(runDir, $"%s{project}.coverage.cobertura.xml")
+
 /// Escape the raw control characters inside a report's string literals (AUTOMATION-1073).
 ///
 /// xUnit v3's JSON writer escapes only `\b \f \n \r \t` below U+0020, so a failure message

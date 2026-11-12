@@ -3,7 +3,7 @@
     "Configuration": {
       "CodeCoverage": {
         "ModulePaths": {
-          "Exclude": [ ".*Falco\\.UnionRoutes\\.dll$" ]
+          "Exclude": [ ".*Falco\\.UnionRoutes\\.dll$", ".*[\\\\/]TestPrune\\.Trace\\.Recorder\\.dll$" ]
         }
       }
     }

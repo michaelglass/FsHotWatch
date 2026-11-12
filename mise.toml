@@ -121,7 +121,12 @@ run = [
 # === Direct tasks (CI, docs, packaging) ===
 
 [tasks.test-direct]
-description = "Run tests directly with coverage (for CI). Excludes IntegrationTests whose SDK-reflection paths fire nondeterministically and make the coverage ratchet flaky."
+description = "Run FsHotWatch.Tests directly with coverage, for `check` and the explicit ratchet tasks. Excludes IntegrationTests whose SDK-reflection paths fire nondeterministically and make the coverage ratchet flaky."
+# NOT in `ci`: `confirm` grades the same floors on the report its own full-suite run kept in
+# `.fshw/test-runs/<runId>/` (see `[tasks.ci]`). This run is for what has no full-suite run
+# of its own: `check`, whose impact-filtered suite grades nothing, and the explicit
+# coverage-ratchet / coverage-loosen / loosen-from-ci tasks, which rewrite floors from it.
+#
 # The report lives in coverage-direct/, a directory ONLY this task writes. The daemon
 # writes its own artifacts under `tests.coverageDir` (coverage/), including a shared
 # coverage.cobertura.xml it re-emits after every test run, filtered runs included. When
@@ -141,7 +146,7 @@ dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
 # No `--coverage-settings`: the module filters are tests/FsHotWatch.Tests/testconfig.json, which
 # MTP reads next to the test app, so this task, the daemon and CI's reusable workflow all
 # measure the same modules (MTP refuses a run given both a testconfig.json and a settings file).
-# depends on `compile`, not just `restore`: `mise run ci` fans out to
+# depends on `compile`, not just `restore`: `mise run ci` once fanned out to
 # {compile, lint-project, coverage-check→test-direct} in PARALLEL, and both
 # `compile` and this task drive MSBuild over the same output directories. They
 # collided writing FsHotWatch.Cli.deps.json ("the process cannot access the
@@ -299,6 +304,18 @@ description = "Run the full-suite confirm (single pass, no daemon), then the int
 # the real CI is a local `ci` that can go green on work CI will reject — the drift is the
 # bug. `CiParityTests` pins both.
 #
+# COVERAGE IS GRADED BY `confirm` ITSELF, once. The daemon's coverage plugin grades every
+# floors file (`.fshw.json` `coverage`: FsHotWatch, TestPrune, TestPrune.Trace), each on
+# the report its test project wrote in THIS run, which the run keeps in its own directory
+# `.fshw/test-runs/<runId>/<Project>.coverage.cobertura.xml`. No later run and no other
+# daemon writes that directory, so the incident behind `test-direct`'s coverage-direct/ (a
+# live daemon from an earlier gate rewrote the shared report; 113 files graded instead of
+# 134, and a pass) cannot reach it, and a floored file the report has no row for fails. A
+# coverage red is a red `confirm`: `coverage` is a plugin every green requires. So `ci` no
+# longer runs the suite a second time through `test-direct` + `tp-test` (AUTOMATION-1642:
+# 368 s + 112 s of a 1172 s gate). Each project's own testconfig.json still sets its module
+# filter, because MTP reads it next to the test app whoever launches it.
+#
 # The integration half runs HERE and not in `check`. `.fshw.json` declares the
 # IntegrationTests project out of the daemon's test slot (its `tests.excluded` reason
 # says why), so `confirm` does not run it; this task and CI do. After `confirm`, never
@@ -318,7 +335,7 @@ run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-pac
 # which is the very thing this repo refuses to ship.
 # `check-msbuild-deps` is NOT listed here — it is in the `run` command above, so
 # that CI runs it too. `compile` stays, because the check reads a BUILT deps.json.
-depends = ["compile", "lint-project", "coverage-check", "tp-coverage-check", "tp-example-build", "sync-docs-check", "check-commit-messages"]
+depends = ["compile", "lint-project", "tp-example-build", "sync-docs-check", "check-commit-messages"]
 
 [tasks.ci-linux]
 description = "Run GitHub Actions' CI jobs (build, integration, lint-project) in a local Linux container. Required before every push to main."
@@ -391,10 +408,12 @@ depends = ["restore", "tool-restore"]
 
 # === TestPrune (imported from michaelglass/TestPrune, AUTOMATION-1367) ===
 # TestPrune's own tasks, prefixed `tp-`. Its tests are ALSO in `.fshw.json` `tests.projects`,
-# so `confirm` (built from this source) gates them; these tasks add what the gate does not:
-# TestPrune's per-file coverage floors (coverage-ratchet-TestPrune*.json) and the sample
-# solution. Reports go to coverage-tp/<project>/, a directory nothing else writes, for the
-# reason `test-direct` uses coverage-direct/.
+# so `confirm` (built from this source) gates them AND their per-file coverage floors
+# (coverage-ratchet-TestPrune*.json, graded on each project's run-scoped report, as
+# FsHotWatch's are). tp-test / tp-coverage-check stay as the direct measurement the explicit
+# tp-coverage-ratchet tightens from; `ci` does not run them. Reports go to
+# coverage-tp/<project>/, a directory nothing else writes, for the reason `test-direct`
+# uses coverage-direct/.
 
 [tasks.tp-test]
 description = "Run the TestPrune test projects with coverage (one cobertura per project in coverage-tp/<project>/)"

@@ -621,13 +621,14 @@ merge verdict without one.
 | `writes` | `string[]` | `[]` | Repo-relative files the command may rewrite. Its writes are attributed by content, so its own echo never re-triggers it. |
 | `timeoutSec` | `number` | global `timeoutSec` | Bound on one run. |
 
-**`coverage` fields:**
+**`coverage` fields** (`coverage` is one floor set, or an array of them — one per thresholds file, e.g. one per test project when each measures its own modules; a check grades every set and fails when any falls short):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `configPath` | `string` | `"coverage-ratchet.json"` | Path to the coverage-ratchet thresholds file (relative to repo root or absolute). |
 | `searchDir` | `string` | `"."` | Directory tree to search for `coverage.cobertura.xml` files after each test run. |
 | `reports` | `string[]` | — | The exact report files a check reads instead of searching (repo-relative or absolute), typically a project's raw full-suite runner output, `coverage/<project>/coverage.baseline.cobertura.xml`. Only a full-suite run writes them, so only a full-suite run is judged; an impact-filtered run is not, and a named report missing or older than its run's start fails the check. Give `searchDir` or `reports`, not both. |
+| `projects` | `string[]` | — | Grade each named test project's report as the full-suite run being judged kept it in its own run directory, `.fshw/test-runs/<runId>/<project>.coverage.cobertura.xml`. Nothing but that run writes there — no later run, no second daemon in the checkout — so the report cannot change between the run and its check. Each must be a `tests.projects` entry that collects coverage (a config error otherwise). An impact-filtered run is not judged; a full-suite run whose directory lacks a report fails the check. Give it alone, without `searchDir` or `reports`. |
 
 Every check judges both the percentage floors and the count floors (`countFloors`) of the thresholds file, as `coverageratchet check` does.
 

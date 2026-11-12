@@ -508,10 +508,13 @@ type DaemonConfiguration =
         /// build and the checks see them, run in this order, ahead of the built-in
         /// formatter. See `FsHotWatch.CommandPreprocessor`.
         Preprocessors: PreprocessorConfig list
+        /// The `coverage` floor sets, one per floors file (`coverage` may be one object
+        /// or an array of them). Empty: no coverage plugin.
         Coverage:
             {| ConfigPath: string
                SearchDir: string
-               Reports: string list option |} option
+               Reports: string list option
+               Projects: string list option |} list
         Exclude: string list
         /// When false (default), the report-producing plugins (analyzers, lint) skip
         /// compile items that resolve OUTSIDE the repo root — e.g. NuGet-injected
@@ -610,7 +613,7 @@ let private defaultConfig () =
       Tests = None
       FileCommands = []
       Preprocessors = []
-      Coverage = None
+      Coverage = []
       Exclude = []
       IncludeOutsideRepo = false
       LogDir = DefaultLogDir
@@ -1710,49 +1713,96 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, _ -> raise (ConfigErrorException "preprocessors must be an array of entries")
         | _ -> []
 
+    // `coverage`: one floor set, or an array of them. Each names its floors file and ONE
+    // source of reports: `searchDir` (the default), `reports` (exact files) or `projects`
+    // (each project's report from the run being judged, in that run's own directory).
+    let coverageSet (v: JsonElement) =
+        let configPath =
+            match v.TryGetProperty("configPath") with
+            | true, cp when cp.ValueKind = JsonValueKind.String -> cp.GetString()
+            | _ -> "coverage-ratchet.json"
+
+        let searchDir =
+            match v.TryGetProperty("searchDir") with
+            | true, sd when sd.ValueKind = JsonValueKind.String -> sd.GetString()
+            | _ -> "."
+
+        let stringArray (key: string) =
+            match v.TryGetProperty(key) with
+            | false, _ -> None
+            | true, r when
+                r.ValueKind = JsonValueKind.Array
+                && r.GetArrayLength() > 0
+                && (r.EnumerateArray() |> Seq.forall (fun e -> e.ValueKind = JsonValueKind.String))
+                ->
+                Some(r.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList)
+            | true, r ->
+                let what =
+                    if key = "reports" then
+                        "a non-empty array of report paths"
+                    else
+                        "a non-empty array of test project names"
+
+                raise (ConfigErrorException $"coverage.%s{key}: expected %s{what}, got '%s{describeValue r}'")
+
+        // `reports`: the exact report files a check reads, a full-suite run's own
+        // runner output. They replace the search, so the two cannot both be given.
+        let reports = stringArray "reports"
+        let projects = stringArray "projects"
+
+        match reports, v.TryGetProperty("searchDir") with
+        | Some _, (true, _) ->
+            raise (
+                ConfigErrorException
+                    "coverage: give either searchDir or reports, not both — reports names the exact files a check reads"
+            )
+        | _ -> ()
+
+        match projects, reports, v.TryGetProperty("searchDir") with
+        | Some _, Some _, _
+        | Some _, _, (true, _) ->
+            raise (
+                ConfigErrorException
+                    "coverage: give projects alone — it names the run's own reports, so a searchDir or reports beside it would be a second source"
+            )
+        | _ -> ()
+
+        {| ConfigPath = configPath
+           SearchDir = searchDir
+           Reports = reports
+           Projects = projects |}
+
     let coverage =
         match root.TryGetProperty("coverage") with
-        | true, v when v.ValueKind = JsonValueKind.Object ->
-            let configPath =
-                match v.TryGetProperty("configPath") with
-                | true, cp when cp.ValueKind = JsonValueKind.String -> cp.GetString()
-                | _ -> "coverage-ratchet.json"
+        | true, v when v.ValueKind = JsonValueKind.Object -> [ coverageSet v ]
+        | true, v when
+            v.ValueKind = JsonValueKind.Array
+            && v.GetArrayLength() > 0
+            && (v.EnumerateArray() |> Seq.forall (fun e -> e.ValueKind = JsonValueKind.Object))
+            ->
+            v.EnumerateArray() |> Seq.map coverageSet |> Seq.toList
+        | true, v when v.ValueKind = JsonValueKind.Array ->
+            raise (
+                ConfigErrorException
+                    $"coverage: expected a floor set or a non-empty array of floor sets, got '%s{describeValue v}'"
+            )
+        | _ -> []
 
-            let searchDir =
-                match v.TryGetProperty("searchDir") with
-                | true, sd when sd.ValueKind = JsonValueKind.String -> sd.GetString()
-                | _ -> "."
+    // A floor set graded on a project's run report needs a project that writes one:
+    // otherwise every full-suite run is red, or the set gets dropped to make it green.
+    let collecting =
+        tests
+        |> Option.map (fun t -> t.Projects |> List.filter _.CollectCoverage |> List.map _.Project)
+        |> Option.defaultValue []
+        |> Set.ofList
 
-            // `reports`: the exact report files a check reads, a full-suite run's own
-            // runner output. They replace the search, so the two cannot both be given.
-            let reports =
-                match v.TryGetProperty("reports") with
-                | false, _ -> None
-                | true, r when
-                    r.ValueKind = JsonValueKind.Array
-                    && r.GetArrayLength() > 0
-                    && (r.EnumerateArray() |> Seq.forall (fun e -> e.ValueKind = JsonValueKind.String))
-                    ->
-                    Some(r.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList)
-                | true, r ->
-                    raise (
-                        ConfigErrorException
-                            $"coverage.reports: expected a non-empty array of report paths, got '%s{describeValue r}'"
-                    )
-
-            match reports, v.TryGetProperty("searchDir") with
-            | Some _, (true, _) ->
+    for set in coverage do
+        for project in set.Projects |> Option.defaultValue [] do
+            if not (collecting.Contains project) then
                 raise (
                     ConfigErrorException
-                        "coverage: give either searchDir or reports, not both — reports names the exact files a check reads"
+                        $"coverage.projects: '%s{project}' is not a tests.projects entry that collects coverage, so no run writes its report"
                 )
-            | _ -> ()
-
-            Some
-                {| ConfigPath = configPath
-                   SearchDir = searchDir
-                   Reports = reports |}
-        | _ -> None
 
     let exclude =
         match root.TryGetProperty("exclude") with
@@ -2173,7 +2223,7 @@ let nonTestPluginNames (config: DaemonConfiguration) : string list =
       | _ -> ()
       for fc in config.FileCommands do
           fc.PluginName
-      if config.Coverage.IsSome then
+      if not (List.isEmpty config.Coverage) then
           "coverage" ]
     |> List.distinct
 
@@ -3093,49 +3143,59 @@ let registerPluginsIn
         | Some pattern -> daemon.Host.RegisterFileCommandPattern(fc.PluginName, pattern)
         | None -> ()
 
-    // Coverage plugin
-    match config.Coverage with
-    | Some cov ->
-        let absSearchDir =
-            if Path.IsPathRooted(cov.SearchDir) then
-                cov.SearchDir
+    // Coverage plugin: one handler grading every floor set.
+    let floorSet
+        (cov:
+            {| ConfigPath: string
+               SearchDir: string
+               Reports: string list option
+               Projects: string list option |})
+        =
+        let absolute (path: string) =
+            if Path.IsPathRooted path then
+                path
             else
-                Path.GetFullPath(Path.Combine(repoRoot, cov.SearchDir))
+                Path.GetFullPath(Path.Combine(repoRoot, path))
 
-        let absConfigPath =
-            if Path.IsPathRooted(cov.ConfigPath) then
-                cov.ConfigPath
-            else
-                Path.GetFullPath(Path.Combine(repoRoot, cov.ConfigPath))
+        let absConfigPath = absolute cov.ConfigPath
 
         if not (File.Exists absConfigPath) then
             Logging.warn "config" $"CoveragePlugin: configPath does not exist: %s{absConfigPath}"
 
-        if not (Directory.Exists absSearchDir) then
-            Logging.warn "config" $"CoveragePlugin: searchDir does not exist: %s{absSearchDir}"
-
         let reports =
-            match cov.Reports with
-            | Some paths ->
+            match cov.Projects, cov.Reports with
+            | Some projects, _ -> FsHotWatch.Coverage.Judgement.CoverageReports.OfRun(repoRoot, projects)
+            | None, Some paths ->
                 paths
-                |> List.map (fun path ->
-                    if Path.IsPathRooted path then
-                        path
-                    else
-                        Path.GetFullPath(Path.Combine(repoRoot, path)))
+                |> List.map absolute
                 |> FsHotWatch.Coverage.Judgement.CoverageReports.Named
-            | None -> FsHotWatch.Coverage.Judgement.CoverageReports.SearchUnder absSearchDir
+            | None, None ->
+                let absSearchDir = absolute cov.SearchDir
+
+                if not (Directory.Exists absSearchDir) then
+                    Logging.warn "config" $"CoveragePlugin: searchDir does not exist: %s{absSearchDir}"
+
+                FsHotWatch.Coverage.Judgement.CoverageReports.SearchUnder absSearchDir
 
         let source =
             match reports with
             | FsHotWatch.Coverage.Judgement.CoverageReports.Named paths ->
                 let listed = String.concat ", " paths
                 $"reports=%s{listed}"
+            | FsHotWatch.Coverage.Judgement.CoverageReports.OfRun(_, projects) ->
+                let listed = String.concat ", " projects
+                $"run reports of %s{listed}"
             | FsHotWatch.Coverage.Judgement.CoverageReports.SearchUnder dir -> $"searchDir=%s{dir}"
 
         Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} %s{source}"
-        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.createWith absConfigPath reports)
-    | None -> ()
+
+        ({ ConfigPath = absConfigPath
+           Reports = reports }
+        : FsHotWatch.Coverage.CoveragePlugin.FloorSet)
+
+    match config.Coverage with
+    | [] -> ()
+    | sets -> daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.createSets (sets |> List.map floorSet))
 
 /// The environment variable that overrides `tests.runOn` for one daemon: `"change"` or
 /// `"request"`, read when the daemon starts. Whatever starts a daemon sets it — a worker

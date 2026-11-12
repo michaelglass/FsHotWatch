@@ -1177,23 +1177,86 @@ let ``parseConfig tests project with no project key defaults to unknown`` () =
 
 // --- parseConfig: coverage plugin ---
 
+/// A `tests` block with one project that collects coverage and one that does not.
+let private coverageTests =
+    """ "tests": {"projects": [
+          {"project": "Measured.Tests", "command": "dotnet", "args": "test"},
+          {"project": "Unmeasured.Tests", "command": "dotnet", "args": "test", "coverage": false}]} """
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig coverage may list several floor sets, each grading its own projects' run reports`` () =
+    let json =
+        """{"coverage": [
+              {"configPath": "floors-a.json", "projects": ["Measured.Tests"]},
+              {"configPath": "floors-b.json", "searchDir": "artifacts"}], __T__}"""
+            .Replace("__T__", coverageTests)
+
+    let config = parseConfig json defaults
+
+    test <@ config.Coverage |> List.map _.ConfigPath = [ "floors-a.json"; "floors-b.json" ] @>
+    test <@ config.Coverage.Head.Projects = Some [ "Measured.Tests" ] @>
+    test <@ config.Coverage.[1].Projects = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig coverage projects must name projects that collect coverage`` () =
+    // A floor set graded on a report no run writes would be red forever — or, worse, a
+    // set somebody "fixed" by dropping it. Refused at load, naming the project.
+    for project in [ "Unmeasured.Tests"; "Nowhere.Tests" ] do
+        let json =
+            """{"coverage": {"configPath": "f.json", "projects": ["__P__"]}, __T__}"""
+                .Replace("__P__", project)
+                .Replace("__T__", coverageTests)
+
+        let ex =
+            Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
+        test <@ ex.message.Contains "coverage.projects" && ex.message.Contains project @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"searchDir\": \"coverage\"")>]
+[<InlineData("\"reports\": [\"coverage/x.cobertura.xml\"]")>]
+let ``parseConfig coverage projects is one report source, never alongside another`` (other: string) =
+    let json =
+        """{"coverage": {"projects": ["Measured.Tests"], __O__}, __T__}"""
+            .Replace("__O__", other)
+            .Replace("__T__", coverageTests)
+
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.message.Contains "projects" @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("[]")>]
+[<InlineData("\"Measured.Tests\"")>]
+[<InlineData("[1]")>]
+let ``parseConfig coverage projects of any other shape is a ConfigErrorException`` (projects: string) =
+    let json =
+        """{"coverage": {"projects": __P__}, __T__}""".Replace("__P__", projects).Replace("__T__", coverageTests)
+
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.message.Contains "coverage.projects" @>
+
+
 [<Fact(Timeout = 15000)>]
 let ``parseConfig coverage section parses configPath and searchDir`` () =
     let json =
         """{"coverage": {"configPath": "coverage-ratchet-Proj.json", "searchDir": "artifacts"}}"""
 
     let config = parseConfig json defaults
-    test <@ config.Coverage.IsSome @>
-    test <@ config.Coverage.Value.ConfigPath = "coverage-ratchet-Proj.json" @>
-    test <@ config.Coverage.Value.SearchDir = "artifacts" @>
+    test <@ config.Coverage.Length = 1 @>
+    test <@ config.Coverage.Head.ConfigPath = "coverage-ratchet-Proj.json" @>
+    test <@ config.Coverage.Head.SearchDir = "artifacts" @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig coverage section defaults configPath and searchDir when absent`` () =
     let json = """{"coverage": {}}"""
     let config = parseConfig json defaults
-    test <@ config.Coverage.IsSome @>
-    test <@ config.Coverage.Value.ConfigPath = "coverage-ratchet.json" @>
-    test <@ config.Coverage.Value.SearchDir = "." @>
+    test <@ config.Coverage.Length = 1 @>
+    test <@ config.Coverage.Head.ConfigPath = "coverage-ratchet.json" @>
+    test <@ config.Coverage.Head.SearchDir = "." @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig coverage reports names the exact report files`` () =
@@ -1201,13 +1264,13 @@ let ``parseConfig coverage reports names the exact report files`` () =
         """{"coverage": {"configPath": "floors.json", "reports": ["coverage/T/coverage.baseline.cobertura.xml"]}}"""
 
     let config = parseConfig json defaults
-    test <@ config.Coverage.Value.Reports = Some [ "coverage/T/coverage.baseline.cobertura.xml" ] @>
-    test <@ config.Coverage.Value.ConfigPath = "floors.json" @>
+    test <@ config.Coverage.Head.Reports = Some [ "coverage/T/coverage.baseline.cobertura.xml" ] @>
+    test <@ config.Coverage.Head.ConfigPath = "floors.json" @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig coverage without reports searches, as before`` () =
     let config = parseConfig """{"coverage": {"searchDir": "artifacts"}}""" defaults
-    test <@ config.Coverage.Value.Reports = None @>
+    test <@ config.Coverage.Head.Reports = None @>
 
 [<Theory(Timeout = 15000)>]
 [<InlineData("[]")>]
@@ -1233,9 +1296,9 @@ let ``parseConfig coverage refuses both searchDir and reports`` () =
     test <@ ex.message.Contains "searchDir" && ex.message.Contains "reports" @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig no coverage section yields None`` () =
+let ``parseConfig no coverage section yields no floor set`` () =
     let config = parseConfig "{}" defaults
-    test <@ config.Coverage.IsNone @>
+    test <@ List.isEmpty config.Coverage @>
 
 // --- parseConfig: tests.coverageDir ---
 // Coverage XMLs land under <repoRoot>/<tests.coverageDir>/<project>/ (default

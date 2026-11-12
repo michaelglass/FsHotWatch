@@ -81,12 +81,26 @@
       }
     }
   },
-  "coverage": {
-    "configPath": "coverage-ratchet-FsHotWatch.json",
-    "reports": [
-      "coverage/FsHotWatch.Tests/coverage.baseline.cobertura.xml"
-    ]
-  },
+  "coverage": [
+    {
+      "configPath": "coverage-ratchet-FsHotWatch.json",
+      "projects": [
+        "FsHotWatch.Tests"
+      ]
+    },
+    {
+      "configPath": "coverage-ratchet-TestPrune.json",
+      "projects": [
+        "TestPrune.Tests"
+      ]
+    },
+    {
+      "configPath": "coverage-ratchet-TestPrune.Trace.json",
+      "projects": [
+        "TestPrune.Trace.Tests"
+      ]
+    }
+  ],
   "tests": {
     "projects": [
       {
@@ -118,7 +132,10 @@
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
         "group": "default",
-        "coverage": false
+        "coverage": {
+          "enabled": false,
+          "collectForImpact": true
+        }
       },
       {
         "project": "TestPrune.Trace.Tests",
@@ -127,7 +144,10 @@
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
         "group": "trace",
-        "coverage": false
+        "coverage": {
+          "enabled": false,
+          "collectForImpact": true
+        }
       }
     ],
     "excluded": [

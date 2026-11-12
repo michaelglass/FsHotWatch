@@ -12,6 +12,12 @@ type CoverageReports =
     /// Exactly these files: a full-suite run's own runner output. Only a full-suite run
     /// writes them, so no other run is judged by them.
     | Named of paths: string list
+    /// Each project's report as the run being judged kept it in its OWN directory,
+    /// `<repoRoot>/.fshw/test-runs/<runId>/<Project>.coverage.cobertura.xml`
+    /// (`Ctrf.coverageReportPath`). No other run, and no other daemon, writes that
+    /// directory, so the report cannot change between the run and its check. Resolved
+    /// per run by `reportsForRun`.
+    | OfRun of repoRoot: string * projects: string list
 
 /// The floors a run's coverage fell below, as the `coverageratchet check` CLI reads
 /// them: per-file percentage floors and absolute count floors.
@@ -179,11 +185,26 @@ let private verdictOf (configPath: string) (scope: RunScope) (xmlPaths: string l
     | Ok coverage -> gateVerdict scope (floorCheck (loadConfig configPath) coverage)
     | Result.Error reason -> Unreadable reason
 
-/// The reports of `reports` that exist now.
+/// The reports `reports` names for the run `runId`: a run-scoped set becomes the exact
+/// files in that run's directory; searched and named reports do not depend on the run.
+let reportsForRun (runId: System.Guid) (reports: CoverageReports) : CoverageReports =
+    match reports with
+    | CoverageReports.OfRun(repoRoot, projects) ->
+        let runDir = FsHotWatch.Ctrf.runDir repoRoot runId
+
+        projects
+        |> List.map (FsHotWatch.Ctrf.coverageReportPath runDir)
+        |> CoverageReports.Named
+    | CoverageReports.SearchUnder _
+    | CoverageReports.Named _ -> reports
+
+/// The reports of `reports` that exist now. A run-scoped set names no run here, so it
+/// reads every run directory's copy for its projects that still exists.
 let internal existingReports (reports: CoverageReports) : string list =
     match reports with
     | CoverageReports.SearchUnder dir -> findCoverageFiles dir
     | CoverageReports.Named paths -> paths |> List.filter System.IO.File.Exists
+    | CoverageReports.OfRun _ -> []
 
 /// Why a run of `scope` is not judged by `reports`, or `None` when it is. Decided
 /// from the run's kind alone, before anything is read.
@@ -191,7 +212,10 @@ let internal notJudgedReason (reports: CoverageReports) (scope: RunScope) : stri
     match reports, scope with
     | CoverageReports.Named _, Partial ->
         Some "an impact-filtered run does not write the named coverage reports, which a full-suite run does"
+    | CoverageReports.OfRun _, Partial ->
+        Some "an impact-filtered run measured only the tests it selected, so its own reports are not graded"
     | CoverageReports.Named _, FullSuite
+    | CoverageReports.OfRun _, FullSuite
     | CoverageReports.SearchUnder _, _ -> None
 
 /// Whether a run's coverage is judged, and against what, before any report is read.
@@ -209,6 +233,8 @@ let internal judge
     : CoverageJudgement =
     match notJudgedReason reports scope, reports with
     | Some reason, _ -> NotJudged reason
+    | None, CoverageReports.OfRun _ ->
+        Judged(Unreadable "run-scoped coverage reports were judged without the run they belong to")
     | None, CoverageReports.Named paths ->
         let notWritten =
             paths
@@ -237,3 +263,61 @@ let internal judge
         | [], FullSuite -> Judged(Unreadable $"no coverage report found under %s{dir} after a full-suite run")
         | [], Partial -> NotJudged $"no coverage report found under %s{dir} after an impact-filtered run"
         | found, _ -> Judged(verdictOf configPath scope found)
+
+/// `combine` over two or more floor sets.
+let private combineMany (judgements: (string * CoverageJudgement) list) : CoverageJudgement =
+    let judged, notJudged =
+        judgements
+        |> List.fold
+            (fun (judged, notJudged) (config, j) ->
+                match j with
+                | Judged v -> (config, v) :: judged, notJudged
+                | NotJudged reason -> judged, $"%s{System.IO.Path.GetFileName config}: %s{reason}" :: notJudged)
+            ([], [])
+        |> fun (judged, notJudged) -> List.rev judged, List.rev notJudged
+
+    let unreadable =
+        judged
+        |> List.choose (fun (config, v) ->
+            match v with
+            | Unreadable reason -> Some $"%s{System.IO.Path.GetFileName config}: %s{reason}"
+            | _ -> None)
+
+    let failures =
+        judged
+        |> List.choose (fun (_, v) ->
+            match v with
+            | Failed f -> Some f
+            | _ -> None)
+
+    let filtered =
+        judged
+        |> List.choose (fun (_, v) ->
+            match v with
+            | NotGatedFiltered n -> Some n
+            | _ -> None)
+
+    match judged, unreadable, failures with
+    | [], _, _ -> NotJudged(notJudged |> List.distinct |> String.concat "; ")
+    | _, _ :: _, _ -> Judged(Unreadable(String.concat "; " unreadable))
+    | _, [], _ :: _ ->
+        Judged(
+            Failed
+                { Files = failures |> List.collect _.Files
+                  Counts = failures |> List.collect _.Counts
+                  Unmeasured = failures |> List.collect _.Unmeasured }
+        )
+    | _, [], [] when not (List.isEmpty filtered) -> Judged(NotGatedFiltered(List.sum filtered))
+    | _ -> Judged Passed
+
+/// One verdict from the judgements of several floor sets, each named by its floor file.
+///
+/// A set that could not be read makes the whole check unreadable (it verified nothing,
+/// whatever the others found); otherwise every shortfall of every set is reported; a
+/// filtered notice sums the sets' counts; and the check passes only when every set that
+/// was judged passed. Sets not judged add nothing, and when none was judged neither is
+/// the check. A single set's judgement is its own, word for word.
+let combine (judgements: (string * CoverageJudgement) list) : CoverageJudgement =
+    match judgements with
+    | [ _, only ] -> only
+    | _ -> combineMany judgements

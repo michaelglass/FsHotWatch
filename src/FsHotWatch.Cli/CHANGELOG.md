@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `.fshw.json` `coverage` may be an array of floor sets, and a set may name `projects`
+  instead of `searchDir` / `reports`: each project's report as the full-suite run being judged
+  kept it in its own run directory (AUTOMATION-1642). A project that is not a coverage-collecting
+  `tests.projects` entry is a config error. This repository's `mise run ci` now grades its three
+  floors files inside `confirm` and no longer runs the suite a second time for coverage.
+
 - feat: `.fshw.json` `tests.projects[].runtimeSelection: "decide" | "shadow"` (AUTOMATION-1645), default `"decide"`.
   `"shadow"` keeps collecting runtime coverage and logs what it would add to each impact launch without running it;
   see the FsHotWatch.TestPrune changelog. Any other value, or `"shadow"` on a project that collects no coverage for

@@ -28,6 +28,8 @@
 /// so it cannot be undone by adding one `depends` entry.
 module FsHotWatch.Tests.GatePurityTests
 
+open System.IO
+open System.Text.Json
 open System.Text.RegularExpressions
 open Xunit
 open Swensen.Unquote
@@ -49,6 +51,39 @@ let private ratchetVerbsIn mise taskName =
     |> Seq.map (fun m -> m.Groups[1].Value)
     |> Seq.toList
 
+/// The floors files in the repository root, by file name.
+let private floorsFiles root =
+    Directory.GetFiles(root, "coverage-ratchet-*.json")
+    |> Array.map Path.GetFileName
+    |> Array.sort
+    |> Array.toList
+
+/// `.fshw.json`'s coverage floor sets: each floors file and the test projects whose
+/// run-scoped reports it grades (`[]` for a set with another report source).
+let private daemonFloorSets root =
+    use config = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, ".fshw.json")))
+    let coverage = config.RootElement.GetProperty("coverage")
+
+    let sets =
+        if coverage.ValueKind = JsonValueKind.Array then
+            coverage.EnumerateArray() |> Seq.toList
+        else
+            [ coverage ]
+
+    sets
+    |> List.map (fun set ->
+        let projects =
+            match set.TryGetProperty("projects") with
+            | true, ps -> ps.EnumerateArray() |> Seq.map _.GetString() |> Seq.toList
+            | false, _ -> []
+
+        set.GetProperty("configPath").GetString(), projects)
+
+/// Whether `gate`'s own command runs `confirm`, the full-suite run whose coverage plugin
+/// grades `.fshw.json`'s floor sets.
+let private runsConfirm mise gate =
+    Regex.IsMatch(commandLines mise gate, @"FsHotWatch\.Cli\b[^\n&]*--\s+confirm\b")
+
 /// Shell redirection, or one of the in-place-write commands a mise task could plausibly
 /// reach for, AIMED AT `path`. Text analysis, and it says so: see the test that uses it.
 let private writesTo (line: string) (path: string) =
@@ -66,8 +101,10 @@ let ``no task a gate depends on invokes a coverageratchet verb that writes`` () 
 
         // PRESENT, not merely absent: a gate that consults coverage at all must be seen
         // to do it, so a graph that dropped the check entirely cannot pass this by
-        // saying nothing.
-        test <@ not (List.isEmpty verbs) @>
+        // saying nothing. `ci` grades in its own `confirm` (pinned by the next test);
+        // `check` runs an impact-filtered suite, which grades nothing, so it keeps the
+        // direct run.
+        test <@ not (List.isEmpty verbs) || (gate = "ci" && runsConfirm mise gate) @>
 
         let writing =
             verbs |> List.filter (fun v -> not (Set.contains v readOnlyRatchetVerbs))
@@ -103,14 +140,39 @@ let ``the tighten task cannot loosen`` () =
     test <@ ratchetVerbsIn mise "coverage-ratchet" = [ "ratchet" ] @>
 
 [<Fact>]
-let ``the local gate consults coverage exactly the way CI does`` () =
-    // `ci` runs the command GitHub Actions runs. While the two gates disagreed about
-    // coverage the local one could go green on work CI rejects — and did: `check`
-    // auto-loosened where `coverage-check` fails. One task, so they cannot drift.
-    let mise = miseToml (repoRoot ())
+let ``ci grades every floors file in the confirm CI runs, on that run's own reports`` () =
+    // `ci` used to run the suite TWICE: `test-direct` and `tp-test` only to write the
+    // reports `coverage-check` / `tp-coverage-check` graded, then `confirm` again for the
+    // verdict (AUTOMATION-1642: 368 s + 112 s of a 1172 s gate). The reports had to come
+    // from a run of their own because the daemon's were shared files a later run — or a
+    // second daemon alive from an earlier gate — rewrote: 113 files graded instead of 134,
+    // and a pass. Now `confirm` grades every floors file itself, each on the report its
+    // project wrote into that run's own directory, which nothing else writes; and the
+    // command is the one GitHub CI runs (`CiParityTests`), so the two gates cannot drift.
+    let root = repoRoot ()
+    let mise = miseToml root
+    let sets = daemonFloorSets root
 
-    for gate in gateTasks do
-        test <@ Set.contains "coverage-check" (dependencyClosure mise gate) @>
+    test <@ runsConfirm mise "ci" @>
+    test <@ not (List.isEmpty (floorsFiles root)) @>
+    test <@ (sets |> List.map fst |> List.sort) = floorsFiles root @>
+    test <@ sets |> List.forall (fun (_, projects) -> not (List.isEmpty projects)) @>
+
+[<Fact>]
+let ``ci runs the test suite once`` () =
+    // The direct coverage runs stay for what they are still for — `mise run check`, whose
+    // impact-filtered suite grades nothing, and the explicit ratchet/loosen tasks — but
+    // not in `ci`, where `confirm` has already run every project with coverage.
+    let mise = miseToml (repoRoot ())
+    let closure = dependencyClosure mise "ci"
+
+    test <@ not (Set.contains "test-direct" closure) @>
+    test <@ not (Set.contains "tp-test" closure) @>
+
+[<Fact>]
+let ``the inner loop still grades coverage with the direct run`` () =
+    let mise = miseToml (repoRoot ())
+    test <@ Set.contains "coverage-check" (dependencyClosure mise "check") @>
 
 [<Fact>]
 let ``no gate task redirects, tees or copies onto a declared verdict input`` () =
@@ -224,3 +286,36 @@ let ``test-direct writes its report where the daemon never writes`` () =
         |> Seq.toList
 
     test <@ removed = [ reportDir.Value ] @>
+
+[<Fact>]
+let ``a traced test project measures the modules its plain launch measures`` () =
+    // `confirm` launches TestPrune.Tests TRACED (`tests.traces`): its woven host loads the
+    // trace recorder, which a plain `dotnet test` of the project never does. Graded on
+    // that run's own report, the recorder's 12 files appeared with no floor (the 100%
+    // default) and failed, a file set the direct run — and hosted CI's — never had.
+    // Measured 2026-11-12 on one build: 46 files traced against 34 direct, the 34 equal
+    // line for line. The project's own filter excludes the recorder, so both launches
+    // grade the same files.
+    let root = repoRoot ()
+
+    use config =
+        JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "tests", "TestPrune.Tests", "testconfig.json")))
+
+    let excludes =
+        config.RootElement
+            .GetProperty("codeCoverage")
+            .GetProperty("Configuration")
+            .GetProperty("CodeCoverage")
+            .GetProperty("ModulePaths")
+            .GetProperty("Exclude")
+            .EnumerateArray()
+        |> Seq.map _.GetString()
+        |> Seq.toList
+
+    let recorder =
+        "/repo/tests/TestPrune.Tests/bin/Traced/net10.0/TestPrune.Trace.Recorder.dll"
+
+    let core = "/repo/tests/TestPrune.Tests/bin/Traced/net10.0/TestPrune.Core.dll"
+
+    test <@ excludes |> List.exists (fun pattern -> Regex.IsMatch(recorder, pattern)) @>
+    test <@ not (excludes |> List.exists (fun pattern -> Regex.IsMatch(core, pattern))) @>

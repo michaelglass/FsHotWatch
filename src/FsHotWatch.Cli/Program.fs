@@ -130,7 +130,7 @@ module RerunBaseline =
             Format = FormatMode.Off
             Lint = false
             Analyzers = None
-            Coverage = None
+            Coverage = []
             FileCommands = [] }
 
     /// Why the workspace's full-suite baseline cannot vouch for `runnable` — `None` when

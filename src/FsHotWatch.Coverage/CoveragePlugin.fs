@@ -9,6 +9,22 @@ open CoverageRatchet.Ratchet
 // Last, so its `judge`, `Passed` and `Failed` shadow CoverageRatchet's.
 open FsHotWatch.Coverage.Judgement
 
+/// One floors file and the reports it grades. A repository whose test projects measure
+/// different modules keeps one floors file per project, and a check grades every set.
+type FloorSet =
+    {
+        /// The coverage-ratchet floors file.
+        ConfigPath: string
+        /// Where a check reads the reports these floors grade.
+        Reports: CoverageReports
+    }
+
+/// The run a retained trigger belongs to: when it started (a named report older than
+/// that was not written by it) and its id (a run-scoped report lives in its directory).
+type OwedRun =
+    { StartedAt: System.DateTime
+      RunId: System.Guid }
+
 [<NoComparison; NoEquality>]
 type CoverageMsg =
     | CheckDone of judgement: CoverageJudgement * elapsed: System.TimeSpan
@@ -40,7 +56,7 @@ type CoverageState =
         /// whatever Cobertura XML is on disk when it runs, which is the newest run's
         /// output, so the newest run's scope is the one that describes what it reads.
         /// Cleared the moment a check for it is claimed.
-        Owed: (RunScope * System.DateTime) option
+        Owed: (RunScope * OwedRun) option
         /// When each run still in flight started (`TestRunStarted`), by run id: a
         /// named report older than its run's start was not written by that run.
         Started: Map<System.Guid, System.DateTime>
@@ -74,21 +90,23 @@ let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
 
 /// One coverage check: find this run's Cobertura output, judge it, and gate the raw
 /// result by the scope the run PROVED.
-let private checkWork
-    (configPath: string)
-    (reports: CoverageReports)
-    (scope: RunScope)
-    (runStartedAt: System.DateTime)
-    =
+let private checkWork (sets: FloorSet list) (scope: RunScope) (run: OwedRun) =
     async {
         let checkStarted = System.DateTime.UtcNow
+        let judgements = ResizeArray()
 
-        let! found =
-            match reports with
-            | CoverageReports.SearchUnder dir -> pollForFiles dir 50 100
-            | CoverageReports.Named _ -> async { return [] }
+        for set in sets do
+            let reports = reportsForRun run.RunId set.Reports
 
-        let judgement = judge configPath reports scope runStartedAt found
+            let! found =
+                match reports with
+                | CoverageReports.SearchUnder dir -> pollForFiles dir 50 100
+                // Named: `reportsForRun` has already resolved a run-scoped set to these.
+                | _ -> async { return [] }
+
+            judgements.Add(set.ConfigPath, judge set.ConfigPath reports scope run.StartedAt found)
+
+        let judgement = combine (List.ofSeq judgements)
 
         // No baseline to refresh here: the TestPrune DB is the coverage
         // high-watermark, ingested (max-merged across projects) per run, and emits
@@ -106,18 +124,17 @@ let private checkWork
 /// than disappearing.
 let private startCheck
     (ctx: PluginCtx<CoverageMsg>)
-    (configPath: string)
-    (reports: CoverageReports)
+    (sets: FloorSet list)
     (scope: RunScope)
-    (runStartedAt: System.DateTime)
-    : (RunScope * System.DateTime) option =
+    (run: OwedRun)
+    : (RunScope * OwedRun) option =
     let launchedAt = System.DateTime.UtcNow
 
     // A check that throws (a report that is not Cobertura, a floor file that cannot be
     // loaded) still folds: as an unreadable verdict, which is red, and which drains a
     // trigger retained behind it exactly as any other verdict does.
     let work =
-        checkWork configPath reports scope runStartedAt
+        checkWork sets scope run
         |> PluginWork.onFailure (fun failure ->
             CheckDone(
                 Judged(Unreadable $"the coverage check faulted: %s{failure.GetType().Name}: %s{failure.Message}"),
@@ -128,29 +145,38 @@ let private startCheck
     | Claimed -> None
     | SlotBusy ->
         ctx.Log "coverage-check slot held — keeping this trigger for the holder's result fold to run"
-        Some(scope, runStartedAt)
+        Some(scope, run)
 
 /// Run whatever a refused claim left owed. Called from the folds that HOLD
 /// "coverage-check": a result fold may claim the next run under its own key before it
 /// commits, so this is the one place the retained trigger can actually start.
-let private drainOwed
-    (ctx: PluginCtx<CoverageMsg>)
-    (configPath: string)
-    (reports: CoverageReports)
-    (state: CoverageState)
-    : CoverageState =
+let private drainOwed (ctx: PluginCtx<CoverageMsg>) (sets: FloorSet list) (state: CoverageState) : CoverageState =
     match state.Owed with
     | None -> state
-    | Some(scope, runStartedAt) ->
+    | Some(scope, run) ->
         { state with
-            Owed = startCheck ctx configPath reports scope runStartedAt }
+            Owed = startCheck ctx sets scope run }
 
 /// <summary>Create a CoveragePlugin handler that checks per-file coverage floors (line and
 /// branch percentages, and covered-line and covered-branch counts) after each
-/// <c>TestRunCompleted</c> event, reading the reports <paramref name="reports"/> names.</summary>
-/// <param name="configPath">Path to the coverage-ratchet.json thresholds config.</param>
-/// <param name="reports">Where each check reads the run's Cobertura reports.</param>
-let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<CoverageState, CoverageMsg> =
+/// <c>TestRunCompleted</c> event, grading every floor set in <paramref name="sets"/>
+/// against the reports that set names. The check fails when any set falls short.</summary>
+/// <param name="sets">The floors files and the reports each one grades; the first is
+/// the one <c>coverage-ratchet</c> rewrites when it is given no path.</param>
+let createSets (sets: FloorSet list) : PluginHandler<CoverageState, CoverageMsg> =
+    if List.isEmpty sets then
+        invalidArg (nameof sets) "the coverage plugin needs at least one floor set"
+
+    let configPath = sets.Head.ConfigPath
+
+    // The reports `coverage-ratchet` rewrites `cfgPath` from: its own set's, or the
+    // first set's for a path no set names.
+    let reportsFor (cfgPath: string) =
+        sets
+        |> List.tryFind (fun set -> set.ConfigPath = cfgPath)
+        |> Option.defaultValue sets.Head
+        |> _.Reports
+
     { Name = PluginName.create "coverage"
       Init = CoverageState.initial
       Subscriptions = Set.ofList [ SubscribeTestRunStarted; SubscribeTestRunCompleted ]
@@ -219,10 +245,12 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
             | TestRunCompleted trc ->
                 // The run's own start bounds which reports it wrote. A run whose start
                 // was not seen falls back to its completion less its elapsed time.
-                let runStartedAt =
-                    state.Started
-                    |> Map.tryFind trc.RunId
-                    |> Option.defaultWith (fun () -> System.DateTime.UtcNow - trc.TotalElapsed)
+                let run =
+                    { StartedAt =
+                        state.Started
+                        |> Map.tryFind trc.RunId
+                        |> Option.defaultWith (fun () -> System.DateTime.UtcNow - trc.TotalElapsed)
+                      RunId = trc.RunId }
 
                 let state =
                     { state with
@@ -237,11 +265,14 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                     ctx.Log "coverage check skipped — the run executed no tests, so it produced no coverage to judge"
                     async { return state }
                 | Normal, Some scope ->
-                    match notJudgedReason reports scope with
-                    | Some reason ->
+                    let notJudged =
+                        sets |> List.map (fun set -> set.ConfigPath, notJudgedReason set.Reports scope)
+
+                    match notJudged |> List.forall (snd >> Option.isSome), notJudged with
+                    | true, (_, Some reason) :: _ ->
                         ctx.Log $"coverage not judged: %s{reason}"
                         async { return state }
-                    | None ->
+                    | _ ->
                         // A refused claim (a check or a ratchet rewrite holds the key, or
                         // a finished one's result fold still does) KEEPS this trigger
                         // owed; the holder's fold runs it. `startCheck` answers with what
@@ -250,7 +281,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                         async {
                             return
                                 { state with
-                                    Owed = startCheck ctx configPath reports scope runStartedAt }
+                                    Owed = startCheck ctx sets scope run }
                         }
 
             | Custom(RatchetRequested(cfgPath, reply)) ->
@@ -260,13 +291,15 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
 
                         try
                             try
+                                let reports = reportsFor cfgPath
                                 let xmlPaths = existingReports reports
 
                                 let ratchet =
                                     if List.isEmpty xmlPaths then
                                         match reports with
                                         | CoverageReports.SearchUnder _ -> CoverageReplies.RatchetReply.NoReportFound
-                                        | CoverageReports.Named _ -> CoverageReplies.RatchetReply.NoNamedReportExists
+                                        | CoverageReports.Named _
+                                        | CoverageReports.OfRun _ -> CoverageReplies.RatchetReply.NoNamedReportExists
                                     else
                                         match readCoverage cfgPath xmlPaths with
                                         | Result.Error reason -> CoverageReplies.RatchetReply.Failed reason
@@ -316,7 +349,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
 
                     // This fold holds "coverage-check" until it commits, so a trigger
                     // refused while the ratchet ran starts here.
-                    return drainOwed ctx configPath reports state
+                    return drainOwed ctx sets state
                 }
 
             | Custom(CheckDone(NotJudged reason, elapsed)) ->
@@ -330,7 +363,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                         )
                     )
 
-                    return drainOwed ctx configPath reports state
+                    return drainOwed ctx sets state
                 }
 
             | Custom(CheckDone(Judged Passed, elapsed)) ->
@@ -350,8 +383,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                     return
                         drainOwed
                             ctx
-                            configPath
-                            reports
+                            sets
                             { state with
                                 LastCheckPassed = Some true }
                 }
@@ -376,7 +408,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                             $"the last coverage red stands: an impact-filtered run cannot clear it (%s{summary})"
 
                         ctx.ReportStatus(PluginStatus.failedNow reason "coverage red stands" elapsed)
-                        return drainOwed ctx configPath reports state
+                        return drainOwed ctx sets state
                     | Some true
                     | None ->
                         // Nothing red to keep: a deterministic ✓ on an unchanged commit,
@@ -391,8 +423,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                         return
                             drainOwed
                                 ctx
-                                configPath
-                                reports
+                                sets
                                 { state with
                                     LastCheckPassed = Some true }
                 }
@@ -414,8 +445,7 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                     return
                         drainOwed
                             ctx
-                            configPath
-                            reports
+                            sets
                             { state with
                                 LastCheckPassed = Some false }
                 }
@@ -429,13 +459,21 @@ let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<C
                     return
                         drainOwed
                             ctx
-                            configPath
-                            reports
+                            sets
                             { state with
                                 LastCheckPassed = Some false }
                 }
 
             | _ -> async { return state } }
+
+/// <summary>Create a CoveragePlugin handler that checks one floors file against the reports
+/// <paramref name="reports"/> names.</summary>
+/// <param name="configPath">Path to the coverage-ratchet.json thresholds config.</param>
+/// <param name="reports">Where each check reads the run's Cobertura reports.</param>
+let createWith (configPath: string) (reports: CoverageReports) : PluginHandler<CoverageState, CoverageMsg> =
+    createSets
+        [ { ConfigPath = configPath
+            Reports = reports } ]
 
 /// <summary>Create a CoveragePlugin handler that checks per-file coverage floors after each
 /// <c>TestRunCompleted</c> event, reading every <c>coverage.cobertura.xml</c> under

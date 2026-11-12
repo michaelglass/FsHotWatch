@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- AUTOMATION-1642: a floor set can grade each test project's report from the run being
+  judged (`CoverageReports.OfRun`, resolved by `reportsForRun` to
+  `.fshw/test-runs/<runId>/<project>.coverage.cobertura.xml`), which no later run and no
+  other daemon writes. `createSets` grades several floor sets in one check (`FloorSet`),
+  combined by `Judgement.combine`: any unreadable set makes the check unreadable, every
+  set's shortfalls are reported, and it passes only when every judged set does.
+
 ## 0.7.0-alpha.34 - 2026-11-11
 
 - AUTOMATION-1558: Coverage: a run with no report is not a pass, and a filtered run keeps a red

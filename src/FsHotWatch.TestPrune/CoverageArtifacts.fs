@@ -195,8 +195,7 @@ let internal TestHostStop: TreeStop =
 /// Where a run keeps its own copy of the raw coverage `project` wrote, beside its CTRF
 /// report and output log. The per-project baseline and partial files are overwritten by
 /// every later run; this copy is not.
-let internal runCoveragePath (runDir: string) (project: string) =
-    Path.Combine(runDir, $"%s{project}.coverage.cobertura.xml")
+let internal runCoveragePath (runDir: string) (project: string) = Ctrf.coverageReportPath runDir project
 
 /// Copy the raw coverage the run wrote for `launch.Project` into the run's directory.
 /// Nothing is copied when the run wrote nothing; a failed copy is logged, never fatal.
