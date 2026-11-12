@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a `test-baseline` refusal names why a project has no K_P (AUTOMATION-1587 step 2b). A configured project the
+  project model does not name (one outside the discovery roots, AUTOMATION-1617) is refused as `not in the project
+  model`, a project whose key failed with the key's own error, and a daemon with no evidence store or no identities
+  says so; before, all read `no K_P key at the current tree`. `TestEvidenceRun.currentOutcomeKeyResults` returns each
+  candidate's key or why it has none.
+
 ## 0.13.0-alpha.111 - 2026-11-12
 
 - perf: a new fshw build no longer re-keys every test-prune analysis record (AUTOMATION-1616).

@@ -39,7 +39,7 @@ let private fullKeyOf (project: string) =
         "full"
 
 let private fullKeys () =
-    projects |> Seq.map (fun p -> p, (fullKeyOf p).Value.Text) |> Map.ofSeq
+    projects |> Seq.map (fun p -> p, Ok (fullKeyOf p).Value.Text) |> Map.ofSeq
 
 /// File `project`'s full-scope `outcome` at its K_P, as run `runId` would have.
 let private fileFullAt
@@ -209,8 +209,26 @@ let ``a project whose full pass is not this run's, or is a fail, or is missing, 
                 @>
         | Ok _ -> failwith "filed a baseline over a failed project"
 
+        // A project the model does not name has no entry at all; one whose key failed names why.
         let noKey () =
-            Map.ofList [ "TA", (fullKeyOf "TA").Value.Text ]
+            Map.ofList [ "TA", Ok (fullKeyOf "TA").Value.Text ]
+
+        let keyFailed () =
+            Map.ofList
+                [ "TA", Ok (fullKeyOf "TA").Value.Text
+                  "TB", Error "project options unknown for tests/TB/TB.fsproj" ]
+
+        match TestBaseline.file (Some store) keyFailed fileKeys (producerAt t0) facts with
+        | Error refusals ->
+            test
+                <@
+                    refusals
+                    |> List.exists (function
+                        | TestBaseline.Refusal.LacksFullPass("TB", why) ->
+                            why.Contains "project options unknown for tests/TB/TB.fsproj"
+                        | _ -> false)
+                @>
+        | Ok _ -> failwith "filed a baseline over a project whose key failed"
 
         match TestBaseline.file (Some store) noKey fileKeys (producerAt t0) facts with
         | Error refusals ->
@@ -218,7 +236,7 @@ let ``a project whose full pass is not this run's, or is a fail, or is missing, 
                 <@
                     refusals
                     |> List.exists (function
-                        | TestBaseline.Refusal.LacksFullPass("TB", why) -> why.Contains "no K_P key"
+                        | TestBaseline.Refusal.LacksFullPass("TB", why) -> why.Contains "not in the project model"
                         | _ -> false)
                 @>
         | Ok _ -> failwith "filed a baseline over an unkeyed project"
@@ -433,3 +451,51 @@ let ``a store that cannot file the baseline refuses it as not-filed, and the lin
                 @>
         finally
             File.SetUnixFileMode(keyDir, writable))
+
+[<Fact>]
+let ``with no evidence store or no identities every configured project is refused, naming which`` () =
+    let configs =
+        Some
+            [ FsHotWatch.Tests.TestPrunePluginTestSupport.testConfigNamed "TA"
+              FsHotWatch.Tests.TestPrunePluginTestSupport.testConfigNamed "TB" ]
+
+    let noStore =
+        PluginSteps.currentOutcomeKeyResultsIn None "/repo" configs FsHotWatch.PluginFramework.ProjectGraphAccessor.none
+
+    test
+        <@
+            noStore = Map.ofList
+                [ "TA", Error "no test-evidence store is wired"
+                  "TB", Error "no test-evidence store is wired" ]
+        @>
+
+    withTempDir "baseline" (fun dir ->
+        let wiring: TestEvidenceRun.Wiring =
+            { Store =
+                TestEvidenceStore.Store(
+                    { Root = Path.Combine(dir, "evidence")
+                      Ttl = TimeSpan.FromHours 1.0
+                      MaxBytes = 1_000_000L
+                      Now = fun () -> t0
+                      Log = ignore }
+                )
+              Configs = Map.empty
+              Toolchain = lazy "tc"
+              Loaded = TestEvidenceKey.LoadedEnvironment.empty
+              ProducerHash = "p"
+              ExcludePatterns = []
+              Outcomes = Some(storeIn dir) }
+
+        let noIdentities =
+            PluginSteps.currentOutcomeKeyResultsIn
+                (Some wiring)
+                dir
+                configs
+                FsHotWatch.PluginFramework.ProjectGraphAccessor.none
+
+        test
+            <@
+                noIdentities
+                |> Map.forall (fun _ r -> r = Error "the project model publishes no compile-input identities")
+                && noIdentities.Count = 2
+            @>)

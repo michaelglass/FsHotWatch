@@ -536,15 +536,40 @@ let internal currentOutcomeKeysIn
             (evidenceCandidates graph (defaultArg testConfigs []))
     | _ -> Map.empty
 
-/// File the shadow `test-baseline` record a completion may earn (AUTOMATION-1587 step 2) and
+/// Each configured project's full-run outcome key over the tree as it is now, or why it has
+/// none (AUTOMATION-1587). A project the model does not name is absent: it is not a
+/// candidate at all (`evidenceCandidates`). Without a store or identities, every configured
+/// project is refused, naming which.
+let internal currentOutcomeKeyResultsIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (graph: ProjectGraphAccessor)
+    : Map<string, Result<string, string>> =
+    let configs = defaultArg testConfigs []
+
+    let refuseAll (why: string) =
+        configs |> List.map (fun c -> c.Project, Error why) |> Map.ofList
+
+    match evidence, ObservedModel.inputs graph with
+    | Some wiring, Some identities ->
+        TestEvidenceRun.currentOutcomeKeyResults
+            wiring
+            repoRoot
+            (fun fsproj -> Map.tryFind fsproj identities)
+            (evidenceCandidates graph configs)
+    | None, _ -> refuseAll "no test-evidence store is wired"
+    | Some _, None -> refuseAll "the project model publishes no compile-input identities"
+
+/// File the shadow `test-baseline` record) a completion may earn (AUTOMATION-1587 step 2) and
 /// log one line saying whether it did, and if not, which conditions refused it. The K_P keys
-/// are those `test-scope` reports (`currentOutcomeKeys`), and the per-file analysis
+/// are those `test-scope` reports, with why a project has none (`currentOutcomeKeyResultsIn`), and the per-file analysis
 /// identities are the index's `file_keys`. Never fails the completion: a baseline that
 /// cannot be written is logged as `not-filed`.
 let internal fileBaselineIn
     (evidence: TestEvidenceRun.Wiring option)
     (repoRoot: string)
-    (currentOutcomeKeys: ProjectGraphAccessor -> Map<string, string>)
+    (currentOutcomeKeys: ProjectGraphAccessor -> Map<string, Result<string, string>>)
     (fileKeys: unit -> Map<string, string>)
     (ctx: PluginCtx<TestPruneMsg>)
     (facts: TestBaseline.Facts)

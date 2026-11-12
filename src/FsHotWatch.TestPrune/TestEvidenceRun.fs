@@ -431,6 +431,19 @@ let qualifies
     | TestsErrored _
     | TestsNoMatch _ -> Error "the run verified nothing"
 
+/// Each candidate's FULL-run outcome key over the tree as it is NOW, or why it has none
+/// (AUTOMATION-1587): what a `test-baseline` record names its refusal by, where
+/// `currentOutcomeKeys` leaves an unkeyable candidate out.
+let currentOutcomeKeyResults
+    (wiring: Wiring)
+    (repoRoot: string)
+    (optionsHash: string -> string option)
+    (candidates: Candidate list)
+    : Map<string, Result<string, string>> =
+    keysOf wiring repoRoot optionsHash candidates
+    |> fst
+    |> Map.map (fun _ key -> key |> Result.map (fun key -> (testActionKey key "full").Value.Text))
+
 /// The outcome-store key of each candidate's FULL run over the tree as it is NOW (ADR-059
 /// step 7b): what a lookup verdict asks the store for. A candidate with no key is absent, so
 /// nothing can stand in for it.
