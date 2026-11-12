@@ -200,7 +200,27 @@ let internal createWithEvidenceAndQueries
                     None)
         | _ -> []
 
-    let allowedRuntimeProjects = Set.ofList expectedRuntimeCoverageProjects
+    // `runtimeSelection: "shadow"` (AUTOMATION-1645): still collected and selected
+    // above, but only logged — never owed.
+    let shadowRuntimeProjects =
+        match testConfigs, coveragePaths with
+        | Some configs, Some pathsForProject ->
+            configs
+            |> List.filter (fun config ->
+                match pathsForProject config.Project with
+                | Some paths -> paths.RuntimeSelection = RuntimeSelectionMode.Shadow
+                | None -> false)
+            |> List.map (fun config -> config.Project)
+            |> Set.ofList
+        | _ -> Set.empty
+
+    let isRuntimeShadow project =
+        Set.contains project shadowRuntimeProjects
+
+    // Only a deciding project may be owed a runtime obligation: one loaded for a project
+    // now in shadow is pruned with the rest, so switching to shadow leaves nothing owed.
+    let allowedRuntimeProjects =
+        Set.difference (Set.ofList expectedRuntimeCoverageProjects) shadowRuntimeProjects
 
     let loadedDebt = debtFromRestored repoRoot allowedRuntimeProjects restored
 
@@ -280,6 +300,7 @@ let internal createWithEvidenceAndQueries
           EnqueuePending = enqueuePending
           PersistQueueAdditions = persistQueueAdditions
           RuntimeCoverageSelection = runtimeCoverageSelection
+          IsRuntimeShadow = isRuntimeShadow
           Refresh =
             { Phase = extensionRefresh
               Extensions = extensions
@@ -368,6 +389,7 @@ let internal createWithEvidenceAndQueries
               BeforeRun = beforeRun
               AfterRun = afterRun
               CoveragePaths = coveragePaths
+              RuntimeShadowProjects = shadowRuntimeProjects
               Traces = traces }
           Db = db
           Queries = queries

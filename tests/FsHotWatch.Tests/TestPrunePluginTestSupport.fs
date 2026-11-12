@@ -51,6 +51,7 @@ let emptyLaunch: TestRunLaunch =
       TestHostStartedAt = None
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
+      RuntimeShadow = Map.empty
       Selection = Map.empty
       WouldHaveRun = None
       TraceShadow = []
@@ -74,6 +75,7 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
       TestHostStartedAt = None
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
+      RuntimeShadow = Map.empty
       Selection = projects |> List.map (fun p -> p, ProjectInFull) |> Map.ofList
       WouldHaveRun = None
       TraceShadow = []
@@ -97,6 +99,7 @@ let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
       TestHostStartedAt = None
       CoveringProjectsBySymbol = Map.empty
       RuntimeProjectsByFile = Map.empty
+      RuntimeShadow = Map.empty
       Selection =
         selection
         |> List.map (fun (p, classes) -> p, ProjectClasses(Set.ofList classes))

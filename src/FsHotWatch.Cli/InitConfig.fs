@@ -77,6 +77,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       CollectCoverage = true
                       Coverage = true
                       CoverageArgsTemplate = None
+                      RuntimeSelection = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
                       TimeoutSec = None
                       ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
                       Starvation = None

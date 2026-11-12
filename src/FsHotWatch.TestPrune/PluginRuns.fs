@@ -119,6 +119,7 @@ let internal commandForceRunWith
           TestHostStartedAt = None
           CoveringProjectsBySymbol = Map.empty
           RuntimeProjectsByFile = Map.empty
+          RuntimeShadow = Map.empty
           Selection = configs |> List.map (fun c -> c.Project, ProjectInFull) |> Map.ofList
           // A FORCE run has no impact selection behind it — nothing was widened past,
           // so there is no `check` reading to project. This is the
@@ -448,13 +449,17 @@ type internal ExtensionRefreshSteps =
 
 /// What a flush of pending analysis reads from the plugin (`flushPendingWith`).
 type internal FlushEnv =
-    { Db: Database
-      DbPath: string
-      BusyTimeout: TimeSpan
-      EnqueuePending: string list -> VerificationDebt -> VerificationDebt
-      PersistQueueAdditions: VerificationDebt -> unit
-      RuntimeCoverageSelection: string list -> RuntimeCoverageSelection
-      Refresh: ExtensionRefreshSteps }
+    {
+        Db: Database
+        DbPath: string
+        BusyTimeout: TimeSpan
+        EnqueuePending: string list -> VerificationDebt -> VerificationDebt
+        PersistQueueAdditions: VerificationDebt -> unit
+        RuntimeCoverageSelection: string list -> RuntimeCoverageSelection
+        /// Whether a project's `runtimeSelection` is shadow.
+        IsRuntimeShadow: string -> bool
+        Refresh: ExtensionRefreshSteps
+    }
 
 let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
     let db = env.Db
@@ -551,20 +556,41 @@ let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (st
 
     let runtimeSelection = runtimeCoverageSelection flushedState.ChangedFiles
 
+    // A shadow project's selection is computed like any other and kept apart: it is
+    // logged at launch (`RuntimeShadowLine`) and never enters the ledger, so nothing
+    // selects or owes it.
+    let split =
+        splitRuntimeSelection env.IsRuntimeShadow runtimeSelection.ProjectsByFile
+
     let runtimeObligations =
-        if Map.isEmpty runtimeSelection.ProjectsByFile then
+        if Map.isEmpty split.Decided then
             flushedState.Debt.RuntimeObligations
         else
-            mergeRuntimeCoverageObligations flushedState.Debt.RuntimeObligations runtimeSelection.ProjectsByFile
+            mergeRuntimeCoverageObligations flushedState.Debt.RuntimeObligations split.Decided
 
-    if not (Map.isEmpty runtimeSelection.ProjectsByFile) then
-        for KeyValue(file, projects) in runtimeSelection.ProjectsByFile do
-            if not (Set.isEmpty projects) then
-                let projectNames = projects |> Set.toList |> String.concat ", "
+    let names (projects: Set<string>) =
+        projects |> Set.toList |> String.concat ", "
 
-                Logging.info "test-prune" $"runtime coverage selected %s{file} -> %s{projectNames} (project-in-full)"
+    split.Decided
+    |> Map.iter (fun file projects ->
+        Logging.info "test-prune" $"runtime coverage selected %s{file} -> %s{names projects} (project-in-full)")
 
-    reportRuntimeCoverageWidenings (Logging.warn "test-prune") runtimeSelection
+    split.Shadowed
+    |> Map.iter (fun file projects ->
+        Logging.info
+            "test-prune"
+            $"runtime coverage (shadow) would select %s{file} -> %s{names projects} (project-in-full); not selected")
+
+    reportRuntimeCoverageWidenings (Logging.warn "test-prune") env.IsRuntimeShadow runtimeSelection
+
+    let flushedState =
+        if Map.isEmpty split.Shadowed then
+            flushedState
+        else
+            { flushedState with
+                Debt =
+                    { flushedState.Debt with
+                        ShadowRuntime = mergeRuntimeCoverageObligations flushedState.Debt.ShadowRuntime split.Shadowed } }
 
     flushedState, runtimeObligations
 

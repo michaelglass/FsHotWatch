@@ -131,6 +131,14 @@ let internal runTestsWithImpactWith
 
             logLaunch "impact" inputs.Mode launch
 
+            // What runtime coverage would have added, beside what static selection took:
+            // nothing for the skip, `Selection` for a run.
+            let logRuntimeShadow (selection: Map<string, ProjectSelection>) =
+                if not (Set.isEmpty env.Config.RuntimeShadowProjects) then
+                    Logging.info
+                        "test-prune"
+                        (RuntimeShadowLine.render launch.InputTreeHash selection launch.RuntimeShadow)
+
             let hasQuarantinedFailures = not (List.isEmpty inputs.OutstandingFailures)
 
             // Two independent routes to the degenerate zero-affected skip. Both
@@ -173,9 +181,11 @@ let internal runTestsWithImpactWith
                 totalClasses = 0 && Set.isEmpty forceRunProjects && not hasQuarantinedFailures
 
             if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
+                logRuntimeShadow Map.empty
                 return! zeroAffectedSkip emitStarted inputs launch nothingToVerify
             else
                 let launch = priceSelection launch
+                logRuntimeShadow launch.Selection
 
                 // THE SKIP ON RECORDS (ADR-067). The only refusal is that no run has
                 // completed in this session: nothing is owed, the full-suite baseline
@@ -318,6 +328,7 @@ let internal runTestsWithImpactWith
                   TestHostStartedAt = None
                   CoveringProjectsBySymbol = Map.empty
                   RuntimeProjectsByFile = launchedRuntimeObligations
+                  RuntimeShadow = Map.empty
                   Selection = Map.empty
                   WouldHaveRun = None
                   Reused = Map.empty

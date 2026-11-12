@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: `tests.projects[].runtimeSelection: "decide" | "shadow"` (AUTOMATION-1645). `"decide"`, the default, is
+  today's behaviour. In `"shadow"`, runtime coverage is still collected for impact and what it selects is still computed,
+  but it is split out (`splitRuntimeSelection`) into `VerificationDebt.ShadowRuntime` instead of the obligation ledger:
+  it never forces a project in full, is never owed, and so leaves no obligation for a completion to retire; a run that
+  took only the static selection is never `Ran FullSuite` and never earns the full-suite baseline. Every impact launch
+  logs one machine-readable `runtime-selection shadow: {json}` line (`RuntimeShadowLine.render`): the launch tree, the
+  static selection per project with counts, and the projects and files runtime coverage would add, with `beyondStatic`
+  naming those static selection did not run whole. A completion spends the would-add unless the project came back red.
+  A ledger entry loaded for a project now in shadow is pruned at startup. Runtime coverage that did not ingest
+  (`CoverageNotIngested`) still runs its project in full, in either mode.
+
 ## 0.13.0-alpha.112 - 2026-11-12
 
 - fix: a `test-baseline` refusal names why a project has no K_P (AUTOMATION-1587 step 2b). A configured project the

@@ -370,7 +370,8 @@ let private runScenario (root: string) (setup: Setup) =
                   Partial = Path.Combine(dir, PartialName)
                   Cobertura = Path.Combine(dir, CoberturaName)
                   IncludeInRatchet = true
-                  ArgsTemplate = "--coverage-output {output}" }
+                  ArgsTemplate = "--coverage-output {output}"
+                  RuntimeSelection = RuntimeSelectionMode.Decide }
 
         let recorded = Recorded()
         let cache = RecordingTaskCache()

@@ -1305,6 +1305,55 @@ let ``parseConfig tests nameHungTests is off when absent, read when a boolean, a
 
     test <@ ex.message.Contains "tests.projects[T].nameHungTests" @>
 
+// AUTOMATION-1645: runtime coverage may be shadowed (computed and logged, never selected).
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests runtimeSelection decides when absent, reads decide or shadow, and refuses anything else`` () =
+    let parse json =
+        (parseConfig json defaults).Tests.Value.Projects.[0].RuntimeSelection
+
+    test
+        <@
+            parse """{"tests": {"projects": [{"project": "T"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
+        @>
+
+    test
+        <@
+            parse """{"tests": {"projects": [{"project": "T", "runtimeSelection": "decide"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
+        @>
+
+    test
+        <@
+            parse """{"tests": {"projects": [{"project": "T", "runtimeSelection": "shadow"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Shadow
+        @>
+
+    // Read as "decide", a typo would silently put runtime coverage back in charge.
+    let refused json =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
+    let typo =
+        refused """{"tests": {"projects": [{"project": "T", "runtimeSelection": "shadwo"}]}}"""
+
+    test <@ typo.message.Contains "tests.projects[T].runtimeSelection" @>
+
+    let notAString =
+        refused """{"tests": {"projects": [{"project": "T", "runtimeSelection": true}]}}"""
+
+    test <@ notAString.message.Contains "tests.projects[T].runtimeSelection" @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig refuses a shadow runtimeSelection on a project that collects no coverage for impact`` () =
+    // Nothing is collected, so nothing could be computed or logged: the declaration
+    // would be inert, and an inert declaration is refused rather than ignored.
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () ->
+            parseConfig
+                """{"tests": {"projects": [{"project": "T", "coverage": false, "runtimeSelection": "shadow"}]}}"""
+                defaults
+            |> ignore)
+
+    test <@ ex.message.Contains "tests.projects[T].runtimeSelection" @>
+    test <@ ex.message.Contains "collectForImpact" @>
+
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests starvation reads the declaration, none when absent, and refuses a typo`` () =
     let parse json =

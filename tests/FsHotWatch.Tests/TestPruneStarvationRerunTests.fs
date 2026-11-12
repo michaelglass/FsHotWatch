@@ -252,7 +252,8 @@ let private runOnceWithCoverage (root: string) (config: TestConfig) : string * s
               Partial = Path.Combine(dir, PartialName)
               Cobertura = Path.Combine(root, "coverage", CoberturaName)
               IncludeInRatchet = false
-              ArgsTemplate = "--coverage-output \"{output}\"" }
+              ArgsTemplate = "--coverage-output \"{output}\""
+              RuntimeSelection = RuntimeSelectionMode.Decide }
 
     let host = PluginHost.create (Unchecked.defaultof<_>) root
 

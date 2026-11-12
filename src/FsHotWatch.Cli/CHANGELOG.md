@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `.fshw.json` `tests.projects[].runtimeSelection: "decide" | "shadow"` (AUTOMATION-1645), default `"decide"`.
+  `"shadow"` keeps collecting runtime coverage and logs what it would add to each impact launch without running it;
+  see the FsHotWatch.TestPrune changelog. Any other value, or `"shadow"` on a project that collects no coverage for
+  impact, is refused at load.
+
 ## 0.14.0-alpha.145 - 2026-11-12
 
 - chore: rebuild to bundle updated dependencies

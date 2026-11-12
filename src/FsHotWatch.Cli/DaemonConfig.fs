@@ -356,6 +356,10 @@ type TestProjectConfig =
         CollectCoverage: bool
         /// Include this project's contribution in the consumer coverage ratchet.
         Coverage: bool
+        /// `runtimeSelection`: whether the runtime coverage collected for impact decides
+        /// what runs (`"decide"`, the default) or is only computed and logged
+        /// (`"shadow"`, AUTOMATION-1645).
+        RuntimeSelection: FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode
         CoverageArgsTemplate: string option
         TimeoutSec: int option
         /// How to obtain the structured test report the verdict is derived from
@@ -813,6 +817,29 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
             collectForImpact, enabled, tmpl
         | _ -> true, true, None
 
+    // `runtimeSelection` (AUTOMATION-1645): whether the runtime coverage collected for
+    // impact decides what runs, or is only computed and logged. Refused unless it parses:
+    // read as "decide", a typo would silently put runtime coverage back in charge. Shadow
+    // on a project that collects nothing for impact is refused too: there would be nothing
+    // to compute or log, so the declaration could not be honoured.
+    let runtimeSelection =
+        let key = $"tests.projects[%s{project}].runtimeSelection"
+        let accepted = jsonStrings [ "decide"; "shadow" ]
+
+        match p.TryGetProperty("runtimeSelection") with
+        | false, _ -> FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString() with
+            | "decide" -> FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
+            | "shadow" when not collectCoverage ->
+                raise (
+                    ConfigErrorException
+                        $"%s{key}: \"shadow\" needs runtime coverage collected for impact, and this project collects none (`coverage` is false, or `coverage.collectForImpact` is false)"
+                )
+            | "shadow" -> FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Shadow
+            | other -> refuseUnknown key other accepted
+        | true, v -> refuseUnknown key (describeValue v) accepted
+
     let timeoutSec =
         match p.TryGetProperty("timeoutSec") with
         | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
@@ -936,6 +963,7 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
       CollectCoverage = collectCoverage
       Coverage = coverage
       CoverageArgsTemplate = coverageArgsTemplate
+      RuntimeSelection = runtimeSelection
       TimeoutSec = timeoutSec
       ReportVerificationFormat = reportVerificationFormat
       AlwaysClasses = alwaysClasses
@@ -2979,7 +3007,8 @@ let registerPluginsIn
                                 )
                             )
                           IncludeInRatchet = projectsByName.[project].Coverage
-                          ArgsTemplate = argsTemplate })
+                          ArgsTemplate = argsTemplate
+                          RuntimeSelection = projectsByName.[project].RuntimeSelection })
 
         // Extension factories — invoked by the plugin with its own DB, so the
         // RouteStore/SymbolStore an extension captures is guaranteed to be the

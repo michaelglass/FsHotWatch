@@ -210,7 +210,8 @@ let ``each run keeps its own copy of the coverage it wrote`` () =
                   Partial = Path.Combine(coverageDir, PartialName)
                   Cobertura = Path.Combine(repoRoot, "coverage", CoberturaName)
                   IncludeInRatchet = false
-                  ArgsTemplate = "{output}" }
+                  ArgsTemplate = "{output}"
+                  RuntimeSelection = RuntimeSelectionMode.Decide }
 
         let host = createModelHost (Unchecked.defaultof<_>) repoRoot
 

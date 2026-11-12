@@ -39,6 +39,18 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
+/// `tests.projects[].runtimeSelection` (AUTOMATION-1645): whether what a project's runtime
+/// coverage attributes to a changed file decides what runs.
+[<RequireQualifiedAccess>]
+type RuntimeSelectionMode =
+    /// The project runs in full for every changed file its runtime coverage reached, owed
+    /// until a run of it passes. The default.
+    | Decide
+    /// Coverage is still collected for impact, and what it would add is computed and
+    /// logged per launch (`RuntimeShadowLine`). It never enters the selection, so it is
+    /// never owed.
+    | Shadow
+
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
 /// `Partial` (impact-filtered run); the plugin ingests whichever this run wrote
@@ -64,6 +76,8 @@ type CoveragePaths =
         /// populate TestPrune while remaining outside the consumer's gate.
         IncludeInRatchet: bool
         ArgsTemplate: string
+        /// Whether this project's runtime coverage decides what runs, or is only logged.
+        RuntimeSelection: RuntimeSelectionMode
     }
 
 /// One raw coverage artifact produced by one test project. Keeping the project

@@ -255,6 +255,7 @@ let internal debtFromRestored
               $"a verification-debt publication did not finish (%s{debtPublicationPath}), and no full suite has passed since to recover it" ]
       Baseline = loadedBaseline
       RuntimeObligations = pruneRuntimeCoverageObligations allowedRuntimeProjects loadedRuntimeObligations
+      ShadowRuntime = Map.empty
       CoverageNotIngested = loadedNotIngested }
 
 /// Seed the in-memory hot view from the durable queue so a restart with a non-empty

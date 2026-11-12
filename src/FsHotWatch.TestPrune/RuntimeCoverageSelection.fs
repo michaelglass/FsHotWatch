@@ -240,15 +240,128 @@ let internal selectByRuntimeCoverage
     { ProjectsByFile = projectsByFile
       Widenings = widenings }
 
-let internal reportRuntimeCoverageWidenings (warn: string -> unit) (selection: RuntimeCoverageSelection) =
+/// What runtime coverage selected, split by each project's `runtimeSelection`.
+type internal RuntimeSelectionSplit =
+    { Decided: Map<string, Set<string>>
+      Shadowed: Map<string, Set<string>> }
+
+/// Split what runtime coverage selected by each project's `runtimeSelection`. Each side
+/// names only the files with at least one of its projects: a file naming no project is
+/// not an obligation (`mergeRuntimeCoverageObligations`).
+let internal splitRuntimeSelection (isShadow: string -> bool) (projectsByFile: Map<string, Set<string>>) =
+    let side keep =
+        projectsByFile
+        |> Map.map (fun _ projects -> Set.filter keep projects)
+        |> Map.filter (fun _ projects -> not (Set.isEmpty projects))
+
+    { Decided = side (isShadow >> not)
+      Shadowed = side isShadow }
+
+/// The one line a launch logs when a project's `runtimeSelection` is shadow: the static
+/// selection the run took, what runtime coverage would have added, and the counts, as
+/// JSON after a fixed prefix. A later full run over the same `tree` joins to it: a test
+/// that fails there in a project `beyondStatic` names, which static selection did not
+/// run, is one catch only runtime selection would have made.
+module internal RuntimeShadowLine =
+    open System.Text.Json.Nodes
+
+    [<Literal>]
+    let Prefix = "runtime-selection shadow: "
+
+    /// Relaxed escaping: a nested class's `+` stays a `+`, so the line greps as written.
+    let private options =
+        JsonSerializerOptions(Encoder = Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping)
+
+    let private str (value: string) : JsonNode = JsonValue.Create value
+    let private num (value: int) : JsonNode = JsonValue.Create value
+
+    let private sorted (values: string seq) : JsonNode =
+        JsonArray(values |> Seq.sort |> Seq.map str |> Seq.toArray)
+
+    let private objectOf (properties: (string * JsonNode) seq) : JsonNode =
+        JsonObject(properties |> Seq.map System.Collections.Generic.KeyValuePair.Create)
+
+    let private scopeOf =
+        function
+        | ProjectInFull -> "whole", Set.empty
+        | ProjectClasses classes -> "classes", classes
+        | ProjectExcept classes -> "all-but", classes
+
+    let render (tree: string option) (selection: Map<string, ProjectSelection>) (wouldAdd: RuntimeCoverageObligations) =
+        let filesByProject =
+            wouldAdd
+            |> Map.toSeq
+            |> Seq.collect (fun (file, projects) -> projects |> Map.keys |> Seq.map (fun p -> p, file))
+            |> Seq.groupBy fst
+            |> Seq.map (fun (project, pairs) -> project, pairs |> Seq.map snd |> Set.ofSeq)
+            |> Map.ofSeq
+
+        let named =
+            selection
+            |> Map.toSeq
+            |> Seq.sumBy (fun (_, s) ->
+                match s with
+                | ProjectClasses classes -> Set.count classes
+                | _ -> 0)
+
+        let staticNode =
+            objectOf
+                [ "projects", num (Map.count selection)
+                  "wholeProjects", num (selection |> Map.filter (fun _ s -> s = ProjectInFull) |> Map.count)
+                  "classes", num named
+                  "byProject",
+                  objectOf (
+                      selection
+                      |> Map.toSeq
+                      |> Seq.map (fun (project, s) ->
+                          let scope, classes = scopeOf s
+                          project, objectOf [ "scope", str scope; "classes", sorted classes ])
+                  ) ]
+
+        let wouldAddNode =
+            objectOf
+                [ "granularity", str "project"
+                  "projects", num (Map.count filesByProject)
+                  "files", num (wouldAdd |> Map.filter (fun _ ps -> not (Map.isEmpty ps)) |> Map.count)
+                  "beyondStatic",
+                  sorted (
+                      filesByProject
+                      |> Map.keys
+                      |> Seq.filter (fun project -> Map.tryFind project selection <> Some ProjectInFull)
+                  )
+                  "byProject",
+                  objectOf (
+                      filesByProject
+                      |> Map.toSeq
+                      |> Seq.map (fun (project, files) -> project, sorted files)
+                  ) ]
+
+        let line =
+            objectOf
+                [ "v", num 1
+                  "tree", (tree |> Option.map str |> Option.toObj)
+                  "static", staticNode
+                  "wouldAdd", wouldAddNode ]
+
+        Prefix + line.ToJsonString options
+
+let internal reportRuntimeCoverageWidenings
+    (warn: string -> unit)
+    (isShadow: string -> bool)
+    (selection: RuntimeCoverageSelection)
+    =
     for project, reason in selection.Widenings do
+        let widening =
+            if isShadow project then
+                "shadow: would widen to every test in that configured project; not selected"
+            else
+                "widening to every test in that configured project"
+
         match reason with
-        | MissingBaseline ->
-            warn
-                $"runtime coverage: project '%s{project}' has no complete baseline; widening to every test in that configured project"
+        | MissingBaseline -> warn $"runtime coverage: project '%s{project}' has no complete baseline; %s{widening}"
         | StaleBaseline observedAt ->
             warn
-                $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; widening to every test in that configured project"
+                $"runtime coverage: project '%s{project}' complete baseline from %O{observedAt} is older than %O{RuntimeCoverageMaxAge}; %s{widening}"
 
 /// The causes of unknown verification debt (`VerificationDebt.UnknownDebt`), in one clause.
 let internal describeUnknownDebt (causes: string list) = String.concat "; " causes

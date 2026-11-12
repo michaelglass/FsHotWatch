@@ -56,6 +56,10 @@ type VerificationDebt =
         Baseline: FullSuiteBaseline.Baseline option
         /// File-granular runtime coverage obligations, per project generation. Durable.
         RuntimeObligations: RuntimeCoverageObligations
+        /// What runtime coverage would have obligated for the projects whose
+        /// `runtimeSelection` is shadow. Logged per launch, never selected, never owed: no
+        /// verdict, skip or baseline reads it. In memory only.
+        ShadowRuntime: RuntimeCoverageObligations
         /// Projects whose runtime coverage did not ingest, each with why. Each runs in full
         /// until a run of it passes (and so ingests). Durable (`CoverageNotIngested`).
         CoverageNotIngested: Map<string, string>

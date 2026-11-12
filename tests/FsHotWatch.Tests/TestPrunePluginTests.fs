@@ -257,7 +257,8 @@ let ``a zero-symbol FileChecked forces its runtime-covered project in full`` () 
                   Partial = Path.Combine(tmpDir, PartialName)
                   Cobertura = Path.Combine(tmpDir, CoberturaName)
                   IncludeInRatchet = false
-                  ArgsTemplate = "--coverage-output {output}" }
+                  ArgsTemplate = "--coverage-output {output}"
+                  RuntimeSelection = RuntimeSelectionMode.Decide }
 
         let dbPath = Path.Combine(tmpDir, "test.db")
         let db = Database.create dbPath
@@ -4242,7 +4243,8 @@ let ``buildCoverageArgs picks baseline on full run and partial on filtered run``
           Partial = "/tmp/cov/partial.cobertura.xml"
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
           IncludeInRatchet = true
-          ArgsTemplate = DefaultCoverageArgsTemplate }
+          ArgsTemplate = DefaultCoverageArgsTemplate
+          RuntimeSelection = RuntimeSelectionMode.Decide }
 
     let full = buildCoverageArgs paths false
     test <@ full.Contains("baseline.cobertura.xml") @>
@@ -4262,7 +4264,8 @@ let ``default template uses an MTP-accepted output format`` () =
           Partial = "/tmp/cov/partial.cobertura.xml"
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
           IncludeInRatchet = true
-          ArgsTemplate = DefaultCoverageArgsTemplate }
+          ArgsTemplate = DefaultCoverageArgsTemplate
+          RuntimeSelection = RuntimeSelectionMode.Decide }
 
     let args = buildCoverageArgs paths false
     let mtpAccepts = [ "coverage"; "xml"; "cobertura" ]
@@ -4284,7 +4287,8 @@ let ``buildCoverageArgs honors a custom ArgsTemplate with {output} substitution`
           Partial = "/tmp/cov/P.xml"
           Cobertura = "/tmp/cov/C.xml"
           IncludeInRatchet = true
-          ArgsTemplate = "--custom-collector --out \"{output}\" --extra" }
+          ArgsTemplate = "--custom-collector --out \"{output}\" --extra"
+          RuntimeSelection = RuntimeSelectionMode.Decide }
 
     let full = buildCoverageArgs paths false
     test <@ full = "--custom-collector --out \"/tmp/cov/B.xml\" --extra" @>
@@ -4300,7 +4304,8 @@ let ``buildCoverageArgs treats a template missing {output} as invalid`` () =
           Partial = "/tmp/cov/P.xml"
           Cobertura = "/tmp/cov/C.xml"
           IncludeInRatchet = true
-          ArgsTemplate = "--broken-template-no-placeholder" }
+          ArgsTemplate = "--broken-template-no-placeholder"
+          RuntimeSelection = RuntimeSelectionMode.Decide }
 
     let ex = Assert.ThrowsAny(fun () -> buildCoverageArgs paths false |> ignore)
 
@@ -4418,7 +4423,7 @@ let ``runtime widening is diagnosed when the AST change has zero symbols`` () =
 
     // No symbol list participates in this reporting boundary: a file-level runtime
     // widening remains visible even when symbol extraction yielded [] for the edit.
-    reportRuntimeCoverageWidenings messages.Add selection
+    reportRuntimeCoverageWidenings messages.Add (fun _ -> false) selection
 
     test <@ messages.Count = 2 @>
     test <@ messages.[0].Contains "MissingRuntimeTests" @>
@@ -4930,7 +4935,8 @@ cp "%s{source}" "$output"
                   Partial = Path.Combine(projectDir, PartialName)
                   Cobertura = sharedOut
                   IncludeInRatchet = project = "UnitTests" || integrationEnabled
-                  ArgsTemplate = "--coverage-output {output}" }
+                  ArgsTemplate = "--coverage-output {output}"
+                  RuntimeSelection = RuntimeSelectionMode.Decide }
 
         let host = createModelHost (Unchecked.defaultof<_>) dir
 

@@ -732,6 +732,24 @@ let internal settleDebt (facts: DebtSettlementFacts) : DebtSettlement =
                 RuntimeObligations =
                     retireRuntimeCoverageObligations debt.RuntimeObligations retiredRuntime projectPassed }
 
+    // What runtime coverage would have added to this run, for a shadow project, is spent
+    // by the run it was logged beside: it was never selected, so nothing here may treat it
+    // as covered or owed. Only a project that came back red keeps it, for the run that
+    // retries it, as a deciding project's obligation would stay.
+    let debt =
+        if aborted || Map.isEmpty launch.RuntimeShadow then
+            debt
+        else
+            // Per project, not a run-level verdict: a project this run did not launch was
+            // not red, so what was logged beside the run is spent for it too.
+            let notRed project =
+                match Map.tryFind project completed.Results with
+                | Some result -> TestResult.verifiedGreen result
+                | None -> true
+
+            { debt with
+                ShadowRuntime = retireRuntimeCoverageObligations debt.ShadowRuntime launch.RuntimeShadow notRed }
+
     // A project this run executed UNFILTERED and passed, over the input
     // tree it launched against, ran every test a trigger raised for it
     // during the run could ask for: a scan re-deriving its runtime

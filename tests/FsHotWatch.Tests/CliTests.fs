@@ -222,6 +222,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               CollectCoverage = cov
               Coverage = cov
               CoverageArgsTemplate = None
+              RuntimeSelection = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
               TimeoutSec = None
               ReportVerificationFormat = FsHotWatch.TestPrune.PluginTypes.AutoDetect
               Starvation = None

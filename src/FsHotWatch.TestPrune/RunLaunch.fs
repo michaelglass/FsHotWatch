@@ -80,6 +80,10 @@ type TestRunLaunch =
         /// the symbol queue. Each project runs unfiltered; only those exact file
         /// obligations may be retired by its green result.
         RuntimeProjectsByFile: RuntimeCoverageObligations
+        /// What runtime coverage would have added to this run for the projects whose
+        /// `runtimeSelection` is shadow (`VerificationDebt.ShadowRuntime` at launch). Never
+        /// selected; its completion retires it unless the project came back red.
+        RuntimeShadow: RuntimeCoverageObligations
         Selection: Map<string, ProjectSelection>
         /// The selection this run would have been launched against had
         /// `confirm` not widened the scope to full — i.e. what `check` would have run over

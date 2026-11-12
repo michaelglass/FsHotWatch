@@ -51,15 +51,20 @@ open FsHotWatch.TestPrune.AffectedSelection
 
 /// The fixed configuration a run reads.
 type internal RunConfig =
-    { RepoRoot: string
-      ConfiguredTestProjects: TestConfig list
-      RunnableProjects: Set<string>
-      LaunchDeadline: TimeSpan
-      MaxParallelProjects: int option
-      BeforeRun: (Guid -> HookStep.Tracker -> unit) option
-      AfterRun: (TestResults -> unit) option
-      CoveragePaths: (string -> CoveragePaths option) option
-      Traces: TraceWiring option }
+    {
+        RepoRoot: string
+        ConfiguredTestProjects: TestConfig list
+        RunnableProjects: Set<string>
+        LaunchDeadline: TimeSpan
+        MaxParallelProjects: int option
+        BeforeRun: (Guid -> HookStep.Tracker -> unit) option
+        AfterRun: (TestResults -> unit) option
+        CoveragePaths: (string -> CoveragePaths option) option
+        /// The projects whose `runtimeSelection` is shadow. While any is configured, every
+        /// impact launch logs a `RuntimeShadowLine`.
+        RuntimeShadowProjects: Set<string>
+        Traces: TraceWiring option
+    }
 
 /// How a run classifies the debt it launches against.
 type internal RunDebt =
@@ -844,6 +849,7 @@ let internal assembleLaunch
           TestHostStartedAt = None
           CoveringProjectsBySymbol = coveringProjectsBySymbol
           RuntimeProjectsByFile = launchedRuntimeObligations
+          RuntimeShadow = inputs.Debt.ShadowRuntime
           Selection = selection
           WouldHaveRun = wouldHaveRun
           Reused = Map.empty
