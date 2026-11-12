@@ -205,13 +205,32 @@ let list (projects: Types.ProjectOptions list) : EvaluationInputs =
       Listings = fileSystem.Listings
       EnvNames = List.ofSeq envNames }
 
-/// The builds that decide what an evaluation produces besides its inputs: fshw's, Ionide's
-/// (its global properties and design-time targets), and the MSBuild that runs it.
+/// What fshw itself contributes to an options record's key: how it evaluates a project
+/// and records what the evaluation read (`list`, `RecordingFileSystem`), and how it files
+/// the options (`OptionsRecords`' key terms and record formats).
+///
+/// BUMP IT BY HAND for any change that makes a record an older fshw filed wrong for this
+/// one: a recorded input added or dropped, a global property or design-time target fshw
+/// sets, a re-spelled key term. A bump costs every workspace one cold evaluation; a missed
+/// bump replays options this build would not have produced, so when in doubt, bump.
+///
+/// It replaces fshw's own assembly identity in the key (AUTOMATION-1616), which moved with
+/// every build and so made every release re-evaluate every project. `RecordKeyGoldenTests`
+/// pins the request key and fails on any change to how it is computed.
+[<Literal>]
+let OptionsRecordSchema = "fshw-options-semantics-v1"
+
+/// The toolchain an options record is keyed by, from its parts: Ionide's build (its
+/// global properties and design-time targets), the MSBuild that runs it, and fshw's
+/// options-record `schema`.
+let toolchainOf (ionide: string) (msbuild: string) (schema: string) : string =
+    [ ionide; msbuild; $"fshw-options-schema=%s{schema}" ] |> String.concat ";"
+
+/// The builds that decide what an evaluation produces besides its inputs: Ionide's and the
+/// MSBuild that runs it (the SDK's), named exactly, and `OptionsRecordSchema` for fshw's own
+/// part.
 let toolchain () : string =
-    [ typeof<EvaluationInputs>.Assembly
-      typeof<WorkspaceLoader>.Assembly
-      typeof<Project>.Assembly ]
-    |> List.map (fun assembly ->
-        let name = assembly.GetName()
-        $"%s{name.Name}@%O{name.Version}/%O{assembly.ManifestModule.ModuleVersionId}")
-    |> String.concat ";"
+    toolchainOf
+        (CheckCache.assemblyIdentity typeof<WorkspaceLoader>.Assembly)
+        (CheckCache.assemblyIdentity typeof<Project>.Assembly)
+        OptionsRecordSchema
