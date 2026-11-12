@@ -167,14 +167,14 @@ let internal runTestsWithImpactWith
             let baselineEquivalent =
                 nothingOwed inputs.Debt && hasCachedResults && not treeUnverified
 
-            // Route 2 needs a run of this session behind it all the same: a skip earns no
-            // evidence, it only keeps what an earlier run earned (`retainedForZeroSelection`),
-            // and the verdict waits for evidence under the current model. A daemon that has
-            // run nothing yet, such as one whose first launch waited on a checkout baseline
-            // and found only uncovered symbols, would skip and never answer `check`
-            // (AUTOMATION-1587). It runs instead, as its first launch always has.
+            // Route 2 is not taken by a launch that selects against a checkout baseline with
+            // no run of this session behind it: its evidence tree is T, a tree this daemon
+            // never ran, so a skip would keep no evidence of its own and `check` would never
+            // be answered (AUTOMATION-1587). It runs instead, as its first launch always has.
+            // A plain cold start keeps route 2: there it is what resolves the check.
             let nothingToVerify =
-                UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered && inputs.SessionRan
+                UncoveredChanges.isAll inputs.ChangedSymbolsAllUncovered
+                && not inputs.OnCheckoutBaselineOnly
 
             let nothingForced =
                 totalClasses = 0 && Set.isEmpty forceRunProjects && not hasQuarantinedFailures
