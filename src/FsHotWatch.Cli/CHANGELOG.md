@@ -13,6 +13,11 @@
   see the FsHotWatch.TestPrune changelog. Any other value, or `"shadow"` on a project that collects no coverage for
   impact, is refused at load.
 
+- fix: the analyzers task cache no longer replays an entry across a compiler-service, FSharp.Core or analyzer SDK change,
+  and its host code is covered by a named, golden-tested schema constant (AUTOMATION-1629; see the FsHotWatch.Analyzers
+  changelog). **One-time effect of upgrading:** every analyzers cache entry is re-keyed once, so the first check runs the
+  analyzers on every file; check, options and analysis records are unaffected.
+
 ## 0.14.0-alpha.145 - 2026-11-12
 
 - chore: rebuild to bundle updated dependencies

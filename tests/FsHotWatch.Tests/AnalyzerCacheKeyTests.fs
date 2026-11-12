@@ -265,3 +265,101 @@ let ``a file whose used signatures cannot be described has no analyzers key`` ()
             |> withUndescribableOptions
 
         test <@ keyFor (Some root) DiagnosticSeverity.Hint result = None @>)
+
+// ---------------------------------------------------------------------------
+// the host: what fshw contributes to a key (AUTOMATION-1629, the 1616 rule)
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the host's terms name the checker build, the analyzer SDK release and the task schema`` () =
+    let terms = AnalyzerHost.keyTerms AnalyzerHost.current
+    test <@ terms |> List.map fst = [ "plugin-version"; "checker"; "analyzer-sdk" ] @>
+    test <@ List.contains ("plugin-version", AnalyzerTaskSchema) terms @>
+    // The analyzers read the typed tree FCS built: an FCS or FSharp.Core build can change
+    // what they see without moving the file's diagnostics, so the key names it exactly.
+    test <@ List.contains ("checker", CheckCache.toolchainIdentity) terms @>
+    // The SDK builds the context the analyzers run against; it is named by release, not
+    // by module version id, so a rebuild of the same release replays.
+    let sdk = terms |> List.find (fst >> (=) "analyzer-sdk") |> snd
+    test <@ sdk.StartsWith "FSharp.Analyzers.SDK@" @>
+    test <@ not (sdk.Contains "+") && not (sdk.Contains "/") @>
+    // fshw's own build is never a term: it moves with every release (AUTOMATION-1616).
+    test <@ terms |> List.forall (fun (_, value) -> not (value.Contains "FsHotWatch")) @>
+
+/// A host with every component spelled out, so a key under it is the same on every
+/// machine and every build of fshw.
+let private hostN: AnalyzerHost =
+    { TaskSchema = AnalyzerTaskSchema
+      Checker =
+        "FSharp.Compiler.Service@43.12.402.0/11111111-1111-1111-1111-111111111111;\
+         FSharp.Core@10.0.0.0/22222222-2222-2222-2222-222222222222;fshw-check-schema=golden"
+      AnalyzerSdk = "FSharp.Analyzers.SDK@0.39.2" }
+
+let private keyUnder (host: AnalyzerHost) (root: string) (result: FileCheckResult) =
+    let handler =
+        createHostedWithSeams host (Some root) [] Map.empty None DiagnosticSeverity.Warning None runSafely
+
+    handler.CacheKey.Value handler.Init (FileChecked result)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an entry filed under one host is not replayed after a schema bump, an FCS or FSharp.Core build, or an SDK release``
+    ()
+    =
+    withTempDir "host-moved" (fun root ->
+        let result = resultIn root
+        let filed = (keyUnder hostN root result).Value
+
+        // Control: the same host replays, so the misses below are the host's doing.
+        match lookupAcross root filed root (keyUnder hostN root result).Value "src/A.fs" with
+        | CacheHit _ -> ()
+        | CacheMiss reason -> failwith $"expected a hit under an unchanged host, got %A{reason}"
+
+        let moved =
+            [ "schema",
+              { hostN with
+                  TaskSchema = AnalyzerTaskSchema + "-bumped" }
+              "FCS",
+              { hostN with
+                  Checker = hostN.Checker.Replace("43.12.402.0", "43.12.403.0") }
+              "FSharp.Core",
+              { hostN with
+                  Checker = hostN.Checker.Replace("10.0.0.0", "10.0.1.0") }
+              "SDK",
+              { hostN with
+                  AnalyzerSdk = "FSharp.Analyzers.SDK@0.40.0" } ]
+
+        for what, host in moved do
+            match lookupAcross root filed root (keyUnder host root result).Value "src/A.fs" with
+            | CacheMiss _ -> ()
+            | CacheHit _ -> failwith $"an entry filed before the %s{what} change was replayed after it")
+
+/// Fails with the instruction a changed key needs.
+let private golden (what: string) (expected: 'T) (actual: 'T) =
+    if actual <> expected then
+        failwith
+            $"%s{what} changed. An analyzers key is a contract with every entry an earlier fshw \
+              filed: bump AnalyzerTaskSchema, then update the golden.\nexpected: %A{expected}\nactual:   %A{actual}"
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``golden: the analyzers task-cache key of a fixed file under a fixed host`` () =
+    golden
+        "The host's key terms"
+        [ "plugin-version"; "checker"; "analyzer-sdk" ]
+        (AnalyzerHost.keyTerms hostN |> List.map fst)
+
+    golden
+        "taskKeyWith"
+        "f8a9a2eb5780ba6296fe0bfb57e6a98abd2b94583645e0726b3c377ea0227562"
+        (ContentHash.value (taskKeyWith hostN [ "file", "src/A.fs"; "source", "let x = 1\n" ]))
+
+    withTempDir "golden" (fun root ->
+        golden
+            "The plugin's key for the fixture file"
+            "59f16753d53665fc56910dd58c0134bd0c9021989a70bfb78b0c12e014d4a667"
+            (ContentHash.value (keyUnder hostN root (resultIn root)).Value))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an SDK is named by its release, build metadata dropped, or by its assembly version when it states none`` () =
+    let version = System.Version(0, 39, 2, 0)
+    test <@ AnalyzerHost.sdkIdentityOf "SDK" version (Some "0.39.2+abc123") = "SDK@0.39.2" @>
+    test <@ AnalyzerHost.sdkIdentityOf "SDK" version None = "SDK@0.39.2.0" @>
