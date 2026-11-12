@@ -22,6 +22,7 @@ let private usage =
                    [--path-from TypeA --path-to TypeB [--block TypeC,…]]
   fshw-bench summarize <jsonl> [--allow-contended]
   fshw-bench hash-cost [--iterations 1000] [--warmup 100]
+  fshw-bench probe-cost [--records 2781] [--bytes 122880]
   fshw-bench key-cost --project <fsproj> [--repo .]
                       [--edit-file <repo-relative path> [--body "<before>=><after>"] [--shape "<before>=><after>"]]
   fshw-bench replay --target <repo> --workspace <name> [--revset <revset> | --count N [--from main@origin]]
@@ -250,6 +251,22 @@ let main argv =
         HashCost.measure (count "warmup" 100) (count "iterations" 1000) (HashCost.representativeInputs ())
         |> HashCost.render
         |> printfn "%s"
+
+        0
+    | "probe-cost" ->
+        let count key fallback =
+            one opts key |> Option.map int |> Option.defaultValue fallback
+
+        // Always a directory of its own: it is deleted afterwards.
+        let root =
+            Path.Combine(Path.GetTempPath(), "fshw-probe-cost-" + Guid.NewGuid().ToString "N")
+
+        try
+            ProbeCost.compare root (count "records" 2781) (count "bytes" 122880)
+            |> List.iter (ProbeCost.render >> printfn "%s")
+        finally
+            if Directory.Exists root then
+                Directory.Delete(root, true)
 
         0
     | "key-cost" ->

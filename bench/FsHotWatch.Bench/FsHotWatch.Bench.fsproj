@@ -27,6 +27,7 @@
     <Compile Include="Instruments.fs" />
     <Compile Include="HashCost.fs" />
     <Compile Include="KeyCost.fs" />
+    <Compile Include="ProbeCost.fs" />
     <Compile Include="GraphReport.fs" />
     <Compile Include="ReplayModel.fs" />
     <Compile Include="ReplayRun.fs" />
