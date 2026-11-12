@@ -993,17 +993,6 @@ let ``a different toolchain gives a different cache key for the same file, optio
         test <@ keyUnder "fcs-1" = keyUnder "fcs-1" @>
         test <@ keyUnder "fcs-1" <> keyUnder "fcs-2" @>)
 
-[<Fact(Timeout = 15000)>]
-let ``toolchainIdentity names the exact compiler service, FSharp.Core and fshw builds`` () =
-    // A module version id changes with every build of an assembly, so it names the
-    // checker's code (and the settings fshw creates it with) more exactly than a version.
-    let mvid (t: Type) =
-        string t.Assembly.ManifestModule.ModuleVersionId
-
-    test <@ toolchainIdentity.Contains(mvid typeof<FSharp.Compiler.CodeAnalysis.FSharpChecker>) @>
-    test <@ toolchainIdentity.Contains(mvid typeof<option<int>>) @>
-    test <@ toolchainIdentity.Contains(mvid typeof<CacheKey>) @>
-
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``makeCacheKey keys under this process's toolchain`` () =
     withTempDir "key-default-toolchain" (fun dir ->

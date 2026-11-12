@@ -159,8 +159,8 @@ let private replay (tree: Tree) (pipeline: CheckPipeline) (b: FSharpProjectOptio
 
     pipeline.ReplayCheck(AbsFilePath.create file, options)
 
-/// Check every file and file the records: the state a daemon leaves behind.
-let private seeded (dir: string) =
+/// Check every file and file the records under `toolchain`: the state a daemon leaves behind.
+let private seededUnder (toolchain: string) (dir: string) =
     let checker = FsHotWatch.Daemon.Daemon.createChecker ()
     let tree = treeIn checker (Path.Combine(dir, "repo"))
     let store = storeIn dir
@@ -169,6 +169,58 @@ let private seeded (dir: string) =
     let checkedNow = checkAll tree pipeline files |> Map.ofList
     let filed = pipeline.PersistCheckRecords()
     tree, store, files, checkedNow, filed
+
+/// Check every file and file the records: the state a daemon leaves behind.
+let private seeded (dir: string) = seededUnder toolchain dir
+
+/// fshw build N's checker build, and N+1's: the same FCS, FSharp.Core and record schema,
+/// a new fshw version and module id (AUTOMATION-1616).
+let private buildN: CheckCache.CheckerBuild =
+    { Fcs = "FSharp.Compiler.Service@43.12.402.0/11111111-1111-1111-1111-111111111111"
+      FSharpCore = "FSharp.Core@10.0.0.0/22222222-2222-2222-2222-222222222222"
+      Fshw = "FsHotWatch@0.10.0.110/33333333-3333-3333-3333-333333333333"
+      RecordSchema = CheckCache.CheckRecordSchema }
+
+let private buildNPlus1 =
+    { buildN with
+        Fshw = "FsHotWatch@0.10.0.111/44444444-4444-4444-4444-444444444444" }
+
+[<Fact(Timeout = 240000)>]
+let ``records filed by one fshw build replay under the next when FCS, FSharp.Core and the schema are unchanged`` () =
+    withTempDir "check-records-next-build" (fun dir ->
+        let tree, store, files, _, filed =
+            seededUnder (CheckCache.CheckerBuild.keyIdentity buildN) dir
+
+        test <@ filed = 4 @>
+
+        let next, counter =
+            restart tree (Some store) (CheckCache.CheckerBuild.keyIdentity buildNPlus1) tree.B
+
+        for file in files do
+            test <@ replay tree next tree.B file |> Option.isSome @>
+
+        test <@ counter.Started = 0 @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a schema bump, an FCS version or an FSharp.Core version re-keys every record`` () =
+    withTempDir "check-records-rekey" (fun dir ->
+        let tree, store, files, _, _ =
+            seededUnder (CheckCache.CheckerBuild.keyIdentity buildN) dir
+
+        let rekeyed =
+            [ { buildNPlus1 with
+                  RecordSchema = CheckCache.CheckRecordSchema + "-bumped" }
+              { buildNPlus1 with
+                  Fcs = "FSharp.Compiler.Service@43.12.403.0/11111111-1111-1111-1111-111111111111" }
+              { buildNPlus1 with
+                  FSharpCore = "FSharp.Core@10.0.1.0/22222222-2222-2222-2222-222222222222" } ]
+
+        for build in rekeyed do
+            let pipeline, _ =
+                restart tree (Some store) (CheckCache.CheckerBuild.keyIdentity build) tree.B
+
+            for file in files do
+                test <@ replay tree pipeline tree.B file = None @>)
 
 [<Fact(Timeout = 240000)>]
 let ``a restart replays every filed check, equal to a forced re-check, without running FCS`` () =
