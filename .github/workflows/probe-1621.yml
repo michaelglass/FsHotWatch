@@ -1,0 +1,26 @@
+name: probe-1621
+on:
+  push:
+    branches: [probe-1621-fix, probe-1621-base]
+jobs:
+  probe:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            10.0.4xx
+            11.0.100
+      - name: SDKs present (the new image's relevant difference, made deterministic)
+        run: |
+          echo "IMAGE=$ImageOS $ImageVersion"
+          dotnet --list-sdks
+          echo "repo resolves: $(dotnet --version)"
+          echo "a dir with no global.json resolves: $(cd "$(mktemp -d)" && dotnet --version)"
+      - run: dotnet tool restore
+      - run: dotnet restore
+      - run: dotnet build --warnaserror --no-restore
+      - name: FsHotWatch.Tests, the suite that went red on image 20261111.196
+        run: dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj --no-build
