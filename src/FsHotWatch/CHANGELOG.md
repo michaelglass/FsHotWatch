@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `OutcomeStore.FiledWork` states the rule for work a plugin files box-wide and also caches per workspace
+  (AUTOMATION-1609). `mayAnswerLocally` lets a per-workspace cache entry answer only once the store holds the work's
+  record. `fileIfAbsent` files only when the key is absent. TestPrune's analyses use it; the analyzers' records
+  (AUTOMATION-1585) are meant to use it the same way, through the state's `IFileCacheReadGuard`.
+
 ## 0.10.0-alpha.110 - 2026-11-12
 
 - fix: an options record is no longer refused because a directory above the checkout changed, and is never filed under

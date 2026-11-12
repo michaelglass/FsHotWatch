@@ -330,7 +330,11 @@ let internal createWithEvidenceAndQueries
         { initialStateOf initialMode mayReplay loadedDebt restored with
             IndexGuard =
                 IndexedAnalysis.Guard(
-                    mayReplay,
+                    // AUTOMATION-1609: the task cache answers a file only once its analysis
+                    // is filed box-wide; until then the file is analysed again, and filed.
+                    (fun pending result ->
+                        mayReplay pending result
+                        && AnalysisRecords.mayAnswerLocally analysisRecords repoRoot result),
                     fun result ->
                         analysisRecords
                         |> Option.exists (fun store -> AnalysisRecords.holds store repoRoot result)

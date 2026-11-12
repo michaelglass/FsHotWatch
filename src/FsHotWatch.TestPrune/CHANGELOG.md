@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a workspace whose TestPrune task cache answers a file now still files that file's analysis box-wide, so a fresh
+  workspace at the same tree replays it instead of demanding a live check (AUTOMATION-1609). A task-cache hit skipped the
+  analysis and with it the filing, so a cache-warm workspace filed nothing: one experiment's fresh workspace demanded
+  2,780 live checks for test-prune. A cache entry records that the analysis ran, not what it produced, so it cannot file
+  the record. The task cache now answers a file only once the store holds that file's analysis under its exact key.
+  Until then the file is analysed again from the check already in hand and filed. Filing now looks the key up first and
+  files only when it is absent, so a key the store holds is never filed twice (part 1 of AUTOMATION-1596).
+
 ## 0.13.0-alpha.110 - 2026-11-12
 
 - fix: flakiness history and the declared-class reader keep the rows of a CTRF report whose string literals carry raw
