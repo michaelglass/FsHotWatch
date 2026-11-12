@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a wait takes one reading of its clock per sample (AUTOMATION-1646). `waitForAllTerminal`'s loop read its clock
+  three times a tick (the wedge sample, the deadline, the log cadence), so a clock moved between them was seen by the
+  deadline and log reads but not by the wedge sample. Declared work outlasting the stall threshold could then be charged
+  as silence the moment it ended, and the fold after it named WEDGED at once. In production the gap is microseconds; in
+  tests driven by `ManualClock`, whose `AwaitSamples` counts two reads as one whole sample, it reddened `the fold after
+  a declaration longer than the stall threshold is not instantly wedged` under gate load.
 - fix: a task-cache miss reason no longer depends on unrelated work (AUTOMATION-1647). The process-wide key-fingerprint
   registry behind miss reasons (`TaskCache.KeyFingerprints`) is bounded at 8192 and used to drop every entry when it
   filled, so a key minted before some other work crossed the bound lost its fingerprint and its miss reason degraded from

@@ -69,7 +69,9 @@ type ManualClock(start: DateTime) =
     /// Returns once the code under test has read the clock twice more, or `running` has
     /// ended and so stopped reading. A read counted after this call starts sees every
     /// `Advance` made before it, so this is how a test waits for a moved clock to be SEEN,
-    /// instead of for time to pass.
+    /// instead of for time to pass. That holds only when the code under test takes ONE reading
+    /// per sample; a loop that reads several times a tick can satisfy the count without a
+    /// whole sample (`a wait reads its clock once to start and once per sample`).
     member this.AwaitSamples(running: Tasks.Task) =
         let seen = this.Reads
 

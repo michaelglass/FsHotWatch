@@ -721,3 +721,96 @@ let ``a fold that hangs after its declaration ends is still named wedged`` () =
     finally
         declaredRelease.Set()
         tailRelease.Set()
+
+// ---------------------------------------------------------------------------
+// One clock reading per sample (AUTOMATION-1646): what `ManualClock.AwaitSamples` relies on.
+// ---------------------------------------------------------------------------
+//
+// `AwaitSamples` returns after two more clock reads and promises that a whole sample has
+// then seen every earlier `Advance`. That holds only if one detector sample is one read.
+// The loop used to read three times a tick (the stall sample, the deadline, the log
+// cadence), so a test's `Advance` could land after the stall sample and be "seen" by the
+// other two reads alone: the detector never sampled the moved time while the declaration
+// was live, and once the declaration ended charged the whole advance as silence. That is
+// the 2026-11-12 load flake in `the fold after a declaration longer than the stall
+// threshold is not instantly wedged`; load only widened the window between the reads.
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a wait reads its clock once to start and once per sample`` () =
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let clock = ManualClock(DateTime.UtcNow)
+
+    // A host at rest resolves on its first sample.
+    Daemon.waitForAllTerminalCoreOn
+        clock.WallNow
+        host
+        (TimeSpan.FromMinutes 10.0)
+        (TimeSpan.FromSeconds 2.0)
+        CancellationToken.None
+    |> fun t -> t.GetAwaiter().GetResult()
+
+    test <@ clock.Reads = 2L @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a clock moved right after a sample is read is seen by a whole sample inside the declaration`` () =
+    use declaredRelease = new ManualResetEventSlim(false)
+    use tailEntered = new ManualResetEventSlim(false)
+    use tailRelease = new ManualResetEventSlim(false)
+    use twoReadsAfterMove = new ManualResetEventSlim(false)
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let clock = ManualClock(DateTime.UtcNow)
+    let threshold = TimeSpan.FromSeconds 2.0
+
+    // The worst alignment, made certain rather than left to the scheduler: the clock moves
+    // inside a read, after that read's value is taken, and the test is woken (an event, not a
+    // poll) the moment the detector has read the clock twice more, which is all
+    // `AwaitSamples` waits for.
+    let moveOnNextRead = ref false
+    let readsAtMove = ref -1L
+    let reads = ref 0L
+
+    let stallClock () =
+        let now = clock.WallNow()
+        let n = Interlocked.Increment(&reads.contents)
+
+        if Interlocked.Exchange(&moveOnNextRead.contents, false) then
+            clock.Advance(threshold + TimeSpan.FromMilliseconds 500.0)
+            Volatile.Write(&readsAtMove.contents, n)
+        else
+            let movedAt = Volatile.Read(&readsAtMove.contents)
+
+            if movedAt >= 0L && n >= movedAt + 2L then
+                twoReadsAfterMove.Set()
+
+        now
+
+    try
+        host.RegisterHandler(
+            declaredThenTailHandler
+                "selecting-plugin"
+                (TimeSpan.FromMinutes 20.0)
+                declaredRelease
+                tailEntered
+                tailRelease
+        )
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        test <@ waitUntilTrue (fun () -> host.WorkSnapshot.SupervisedWorkInFlight) HangWaitMs @>
+
+        let wait =
+            Daemon.waitForAllTerminalCoreOn stallClock host (TimeSpan.FromMinutes 10.0) threshold CancellationToken.None
+
+        clock.AwaitSamples wait
+        Volatile.Write(&moveOnNextRead.contents, true)
+        Assert.True(twoReadsAfterMove.Wait HangWaitMs, "the detector must read its clock twice after the move")
+        test <@ not wait.IsCompleted @>
+
+        declaredRelease.Set()
+        Assert.True(tailEntered.Wait HangWaitMs, "the remainder of the fold must start")
+
+        // No time has passed since a whole sample saw the declaration at the moved time.
+        clock.AwaitSamples wait
+        test <@ not wait.IsCompleted @>
+    finally
+        declaredRelease.Set()
+        tailRelease.Set()
