@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a test-evidence reuse is refused when the outcome store holds a newer fail at the project's K_P (AUTOMATION-1615,
+  ADR-059 §34). Ordinary reuse read only the evidence store, which holds greens, so when another checkout (or a
+  cleared local ledger) had since failed the project on the same bytes, a fresh checkout reused the older green. Each
+  hit now asks `TestEvidenceRun.reuseRefusal`: a newest full fail with no §25 clearance, an impact fail filed after the
+  full green, or a record at either key that cannot be read, each launches the project and logs why. Fail-then-pass
+  still reuses; a fail under a different K_P does not bear.
+
 - fix: a workspace whose TestPrune task cache answers a file now still files that file's analysis box-wide, so a fresh
   workspace at the same tree replays it instead of demanding a live check (AUTOMATION-1609). A task-cache hit skipped the
   analysis and with it the filing, so a cache-warm workspace filed nothing: one experiment's fresh workspace demanded

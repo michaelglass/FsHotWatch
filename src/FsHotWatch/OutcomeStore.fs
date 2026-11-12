@@ -349,8 +349,9 @@ type Store(settings: Settings) =
     /// would return the older pass, and quarantining it would make that answer permanent.
     /// So the whole key is a miss and nothing is moved, as in `TestEvidenceStore.Lookup`.
     /// `Gc` then sees no readable record and evicts the key as expired unless it is kept: a miss
-    /// either way.
-    let readKeyFiles (keyValue: ActionKey.KeyValue) : (Record * (string * string option)) list =
+    /// either way. `Error` names the file and why, for a reader that must not take it for an
+    /// empty key (AUTOMATION-1615).
+    let tryReadKeyFiles (keyValue: ActionKey.KeyValue) : Result<(Record * (string * string option)) list, string> =
         let dir = directoryOf keyValue
 
         let files =
@@ -380,7 +381,7 @@ type Store(settings: Settings) =
             settings.Log
                 $"outcome store: %s{Path.GetFileName file} could not be read, so %s{keyValue.Text} is a miss: %s{why}"
 
-            []
+            Error $"%s{Path.GetFileName file} could not be read: %s{why}"
         | None ->
             [ for file, text in read do
                   match text |> Result.bind decode with
@@ -388,6 +389,10 @@ type Store(settings: Settings) =
                   | Ok _ -> quarantine file "the record is filed under another key"
                   | Error why -> quarantine file why ]
             |> chronological
+            |> Ok
+
+    let readKeyFiles (keyValue: ActionKey.KeyValue) : (Record * (string * string option)) list =
+        tryReadKeyFiles keyValue |> Result.defaultValue []
 
     /// Every readable record filed under `keyValue` with its outputs, oldest first.
     let readKeyWithOutputs (keyValue: ActionKey.KeyValue) : (Record * string option) list =
@@ -453,6 +458,13 @@ type Store(settings: Settings) =
 
     /// Every record of `keyValue`, oldest first.
     member _.History(keyValue: ActionKey.KeyValue) : Record list = readKey keyValue
+
+    /// Every record of `keyValue`, oldest first, or `Error` naming a file at the key that could
+    /// not be READ (AUTOMATION-1615). `History` reads that key as empty, which is right for a
+    /// miss and wrong for a reader asking whether a newer fail is filed: the unreadable file may
+    /// be that fail.
+    member _.TryHistory(keyValue: ActionKey.KeyValue) : Result<Record list, string> =
+        tryReadKeyFiles keyValue |> Result.map (List.map fst)
 
     /// `Lookup` with the record's outputs: `None` is a miss.
     member _.LookupWithOutputs(keyValue: ActionKey.KeyValue) : (Record * string option) option =

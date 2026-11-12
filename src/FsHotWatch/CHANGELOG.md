@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `OutcomeStore.Store.TryHistory` returns a key's records, or `Error` when a file at the key could not be read,
+  where `History` and `Lookup` answer such a key as empty (AUTOMATION-1615). A reader asking whether a newer fail is
+  filed must not take an unreadable record for none.
+
 - feat: checks held back from filing behind a file with no check record are logged (AUTOMATION-1606). After each
   filing, the daemon logs `N check(s) not filed: provisional behind <file>, which has no check record in its project`,
   so a file that never gets a record (a check that never completes in that project) is visible instead of silently

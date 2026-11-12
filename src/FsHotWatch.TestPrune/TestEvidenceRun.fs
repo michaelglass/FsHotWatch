@@ -123,6 +123,89 @@ let keysOf
             |> Map.ofList,
             0L
 
+/// The outcome-store action key of a test project's run over K_P `key`, in `scope`
+/// (`full` or `impact`). K_P's own labels travel in as `kp:<label>`, so a miss names the K_P
+/// input that moved (ADR-059 §1).
+let testActionKey (key: TestEvidenceKey.Key) (scope: string) : ActionKey.ActionKey =
+    ActionKey.create
+        "test"
+        ((key.Labels |> List.map (fun (label, digest) -> "kp:" + label, digest))
+         @ [ "kp", key.Value; "run-scope", scope ])
+
+/// Why the outcome store will not let a full green earned at `earnedAt` under K_P `key`
+/// stand in for a run of the project (ADR-059 §34, AUTOMATION-1615), or `None` when it lets
+/// it. Every reuse asks this one question: `plan`'s ordinary reuse, and anything else that
+/// answers a project from the test-evidence store.
+///
+/// The test-evidence store holds greens only. A fail filed later at the same K_P (a flake,
+/// or another checkout's run) lives in the outcome store, whose answer for a key is its
+/// newest record (§2). So the reuse is refused when:
+///   * the newest record at the FULL key is a fail no §25 clearance names (a later full pass,
+///     or a clearance filed after the fail, lets the green stand: fail-then-pass);
+///   * an IMPACT-scoped fail at the same K_P is filed at or after the full green that stands
+///     (the newest full pass, the clearance, or `earnedAt` when the full key holds nothing):
+///     it failed one of the very tests that green passed, over the same bytes. Only a later
+///     full green clears it; a later impact pass may have run other tests;
+///   * a file at either key, or at the clearance, could not be READ: it may be that fail, so
+///     it is never read as "no fail" (the AUTOMATION-1568 rule).
+/// With no outcome store wired there is nothing to consult, and the evidence store alone
+/// decides, as it did before.
+let reuseRefusal
+    (outcomes: OutcomeStore.Store option)
+    (key: TestEvidenceKey.Key)
+    (earnedAt: DateTimeOffset)
+    : string option =
+    match outcomes with
+    | None -> None
+    | Some outcomes ->
+        let full = testActionKey key "full"
+
+        let unreadable (what: string) (why: string) =
+            $"its %s{what} at its K_P could not be read, so a newer fail cannot be ruled out: %s{why}"
+
+        let filedBy (r: OutcomeStore.Record) =
+            let run = r.Producer.RunId |> Option.defaultValue "an unnamed run"
+            $"""run %s{run} in %s{r.Producer.Worktree} at %s{r.RecordedAt.ToString("u")}"""
+
+        // When the full green that stands was filed, or why none stands.
+        let standing =
+            match outcomes.TryHistory full.Value with
+            | Error why -> Error(unreadable "full-run record" why)
+            | Ok history ->
+                match List.tryLast history with
+                | None -> Ok earnedAt
+                | Some pass when pass.Outcome = OutcomeStore.Outcome.Pass -> Ok pass.RecordedAt
+                | Some fail ->
+                    let clearances =
+                        match fail.Producer.RunId with
+                        | Some run -> outcomes.TryHistory (TestFailureClearance.keyOf full.Value run).Value
+                        | None -> Ok []
+
+                    match clearances with
+                    | Error why -> Error(unreadable "clearance record" why)
+                    | Ok records ->
+                        match
+                            records
+                            |> List.filter (fun c ->
+                                c.Outcome = OutcomeStore.Outcome.Pass && c.RecordedAt > fail.RecordedAt)
+                            |> List.tryLast
+                        with
+                        | Some clearance -> Ok clearance.RecordedAt
+                        | None ->
+                            Error $"a full fail at its K_P, filed by %s{filedBy fail}, is newer than any green there"
+
+        match standing with
+        | Error why -> Some why
+        | Ok since ->
+            match outcomes.TryHistory (testActionKey key "impact").Value with
+            | Error why -> Some(unreadable "impact record" why)
+            | Ok history ->
+                history
+                |> List.filter (fun r -> r.Outcome = OutcomeStore.Outcome.Fail && r.RecordedAt >= since)
+                |> List.tryLast
+                |> Option.map (fun r ->
+                    $"an impact fail at its K_P, filed by %s{filedBy r}, is newer than the full green there")
+
 /// The launch-time half of a run: every key it computed, and the projects it reuses.
 [<NoComparison; NoEquality>]
 type Plan =
@@ -144,7 +227,9 @@ type Plan =
     }
 
 /// Key every candidate, then look up the ones `eligible` admits: a project about to
-/// launch, with no outstanding failure, in a run that may consult evidence at all.
+/// launch, with no outstanding failure, in a run that may consult evidence at all. A hit
+/// is reused only when `reuseRefusal` finds no newer fail at its K_P in the outcome store:
+/// this checkout's outstanding failures say nothing of a fail another checkout filed.
 let plan
     (wiring: Wiring)
     (repoRoot: string)
@@ -162,31 +247,40 @@ let plan
         |> List.filter (fun c -> eligible c.Project)
         |> List.map (fun c ->
             let relative = Path.GetRelativePath(root, c.ProjectFile).Replace('\\', '/')
-            c.Project, keys[c.Project] |> Result.map (fun key -> wiring.Store.Lookup(relative, key)))
 
-    let hit (lookup: Result<TestEvidenceStore.Lookup, string>) =
-        match lookup with
-        | Ok(TestEvidenceStore.Lookup.Hit entry) -> Some entry
-        | Ok(TestEvidenceStore.Lookup.Miss _)
-        | Error _ -> None
+            c.Project,
+            keys[c.Project]
+            |> Result.map (fun key -> key, wiring.Store.Lookup(relative, key)))
 
-    let missReason (lookup: Result<TestEvidenceStore.Lookup, string>) =
-        match lookup with
-        | Ok(TestEvidenceStore.Lookup.Hit _) -> None
-        | Ok(TestEvidenceStore.Lookup.Miss miss) -> Some(TestEvidenceStore.describeMiss miss)
-        | Error reason -> Some $"no key: %s{reason}"
+    // Each eligible candidate's decision: the entry it reuses, or why it launches. A hit
+    // stands only while the outcome store holds no newer fail at its K_P (ADR-059 §34).
+    let decisions =
+        lookups
+        |> List.map (fun (project, lookup) ->
+            project,
+            match lookup with
+            | Ok(key, TestEvidenceStore.Lookup.Hit entry) ->
+                match reuseRefusal wiring.Outcomes key entry.Producer.EarnedAt with
+                | None -> Ok entry
+                | Some why -> Error why
+            | Ok(_, TestEvidenceStore.Lookup.Miss miss) -> Error(TestEvidenceStore.describeMiss miss)
+            | Error reason -> Error $"no key: %s{reason}")
 
     { Wiring = wiring
       OptionsHash = optionsHash
       Candidates = candidates
       LaunchKeys = keys
       Reused =
-        lookups
-        |> List.choose (fun (project, lookup) -> hit lookup |> Option.map (fun entry -> project, entry))
+        decisions
+        |> List.choose (fun (project, decision) ->
+            decision |> Result.toOption |> Option.map (fun entry -> project, entry))
         |> Map.ofList
       Misses =
-        lookups
-        |> List.choose (fun (project, lookup) -> missReason lookup |> Option.map (fun why -> project, why))
+        decisions
+        |> List.choose (fun (project, decision) ->
+            match decision with
+            | Ok _ -> None
+            | Error why -> Some(project, why))
         |> Map.ofList
       Lookups = lookups |> List.filter (snd >> Result.isOk) |> List.length
       BytesHashed = bytes }
@@ -336,15 +430,6 @@ let qualifies
     | TestsDeferred _
     | TestsErrored _
     | TestsNoMatch _ -> Error "the run verified nothing"
-
-/// The outcome-store action key of a test project's run over K_P `key`, in `scope`
-/// (`full` or `impact`). K_P's own labels travel in as `kp:<label>`, so a miss names the K_P
-/// input that moved (ADR-059 §1).
-let testActionKey (key: TestEvidenceKey.Key) (scope: string) : ActionKey.ActionKey =
-    ActionKey.create
-        "test"
-        ((key.Labels |> List.map (fun (label, digest) -> "kp:" + label, digest))
-         @ [ "kp", key.Value; "run-scope", scope ])
 
 /// The outcome-store key of each candidate's FULL run over the tree as it is NOW (ADR-059
 /// step 7b): what a lookup verdict asks the store for. A candidate with no key is absent, so
