@@ -1689,7 +1689,7 @@ worker.
   memory ≥ 15%.
 - **Phase 3, tests are records:** test-class actions in shadow (Change 3), then the selection
   machinery and §9 item 6 deleted. Gate: recall 1.0 and mutation miss-rate 0 for 2 weeks; median
-  body-edit run ≤ 300 tests.
+  body edit runs no more than its covering classes (class grain; method grain is a later question).
 - **Phase 4, constructive outputs:** traced setup, restore and build outputs in the store, so a
   fresh workspace materialises instead of building (AUTOMATION-1630). Gate: a fresh replayed gate
   ≤ 60 s; the hazard detector clean for 14 nights.
