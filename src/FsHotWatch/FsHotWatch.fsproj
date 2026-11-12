@@ -119,6 +119,7 @@
     <Compile Include="Ctrf.fs" />
     <Compile Include="RunLog.fs" />
     <Compile Include="VerdictInputs.fs" />
+    <Compile Include="ConfiguredTestRoots.fs" />
     <Compile Include="TreeHash.fs" />
     <Compile Include="TestEvidenceKey.fs" />
     <Compile Include="TestEvidenceStore.fs" />

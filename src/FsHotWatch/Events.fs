@@ -949,7 +949,8 @@ module internal EarnedEvidence =
         (launchModelGeneration: int64 option)
         (currentModelGeneration: int64 option)
         (currentInputs: Map<string, string> option)
-        // Each expected project's `.fsproj`, by name: what its identity is looked up by.
+        // Each project the model names, with its `.fsproj`: what its identity is looked up
+        // by. A project absent here is never recorded as covered.
         (projectFiles: Map<string, string>)
         (expectedProjects: Set<string>)
         (pendingObligationCount: int)
@@ -967,7 +968,7 @@ module internal EarnedEvidence =
             // Only a project that PASSED unfiltered ran every test. A red one is never
             // covered (AUTOMATION-1581): a host that ends early, as xUnit v3 does under
             // `--stop-on-fail on`, reports only the tests it reached.
-            let wholeProjectCoverage =
+            let ranWhole =
                 completed.Results
                 |> Map.toSeq
                 |> Seq.choose (fun (project, result) ->
@@ -975,7 +976,23 @@ module internal EarnedEvidence =
                     | Normal, TestsPassed(_, false, _) -> Some project
                     | _ -> None)
                 |> Set.ofSeq
-                |> Set.union baselineProjects
+
+            // A project the model does not name (a configured test project outside the
+            // discovery roots, AUTOMATION-1617) vouches for THIS completion when it ran
+            // whole, but is never recorded as covered: nothing identifies its inputs and
+            // nothing re-selects it, so carrying it would hide every later edit to it. It
+            // is owed a whole run on every launch instead (`wholeProjectGap`).
+            //
+            // Judged only against a model that names projects at all: one that names none
+            // tells no project apart from another, and the tree hash already names a
+            // configured project it cannot locate.
+            let modelled (project: string) =
+                projectFiles.IsEmpty || projectFiles.ContainsKey project
+
+            let wholeProjectCoverage =
+                Set.union ranWhole baselineProjects |> Set.filter modelled
+
+            let vouchedHere = Set.union ranWhole wholeProjectCoverage
 
             let refusals =
                 [ match completed.Outcome with
@@ -994,7 +1011,7 @@ module internal EarnedEvidence =
                       | None -> yield $"%s{project}: no result or baseline for an admitted obligation"
                       | Some result ->
                           match TestResult.verdict result with
-                          | Verified when Set.contains project wholeProjectCoverage -> ()
+                          | Verified when Set.contains project vouchedHere -> ()
                           | Verified -> yield $"%s{project}: filtered execution without a whole-project baseline"
                           | Refuted -> yield $"%s{project}: tests failed or timed out"
                           | NothingVerified when TestResult.isNoMatch result && Set.contains project baselineProjects ->

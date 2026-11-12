@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a configured test project the project model does not name is named, not silently dropped (AUTOMATION-1617).
+  `PluginSteps.evidenceCandidates` warns that it cannot be vouched for by test evidence, runs in full on every run, and
+  is never carried as covered; `TestEvidenceRun.currentOutcomeKeys` logs each project whose K_P key failed, with the
+  error, where it used to leave it out without a word.
+
 - fix: a `test-baseline` refusal names why a project has no K_P (AUTOMATION-1587 step 2b). A configured project the
   project model does not name (one outside the discovery roots, AUTOMATION-1617) is refused as `not in the project
   model`, a project whose key failed with the key's own error, and a daemon with no evidence store or no identities

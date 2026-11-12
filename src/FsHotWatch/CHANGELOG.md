@@ -12,6 +12,18 @@
   no schema constant moves: an options record is already keyed by the MSBuild path it was evaluated from (`Sdk`), which
   names the chosen SDK, so a different choice is a different key, and a check record follows its options hash.
 
+- fix: a configured test project outside the discovery roots is hashed, and never carried as covered
+  (AUTOMATION-1617). A `tests.projects` entry under `bench/` was in no tree hash, so an edit to it, or to a project it
+  references, left a green earned before the edit applying; and a first whole run of it counted as whole-project
+  coverage for the rest of the model generation, though nothing re-selects it. The tree hash now walks, beside `src/`
+  and `tests/`, the directory of every configured test project and of every project in its `ProjectReference`
+  closure that lies outside them (`ConfiguredTestRoots.locate`, by `--project` path or by `<project>.fsproj` under the
+  roots); one that cannot be located is an entry of the hash by name, and the coverage description names it
+  (`Walked.Unlocated`, `Coverage.Unlocated`). `EarnedEvidence.fromCompletion` vouches for such a project when it ran
+  whole in that completion, but never records it as covered, so `wholeProjectGap` owes it a whole run on every launch.
+  **`TreeHash.Algorithm` is now `fshw-tree-sha256-v5`: what is hashed changed, so every verdict written under v4 stops
+  applying once.**
+
 ## 0.10.0-alpha.111 - 2026-11-12
 
 - perf: a new fshw build no longer re-keys every options record (AUTOMATION-1616). `OptionsInputs.toolchain` named

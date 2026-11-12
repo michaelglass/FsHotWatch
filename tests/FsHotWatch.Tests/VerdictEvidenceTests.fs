@@ -18,6 +18,11 @@ let private completed runId results =
 let private fullRun runId =
     completed runId (Map.ofList [ "Tests.fsproj", TestsPassed("one passed", false, TimeSpan.Zero) ])
 
+/// A project model naming `projects` (each its own `.fsproj`): a project the model does not
+/// name is never recorded as covered (AUTOMATION-1617).
+let private modelOf (projects: string seq) =
+    projects |> Seq.map (fun p -> p, p) |> Map.ofSeq
+
 /// Mint evidence for the single configured project `Tests.fsproj`.
 let private earn launchGeneration currentGeneration pending baseline (completion: TestRunCompleted) =
     EarnedEvidence.fromCompletion
@@ -25,7 +30,7 @@ let private earn launchGeneration currentGeneration pending baseline (completion
         launchGeneration
         currentGeneration
         None
-        Map.empty
+        (modelOf [ "Tests.fsproj" ])
         (Set.singleton "Tests.fsproj")
         pending
         baseline
@@ -185,7 +190,16 @@ let ``same-model baseline accounts untouched and no-match siblings without hidin
                   "Sibling.fsproj", TestsPassed("passed", false, TimeSpan.Zero) ])
 
     let mint baseline (completion: TestRunCompleted) =
-        EarnedEvidence.fromCompletion completion.RunId (Some 1L) (Some 1L) None Map.empty expected 0 baseline completion
+        EarnedEvidence.fromCompletion
+            completion.RunId
+            (Some 1L)
+            (Some 1L)
+            None
+            (modelOf expected)
+            expected
+            0
+            baseline
+            completion
         |> Option.get
 
     let baseline = mint None baselineCompletion
