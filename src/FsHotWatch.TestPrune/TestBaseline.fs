@@ -189,21 +189,28 @@ let private fullPasses
     (store: OutcomeStore.Store)
     (runId: string)
     (runnable: Set<string>)
-    (fullKeys: Map<string, string>)
+    (fullKeys: Map<string, Result<string, string>>)
     : Result<Map<string, string>, Refusal list> =
     let judged =
         [ for project in runnable ->
               project,
-              match Map.tryFind project fullKeys |> Option.bind ActionKey.KeyValue.tryParse with
-              | None -> Error "no K_P key at the current tree"
-              | Some key ->
-                  match store.Lookup key with
-                  | None -> Error "no full-scope record at its current K_P"
-                  | Some r when r.Outcome = OutcomeStore.Outcome.Fail -> Error "its newest full-scope record is a fail"
-                  | Some r when r.Producer.RunId <> Some runId ->
-                      let earner = r.Producer.RunId |> Option.defaultValue "an unnamed run"
-                      Error $"its full-scope pass is from run %s{earner} in %s{r.Producer.Worktree}, not this run"
-                  | Some _ -> Ok key.Text ]
+              match Map.tryFind project fullKeys with
+              | None ->
+                  Error
+                      "no K_P: the project model does not name it (not in the project model; a test project outside the daemon's discovery roots is never modelled)"
+              | Some(Error why) -> Error $"no K_P: %s{why}"
+              | Some(Ok text) ->
+                  match ActionKey.KeyValue.tryParse text with
+                  | None -> Error $"no K_P: %s{text} is not a key"
+                  | Some key ->
+                      match store.Lookup key with
+                      | None -> Error "no full-scope record at its current K_P"
+                      | Some r when r.Outcome = OutcomeStore.Outcome.Fail ->
+                          Error "its newest full-scope record is a fail"
+                      | Some r when r.Producer.RunId <> Some runId ->
+                          let earner = r.Producer.RunId |> Option.defaultValue "an unnamed run"
+                          Error $"its full-scope pass is from run %s{earner} in %s{r.Producer.Worktree}, not this run"
+                      | Some _ -> Ok key.Text ]
 
     match
         judged
@@ -256,7 +263,7 @@ let private baselineOutputs
 /// hold. Never throws for a store that cannot be written: that is `NotFiled`.
 let file
     (store: OutcomeStore.Store option)
-    (fullKeys: unit -> Map<string, string>)
+    (fullKeys: unit -> Map<string, Result<string, string>>)
     (fileKeys: unit -> Map<string, string>)
     (producer: Producer)
     (facts: Facts)

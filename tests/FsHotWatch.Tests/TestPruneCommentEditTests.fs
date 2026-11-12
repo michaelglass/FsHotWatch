@@ -156,12 +156,16 @@ let ``every reading with no evidence for the tree names why`` () =
 /// filter (or `sh`, for a whole-project run) to `runs` and fails while `flag` exists — a
 /// behaviour change the symbol diff never saw.
 type private NarrowingRepo =
-    { Host: PluginHost
-      Source: string
-      Orphan: string
-      Runs: string
-      Flag: string
-      Root: string }
+    {
+        Host: PluginHost
+        Source: string
+        Orphan: string
+        Runs: string
+        Flag: string
+        Root: string
+        /// Stop the daemon and start a new one over the same directory, index and state: a restart.
+        Restart: unit -> PluginHost
+    }
 
 let private libSource comment =
     $"module Lib\n\n// %s{comment}\nlet f () = 1\n"
@@ -260,19 +264,29 @@ let private withNarrowingRepoIndexed
                 ClassJoin = ","
                 AlwaysClasses = always }
 
-        let host =
-            PluginHost(
-                Unchecked.defaultof<_>,
-                tmpDir,
-                taskCache = (FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
+        let start () =
+            let host =
+                PluginHost(
+                    Unchecked.defaultof<_>,
+                    tmpDir,
+                    taskCache = (FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
+                )
+
+            host.WorkStore.PublishProjectModelWithFiles(
+                fixtureModel,
+                Set.ofList [ AbsFilePath.create source; AbsFilePath.create orphan ]
             )
 
-        host.WorkStore.PublishProjectModelWithFiles(
-            fixtureModel,
-            Set.ofList [ AbsFilePath.create source; AbsFilePath.create orphan ]
-        )
+            host.RegisterHandler(create dbPath tmpDir (Some [ config ]) None None None None [])
+            host
 
-        host.RegisterHandler(create dbPath tmpDir (Some [ config ]) None None None None [])
+        let current = ref (start ())
+        let host = current.Value
+
+        let restart () =
+            current.Value.Teardown()
+            current.Value <- start ()
+            current.Value
 
         try
             body
@@ -281,9 +295,10 @@ let private withNarrowingRepoIndexed
                   Orphan = orphan
                   Runs = runs
                   Flag = flag
-                  Root = tmpDir }
+                  Root = tmpDir
+                  Restart = restart }
         finally
-            host.Teardown())
+            current.Value.Teardown())
 
 let private withNarrowingRepoDeclaring always body =
     withNarrowingRepoIndexed seedIndex always body
@@ -653,3 +668,22 @@ let ``a comment-only edit whose barrier empties a project attributes the project
             |> List.collect (fun e -> e.Causes |> List.map FsHotWatch.TestPrune.SelectionCause.token)
 
         test <@ causes = [ "composition-root-restored"; "symbol-free-edit" ] @>)
+
+/// AUTOMATION-1587 step 2 read `SealedTree` on every seal, including before a session's first
+/// run. The symbol-free-edit narrowing reads it, and must still need a run of THIS session:
+/// a restarted daemon whose index is sealed at a comment-edited tree has not diffed the tree
+/// its evidence came from, so it runs the project whole instead of only the covering classes.
+[<Fact(Timeout = 60000)>]
+let ``a restarted daemon sealed at a comment-edited tree runs the project whole, not the covering classes`` () =
+    withNarrowingRepo (fun repo ->
+        landBuild repo.Host
+        test <@ lastRun repo = "sh" @>
+        let host = repo.Restart()
+        let before = runCount repo
+
+        File.WriteAllText(repo.Source, libSource "edited")
+        emitBatchAndQuiesce host [ repo.Source ]
+        landBuild host
+
+        test <@ runCount repo = before + 1 @>
+        test <@ lastRun repo = "sh" @>)

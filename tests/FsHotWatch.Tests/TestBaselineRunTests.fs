@@ -95,8 +95,11 @@ let private configs =
           Weight = 1.0
           AlwaysClasses = [] })
 
-let private graphOf (root: string) : ProjectGraphAccessor =
-    let all = (libs @ testProjects) |> List.map (fsprojOf root)
+let private graphHiding (hidden: string list) (root: string) : ProjectGraphAccessor =
+    let all =
+        (libs @ testProjects)
+        |> List.filter (fun p -> not (List.contains p hidden))
+        |> List.map (fsprojOf root)
 
     { ProjectGraphAccessor.none with
         GetAllProjects = fun () -> all
@@ -177,7 +180,7 @@ let private completionRecorder (completions: Collections.Concurrent.ConcurrentQu
 
 /// A long-lived checkout (it holds a full-suite baseline already), so its first run is
 /// the ordinary full run that earns one.
-let private checkout (stores: Stores) (root: string) =
+let private checkoutHiding (hidden: string list) (stores: Stores) (root: string) =
     seedBaseline root testProjects
     let lines = Collections.Concurrent.ConcurrentQueue<string>()
 
@@ -189,7 +192,7 @@ let private checkout (stores: Stores) (root: string) =
     // Installed before the host exists, so its work carries the sink with it.
     Logging.installSink sink |> ignore
     let host = createModelHost Unchecked.defaultof<_> root
-    host.SetProjectGraph(graphOf root)
+    host.SetProjectGraph(graphHiding hidden root)
     host.WorkStore.PublishProjectModelWithInputs(fixtureModel, Set.empty, Some(identitiesOf root))
     let completions = Collections.Concurrent.ConcurrentQueue<TestRunCompleted>()
     host.RegisterHandler(completionRecorder completions)
@@ -218,6 +221,8 @@ let private checkout (stores: Stores) (root: string) =
       Host = host
       Completions = completions
       Lines = lines }
+
+let private checkout = checkoutHiding []
 
 let private launches (c: Checkout) =
     let log = Path.Combine(c.Root, "runs.log")
@@ -408,3 +413,20 @@ let ``selection and the skip decide the same with and without a baseline record 
     let withoutRecord = scenario false
     test <@ withRecord.Length = 4 @>
     test <@ withRecord = withoutRecord @>
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a configured project the project model does not name files no baseline, and the line says why`` () =
+    // FsHotWatch's own FsHotWatch.Bench.Tests is configured in `tests.projects` but lives
+    // under bench/, outside the discovery roots, so the model never names it and it has no K_P.
+    withRepo (fun stores rootNamed ->
+        let c = checkoutHiding [ "TY" ] stores (rootNamed "a")
+        seal c
+        let _, completed = run c
+        let lines = baselineLine c completed
+        test <@ lines.Length = 1 && lines.Head.Contains "reason=lacks-full-pass" @>
+
+        test
+            <@
+                lines.Head.Contains "project TY"
+                && lines.Head.Contains "not in the project model"
+            @>)
