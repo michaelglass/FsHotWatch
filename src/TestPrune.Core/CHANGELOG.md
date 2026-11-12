@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `Database.GetFileKeys` reads every indexed file's stored cache key in one query (AUTOMATION-1587), for a
+  `test-baseline` manifest that records each file's analysis identity.
+
 ## 16.1.1 - 2026-11-12
 
 - fix: a test declared on a base class is indexed under each concrete class that inherits it (AUTOMATION-1569). xUnit runs

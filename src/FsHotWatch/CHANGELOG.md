@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `OutcomeStore.Store.Supersede` files a record as its key's ONLY record, deleting the key's older ones, and
+  returns its size (AUTOMATION-1587). A lookup answers as before; only the history is gone, so a record that is
+  rewritten rather than accumulated (an index) does not grow history for GC to trim oldest first. A record's outputs may
+  name keys under `keeps` (`OutcomeStore.keepsOf`); while that record is its key's answer, `Gc` keeps each of them as if
+  the caller had passed it in `keep`.
+
 - feat: `OutcomeStore.Store.TryHistory` returns a key's records, or `Error` when a file at the key could not be read,
   where `History` and `Lookup` answer such a key as empty (AUTOMATION-1615). A reader asking whether a newer fail is
   filed must not take an unreadable record for none.

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- feat: a completion that earns the full-suite baseline files a shadow `test-baseline` record in the box-wide outcome
+  store, keyed by the receipt identity of the tree it passed (AUTOMATION-1587 step 2). Nothing reads it yet: it is
+  written so that how often one can be earned, and how large it is, can be measured before anything rests on it. It is
+  filed only when the run earned the baseline (never a red or stop-on-fail run, AUTOMATION-1581), every runnable
+  project's newest full-scope record at its current K_P is a pass from THIS run (a reused project does not count), and
+  the impact index is sealed at the receipt tree. It names the run, each project's K_P full-run key, the analyser build,
+  and per file of the tree its content hash and the analysis identity the index holds (`file_keys`). One index record
+  per repository names the newest 20 baselines, rewritten in place, and GC keeps every baseline it names.
+  Every completion logs one line, countable by grep: `test-baseline: written run=… tree=… projects=… files=…
+  identities=… bytes=… index=…/20 index-bytes=… ms=…`, or `test-baseline: not written run=… reason=<tokens> ms=… — …`
+  with the tokens `not-earned`, `not-sealed` (naming `sealed=` and `receipt=`), `lacks-full-pass` (naming each project
+  and why), `no-receipt-tree`, `no-store` and `not-filed`. The tree a `BatchChecked` sealed (`SealedTree`) is now read
+  on every seal, including before the session's first run; each decision that reads it still requires a session
+  baseline of its own.
+
 - fix: a restarted daemon over a tree whose every project passed in full skips on the box-wide records (AUTOMATION-1587, ADR-067).
   When the only refusal is that no run has completed in this session, and every runnable project has a full-pass record at its K_P
   over the tree as `beforeRun` settles it, the cycle launches nothing. The log and `verdict.json` name each record by run and key.

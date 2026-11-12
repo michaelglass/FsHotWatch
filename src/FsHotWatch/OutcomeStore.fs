@@ -290,12 +290,16 @@ type private SupersededRecord =
 /// A key as GC sees it.
 [<CustomEquality; NoComparison>]
 type private GcEntry =
-    { Key: ActionKey.KeyValue
-      Dir: string
-      Newest: DateTimeOffset
-      Size: int64
-      Kind: string
-      Superseded: SupersededRecord list }
+    {
+        Key: ActionKey.KeyValue
+        Dir: string
+        Newest: DateTimeOffset
+        Size: int64
+        Kind: string
+        Superseded: SupersededRecord list
+        /// The keys this key's answer keeps alive (`keepsOf`).
+        Keeps: ActionKey.KeyValue list
+    }
 
     override this.Equals(other) =
         match other with
@@ -315,6 +319,32 @@ let fairShare (budget: int64) (sizes: int64 list) : int64 =
         | _ -> remaining / int64 (max kinds 1)
 
     fill budget (List.length sizes) (List.sort sizes)
+
+/// The outputs field naming the keys a record keeps alive (AUTOMATION-1587).
+[<Literal>]
+let KeepsField = "keeps"
+
+/// The keys a record's outputs name under `keeps`: while that record is its key's answer,
+/// GC keeps each of them as if the caller had passed it in `keep`. An index record names
+/// what it indexes this way, so the store cannot evict an entry out from under the index
+/// that points at it. Anything that is not a key value is ignored.
+let keepsOf (outputs: string option) : ActionKey.KeyValue list =
+    match outputs with
+    | Some text when text.Contains("\"" + KeepsField + "\"", StringComparison.Ordinal) ->
+        try
+            use doc = JsonDocument.Parse text
+
+            match Json.tryProp doc.RootElement KeepsField with
+            | Some keeps when keeps.ValueKind = JsonValueKind.Array ->
+                [ for k in keeps.EnumerateArray() do
+                      if k.ValueKind = JsonValueKind.String then
+                          match ActionKey.KeyValue.tryParse (k.GetString()) with
+                          | Some key -> yield key
+                          | None -> () ]
+            | _ -> []
+        with :? JsonException ->
+            []
+    | _ -> []
 
 type Store(settings: Settings) =
     let root = settings.Root
@@ -456,6 +486,32 @@ type Store(settings: Settings) =
             settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
             false
 
+    /// File `record` with `outputs` as its key's ONLY record (AUTOMATION-1587): file it as
+    /// `RecordWithOutputs` does, then delete every other record under the key. The new
+    /// record is the newest, so the lookup answer is the same as with the history kept; only
+    /// the history is gone. For a record that is REWRITTEN rather than accumulated, such as
+    /// an index: kept as history, each rewrite would supersede the last and GC would trim
+    /// them oldest first. Returns the filed record's size in bytes, or `None` when it could
+    /// not be filed (and then nothing is deleted). Never throws.
+    member _.Supersede(record: Record, outputs: string option) : int64 option =
+        try
+            let payload = serializePayload record outputs
+            let dir = directoryOf record.Key.Value
+            let path = Path.Combine(dir, ContentHash.ofText payload + ".json")
+            writeOnce path (envelope payload)
+
+            for other in Directory.GetFiles(dir, "*.json") do
+                if not (String.Equals(other, path, StringComparison.Ordinal)) then
+                    try
+                        File.Delete other
+                    with ex ->
+                        settings.Log $"outcome store: could not delete the superseded %s{other}: %s{ex.Message}"
+
+            Some(FileInfo(path).Length)
+        with ex ->
+            settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
+            None
+
     /// Every record of `keyValue`, oldest first.
     member _.History(keyValue: ActionKey.KeyValue) : Record list = readKey keyValue
 
@@ -508,7 +564,7 @@ type Store(settings: Settings) =
                               let size = Directory.GetFiles dir |> Array.sumBy (fun f -> FileInfo(f).Length)
 
                               match List.tryLast records with
-                              | Some(newest, _) ->
+                              | Some(newest, (_, newestOutputs)) ->
                                   let superseded =
                                       [ for (r, (file, _)) in List.take (records.Length - 1) records ->
                                             { File = file
@@ -521,7 +577,8 @@ type Store(settings: Settings) =
                                         Newest = newest.RecordedAt
                                         Size = size
                                         Kind = newest.Key.Kind
-                                        Superseded = superseded }
+                                        Superseded = superseded
+                                        Keeps = keepsOf newestOutputs }
                               | None ->
                                   yield
                                       { Key = keyValue
@@ -529,10 +586,16 @@ type Store(settings: Settings) =
                                         Newest = DateTimeOffset.MinValue
                                         Size = size
                                         Kind = "unreadable"
-                                        Superseded = [] } ]
+                                        Superseded = []
+                                        Keeps = [] } ]
                 |> List.sortBy _.Newest
             else
                 []
+
+        // A key named in the answer of any key here is kept as if the caller had asked.
+        let keep =
+            entries
+            |> List.fold (fun kept e -> List.fold (fun k key -> Set.add key k) kept e.Keeps) keep
 
         let expired, live =
             entries

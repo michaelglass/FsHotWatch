@@ -2294,13 +2294,27 @@
       {
         "line": 100,
         "branch": 96,
-        "reason": "new file (AUTOMATION-1587 step 3, ADR-067: the zero-affected skip on box-wide records). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down, on macOS by the unit suite (mise run test-direct) 2026-11-12: line 100.0%, branch 96.2% (25/26).",
+        "reason": "new file (AUTOMATION-1587 step 3, ADR-067: the zero-affected skip on box-wide records). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down, on macOS by the unit suite (mise run test-direct) 2026-11-12: line 100.0%, branch 96.2% (25/26). Re-measured 2026-11-12 after the restack onto AUTOMATION-1615: branch 100.0% (10/10); floor kept at 96 (a floor is raised by the ratchet against both platforms, not by hand from one run).",
         "platform": "macos"
       },
       {
         "line": 100,
         "branch": 96,
-        "reason": "new file (AUTOMATION-1587 step 3, ADR-067). The code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 96.2% (25/26).",
+        "reason": "new file (AUTOMATION-1587 step 3, ADR-067). The code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100.0%, branch 96.2% (25/26); re-measured on macOS after the restack onto AUTOMATION-1615: branch 100.0% (10/10), floor kept.",
+        "platform": "linux"
+      }
+    ],
+    "TestBaseline.fs": [
+      {
+        "line": 98,
+        "branch": 90,
+        "reason": "new file (AUTOMATION-1587 step 2: the shadow test-baseline record and its index). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down, on macOS 2026-11-12 by a coverage run of TestBaselineTests + TestBaselineRunTests (the full unit suite reaches at least as much): line 98.8% (165/167), branch 90.7% (78/86). Uncovered: the JsonException arm of the index reader (a filed record's outputs are always JSON, so only a hand-written file reaches it).",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 90,
+        "reason": "new file (AUTOMATION-1587 step 2). The code takes no platform-specific path in the unit suite, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 98.8% (165/167), branch 90.7% (78/86).",
         "platform": "linux"
       }
     ]

@@ -546,3 +546,53 @@ let ``TryHistory tells an unreadable key from an empty one, and answers a readab
         unreadable passFile (fun () ->
             test <@ Result.isError (store.TryHistory key.Value) @>
             test <@ File.Exists passFile @>))
+
+// --- AUTOMATION-1587 step 2: a record that is rewritten in place, and records that keep others ---
+
+[<Fact>]
+let ``a superseding record is its key's only record, and a lookup answers with it`` () =
+    withStore 1_000_000_000L (fun _ _ store ->
+        let key = actionKey "test-baseline-index" "index"
+
+        let filed =
+            [ for i in 1..5 ->
+                  let record =
+                      Record.ofAction key "index" Outcome.Pass "fshw" "ws" (t0.AddMinutes(float i))
+
+                  store.Supersede(record, Some $"""{{"n":%d{i}}}""") ]
+
+        test
+            <@
+                filed
+                |> List.forall (fun size -> size |> Option.exists (fun bytes -> bytes > 0L))
+            @>
+
+        test <@ store.History key |> List.map _.RecordedAt = [ t0.AddMinutes 5.0 ] @>
+        test <@ store.LookupWithOutputs key |> Option.bind snd = Some """{"n":5}""" @>
+        test <@ Directory.GetFiles(store.DirectoryOf key, "*.json").Length = 1 @>
+        // The size is the filed record's own.
+        test <@ filed |> List.last = Some(FileInfo(Directory.GetFiles(store.DirectoryOf key, "*.json")[0]).Length) @>)
+
+[<Fact>]
+let ``gc keeps every key the newest record of a live key names in its keeps, and only those`` () =
+    withStore 1_000_000_000L (fun _ _ store ->
+        let named = fileAction store "test-baseline" "tree-1" 100 t0
+        let dropped = fileAction store "test-baseline" "tree-0" 100 t0
+        let index = actionKey "test-baseline-index" "index"
+
+        let older = Record.ofAction index "index" Outcome.Pass "fshw" "ws" (t0.AddDays 9.0)
+
+        // A superseded record's keeps keep nothing: only the answer speaks for the key.
+        store.RecordWithOutputs(older, Some $"""{{"keeps":["%s{dropped.Value.Text}"]}}""")
+        |> ignore
+
+        let live = Record.ofAction index "index" Outcome.Pass "fshw" "ws" (t0.AddDays 10.0)
+
+        store.RecordWithOutputs(live, Some $"""{{"keeps":["%s{named.Value.Text}","not-a-key"]}}""")
+        |> ignore
+
+        let evicted = store.Gc(t0.AddDays 15.0, Set.empty)
+
+        test <@ evicted = [ dropped.Value ] @>
+        test <@ store.Lookup named <> None @>
+        test <@ store.Lookup index <> None @>)

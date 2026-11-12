@@ -536,6 +536,42 @@ let internal currentOutcomeKeysIn
             (evidenceCandidates graph (defaultArg testConfigs []))
     | _ -> Map.empty
 
+/// File the shadow `test-baseline` record a completion may earn (AUTOMATION-1587 step 2) and
+/// log one line saying whether it did, and if not, which conditions refused it. The K_P keys
+/// are those `test-scope` reports (`currentOutcomeKeys`), and the per-file analysis
+/// identities are the index's `file_keys`. Never fails the completion: a baseline that
+/// cannot be written is logged as `not-filed`.
+let internal fileBaselineIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (currentOutcomeKeys: ProjectGraphAccessor -> Map<string, string>)
+    (fileKeys: unit -> Map<string, string>)
+    (ctx: PluginCtx<TestPruneMsg>)
+    (facts: TestBaseline.Facts)
+    : unit =
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    let producer: TestBaseline.Producer =
+        { Binary =
+            evidence
+            |> Option.map (fun wiring -> wiring.ProducerHash)
+            |> Option.defaultValue "unknown"
+          Worktree = Path.GetFullPath repoRoot
+          Now = DateTimeOffset.UtcNow }
+
+    let outcome =
+        try
+            TestBaseline.file
+                (evidence |> Option.bind (fun wiring -> wiring.Outcomes))
+                (fun () -> currentOutcomeKeys ctx.ProjectGraph)
+                fileKeys
+                producer
+                facts
+        with ex ->
+            Error [ TestBaseline.Refusal.NotFiled $"%s{ex.GetType().Name}: %s{ex.Message}" ]
+
+    Logging.info "test-prune" (TestBaseline.describe facts.RunId clock.ElapsedMilliseconds outcome)
+
 /// The traces of a run launched under `mode`, when `tests.traces` is configured, with
 /// the plugin's activity log and subtasks: a force run's `executeTests` has no `ctx`.
 let internal tracesForIn

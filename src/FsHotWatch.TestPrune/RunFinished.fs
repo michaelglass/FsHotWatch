@@ -60,13 +60,18 @@ open FsHotWatch.TestPrune.CompletionStages
 /// What `onRunFinishedWith` reads from the plugin. The declared exclusions are resolved
 /// when the handler calls `ResolveExcludedProjects`, as before.
 type internal RunFinishedEnv =
-    { RepoRoot: string
-      RunnableProjects: Set<string>
-      Traces: TraceWiring option
-      ResolveExcludedProjects: unit -> Map<string, string>
-      Debt: CompletionDebt
-      EndRun: bool -> TestPruneState -> TestPruneState
-      ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option }
+    {
+        RepoRoot: string
+        RunnableProjects: Set<string>
+        Traces: TraceWiring option
+        ResolveExcludedProjects: unit -> Map<string, string>
+        Debt: CompletionDebt
+        EndRun: bool -> TestPruneState -> TestPruneState
+        ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
+        /// File the shadow `test-baseline` record this completion may earn, and log the
+        /// outcome either way (AUTOMATION-1587 step 2). Nothing reads what it files.
+        FileBaseline: PluginCtx<TestPruneMsg> -> TestBaseline.Facts -> unit
+    }
 
 /// A run's completion (`TestsFinished`, or a requested run's `CommandTestsFinished`), folded into state.
 let internal onRunFinishedWith
@@ -282,6 +287,17 @@ let internal onRunFinishedWith
             Logging.info
                 "test-prune"
                 $"Full-suite baseline recorded: run %s{runId} passed every configured project (%d{Set.count runnableProjects}); impact-filtered greens are now relative to it"
+
+        // AUTOMATION-1587 step 2: the box-wide, per-TREE record of the same fact, in shadow.
+        // Asked on EVERY completion, so the log counts both the baselines written and, for
+        // each completion that wrote none, the condition that refused it.
+        env.FileBaseline
+            ctx
+            { RunId = completed.RunId.ToString("N")
+              EarnsBaseline = earnsBaseline
+              RunnableProjects = runnableProjects
+              SealedTree = state.SealedTree
+              ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries) }
 
         // The in-memory hot view must shed ONLY the committed symbols,
         // never the whole list — symbols left in the queue (mid-run

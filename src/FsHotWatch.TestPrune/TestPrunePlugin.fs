@@ -479,7 +479,8 @@ let internal createWithEvidenceAndQueries
               OwedElsewhere = owedElsewhere
               RevisionOf = revisionOf }
           EndRun = endRun
-          ObserveModelGeneration = observeModelGeneration }
+          ObserveModelGeneration = observeModelGeneration
+          FileBaseline = fileBaselineIn evidence repoRoot currentOutcomeKeys db.GetFileKeys }
 
     let onRunFinished ctx state message started launchedCompletion launchedAs =
         onRunFinishedWith runFinishedEnv ctx state message started launchedCompletion launchedAs
