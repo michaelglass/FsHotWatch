@@ -3195,15 +3195,21 @@ let private waitCoreWith
     (stallThreshold: System.TimeSpan)
     (ct: CancellationToken)
     : Task<unit> =
+    // ONE reading of `stallClock` per sample, here and in `loop`: a test that moves the clock
+    // waits for two reads (`ManualClock.AwaitSamples`) and takes that as a whole sample having
+    // seen the move. With three reads a tick, the move could land after the stall sample and
+    // be "seen" by the deadline and log reads alone (AUTOMATION-1646).
+    let started = stallClock ()
+
     // TimeSpan.MaxValue signals "no timeout"; adding it to a time overflows, so skip
     // deadline computation entirely in that case and rely on the MaxValue guard in loop.
     let deadline =
         if timeout = System.TimeSpan.MaxValue then
             System.DateTime.MaxValue
         else
-            stallClock () + timeout
+            started + timeout
 
-    let mutable lastLogTime = stallClock ()
+    let mutable lastLogTime = started
 
     let getRunningPlugins () =
         let now = System.DateTime.UtcNow
@@ -3308,9 +3314,7 @@ let private waitCoreWith
                 | rs -> "nothing running, but " + String.concat "; " rs
         | running -> $"""still running: %s{String.concat ", " running}"""
 
-    let logRunningPlugins () =
-        let now = stallClock ()
-
+    let logRunningPlugins (now: System.DateTime) =
         if (now - lastLogTime).TotalSeconds >= 10.0 then
             lastLogTime <- now
 
@@ -3354,9 +3358,9 @@ let private waitCoreWith
         not snapshot.IsBusy && restRequires snapshot
 
     // Wedge detection state, keyed on `CompletedDispatches` — see `StallWatch`.
-    let mutable progress = StallWatch.start (stallClock ())
+    let mutable progress = StallWatch.start started
 
-    let checkForWedgedPlugin () =
+    let checkForWedgedPlugin (stallNow: System.DateTime) =
         // A plugin whose message loop died reports work in flight forever, so
         // waiting on it can only time out. This is the cheapest check and the only
         // certain one — no threshold, no inference from silence. Everything below
@@ -3383,8 +3387,6 @@ let private waitCoreWith
             // work has a deadline which will fail it, and an event fold that never returns
             // has nothing. So every sample taken while it is live restarts the clock, and
             // the rest of the fold it was part of gets the full threshold once it ends.
-            let stallNow = stallClock ()
-
             progress <-
                 StallWatch.observe (host.CompletedDispatches()) stallNow progress
                 |> fun watch ->
@@ -3435,9 +3437,10 @@ let private waitCoreWith
             if ct.IsCancellationRequested then
                 raise (System.OperationCanceledException(DaemonShuttingDownMessage, ct))
 
-            checkForWedgedPlugin ()
+            let now = stallClock ()
+            checkForWedgedPlugin now
 
-            if timeout <> System.TimeSpan.MaxValue && stallClock () >= deadline then
+            if timeout <> System.TimeSpan.MaxValue && now >= deadline then
                 let detail = formatTimeoutDetail ()
 
                 raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
@@ -3445,7 +3448,7 @@ let private waitCoreWith
             if allPluginsAtRest () then
                 return ()
             else
-                logRunningPlugins ()
+                logRunningPlugins now
                 do! Async.Sleep 50
                 return! loop ()
         }
