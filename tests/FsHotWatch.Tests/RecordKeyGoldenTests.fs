@@ -241,3 +241,64 @@ let ``GOLDEN: the options-record keys of a fixed request and every component the
         ("ak1:5d27b2fa53c41b9ee7f7c0c9aa47f96a1f706bbd317debf3010ffaa08fc826e3",
          "ak1:5041e894015bfdec089ad7242230414053e82970b9a1ce97ace1cc437c536b49")
         (requestKey.Value.Text, optionsKey.Value.Text)
+
+// --- the golden test-prune analysis-record key ---
+
+let private testPruneCore (version: string) =
+    Reflection.AssemblyName($"TestPrune.Core, Version=%s{version}")
+
+[<Fact(Timeout = 15000)>]
+let ``an analysis identity moves with TestPrune.Core's release and the schema, and nothing else`` () =
+    let identity =
+        FsHotWatch.TestPrune.AnalysisRecords.analyzerIdentityOf (testPruneCore "16.1.1.0")
+
+    let schema = FsHotWatch.TestPrune.AnalysisRecords.AnalysisSchema
+    test <@ identity schema = identity schema @>
+    test <@ identity (schema + "-bumped") <> identity schema @>
+
+    test
+        <@
+            FsHotWatch.TestPrune.AnalysisRecords.analyzerIdentityOf (testPruneCore "16.2.0.0") schema
+            <> identity schema
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``GOLDEN: the analysis-record key of a fixed analysis and every component it is folded from`` () =
+    let identity =
+        FsHotWatch.TestPrune.AnalysisRecords.analyzerIdentityOf
+            (testPruneCore "16.1.1.0")
+            FsHotWatch.TestPrune.AnalysisRecords.AnalysisSchema
+
+    golden
+        "The analyser identity an analysis record is keyed by"
+        "TestPrune.Core@16.1.1.0;fshw-testprune-analysis-schema=fshw-testprune-analysis-semantics-v1"
+        identity
+
+    let key =
+        FsHotWatch.TestPrune.AnalysisRecords.keyWith identity "analysis-digest" "src/P.fs" "P"
+
+    golden
+        "The analysis-record key's components"
+        [ "analysis", "analysis-digest"
+          "analyzer", identity
+          "file", "src/P.fs"
+          "project", "P" ]
+        key.Inputs
+
+    golden
+        "The analysis-record key"
+        "ak1:212ef02189cf452edbe9b4acab8d2edb9d1e5c092e21211bc8e0cfbedde2af29"
+        key.Value.Text
+
+    // `keyOf` is `keyWith` under this process's analyser.
+    let live =
+        FsHotWatch.TestPrune.AnalysisRecords.keyOf "analysis-digest" "src/P.fs" "P"
+
+    let expected =
+        FsHotWatch.TestPrune.AnalysisRecords.keyWith
+            FsHotWatch.TestPrune.AnalysisRecords.analyzerIdentity
+            "analysis-digest"
+            "src/P.fs"
+            "P"
+
+    test <@ live = expected @>

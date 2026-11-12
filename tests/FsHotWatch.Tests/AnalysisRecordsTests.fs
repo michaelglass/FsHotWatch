@@ -69,6 +69,24 @@ let ``anything but an analysis of this schema is a miss`` () =
     test <@ AnalysisRecords.tryOfJson "/r" (text.Replace("\"name\":\"P.S1\"", "\"name\":null")) = None @>
 
 [<Fact>]
+let ``the analyser identity names TestPrune.Core's release and the analysis schema, not either assembly's build`` () =
+    // Both assemblies' module version ids move with every fshw release: TestPrune.Core's
+    // informational version carries the release commit (AUTOMATION-1616).
+    let core = typeof<AnalysisResult>.Assembly.GetName()
+    test <@ AnalysisRecords.analyzerIdentity.Contains $"%s{core.Name}@%O{core.Version}" @>
+    test <@ AnalysisRecords.analyzerIdentity.Contains "fshw-testprune-analysis-schema=" @>
+    test <@ not (AnalysisRecords.analyzerIdentity.Contains "FsHotWatch.TestPrune@") @>
+
+    test
+        <@
+            not (
+                AnalysisRecords.analyzerIdentity.Contains(
+                    string typeof<AnalysisResult>.Assembly.ManifestModule.ModuleVersionId
+                )
+            )
+        @>
+
+[<Fact>]
 let ``a key names the analysis, the file, the project and the analyser`` () =
     let key = AnalysisRecords.keyOf "id" "src/P.fs" "P"
     test <@ key.Kind = AnalysisRecords.Kind @>

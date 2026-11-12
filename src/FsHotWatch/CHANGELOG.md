@@ -7,7 +7,7 @@
   change in how fshw evaluates a project, records what it read or files the options; the new
   `OptionsInputs.OptionsRecordSchema` constant carries that duty. Ionide and MSBuild are still named exactly. New:
   `OptionsInputs.toolchainOf`. A golden test pins a fixed request's options-inputs and options-record keys. As for check
-  records, alpha.144's first evaluation is cold once more; the saving starts at alpha.145.
+  records, fshw 0.14.0-alpha.144's first evaluation is cold once more; the saving starts at alpha.145.
 
 - perf: a new fshw build no longer re-keys every check record (AUTOMATION-1616). `CheckCache.toolchainIdentity` named
   fshw's own assembly (version and module version id) beside FCS and FSharp.Core, and every check-record key, every
