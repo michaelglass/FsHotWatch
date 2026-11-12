@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.112 - 2026-11-12
+
 - fix: a `test-baseline` refusal names why a project has no K_P (AUTOMATION-1587 step 2b). A configured project the
   project model does not name (one outside the discovery roots, AUTOMATION-1617) is refused as `not in the project
   model`, a project whose key failed with the key's own error, and a daemon with no evidence store or no identities

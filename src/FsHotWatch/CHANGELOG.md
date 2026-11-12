@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.112 - 2026-11-12
+
 - fix: the daemon evaluates projects only with an SDK whose MSBuild its own runtime can host (AUTOMATION-1621). With no
   `global.json`, `dotnet` resolves the newest installed SDK; once a .NET 11 SDK is installed (GitHub's ubuntu-26.04 image
   20261111.196 ships 11.0.100), a .NET 10 daemon loaded its MSBuild and every evaluation failed with "Could not load file

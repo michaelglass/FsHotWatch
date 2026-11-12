@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.145 - 2026-11-12
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.144 - 2026-11-12
 
 - perf: upgrading fshw no longer cold-scans every workspace when the release changed nothing a check computes
