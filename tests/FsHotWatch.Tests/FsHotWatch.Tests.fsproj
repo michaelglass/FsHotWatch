@@ -280,6 +280,7 @@
     <Compile Include="FakeFSharpAssembly.fs" />
     <Compile Include="OutputIdentityTests.fs" />
     <Compile Include="CheckRecordsTests.fs" />
+    <Compile Include="CompileItemKeyTests.fs" />
     <Compile Include="OptionsRecordsTests.fs" />
     <Compile Include="OptionsPortableTests.fs" />
     <Compile Include="RecordKeyGoldenTests.fs" />

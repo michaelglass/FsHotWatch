@@ -1008,7 +1008,7 @@ let ``makeCacheKey keys under this process's toolchain`` () =
                 makeCacheKey provider file opts = makeCacheKeyWith
                     provider
                     toolchainIdentity
-                    (getProjectOptionsHash opts)
+                    (keyedOptionsOf None (FileContentHasher().Hash) opts file)
                     upstream
                     file
             @>)

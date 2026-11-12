@@ -505,7 +505,9 @@ type CheckPipeline
 
         let upstream = upstreamFingerprints.For(path, options, optionsHash)
 
-        makeCacheKeyWith keyProvider toolchainIdentity optionsHash upstream path
+        // The options without the source list, and the file's position (AUTOMATION-1613).
+        let keyed = upstreamFingerprints.KeyedOptions(path, options, optionsHash)
+        makeCacheKeyWith keyProvider toolchainIdentity keyed upstream path
 
     /// The key by API signature: the upstream named by the earlier files' recorded
     /// signatures (`CheckCache.apiUpstreamFingerprintsWith`). Results are stored under
@@ -514,7 +516,8 @@ type CheckPipeline
         let path = AbsFilePath.value filePath
         let optionsHash = optionsHashOf options
         let upstream = upstreamFingerprints.ForApi(path, options, optionsHash)
-        makeCacheKeyWith keyProvider toolchainIdentity optionsHash ("api:" + upstream) path
+        let keyed = upstreamFingerprints.KeyedOptions(path, options, optionsHash)
+        makeCacheKeyWith keyProvider toolchainIdentity keyed ("api:" + upstream) path
 
     /// For each (file, project) slot, the API key its stored entry answers for and the
     /// content key it is stored under. Refreshed on every store and every content-key hit,

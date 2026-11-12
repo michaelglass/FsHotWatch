@@ -184,6 +184,114 @@ let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpPr
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     getProjectOptionsHashRelativeTo None options
 
+/// `getProjectOptionsHashRelativeTo` without the source list: what every check of the
+/// project reads of its options alike (AUTOMATION-1613). The files before a file are named
+/// in its upstream chain and its own position by `compilePositions`, so a check key names
+/// these instead of the whole list, and adding a Compile item no longer re-keys every file
+/// of the project.
+let getProjectFlagsHashRelativeTo (repoRoot: string option) (options: FSharpProjectOptions) : string =
+    let relativize = relativizeOption repoRoot
+
+    [ "flags"
+      relativize (string options.ProjectFileName)
+      string (Array.length options.ReferencedProjects)
+      options.OtherOptions |> Array.map relativize |> String.concat "|" ]
+    |> String.concat "||"
+    |> sha256Hex
+
+/// An extension FCS compiles as a source or signature file.
+let private isCompiledSource (path: string) =
+    match (Path.GetExtension path).ToLowerInvariant() with
+    | ".fs"
+    | ".fsi"
+    | ".ml"
+    | ".mli" -> true
+    | _ -> false
+
+/// What a check of each source file reads of its project's source list beyond the files
+/// before it (AUTOMATION-1613): whether it is the LAST compiland, which the parser treats
+/// differently (an application's last file may omit its module declaration, FS0222).
+///
+/// - `last` / `followed`: listed once, and every file after it is F# source that exists.
+/// - `list:<options hash>`: anything else — listed twice, or followed by a missing file or
+///   one that is not F# source. These are cases this term does not reason about, so it
+///   names the whole list, as every key did before.
+///
+/// Files that are not sources of the project are absent; `keyedOptionsOf` names the
+/// whole list for them. One backward pass per project.
+let compilePositions
+    (repoRoot: string option)
+    (hashFile: string -> string)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> =
+    let files = options.SourceFiles
+    let whole = lazy ("list:" + getProjectOptionsHashRelativeTo repoRoot options)
+
+    let counts = files |> Array.countBy id |> dict
+
+    let usual (path: string) =
+        isCompiledSource path
+        && counts[path] = 1
+        && (match hashFile path with
+            | "missing"
+            | "unreadable" -> false
+            | _ -> true)
+
+    let table = System.Collections.Generic.Dictionary<string, string>()
+    // Whether every file after the one at hand is usual.
+    let mutable tailUsual = true
+
+    for index in Array.length files - 1 .. -1 .. 0 do
+        let file = files[index]
+
+        let position =
+            if counts[file] <> 1 || not tailUsual then whole.Value
+            elif index = files.Length - 1 then "last"
+            else "followed"
+
+        // A file listed twice is keyed at its first position, as it is checked.
+        table[file] <- position
+        tailUsual <- tailUsual && usual file
+
+    table :> System.Collections.Generic.IReadOnlyDictionary<string, string>
+
+/// The options half a check KEY names for each source file of a project (AUTOMATION-1613):
+/// the project's options without the source list (`getProjectFlagsHashRelativeTo`) and the
+/// file's `compilePositions` term. Returns the table, and the value for a file the project
+/// does not list (the whole list). The flags are hashed once per project, not per file.
+let keyedOptionsTable
+    (repoRoot: string option)
+    (hashFile: string -> string)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    let flags = getProjectFlagsHashRelativeTo repoRoot options
+    let keyed (position: string) = $"%s{flags}|position=%s{position}"
+    let table = System.Collections.Generic.Dictionary<string, string>()
+
+    for KeyValue(file, position) in compilePositions repoRoot hashFile options do
+        table[file] <- keyed position
+
+    table :> System.Collections.Generic.IReadOnlyDictionary<string, string>,
+    keyed ("list:" + getProjectOptionsHashRelativeTo repoRoot options)
+
+/// `filePath`'s entry in a `keyedOptionsTable`.
+let keyedOptionsIn
+    (table: System.Collections.Generic.IReadOnlyDictionary<string, string>, unlisted: string)
+    (filePath: string)
+    : string =
+    match table.TryGetValue filePath with
+    | true, keyed -> keyed
+    | false, _ -> unlisted
+
+/// `filePath`'s entry in a fresh `keyedOptionsTable`: one pass over the project.
+let keyedOptionsOf
+    (repoRoot: string option)
+    (hashFile: string -> string)
+    (options: FSharpProjectOptions)
+    (filePath: string)
+    : string =
+    keyedOptionsIn (keyedOptionsTable repoRoot hashFile options) filePath
+
 /// One assembly's build as a key names it: `name@version/mvid`. The module version id
 /// changes with every build of the assembly, so it names its code more exactly than a
 /// version does.
@@ -206,7 +314,7 @@ let assemblyIdentity (assembly: System.Reflection.Assembly) : string =
 /// change nothing a check computes. `CheckCacheTests`' golden key fails on any change to how
 /// the key is computed and says to bump this.
 [<Literal>]
-let CheckRecordSchema = "fshw-check-semantics-v3"
+let CheckRecordSchema = "fshw-check-semantics-v4"
 
 /// A checker build: the components a check's answer depends on beyond the code it checks.
 type CheckerBuild =
@@ -523,7 +631,8 @@ type internal SignatureLookup = string -> string -> string -> string -> string -
 /// which covers its own references in turn) and its options, in place of every source of
 /// its transitive closure. The assembly references and the non-F# project references are
 /// the same parts `upstreamFingerprintsWith` names. Each project's chain starts from its
-/// own options, so an edit to its defines moves every signature recorded under it.
+/// own options (without the source list, which the chain itself names), so an edit to its
+/// defines moves every signature recorded under it.
 ///
 /// Sound by induction over the compile order: a file's entry equals another's only when,
 /// for each file before it, either the bytes are equal or a check of those bytes against
@@ -541,7 +650,8 @@ let internal apiUpstreamFingerprintsWith
 
     let rec chain (opts: FSharpProjectOptions) =
         let parts = System.Collections.Generic.List<string>()
-        parts.Add $"options:%s{getProjectOptionsHashRelativeTo repoRoot opts}"
+        // Without the source list (AUTOMATION-1613): the chain below names every file.
+        parts.Add $"options:%s{getProjectFlagsHashRelativeTo repoRoot opts}"
         addAssemblyParts parts hashFile stampFile repoRoot opts
 
         for reference in opts.ReferencedProjects do
@@ -657,15 +767,35 @@ type UpstreamFingerprints(repoRoot: string option) =
         else
             build ()
 
+    let keyedMemo =
+        System.Collections.Concurrent.ConcurrentDictionary<
+            string,
+            Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
+         >()
 
     /// The content hash of one file, from the same memo the tables are built from.
     member _.HashFile(path: string) : string = hasher.Hash path
+
+    /// `filePath`'s entry in this generation's `keyedOptionsTable` for its project.
+    /// `optionsHash` distinguishes two option sets for one project file.
+    member _.KeyedOptions(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
+        let build () =
+            keyedOptionsTable repoRoot hasher.Hash options
+
+        let table =
+            if System.Threading.Volatile.Read(&generationsDeclared) then
+                keyedMemo.GetOrAdd($"%s{options.ProjectFileName}|%s{optionsHash}", fun _ -> lazy (build ())).Value
+            else
+                build ()
+
+        keyedOptionsIn table filePath
 
     /// Drop every memoized table; the next lookup per project rebuilds it.
     member _.BeginGeneration() =
         memo.Clear()
         apiMemo.Clear()
         sourceMemo.Clear()
+        keyedMemo.Clear()
         System.Threading.Volatile.Write(&generationsDeclared, true)
 
     /// Record what a check of `filePath` declared: `signature` (`ApiSignature.ofCheck`)
@@ -840,5 +970,6 @@ let makeCacheKeyWith
 /// `makeCacheKeyWith` under this process's toolchain, with no repository root: every
 /// path hashed as written.
 let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey option =
-    let upstream = upstreamFingerprint (FileContentHasher().Hash) None filePath options
-    makeCacheKeyWith provider toolchainIdentity (getProjectOptionsHash options) upstream filePath
+    let hashFile = FileContentHasher().Hash
+    let upstream = upstreamFingerprint hashFile None filePath options
+    makeCacheKeyWith provider toolchainIdentity (keyedOptionsOf None hashFile options filePath) upstream filePath
