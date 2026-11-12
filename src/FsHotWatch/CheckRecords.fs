@@ -233,7 +233,9 @@ type Walk
 
     and walkProject (opts: FSharpProjectOptions) (optionsHash: string) =
         let parts = List<string>()
-        parts.Add $"options:%s{optionsHash}"
+        // Without the source list (AUTOMATION-1613): the chain names every file in order.
+        let flagsHash = getProjectFlagsHashRelativeTo repoRoot opts
+        parts.Add $"options:%s{flagsHash}"
         // An in-repo assembly is built in this checkout too: named as an output is.
         addAssemblyParts parts outputIdentity fileStampText repoRoot opts
 
@@ -276,6 +278,13 @@ type Walk
             |> sha256Hex
 
         let records = List<FileRecord>()
+        let positions = compilePositions repoRoot hashFile opts
+
+        let positionOf (source: string) =
+            match positions.TryGetValue source with
+            | true, position -> position
+            | false, _ -> "list:" + optionsHash
+
         let partOf = Dictionary<string, string>()
         let mutable running = sha256Hex (String.concat "\n" parts)
 
@@ -296,7 +305,11 @@ type Walk
                                 ActionKey.create
                                     CheckKind
                                     [ "toolchain", toolchain
-                                      "options", optionsHash
+                                      // Without the source list, which the upstream
+                                      // names up to this file, and the position that
+                                      // names what it reads of the rest (AUTOMATION-1613).
+                                      "options", flagsHash
+                                      "position", positionOf source
                                       "file", CachePathIdentity.keyOf repoRoot source
                                       "content", content
                                       "upstream", running

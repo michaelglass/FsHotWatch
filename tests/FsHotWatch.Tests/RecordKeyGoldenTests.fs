@@ -105,10 +105,10 @@ let private goldenProject (root: string) : FSharpProjectOptions =
       OriginalLoadReferences = []
       Stamp = None }
 
-/// The fixture's options hash, in-repo paths relative.
+/// The fixture's options hash without its source list, in-repo paths relative.
 [<Literal>]
 let private GoldenOptions =
-    "56905e9d4f44d6e128cddaf4cef807a2906b587a1a7420c86e738086cec70384"
+    "4fc3a4564669ea0a56d0ba03c58064f3a59bbf6d2c85d78857926b1da27fa216"
 
 /// No referenced project: the digest of the empty string.
 [<Literal>]
@@ -118,7 +118,7 @@ let private NoProjectOutputs =
 let private goldenToolchain =
     "FSharp.Compiler.Service@43.12.402.0/11111111-1111-1111-1111-111111111111;\
      FSharp.Core@10.0.0.0/22222222-2222-2222-2222-222222222222;\
-     fshw-check-schema=fshw-check-semantics-v1"
+     fshw-check-schema=fshw-check-semantics-v2"
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GOLDEN: the check-record key of a fixture project and every component it is folded from`` () =
@@ -156,22 +156,24 @@ let ``GOLDEN: the check-record key of a fixture project and every component it i
               [ "content", "d0c34d1ef5d2b2a7d63e3c059a01e397a9910c7938ba3e1e2ca0622adb748747"
                 "file", "repo:A.fs"
                 "options", GoldenOptions
+                "position", "followed"
                 "project-outputs", NoProjectOutputs
                 "toolchain", goldenToolchain
-                "upstream", "5d165528df7e099050eb1e7be9b23d96070570be2400cc335826a84063450e47" ]
+                "upstream", "635bc33fe8c05d523d3919eb2af2d7584ede54c83887f15acf32ee7b5e30a53c" ]
               "B.fs",
               [ "content", "bad3ec53512a110420de668c95a871a266ea9923220f3cf66a776473ccd3dd8d"
                 "file", "repo:B.fs"
                 "options", GoldenOptions
+                "position", "last"
                 "project-outputs", NoProjectOutputs
                 "toolchain", goldenToolchain
-                "upstream", "af4bdd5a53f6e8396eb5cc9f22d1b595acfd223e2db4805a5491be8456d6855d" ] ]
+                "upstream", "214afa76d71f9530a67734a38439548f1d8bd50d815affa65e8499771bc991ef" ] ]
             (keys |> List.map (fun (file, key) -> file, key.Inputs))
 
         golden
             "The check-record key"
-            [ "A.fs", "ak1:a6dc2cdbe350b5a3c676428fcd02010ac0c064457895a9f7dba4fa3d488b9293"
-              "B.fs", "ak1:de59061dea1b09c2705e770f4eb966fd33f502386cff02d510268cb2cd65b89d" ]
+            [ "A.fs", "ak1:4397e49fc1d72d8a524367a12fd49aa0b42e6f8a757485d8552f09f1831b8207"
+              "B.fs", "ak1:ca24b5b4e7e87fac0f74d36972e4e753b004601416cedc8d51c908bae881777e" ]
             (keys |> List.map (fun (file, key) -> file, key.Value.Text))
 
         // The in-memory cache key folds the same toolchain, by a recipe of its own.
@@ -181,14 +183,14 @@ let ``GOLDEN: the check-record key of a fixture project and every component it i
             makeCacheKeyWith
                 provider
                 (CheckerBuild.keyIdentity buildN)
-                (getProjectOptionsHashRelativeTo (Some root) options)
+                (keyedOptionsOf (Some root) (FileContentHasher().Hash) options options.SourceFiles[0])
                 "upstream"
                 options.SourceFiles[0]
             |> Option.map (fun k -> ContentHash.value k.ProjectOptionsHash)
 
         golden
             "The in-memory check cache key's options half"
-            (Some "3bfa4190c87b01f75468411f7ea8fd75571b1e8e68a5efb44609b4198b81174b")
+            (Some "4b7dc9378658809707a3101d63d78c2f27c9881b3471fa6d160979396891daff")
             memoryKey)
 
 // --- the golden options-record key ---

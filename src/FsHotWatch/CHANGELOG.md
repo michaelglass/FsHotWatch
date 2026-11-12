@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- perf: adding or removing a Compile item no longer re-keys every check in its project (AUTOMATION-1613). The options
+  hash a check key folded in named the whole source list, so one new file moved the key of every file in the project.
+  A check reads of that list only the files before it, which its upstream chain already names by path and content (or
+  signature), and whether it is the last compiland (an application's last file may omit its module declaration,
+  FS0222). Keys now name `getProjectFlagsHashRelativeTo` (the options without the source list) and a per-file position
+  term from `compilePositions`: `last`, `followed`, or, for a file listed twice or followed by a missing or non-F#
+  file, the whole list as before. The signature chain (`apiUpstreamFingerprintsWith`) and the check-record chain start
+  from the same flags hash. So a file appended to a project re-keys only the previous last file, and one inserted in
+  the middle only the files after it; projects that reference it still re-key, as they can see what it declares. New:
+  `CheckCache.getProjectFlagsHashRelativeTo`, `compilePositions`, `keyedOptionsTable`, `keyedOptionsIn`, `keyedOptionsOf`,
+  `UpstreamFingerprints.KeyedOptions`. **One-time re-key:** `CheckRecordSchema` is now `fshw-check-semantics-v2`, so the
+  first check under this release replays nothing, and every test-evidence K_P moves with it. It rides the batched
+  re-key release (AUTOMATION-1632); landed beside another schema bump, one bump covers both.
+
 ## 0.10.0-alpha.113 - 2026-11-13
 
 - fix: a wait takes one reading of its clock per sample (AUTOMATION-1646). `waitForAllTerminal`'s loop read its clock
