@@ -1,0 +1,35 @@
+name: probe-1621
+on:
+  push:
+    branches: [probe-1621-fix2]
+jobs:
+  probe:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            10.0.4xx
+            11.0.100
+      - name: SDKs present (the new image's relevant difference, made deterministic)
+        run: |
+          echo "IMAGE=$ImageOS $ImageVersion"
+          dotnet --list-sdks
+          echo "repo resolves: $(dotnet --version)"
+          echo "a dir with no global.json resolves: $(cd "$(mktemp -d)" && dotnet --version)"
+      - name: jj, as CI installs it (pre-build-cmd)
+        run: bash scripts/install-jj.sh
+      - run: dotnet tool restore
+      - run: dotnet restore
+      - run: dotnet build --warnaserror --no-restore
+      - name: FsHotWatch.Tests
+        if: always()
+        run: dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj --no-build
+      - name: FsHotWatch.IntegrationTests
+        if: always()
+        run: dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build
+      - name: TestPrune.Tests
+        if: always()
+        run: dotnet test --project tests/TestPrune.Tests/TestPrune.Tests.fsproj --no-build
