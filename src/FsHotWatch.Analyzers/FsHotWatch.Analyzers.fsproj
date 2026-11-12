@@ -28,6 +28,7 @@
     <Compile Include="AnalyzerLoad.fs" />
     <Compile Include="AnalyzerFindings.fs" />
     <Compile Include="AnalyzerReplies.fs" />
+    <Compile Include="AnalyzeRecords.fs" />
     <Compile Include="AnalyzersPlugin.fs" />
   </ItemGroup>
 

@@ -1787,3 +1787,57 @@ all five, so intelligence audits every shared key. Other kinds through the gener
 the producing checkout's absolute paths (a comparison to write, or a defect, before it joins);
 `options-inputs` 1 of 1 differs in its directory listing. None of these kinds is in the nightly
 yet.
+
+## 36. Amendment (AUTOMATION-1585): an analysis is an `analyze` record, many keys per file
+
+§16 put the analyzers' task-cache entries in the box-wide store every checkout shares, but a
+task cache keeps ONE entry per file: a write deletes every sibling the writer knows of (from
+its start's directory listing and its own last write). Daemons at two different trees
+therefore evicted each other's analyses. A daemon at T2 deleted T1's entry for every file the
+trees differ in; the next start at T1 found nothing for those files, demanded a live check of
+each (§17) and analysed it again, deleting T2's. Each start at the other tree paid D, the number
+of files whose key differs, on every alternation. The always-on box showed the slot holding one
+version per file for all 2,785 files.
+
+**Change.** Each analysis is also filed in the outcome store, as an `analyze` record
+(`FsHotWatch.Analyzers.AnalyzeRecords`):
+
+- **Key.** The task-cache key's terms as labels (`analyzer-paths`, `analyzer-inputs`,
+  `fail-on-severity`, `analyzer-config`, `file`, `source` as a digest, `used-signatures`,
+  `fcs-signature`), plus what a replay must also match to be exactly the analysis its key
+  names: `checker` (FCS and FSharp.Core named exactly, `CheckCache.CheckerBuild.keyIdentity`),
+  `options` (the project options relative to the repository: defines, language version and
+  warnings change what an analyzer reads without moving the source), `analyzer-sdk` (the SDK
+  release fshw hosts analyzers with), `toolchain`, and `recipe`, the hand-bumped
+  `AnalyzeRecordSchema`. No fshw assembly identity (AUTOMATION-1616): a golden key test fails
+  with "bump the schema constant, then update the golden".
+- **Outputs.** The entries the analysis left in the ledger, after promotion, with paths under
+  the filing checkout named relatively. A finding at Error severity files a fail, so a cached
+  red is never read as a pass. A run in which an analyzer crashed, or that timed out, files
+  nothing: it says nothing about the file.
+- **Filing (AUTOMATION-1609's rule).** A completed live analysis files only when the store
+  holds no readable record under its key (no AUTOMATION-1596 duplicates). The task cache may
+  answer a file only once the store holds its record (a key-only probe); until then the file is
+  analysed again and filed, so a workspace answered by its own cache still leaves the records.
+- **GC.** No new rule: §32's fair share gives the kind its share. One tree is about 4 KB a file,
+  11 MB for intelligence.
+
+**Flag `analyzerRecords`** (`FSHW_ANALYZER_RECORDS`): `off`, `shadow` or `on`; **default
+`shadow`**. `shadow` files and guards as above but never lets a record answer: where one would
+have, the live analysis runs and is compared with it field by field, a disagreement logged at
+warning with the field that differs, an agreement at debug. `on` lets a record answer in place
+of a live analysis, a replayed check included (`IReplayedCheckReader`), so no live check is
+demanded. Shadow is the default because the shadow period's evidence exists only where records
+are filed and compared, and a shadow never changes an answer. Its cost: the first start of each
+workspace re-analyses, once, every file its task cache answered before the store held the
+record. Switch to `on` once the shadow has run on real trees without a disagreement.
+
+**Acceptance (E3, `AnalyzeRecordsTests`).** Daemons start alternately at T1 and T2 (differing in
+two files, one finding fixed) over one box: with records `on`, after each tree has run once, a
+further start at either tree analyses nothing and demands nothing, and a fresh workspace at an
+analysed tree analyses nothing. With records `off`, the same alternation re-analyses and demands
+both differing files on every start (the control).
+
+**Not changed.** The task cache is still written and read (under the guard above); retiring the
+analyzers' task-cache entries, and doing the same for `lint`, is follow-up work once the shadow
+has run.

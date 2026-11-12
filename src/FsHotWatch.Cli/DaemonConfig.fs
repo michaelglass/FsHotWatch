@@ -479,6 +479,9 @@ type DaemonConfiguration =
         /// on a restart whose every input is byte-identical (ADR-059 §18, AUTOMATION-1372).
         /// Off when absent.
         OptionsRecords: bool
+        /// `"analyzerRecords"`: `"off"`, `"shadow"` or `"on"` (AUTOMATION-1585). Files each analysis
+        /// as an `analyze` record box-wide; `on` also answers from them. Shadow when absent.
+        AnalyzerRecords: FsHotWatch.Analyzers.AnalyzeRecords.RecordMode
         Analyzers:
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity
@@ -609,6 +612,7 @@ let private defaultConfig () =
       Cache = NoCache
       CheckRecords = false
       OptionsRecords = false
+      AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -996,6 +1000,19 @@ let resolveCheckRecords (configured: bool) (env: string -> string) : bool =
 let resolveOptionsRecords (configured: bool) (env: string -> string) : bool =
     resolveRecordFlag "FSHW_OPTIONS_RECORDS" configured env
 
+/// Whether analyses are filed as `analyze` records, and answered from (AUTOMATION-1585):
+/// `FSHW_ANALYZER_RECORDS` (`off`, `shadow`, `on`) overrides `analyzerRecords`; any other
+/// value leaves the configured mode.
+let resolveAnalyzerRecords
+    (configured: FsHotWatch.Analyzers.AnalyzeRecords.RecordMode)
+    (env: string -> string)
+    : FsHotWatch.Analyzers.AnalyzeRecords.RecordMode =
+    match env "FSHW_ANALYZER_RECORDS" with
+    | null -> configured
+    | value ->
+        FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.tryParse value
+        |> Option.defaultValue configured
+
 /// Whether the format preprocessor files its records (AUTOMATION-1436), ON unless
 /// `FSHW_FORMAT_RECORDS` turns it off. Unlike check and options records it has no config
 /// key: a record only says "the pinned tool left these bytes unchanged", and the variable
@@ -1010,6 +1027,7 @@ let internal KnownTopLevelKeys =
     set
         [ "afterRun"
           "agent"
+          "analyzerRecords"
           "analyzers"
           "beforeRun"
           "build"
@@ -1141,6 +1159,20 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.False || v.ValueKind = JsonValueKind.Null -> false
         | true, v -> raise (ConfigErrorException $"optionsRecords: %s{describeValue v} is not true or false")
         | false, _ -> false
+
+    let analyzerRecords =
+        match root.TryGetProperty("analyzerRecords") with
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.tryParse (v.GetString()) with
+            | Some mode -> mode
+            | None ->
+                raise (
+                    ConfigErrorException $"analyzerRecords: %s{describeValue v} is not \"off\", \"shadow\" or \"on\""
+                )
+        | true, v when v.ValueKind = JsonValueKind.Null -> FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
+        | true, v ->
+            raise (ConfigErrorException $"analyzerRecords: %s{describeValue v} is not \"off\", \"shadow\" or \"on\"")
+        | false, _ -> FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
 
     let cache =
         let refuse (detail: string) =
@@ -2000,6 +2032,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Cache = cache
       CheckRecords = checkRecords
       OptionsRecords = optionsRecords
+      AnalyzerRecords = analyzerRecords
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands
@@ -2900,8 +2933,34 @@ let registerPluginsIn
             |> List.map (fun (p, scope) -> toAbsolute p, scope)
             |> Map.ofList
 
+        // AUTOMATION-1585: each analysis is filed box-wide as an `analyze` record, so daemons
+        // at different trees stop evicting each other's analyses. Records name files under
+        // the repository root, so with `includeOutsideRepo` (no root to scope to) there are none.
+        let records =
+            match
+                resolveAnalyzerRecords config.AnalyzerRecords Environment.GetEnvironmentVariable, outsideRepoScope
+            with
+            | FsHotWatch.Analyzers.AnalyzeRecords.Off, _ -> None
+            | _, None ->
+                Logging.warn "config" "analyzerRecords: off, because includeOutsideRepo leaves no repository root"
+                None
+            | mode, Some _ ->
+                Logging.info
+                    "config"
+                    $"analyzerRecords: %s{FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.toString mode}"
+
+                let wiring: FsHotWatch.Analyzers.AnalyzeRecords.Wiring =
+                    { Store = FsHotWatch.OutcomeStore.openFor repoRoot (Logging.info "analyze-records")
+                      RecordMode = mode
+                      Toolchain = FsHotWatch.DotnetToolchain.identity repoRoot
+                      Log = Logging.warn "analyze-records"
+                      Trace = Logging.debug "analyze-records" }
+
+                Some wiring
+
         let handler =
-            FsHotWatch.Analyzers.AnalyzersPlugin.createScoped
+            FsHotWatch.Analyzers.AnalyzersPlugin.createRecorded
+                records
                 outsideRepoScope
                 resolvedPaths
                 scopeByAbsolutePath

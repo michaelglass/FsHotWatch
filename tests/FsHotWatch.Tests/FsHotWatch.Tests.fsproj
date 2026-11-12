@@ -240,6 +240,7 @@
     <Compile Include="SelectionCharacterisationTests.fs" />
     <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
+    <Compile Include="AnalyzeRecordsTests.fs" />
     <Compile Include="AnalyzerFindingsTests.fs" />
     <Compile Include="FindingsCommandTests.fs" />
     <Compile Include="AnalyzerReloadTests.fs" />

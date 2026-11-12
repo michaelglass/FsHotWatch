@@ -573,6 +573,34 @@ let ``FSHW_OPTIONS_RECORDS overrides the configured optionsRecords either way, a
     test <@ not (resolveOptionsRecords false (env "FSHW_CHECK_RECORDS" "1")) @>
     test <@ resolveOptionsRecords true (env "FSHW_OPTIONS_RECORDS" "maybe") @>
 
+/// AUTOMATION-1585: `analyzerRecords` is off, shadow or on, and shadow when absent.
+[<Fact(Timeout = 15000)>]
+let ``parseConfig analyzerRecords is shadow unless set, and refuses anything but off, shadow or on`` () =
+    let modeOf json =
+        (parseConfig json defaults).AnalyzerRecords
+
+    test <@ modeOf "{}" = FsHotWatch.Analyzers.AnalyzeRecords.Shadow @>
+    test <@ modeOf """{"analyzerRecords": null}""" = FsHotWatch.Analyzers.AnalyzeRecords.Shadow @>
+    test <@ modeOf """{"analyzerRecords": "off"}""" = FsHotWatch.Analyzers.AnalyzeRecords.Off @>
+    test <@ modeOf """{"analyzerRecords": "shadow"}""" = FsHotWatch.Analyzers.AnalyzeRecords.Shadow @>
+    test <@ modeOf """{"analyzerRecords": "on"}""" = FsHotWatch.Analyzers.AnalyzeRecords.On @>
+    raises<ConfigErrorException> <@ parseConfig """{"analyzerRecords": true}""" defaults @>
+    raises<ConfigErrorException> <@ parseConfig """{"analyzerRecords": "yes"}""" defaults @>
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_ANALYZER_RECORDS overrides the configured analyzerRecords with a mode, and nothing else does`` () =
+    let env (variable: string) (value: string) : string -> string =
+        fun name -> if name = variable then value else null
+
+    let on = FsHotWatch.Analyzers.AnalyzeRecords.On
+    let off = FsHotWatch.Analyzers.AnalyzeRecords.Off
+    let shadow = FsHotWatch.Analyzers.AnalyzeRecords.Shadow
+    test <@ resolveAnalyzerRecords shadow (env "FSHW_ANALYZER_RECORDS" "on") = on @>
+    test <@ resolveAnalyzerRecords on (env "FSHW_ANALYZER_RECORDS" "off") = off @>
+    test <@ resolveAnalyzerRecords off (env "FSHW_ANALYZER_RECORDS" "shadow") = shadow @>
+    test <@ resolveAnalyzerRecords on (env "FSHW_ANALYZER_RECORDS" "maybe") = on @>
+    test <@ resolveAnalyzerRecords off (env "FSHW_CHECK_RECORDS" "1") = off @>
+
 [<Fact(Timeout = 15000)>]
 let ``format records are on unless FSHW_FORMAT_RECORDS turns them off`` () =
     let env (variable: string) (value: string) : string -> string =

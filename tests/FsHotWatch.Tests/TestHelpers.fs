@@ -703,6 +703,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       Cache = FsHotWatch.Cli.DaemonConfig.NoCache
       CheckRecords = false
       OptionsRecords = false
+      AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
       Analyzers = None
       Tests = None
       FileCommands = []

@@ -101,6 +101,94 @@ type ReplayStamps internal () =
         | true, inputs -> Some inputs
         | false, _ -> None
 
+/// A key as a weak table holds it: the table's values must be reference types.
+[<Sealed>]
+type internal KeyHolder(key: FsHotWatch.ActionKey.ActionKey) =
+    member _.Key = key
+
+/// One handler's analysis records (AUTOMATION-1585): the `analyze` key each event's
+/// result is filed under, computed beside its task-cache key on the plugin's loop, and
+/// what the state's framework hooks ask of the store. Inert without a wiring, in `Off`,
+/// or without a repository root to name paths under.
+[<Sealed>]
+type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: string option) =
+    let wiring =
+        match records, root with
+        | Some w, Some r when w.RecordMode <> AnalyzeRecords.Off -> Some(w, r)
+        | _ -> None
+
+    let keys =
+        Runtime.CompilerServices.ConditionalWeakTable<FileCheckResult, KeyHolder>()
+
+    // A record `CanAnswer` read, handed to the `Update` that follows it on the same loop.
+    let answers =
+        Runtime.CompilerServices.ConditionalWeakTable<FileCheckResult, ErrorEntry list>()
+
+    let keyOf (result: FileCheckResult) =
+        match keys.TryGetValue result with
+        | true, holder -> Some holder.Key
+        | false, _ -> None
+
+    /// Whether records are filed (and so the task cache is guarded).
+    member internal _.Active = wiring.IsSome
+
+    /// Remember the key `result`'s analysis is filed under; None forgets it (no key).
+    member internal _.Put(result: FileCheckResult, key: FsHotWatch.ActionKey.ActionKey option) =
+        match key with
+        | Some key -> keys.AddOrUpdate(result, KeyHolder key)
+        | None -> keys.Remove result |> ignore
+
+    /// The key `result`'s analysis is filed under, when one was computed for it.
+    member internal _.KeyOf(result: FileCheckResult) = keyOf result
+
+    /// AUTOMATION-1609's rule: the task cache answers a file only once its record is
+    /// filed, so a workspace answered by its own cache still leaves the record for others.
+    member internal _.MayReadFileCache(result: FileCheckResult) =
+        match wiring with
+        | None -> true
+        | Some(w, _) -> AnalyzeRecords.mayAnswerLocally (Some w.Store) (keyOf result)
+
+    /// In `On`, whether a record answers `result` (reading it: a corrupt one is a miss).
+    member internal _.CanAnswer(result: FileCheckResult) =
+        match wiring, keyOf result with
+        | Some(w, root), Some key when w.RecordMode = AnalyzeRecords.On ->
+            match AnalyzeRecords.lookup w.Store root key with
+            | Some entries ->
+                answers.AddOrUpdate(result, entries)
+                true
+            | None -> false
+        | _ -> false
+
+    /// In `On`, the record that answers `result`: the one `CanAnswer` read, else a lookup.
+    member internal _.Answer(result: FileCheckResult) : ErrorEntry list option =
+        match wiring with
+        | Some(w, root) when w.RecordMode = AnalyzeRecords.On ->
+            match answers.TryGetValue result with
+            | true, entries ->
+                answers.Remove result |> ignore
+                Some entries
+            | false, _ -> keyOf result |> Option.bind (AnalyzeRecords.lookup w.Store root)
+        | _ -> None
+
+    /// After a completed live analysis of `result` that found `entries`: in `Shadow`, compare
+    /// it with the record its key holds and say whether they agree; with no readable record,
+    /// file it (once per key, AUTOMATION-1596).
+    member internal _.Settle(result: FileCheckResult, entries: ErrorEntry list) =
+        match wiring, keyOf result with
+        | Some(w, root), Some key ->
+            let relPath =
+                Path.GetRelativePath(root, AbsFilePath.value result.File).Replace('\\', '/')
+
+            match AnalyzeRecords.lookup w.Store root key with
+            | Some recorded ->
+                if w.RecordMode = AnalyzeRecords.Shadow then
+                    match AnalyzeRecords.disagreement recorded entries with
+                    | None -> w.Trace $"analyze records (shadow): agree on %s{relPath}"
+                    | Some field ->
+                        w.Log $"analyze records (shadow): disagree on %s{relPath} under %s{key.Value.Text}: %s{field}"
+            | None -> AnalyzeRecords.fileIfAbsent w.Store root relPath key entries |> ignore
+        | _ -> ()
+
 type AnalyzersState =
     {
         /// Every entry this plugin reported to the ledger for each file: the analyzers'
@@ -121,10 +209,22 @@ type AnalyzersState =
         AnalyzedByFile: Map<AbsFilePath, FsHotWatch.Analyzers.AnalyzerFindings.AnalyzedFile>
         /// See `ReplayStamps`.
         Stamps: ReplayStamps
+        /// See `AnalyzeRecordBook`.
+        Records: AnalyzeRecordBook
     }
 
     // Out-of-repo compile items are never analyzed (see the `FileChecked` arm).
     interface ISkipsOutOfRepoFiles
+
+    // AUTOMATION-1609, for `analyze` records: the task cache answers a file only once the
+    // store holds its record. A refusal runs `Update`, which analyses and files it.
+    interface IFileCacheReadGuard with
+        member this.MayReadFileCache result = this.Records.MayReadFileCache result
+
+    // AUTOMATION-1585: with records `on`, a replayed check whose analysis is filed is
+    // answered from the record, with no live check demanded.
+    interface IReplayedCheckReader with
+        member this.CanAnswer result = this.Records.CanAnswer result
 
     // A replayed analysis is recorded by the rule a live fold applies: only a result
     // published against the model published now is analyzed (see `notCurrent`), and a
@@ -618,28 +718,14 @@ module AnalyzerHost =
     /// version without build metadata, or its assembly version when it states none. A
     /// release, not a module version id: a rebuild of the same release replays.
     let sdkIdentityOf (name: string) (version: Version) (informational: string option) : string =
-        let release =
-            match informational with
-            | Some text -> text.Split('+').[0]
-            | None -> version.ToString()
+        AnalyzeRecords.sdkIdentityOf name version informational
 
-        $"%s{name}@%s{release}"
-
-    let private analyzerSdkIdentity: string =
-        let assembly = typeof<FSharp.Analyzers.SDK.CliContext>.Assembly
-
-        let informational =
-            assembly.GetCustomAttributes(typeof<Reflection.AssemblyInformationalVersionAttribute>, false)
-            |> Array.tryHead
-            |> Option.map (fun attribute ->
-                (attribute :?> Reflection.AssemblyInformationalVersionAttribute).InformationalVersion)
-
-        sdkIdentityOf (assembly.GetName().Name) (assembly.GetName().Version) informational
+    let private analyzerSdkIdentity: string = AnalyzeRecords.analyzerSdkIdentity
 
     /// This process's host.
     let current: AnalyzerHost =
         { TaskSchema = AnalyzerTaskSchema
-          Checker = FsHotWatch.CheckCache.toolchainIdentity
+          Checker = AnalyzeRecords.checkerIdentity
           AnalyzerSdk = analyzerSdkIdentity }
 
     /// The host's terms of an analyzers task-cache key.
@@ -652,12 +738,14 @@ module AnalyzerHost =
 let taskKeyWith (host: AnalyzerHost) (terms: (string * string) list) : ContentHash =
     FsHotWatch.TaskCache.merkleCacheKey (AnalyzerHost.keyTerms host @ terms)
 
-/// The handler under a given `host` (the analyzers task-cache key's host terms), with two
+/// The handler under a given `host` (the analyzers task-cache key's host terms) and `records`
+/// (the box-wide analyze records, AUTOMATION-1585; `None` files none), with two
 /// test seams: `slowHook` is invoked inside the timeout-guarded region before the analyzers
 /// run, and `runAnalyzersOver` stands in for the SDK's run so a test can supply analyzers
 /// without loading an assembly.
 let internal createHostedWithSeams
     (host: AnalyzerHost)
+    (records: FsHotWatch.Analyzers.AnalyzeRecords.Wiring option)
     (repoRoot: string option)
     (analyzerPaths: string list)
     (scopes: Map<string, AnalyzerScope>)
@@ -667,6 +755,7 @@ let internal createHostedWithSeams
     (runAnalyzersOver: AnalyzerRunner)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     let concurrencyLimit = 4
+    let recordBook = AnalyzeRecordBook(records, repoRoot)
     let admits = runsOn repoRoot scopes
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     // Only one synchronous analyzer callback may be alive at a time. Normal
@@ -879,7 +968,8 @@ let internal createHostedWithSeams
           LoadedByPath = loadedByPath
           RunAnalyzed = 0
           AnalyzedByFile = Map.empty
-          Stamps = stamps }
+          Stamps = stamps
+          Records = recordBook }
       Update =
         fun ctx state event ->
             async {
@@ -935,216 +1025,258 @@ let internal createHostedWithSeams
                         let stamp () =
                             stampOf result analyzedUnder (FsHotWatch.Analyzers.AnalyzerFindings.configDigestOf chain)
 
-                        let checkResultsObj =
-                            match result.CheckResults with
-                            | FullCheck(_, cr) -> box cr
-                            | Replayed _ -> raise (ReplayedResultException("analyzers", fileStr))
-                            | ParseOnly _ ->
-                                debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
-                                null
-
-                        let typedTreeObj = typedTreeOf result.CheckResults
-
-                        // Run analysis inline (awaited) so the framework's per-event
-                        // cache-write window sees the final terminal status. Semaphore
-                        // still bounds concurrency across plugins; per-plugin events
-                        // are already serialized by the MailboxProcessor.
-                        //
-                        // Returns Some entries on success, None on timeout (terminal status
-                        // already reported), or raises on crash (caught below as failure).
-                        let! elapsed, analysisOutcome =
-                            async {
-                                do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
-                                do! executionFence.WaitAsync(cts.Token) |> Async.AwaitTask
-                                let elapsed = PluginCtxHelpers.beginRun ctx
-                                ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
-                                let mutable releaseExecutionFenceOnExit = true
-
-                                try
-                                    let! outcome =
-                                        PluginCtxHelpers.withSubtask
-                                            ctx
-                                            fileStr
-                                            $"analyzing {Path.GetFileName fileStr}"
-                                            (async {
-                                                try
-                                                    let runAnalyzers (workCt: Threading.CancellationToken) =
-                                                        match slowHook with
-                                                        | Some h -> h ()
-                                                        | None -> ()
-
-                                                        let sourceText = result.Source |> SourceText.ofString
-
-                                                        // Drive the run under the timeout's token so a stuck
-                                                        // analyzer is actually cancelled on expiry rather than
-                                                        // orphaned holding the semaphore slot.
-                                                        // A scoped path's analyzers run only on the files its
-                                                        // scope admits (`analyzers.scope`).
-                                                        let activeClients =
-                                                            Volatile.Read(&loaded)
-                                                            |> List.filter (fun path -> admits path.Path fileStr)
-                                                            |> List.map _.Client
-
-                                                        // Checked under a virtual root, every range in
-                                                        // the results names the file by its virtual
-                                                        // path: the analyzers are told the same name.
-                                                        let analyzedFile =
-                                                            FsHotWatch.PathFrame.nameIn result.Frame fileStr
-
-                                                        let context =
-                                                            createCliContext
-                                                                (box analyzedFile)
-                                                                (box sourceText)
-                                                                (box (
-                                                                    FileCheckResult.requireParseResults
-                                                                        "analyzers"
-                                                                        result
-                                                                ))
-                                                                checkResultsObj
-                                                                typedTreeObj
-                                                                (box result.ProjectOptions)
-
-                                                        Async.RunSynchronously(
-                                                            runAnalyzersOver activeClients context,
-                                                            cancellationToken = workCt
-                                                        )
-
-                                                    let outcome, actualCompletion =
-                                                        runWithCancellableTimeoutTracked analyzerTimeout runAnalyzers
-
-                                                    match outcome with
-                                                    | WorkTimedOut after ->
-                                                        // Cancellation is cooperative. A synchronous analyzer
-                                                        // callback can ignore the token and keep executing after
-                                                        // the wall-clock timeout. Retain this permit until that
-                                                        // callback really exits; otherwise the mailbox starts the
-                                                        // next file alongside it and each timeout multiplies the
-                                                        // runaway analyzer work.
-                                                        releaseExecutionFenceOnExit <- false
-
-                                                        actualCompletion.ContinueWith(
-                                                            (fun (_: Threading.Tasks.Task) ->
-                                                                executionFence.Release() |> ignore),
-                                                            Threading.CancellationToken.None,
-                                                            Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously,
-                                                            Threading.Tasks.TaskScheduler.Default
-                                                        )
-                                                        |> ignore
-
-                                                        let reason = $"timed out after %d{int after.TotalSeconds}s"
-
-                                                        error
-                                                            "analyzers"
-                                                            $"Analyzers TIMED OUT for %s{fileStr}: %s{reason}"
-
-                                                        ctx.EndSubtask PrimarySubtaskKey
-
-                                                        PluginCtxHelpers.timedOutOnFiles
-                                                            ctx
-                                                            "analyzers"
-                                                            [ fileStr ]
-                                                            reason
-                                                            after
-
-                                                        return Choice1Of3()
-                                                    | WorkCompleted results ->
-                                                        let toEntry (m: Message) : ErrorEntry =
-                                                            { Message = FileCheckResult.textToReal result m.Message
-                                                              Severity =
-                                                                match m.Severity with
-                                                                | Severity.Error -> DiagnosticSeverity.Error
-                                                                | Severity.Warning -> DiagnosticSeverity.Warning
-                                                                | Severity.Info -> DiagnosticSeverity.Info
-                                                                | Severity.Hint -> DiagnosticSeverity.Hint
-                                                              Line = m.Range.StartLine
-                                                              Column = m.Range.StartColumn
-                                                              Code =
-                                                                if String.IsNullOrEmpty m.Code then
-                                                                    None
-                                                                else
-                                                                    Some m.Code
-                                                              Detail = None }
-
-                                                        let findings, crashes = foldResults toEntry results
-
-                                                        crashes |> List.iter (logCrashOnce fileStr)
-
-                                                        let entries =
-                                                            (findings |> List.map (promoteIfFailing failOnSeverity))
-                                                            @ (crashes |> List.map crashFinding)
-
-                                                        debug
-                                                            "analyzers"
-                                                            $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics, %d{crashes.Length} analyzer crashes"
-
-                                                        return Choice2Of3(entries, crashes)
-                                                // Analyzers are third-party assemblies and may
-                                                // raise anything. The broad catch keeps one buggy
-                                                // analyzer from taking down the whole pass;
-                                                // `ex.ToString()` preserves type + stack so the
-                                                // offending analyzer is diagnosable.
-                                                with ex ->
-                                                    error "analyzers" $"Error analyzing %s{fileStr}: %s{ex.ToString()}"
-
-                                                    return Choice3Of3(ex.ToString())
-                                            })
-
-                                    return elapsed, outcome
-                                finally
-                                    if releaseExecutionFenceOnExit then
-                                        executionFence.Release() |> ignore
-
-                                    semaphore.Release() |> ignore
-                            }
-
-                        match analysisOutcome with
-                        | Choice1Of3() ->
-                            // Timed out — terminal status already reported. The file's
-                            // previous entries stay in the ledger, but no analysis of THESE
-                            // inputs completed, so it keeps no stamp: `fshw findings` reads
-                            // it as missing rather than as an answer about its new bytes.
-                            return
-                                { state with
-                                    AnalyzedByFile = state.AnalyzedByFile |> Map.remove result.File }
-                        | Choice2Of3(entries, crashes) ->
-                            // completeWith must run inside this event's window so the
-                            // framework writes the cache for FileChecked.
+                        // AUTOMATION-1585, records `on`: the analysis this event's key names is
+                        // filed, so it answers in place of a live one. A replayed check reaches
+                        // here only this way (`CanAnswer`), so it is never demanded live. The
+                        // record's entries are what the live analysis reported, failures
+                        // included: a cached red stays red.
+                        match recordBook.Answer result with
+                        | Some entries ->
+                            let elapsed = PluginCtxHelpers.beginRun ctx
                             PluginCtxHelpers.reportOrClearFile ctx fileStr entries
-
-                            // Replace (not merge) this file's entries so a re-check that
-                            // passes drops to []; see `summarize`.
                             let updated = state.DiagnosticsByFile |> Map.add result.File entries
-                            let crashesByFile = state.CrashesByFile |> Map.add result.File crashes
-                            let analyzed = state.RunAnalyzed + 1
 
-                            ctx.EndSubtask PrimarySubtaskKey
+                            let crashesByFile =
+                                state.CrashesByFile
+                                |> Map.add result.File (entries |> List.choose crashOfFinding)
 
-                            PluginCtxHelpers.completeWith ctx (summarizeRun analyzed updated crashesByFile) (elapsed ())
+                            Volatile.Write(&replayedFiles, Volatile.Read(&replayedFiles) + 1)
+
+                            PluginCtxHelpers.completeWith
+                                ctx
+                                (summarizeRun state.RunAnalyzed updated crashesByFile)
+                                (elapsed ())
 
                             return
                                 { state with
                                     DiagnosticsByFile = updated
                                     CrashesByFile = crashesByFile
-                                    RunAnalyzed = analyzed
                                     AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
-                        | Choice3Of3 errMsg ->
-                            let entries = [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
-                            ctx.ReportErrors fileStr entries
-                            ctx.EndSubtask PrimarySubtaskKey
+                        | None ->
 
-                            PluginCtxHelpers.completeWith
-                                ctx
-                                $"analyzer crashed on {Path.GetFileName fileStr}"
-                                (elapsed ())
+                            let checkResultsObj =
+                                match result.CheckResults with
+                                | FullCheck(_, cr) -> box cr
+                                | Replayed _ -> raise (ReplayedResultException("analyzers", fileStr))
+                                | ParseOnly _ ->
+                                    debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
+                                    null
 
-                            // The file's entries are what the ledger now holds for it — the
-                            // crash — so the summary and the `diagnostics` command count it,
-                            // and a replay of this result leaves the same state.
-                            return
-                                { state with
-                                    DiagnosticsByFile = state.DiagnosticsByFile |> Map.add result.File entries
-                                    CrashesByFile = state.CrashesByFile |> Map.add result.File []
-                                    AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
+                            let typedTreeObj = typedTreeOf result.CheckResults
+
+                            // Run analysis inline (awaited) so the framework's per-event
+                            // cache-write window sees the final terminal status. Semaphore
+                            // still bounds concurrency across plugins; per-plugin events
+                            // are already serialized by the MailboxProcessor.
+                            //
+                            // Returns Some entries on success, None on timeout (terminal status
+                            // already reported), or raises on crash (caught below as failure).
+                            let! elapsed, analysisOutcome =
+                                async {
+                                    do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
+                                    do! executionFence.WaitAsync(cts.Token) |> Async.AwaitTask
+                                    let elapsed = PluginCtxHelpers.beginRun ctx
+                                    ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
+                                    let mutable releaseExecutionFenceOnExit = true
+
+                                    try
+                                        let! outcome =
+                                            PluginCtxHelpers.withSubtask
+                                                ctx
+                                                fileStr
+                                                $"analyzing {Path.GetFileName fileStr}"
+                                                (async {
+                                                    try
+                                                        let runAnalyzers (workCt: Threading.CancellationToken) =
+                                                            match slowHook with
+                                                            | Some h -> h ()
+                                                            | None -> ()
+
+                                                            let sourceText = result.Source |> SourceText.ofString
+
+                                                            // Drive the run under the timeout's token so a stuck
+                                                            // analyzer is actually cancelled on expiry rather than
+                                                            // orphaned holding the semaphore slot.
+                                                            // A scoped path's analyzers run only on the files its
+                                                            // scope admits (`analyzers.scope`).
+                                                            let activeClients =
+                                                                Volatile.Read(&loaded)
+                                                                |> List.filter (fun path -> admits path.Path fileStr)
+                                                                |> List.map _.Client
+
+                                                            // Checked under a virtual root, every range in
+                                                            // the results names the file by its virtual
+                                                            // path: the analyzers are told the same name.
+                                                            let analyzedFile =
+                                                                FsHotWatch.PathFrame.nameIn result.Frame fileStr
+
+                                                            let context =
+                                                                createCliContext
+                                                                    (box analyzedFile)
+                                                                    (box sourceText)
+                                                                    (box (
+                                                                        FileCheckResult.requireParseResults
+                                                                            "analyzers"
+                                                                            result
+                                                                    ))
+                                                                    checkResultsObj
+                                                                    typedTreeObj
+                                                                    (box result.ProjectOptions)
+
+                                                            Async.RunSynchronously(
+                                                                runAnalyzersOver activeClients context,
+                                                                cancellationToken = workCt
+                                                            )
+
+                                                        let outcome, actualCompletion =
+                                                            runWithCancellableTimeoutTracked
+                                                                analyzerTimeout
+                                                                runAnalyzers
+
+                                                        match outcome with
+                                                        | WorkTimedOut after ->
+                                                            // Cancellation is cooperative. A synchronous analyzer
+                                                            // callback can ignore the token and keep executing after
+                                                            // the wall-clock timeout. Retain this permit until that
+                                                            // callback really exits; otherwise the mailbox starts the
+                                                            // next file alongside it and each timeout multiplies the
+                                                            // runaway analyzer work.
+                                                            releaseExecutionFenceOnExit <- false
+
+                                                            actualCompletion.ContinueWith(
+                                                                (fun (_: Threading.Tasks.Task) ->
+                                                                    executionFence.Release() |> ignore),
+                                                                Threading.CancellationToken.None,
+                                                                Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously,
+                                                                Threading.Tasks.TaskScheduler.Default
+                                                            )
+                                                            |> ignore
+
+                                                            let reason = $"timed out after %d{int after.TotalSeconds}s"
+
+                                                            error
+                                                                "analyzers"
+                                                                $"Analyzers TIMED OUT for %s{fileStr}: %s{reason}"
+
+                                                            ctx.EndSubtask PrimarySubtaskKey
+
+                                                            PluginCtxHelpers.timedOutOnFiles
+                                                                ctx
+                                                                "analyzers"
+                                                                [ fileStr ]
+                                                                reason
+                                                                after
+
+                                                            return Choice1Of3()
+                                                        | WorkCompleted results ->
+                                                            let toEntry (m: Message) : ErrorEntry =
+                                                                { Message = FileCheckResult.textToReal result m.Message
+                                                                  Severity =
+                                                                    match m.Severity with
+                                                                    | Severity.Error -> DiagnosticSeverity.Error
+                                                                    | Severity.Warning -> DiagnosticSeverity.Warning
+                                                                    | Severity.Info -> DiagnosticSeverity.Info
+                                                                    | Severity.Hint -> DiagnosticSeverity.Hint
+                                                                  Line = m.Range.StartLine
+                                                                  Column = m.Range.StartColumn
+                                                                  Code =
+                                                                    if String.IsNullOrEmpty m.Code then
+                                                                        None
+                                                                    else
+                                                                        Some m.Code
+                                                                  Detail = None }
+
+                                                            let findings, crashes = foldResults toEntry results
+
+                                                            crashes |> List.iter (logCrashOnce fileStr)
+
+                                                            let entries =
+                                                                (findings |> List.map (promoteIfFailing failOnSeverity))
+                                                                @ (crashes |> List.map crashFinding)
+
+                                                            debug
+                                                                "analyzers"
+                                                                $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics, %d{crashes.Length} analyzer crashes"
+
+                                                            return Choice2Of3(entries, crashes)
+                                                    // Analyzers are third-party assemblies and may
+                                                    // raise anything. The broad catch keeps one buggy
+                                                    // analyzer from taking down the whole pass;
+                                                    // `ex.ToString()` preserves type + stack so the
+                                                    // offending analyzer is diagnosable.
+                                                    with ex ->
+                                                        error
+                                                            "analyzers"
+                                                            $"Error analyzing %s{fileStr}: %s{ex.ToString()}"
+
+                                                        return Choice3Of3(ex.ToString())
+                                                })
+
+                                        return elapsed, outcome
+                                    finally
+                                        if releaseExecutionFenceOnExit then
+                                            executionFence.Release() |> ignore
+
+                                        semaphore.Release() |> ignore
+                                }
+
+                            match analysisOutcome with
+                            | Choice1Of3() ->
+                                // Timed out — terminal status already reported. The file's
+                                // previous entries stay in the ledger, but no analysis of THESE
+                                // inputs completed, so it keeps no stamp: `fshw findings` reads
+                                // it as missing rather than as an answer about its new bytes.
+                                return
+                                    { state with
+                                        AnalyzedByFile = state.AnalyzedByFile |> Map.remove result.File }
+                            | Choice2Of3(entries, crashes) ->
+                                // completeWith must run inside this event's window so the
+                                // framework writes the cache for FileChecked.
+                                PluginCtxHelpers.reportOrClearFile ctx fileStr entries
+
+                                // Replace (not merge) this file's entries so a re-check that
+                                // passes drops to []; see `summarize`.
+                                let updated = state.DiagnosticsByFile |> Map.add result.File entries
+                                let crashesByFile = state.CrashesByFile |> Map.add result.File crashes
+                                let analyzed = state.RunAnalyzed + 1
+
+                                // AUTOMATION-1585: file the analysis box-wide (or, in shadow,
+                                // compare it with the one filed). A crash says nothing about
+                                // the file, only about the analyzer, so it is never filed.
+                                if List.isEmpty crashes then
+                                    recordBook.Settle(result, entries)
+
+                                ctx.EndSubtask PrimarySubtaskKey
+
+                                PluginCtxHelpers.completeWith
+                                    ctx
+                                    (summarizeRun analyzed updated crashesByFile)
+                                    (elapsed ())
+
+                                return
+                                    { state with
+                                        DiagnosticsByFile = updated
+                                        CrashesByFile = crashesByFile
+                                        RunAnalyzed = analyzed
+                                        AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
+                            | Choice3Of3 errMsg ->
+                                let entries = [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
+                                ctx.ReportErrors fileStr entries
+                                ctx.EndSubtask PrimarySubtaskKey
+
+                                PluginCtxHelpers.completeWith
+                                    ctx
+                                    $"analyzer crashed on {Path.GetFileName fileStr}"
+                                    (elapsed ())
+
+                                // The file's entries are what the ledger now holds for it — the
+                                // crash — so the summary and the `diagnostics` command count it,
+                                // and a replay of this result leaves the same state.
+                                return
+                                    { state with
+                                        DiagnosticsByFile = state.DiagnosticsByFile |> Map.add result.File entries
+                                        CrashesByFile = state.CrashesByFile |> Map.add result.File []
+                                        AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
                 | Custom(AnalysisComplete(file, entries)) ->
                     // Report/clear so the gated ledger set and the summary agree, and
                     // replace this file's map entry — see `summarize`.
@@ -1301,33 +1433,69 @@ let internal createHostedWithSeams
 
                 let chain = refreshConfigs file
 
-                match (Volatile.Read(&snapshot)).Inputs with
-                | Result.Error _ -> None
-                | Result.Ok analyzerInputs ->
-                    Volatile.Write(&replayPending, box result)
-                    // A hit on this key replays the analysis it names; its stamp is this.
-                    stamps.Put(file, Some analyzerInputs, analyzerConfigHash chain)
+                let key =
+                    match (Volatile.Read(&snapshot)).Inputs with
+                    | Result.Error _ -> None
+                    | Result.Ok analyzerInputs ->
+                        Volatile.Write(&replayPending, box result)
+                        let configDigest = analyzerConfigHash chain
+                        // A hit on this key replays the analysis it names; its stamp is this.
+                        stamps.Put(file, Some analyzerInputs, configDigest)
 
-                    // A shape that cannot be described leaves no key: the analyzers
-                    // run and nothing is read from or written to the cache.
-                    FsHotWatch.CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
-                    |> Option.map (fun usedSignatures ->
-                        taskKeyWith
-                            host
-                            [ "analyzer-paths", analyzerPathsHash
-                              "analyzer-inputs", analyzerInputs
-                              // Entries are stored AFTER promotion, so the same finding is
-                              // a failure under one threshold and a pass under another.
-                              "fail-on-severity", DiagnosticSeverity.toString failOnSeverity
-                              "analyzer-config", analyzerConfigHash chain
-                              "file", FsHotWatch.CachePathIdentity.keyOf repoRoot file
-                              "source", result.Source
-                              // A typed analyzer sees the types this file resolved in
-                              // other files; its own diagnostics do not move when one
-                              // changes shape and the file still compiles.
-                              "used-signatures", usedSignatures
-                              // Typed analyzers can read the file's own diagnostics.
-                              "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults ])
+                        // A shape that cannot be described leaves no key: the analyzers
+                        // run and nothing is read from or written to the cache.
+                        FsHotWatch.CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
+                        |> Option.map (fun usedSignatures ->
+                            let fileIdentity = FsHotWatch.CachePathIdentity.keyOf repoRoot file
+                            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
+                            let threshold = DiagnosticSeverity.toString failOnSeverity
+
+                            // AUTOMATION-1585: the same analysis as a box-wide record, keyed
+                            // by the task key's terms plus the checker build and the project
+                            // options, so a replay is exactly the analysis its key names.
+                            match records, repoRoot with
+                            | Some wiring, Some root when recordBook.Active ->
+                                let recordKey =
+                                    AnalyzeRecords.keyWith
+                                        { RecordSchema = AnalyzeRecords.AnalyzeRecordSchema
+                                          Checker = host.Checker
+                                          AnalyzerSdk = host.AnalyzerSdk
+                                          Toolchain = wiring.Toolchain
+                                          Options = AnalyzeRecords.optionsHashOf root result.ProjectOptions
+                                          AnalyzerPaths = analyzerPathsHash
+                                          AnalyzerInputs = analyzerInputs
+                                          FailOnSeverity = threshold
+                                          AnalyzerConfig = configDigest
+                                          File = fileIdentity
+                                          Source = FsHotWatch.ContentHash.ofText result.Source
+                                          UsedSignatures = usedSignatures
+                                          FcsSignature = fcsSignature }
+
+                                recordBook.Put(result, Some recordKey)
+                            | _ -> ()
+
+                            taskKeyWith
+                                host
+                                [ "analyzer-paths", analyzerPathsHash
+                                  "analyzer-inputs", analyzerInputs
+                                  // Entries are stored AFTER promotion, so the same finding is
+                                  // a failure under one threshold and a pass under another.
+                                  "fail-on-severity", threshold
+                                  "analyzer-config", configDigest
+                                  "file", fileIdentity
+                                  "source", result.Source
+                                  // A typed analyzer sees the types this file resolved in
+                                  // other files; its own diagnostics do not move when one
+                                  // changes shape and the file still compiles.
+                                  "used-signatures", usedSignatures
+                                  // Typed analyzers can read the file's own diagnostics.
+                                  "fcs-signature", fcsSignature ])
+
+                // No task key, no record key: nothing is read or filed for this result.
+                if key.IsNone then
+                    recordBook.Put(result, None)
+
+                key
             | _ -> None
 
         Some(fun _state event -> cacheKey event)
@@ -1343,8 +1511,10 @@ let internal createHostedWithSeams
             // alive until it returns.
             Volatile.Read(&loaded) |> List.iter AnalyzerLoad.unload) }
 
-/// `createHostedWithSeams` under this process's host (`AnalyzerHost.current`).
-let internal createScopedWithSeams
+/// `createHostedWithSeams` under this process's host (`AnalyzerHost.current`), filing each
+/// analysis as `records` says (AUTOMATION-1585).
+let internal createRecordedWithSeams
+    (records: FsHotWatch.Analyzers.AnalyzeRecords.Wiring option)
     (repoRoot: string option)
     (analyzerPaths: string list)
     (scopes: Map<string, AnalyzerScope>)
@@ -1355,6 +1525,7 @@ let internal createScopedWithSeams
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     createHostedWithSeams
         AnalyzerHost.current
+        records
         repoRoot
         analyzerPaths
         scopes
@@ -1362,6 +1533,18 @@ let internal createScopedWithSeams
         failOnSeverity
         slowHook
         runAnalyzersOver
+
+/// `createRecordedWithSeams` with no analyze records.
+let internal createScopedWithSeams
+    (repoRoot: string option)
+    (analyzerPaths: string list)
+    (scopes: Map<string, AnalyzerScope>)
+    (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
+    (slowHook: (unit -> unit) option)
+    (runAnalyzersOver: AnalyzerRunner)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    createRecordedWithSeams None repoRoot analyzerPaths scopes timeoutSec failOnSeverity slowHook runAnalyzersOver
 
 /// `createScopedWithSeams` with no scope: every analyzer runs on every file.
 let internal createWithSeams
@@ -1396,3 +1579,15 @@ let createScoped
     (failOnSeverity: DiagnosticSeverity)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     createScopedWithSeams repoRoot analyzerPaths scopes timeoutSec failOnSeverity None runSafely
+
+/// `createScoped`, filing each analysis as an `analyze` record in `records`' store and,
+/// as its mode says, answering from them (AUTOMATION-1585).
+let createRecorded
+    (records: FsHotWatch.Analyzers.AnalyzeRecords.Wiring option)
+    (repoRoot: string option)
+    (analyzerPaths: string list)
+    (scopes: Map<string, AnalyzerScope>)
+    (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    createRecordedWithSeams records repoRoot analyzerPaths scopes timeoutSec failOnSeverity None runSafely

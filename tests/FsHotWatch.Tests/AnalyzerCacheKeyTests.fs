@@ -297,7 +297,7 @@ let private hostN: AnalyzerHost =
 
 let private keyUnder (host: AnalyzerHost) (root: string) (result: FileCheckResult) =
     let handler =
-        createHostedWithSeams host (Some root) [] Map.empty None DiagnosticSeverity.Warning None runSafely
+        createHostedWithSeams host None (Some root) [] Map.empty None DiagnosticSeverity.Warning None runSafely
 
     handler.CacheKey.Value handler.Init (FileChecked result)
 
