@@ -8,7 +8,8 @@
   2,780 live checks for test-prune. A cache entry records that the analysis ran, not what it produced, so it cannot file
   the record. The task cache now answers a file only once the store holds that file's analysis under its exact key.
   Until then the file is analysed again from the check already in hand and filed. Filing now looks the key up first and
-  files only when it is absent, so a key the store holds is never filed twice (part 1 of AUTOMATION-1596).
+  files only when it is absent, so a key the store holds is never filed twice (part 1 of AUTOMATION-1596). After the
+  upgrade, the first warm start re-analyses, once, every file whose analysis record is not yet in the store.
 
 ## 0.13.0-alpha.110 - 2026-11-12
 
