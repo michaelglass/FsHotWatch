@@ -288,7 +288,8 @@ let seedBaseline (root: string) (projects: string list) : unit =
         root
         { RunId = Guid.NewGuid()
           EarnedAt = DateTime.UtcNow
-          Projects = Set.ofList projects }
+          Projects = Set.ofList projects
+          Tree = None }
 
 module PendingQueueHelpers =
     open FsHotWatch.TestPrune

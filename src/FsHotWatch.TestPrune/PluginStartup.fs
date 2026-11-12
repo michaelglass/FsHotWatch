@@ -278,6 +278,7 @@ let internal initialStateOf
       LastRed = None
       SealedTree = None
       AwaitingDiff = None
+      CheckoutBaseline = None
       OwedRunHeld = false
       CompletedRuns = []
       CheckReaches = []

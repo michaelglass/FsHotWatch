@@ -1,8 +1,9 @@
 /// AUTOMATION-1587 step 2: the shadow `test-baseline` record. "Every runnable project passed
 /// full-scope on tree T", filed box-wide under T's receipt identity with the manifest a
 /// neighbour tree could diff against, and named by ONE per-repository index record that GC
-/// keeps alive. Nothing reads these records for a decision yet; these tests pin what is
-/// written, when nothing is, and that the index stays one bounded record.
+/// keeps alive. Their one reader (`checkoutRecordFor`) lets a restarted daemon diff from it;
+/// these tests pin what is written, when nothing is, that the index stays one bounded
+/// record, and what `checkoutRecordFor` accepts.
 module FsHotWatch.Tests.TestBaselineTests
 
 open System
@@ -498,4 +499,106 @@ let ``with no evidence store or no identities every configured project is refuse
                 noIdentities
                 |> Map.forall (fun _ r -> r = Error "the project model publishes no compile-input identities")
                 && noIdentities.Count = 2
+            @>)
+
+// ---------------------------------------------------------------------------
+// `checkoutRecordFor` (AUTOMATION-1587): the one reader. A restarted daemon diffs from its
+// checkout's own last full pass only through a passing record for exactly that tree, filed
+// by this analyser build, whose manifest it can read. Everything else is a miss.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``checkoutRecordFor reads T's run and manifest, and misses every other case`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+
+        test <@ TestBaseline.checkoutRecordFor store (fst tree) = Error "no test-baseline record for that tree" @>
+
+        projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+
+        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        | Ok _ -> ()
+        | Error refusals -> failwith $"refused: %A{refusals}"
+
+        let key = TestBaseline.keyOf (fst tree)
+
+        match TestBaseline.checkoutRecordFor store (fst tree) with
+        | Ok record ->
+            test
+                <@
+                    record.Tree = fst tree
+                    && record.Key = key.Value.Text
+                    && record.RunId = "run-1"
+                    && record.Entries = snd tree
+                @>
+        | Error why -> failwith $"expected a hit: %s{why}"
+
+        // Another tree is a miss: the lookup is by exact identity.
+        test <@ TestBaseline.checkoutRecordFor store "sha256:tree-2" |> Result.isError @>
+
+        let refile (outputs: string option) (outcome: OutcomeStore.Outcome) =
+            store.Supersede(OutcomeStore.Record.ofAction key (fst tree) outcome "fshw-test" "/ws/a" t0, outputs)
+            |> ignore
+
+        let missWith (outputs: string) =
+            refile (Some outputs) OutcomeStore.Outcome.Pass
+            TestBaseline.checkoutRecordFor store (fst tree)
+
+        let valid (fields: string) =
+            "{\"schema\":\""
+            + TestBaseline.Schema
+            + "\",\"tree\":\""
+            + fst tree
+            + "\",\"runId\":\"r\",\"analyzer\":\""
+            + AnalysisRecords.analyzerIdentity
+            + "\""
+            + fields
+            + "}"
+
+        test <@ missWith (valid ",\"manifest\":[[\"a\",\"h\",null]]") |> Result.isOk @>
+        test <@ missWith (valid ",\"manifest\":[[\"a\"]]") = Error "the record's manifest has a malformed row" @>
+        test <@ missWith (valid ",\"manifest\":[[1,2]]") = Error "the record's manifest has a malformed row" @>
+        test <@ missWith (valid ",\"manifest\":[\"a\"]") = Error "the record's manifest has a malformed row" @>
+        test <@ missWith (valid "") = Error "the record has no run or no manifest" @>
+        test <@ missWith (valid ",\"manifest\":{}") = Error "the record has no run or no manifest" @>
+
+        test
+            <@
+                missWith """{"schema":"other","manifest":[]}""" = Error
+                    $"the record is of schema other, not %s{TestBaseline.Schema}"
+            @>
+
+        test
+            <@
+                missWith $"""{{"schema":"%s{TestBaseline.Schema}","tree":"elsewhere","runId":"r","manifest":[]}}""" = Error
+                    "the record names tree elsewhere"
+            @>
+
+        test
+            <@
+                missWith
+                    $"""{{"schema":"%s{TestBaseline.Schema}","tree":"%s{fst tree}","runId":"r","analyzer":"old","manifest":[]}}""" = Error
+                    "the record was filed by a different analyser build"
+            @>
+
+        test
+            <@
+                missWith $"""{{"schema":"%s{TestBaseline.Schema}","tree":"%s{fst tree}","runId":"r","manifest":[]}}""" = Error
+                    "the record was filed by a different analyser build"
+            @>
+
+        refile None OutcomeStore.Outcome.Pass
+
+        test
+            <@
+                TestBaseline.checkoutRecordFor store (fst tree) = Error
+                    "the test-baseline record for that tree has no outputs"
+            @>
+
+        refile None OutcomeStore.Outcome.Fail
+
+        test
+            <@
+                TestBaseline.checkoutRecordFor store (fst tree) = Error
+                    "the test-baseline record for that tree is not a pass"
             @>)
