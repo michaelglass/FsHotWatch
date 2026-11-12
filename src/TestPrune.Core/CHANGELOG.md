@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 16.2.0 - 2026-11-12
+
 - feat: `Database.GetFileKeys` reads every indexed file's stored cache key in one query (AUTOMATION-1587), for a
   `test-baseline` manifest that records each file's analysis identity.
 

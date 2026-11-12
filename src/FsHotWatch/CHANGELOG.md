@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.111 - 2026-11-12
+
 - perf: a new fshw build no longer re-keys every options record (AUTOMATION-1616). `OptionsInputs.toolchain` named
   fshw's own assembly beside Ionide's and MSBuild's, so each release re-evaluated every project. The term stood for a
   change in how fshw evaluates a project, records what it read or files the options; the new

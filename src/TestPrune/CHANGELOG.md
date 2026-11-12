@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 16.2.0 - 2026-11-12
+
+- feat: AUTOMATION-1587 step 2 shadow test-baseline records, one rewritten index, GC keeps what it names
+
+
 ## 16.1.1 - 2026-11-12
 
 - fix(testprune-core): AUTOMATION-1569 B: index inherited tests under the concrete class

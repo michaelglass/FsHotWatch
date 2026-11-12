@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.4 - 2026-11-12
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.9.3 - 2026-11-12
 
 - fix: AUTOMATION-1073 CTRF readers tolerate raw control characters in string literals

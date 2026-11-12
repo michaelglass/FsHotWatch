@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.111 - 2026-11-12
+
 - perf: a new fshw build no longer re-keys every test-prune analysis record (AUTOMATION-1616).
   `AnalysisRecords.analyzerIdentity` named TestPrune.Core's and this plugin's assemblies by module version id, and both
   ids moved with every fshw release (TestPrune.Core is rebuilt with the release commit in its informational version),

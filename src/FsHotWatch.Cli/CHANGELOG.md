@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.144 - 2026-11-12
+
 - perf: upgrading fshw no longer cold-scans every workspace when the release changed nothing a check computes
   (AUTOMATION-1616). The check-record, options-record and test-prune analysis-record keys named fshw's own assembly
   builds, which move every release; each now names an explicit schema constant instead, bumped by hand when a change
