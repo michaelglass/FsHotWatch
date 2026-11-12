@@ -103,6 +103,11 @@ let RepoRootPlaceholder = "${repo}"
 /// `--out:/abs/obj/x.dll`), so this is a prefix substitution rather than a path
 /// parse — which is exactly right: it touches only the machine-local prefix and
 /// leaves every flag, separator and out-of-repo reference untouched.
+///
+/// The root is replaced only at a PATH BOUNDARY: followed by a directory separator or
+/// by the end of the option (AUTOMATION-1640). Matched bare, the root `/w/e2a` turned
+/// the sibling `/w/e2a-old/x.dll` into `${repo}-old/x.dll`, which `/v/e2a-old/x.dll`
+/// under `/v/e2a` also produces: two different files, one key.
 let internal relativizeOption (repoRoot: string option) (option: string) =
     match repoRoot with
     | None -> option
@@ -113,12 +118,38 @@ let internal relativizeOption (repoRoot: string option) (option: string) =
             with _ ->
                 root
 
-        let withSeparator =
-            full.TrimEnd(Path.DirectorySeparatorChar) + string Path.DirectorySeparatorChar
+        let bare = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
 
-        option
-            .Replace(withSeparator, RepoRootPlaceholder + string Path.DirectorySeparatorChar)
-            .Replace(full, RepoRootPlaceholder)
+        let atBoundary (after: int) =
+            after = option.Length
+            || option[after] = Path.DirectorySeparatorChar
+            || option[after] = Path.AltDirectorySeparatorChar
+
+        // The filesystem root trims to nothing: no checkout to name, nothing to match.
+        if bare.Length = 0 then
+            option
+        else
+            let out = StringBuilder(option.Length)
+            let mutable copied = 0
+            let mutable at = option.IndexOf(bare, StringComparison.Ordinal)
+
+            while at >= 0 do
+                let after = at + bare.Length
+
+                let next =
+                    if atBoundary after then
+                        out.Append(option, copied, at - copied).Append(RepoRootPlaceholder) |> ignore
+                        copied <- after
+                        after
+                    else
+                        at + 1
+
+                at <- option.IndexOf(bare, next, StringComparison.Ordinal)
+
+            if copied = 0 then
+                option
+            else
+                out.Append(option, copied, option.Length - copied).ToString()
 
 /// Computes ProjectOptionsHash from FSharpProjectOptions.
 ///
@@ -175,7 +206,7 @@ let assemblyIdentity (assembly: System.Reflection.Assembly) : string =
 /// change nothing a check computes. `CheckCacheTests`' golden key fails on any change to how
 /// the key is computed and says to bump this.
 [<Literal>]
-let CheckRecordSchema = "fshw-check-semantics-v2"
+let CheckRecordSchema = "fshw-check-semantics-v3"
 
 /// A checker build: the components a check's answer depends on beyond the code it checks.
 type CheckerBuild =

@@ -34,7 +34,7 @@ open System.Text.RegularExpressions
 
 /// The identity's own format: bumping it re-keys every record that names an output.
 [<Literal>]
-let Schema = "pe-v2"
+let Schema = "pe-v3"
 
 /// Stands for the checkout root inside an F# resource. NUL-delimited, so no path or
 /// identifier the compiler pickles contains it.
@@ -104,10 +104,19 @@ let private pickledLengthBefore (data: byte[]) (after: int) (at: int) (rootLengt
     | None, None, Some found -> Some found
     | None, None, None -> None
 
-/// `data` with every occurrence of `root` replaced by the placeholder, and the pickled
-/// length in front of each one re-stated as the length of what follows the root.
+/// `data` with every occurrence of `root` AT A PATH BOUNDARY replaced by the placeholder,
+/// and the pickled length in front of each one re-stated as the length of what follows
+/// the root. At a boundary means followed by a directory separator, by the end of the
+/// data, or by the end of the pickled string it opens (AUTOMATION-1640): matched bare,
+/// `/w/e2a` turned the sibling `/w/e2a-old/x.fs` into the same bytes `/w/e2` turns
+/// `/w/e2-old/x.fs` into.
 let internal normalizeResource (root: byte[]) (data: byte[]) : byte[] =
     let occurrences = indicesOf data root
+
+    let separatorAt (index: int) =
+        index < data.Length
+        && (data[index] = byte Path.DirectorySeparatorChar
+            || data[index] = byte Path.AltDirectorySeparatorChar)
 
     if occurrences.Count = 0 || root.Length = 0 then
         data
@@ -116,18 +125,30 @@ let internal normalizeResource (root: byte[]) (data: byte[]) : byte[] =
         let mutable copied = 0
 
         for at in occurrences do
-            match pickledLengthBefore data copied at root.Length with
-            | Some(start, length) ->
-                out.Write(data, copied, start - copied)
-                out.Write(restated, 0, restated.Length)
-                out.Write(BitConverter.GetBytes(length - root.Length), 0, 4)
-            | None -> out.Write(data, copied, at - copied)
+            let after = at + root.Length
+            let pickled = pickledLengthBefore data copied at root.Length
 
-            out.Write(placeholder, 0, placeholder.Length)
-            copied <- at + root.Length
+            let endsPickledString =
+                match pickled with
+                | Some(_, length) -> length = root.Length
+                | None -> false
 
-        out.Write(data, copied, data.Length - copied)
-        out.ToArray()
+            if after = data.Length || separatorAt after || endsPickledString then
+                match pickled with
+                | Some(start, length) ->
+                    out.Write(data, copied, start - copied)
+                    out.Write(restated, 0, restated.Length)
+                    out.Write(BitConverter.GetBytes(length - root.Length), 0, 4)
+                | None -> out.Write(data, copied, at - copied)
+
+                out.Write(placeholder, 0, placeholder.Length)
+                copied <- after
+
+        if copied = 0 then
+            data
+        else
+            out.Write(data, copied, data.Length - copied)
+            out.ToArray()
 
 /// The type whose assembly-level value carries build metadata: SourceLink appends
 /// `+<commit id>` to it on a git checkout (AUTOMATION-1480).
