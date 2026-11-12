@@ -1542,3 +1542,46 @@ the count for AUTOMATION-1536 is 13.
 **Open blocker for reaching 50:** §3's remedy, per-plugin input keys in place of the tree digest. While
 `plugin:<name>` is keyed by the whole tree, any tree without a record for a newly configured plugin reads
 `stricter`, and the run cannot accumulate across such a change.
+
+## 34. Amendment (AUTOMATION-1615): an evidence reuse consults the newest record at its K_P
+
+§25 settled fail-then-pass: a full fail that a later run cleared reads green under `check`. This
+is the other half, pass-then-fail, which the verdict lookup always kept red but which the
+**reuse** path never consulted. `TestEvidenceRun.plan` answered a project from the test-evidence
+store (`TestEvidenceStore.Lookup`), which holds greens only. A failing run files its record in
+the outcome store under the same `testActionKey K_P "full"`, and deletes nothing from the
+evidence store. The only guard was this checkout's `outstanding-failures.json`. So when checkout
+A earned TX green at K_P and checkout B then failed TX on the same bytes (a flake outside every
+closure, so K_P did not move), a fresh checkout C reused A's green: "reused: earned by run …"
+over a key whose newest record (§2) was B's fail.
+
+**Change.** Every reuse asks `TestEvidenceRun.reuseRefusal outcomes K_P earnedAt` before it
+stands in for a run; `plan` turns a refused hit into a miss, logged with the run that filed the
+fail. The reuse is refused when:
+
+- the newest record at the **full** key is a fail, unless a §25 clearance of that fail's run is
+  filed after it. A later full pass (fail-then-pass) is the newest record, so it reuses, as §25.
+- an **impact**-scoped fail at the same K_P is filed at or after the full green that stands (the
+  newest full pass, the clearance, or the entry's `earnedAt` when the full key holds nothing).
+  See below.
+- a file at either key, or at the clearance key, could not be **read**. The new
+  `OutcomeStore.Store.TryHistory` returns `Error` for that where `History` and `Lookup` answer
+  empty; an unreadable record may be the newest fail, so a reuse never reads it as "no fail"
+  (§33's rule, applied to the one reader for which empty and unreadable mean opposite things).
+
+A fail under a different K_P bears on nothing: it is a different key. With no outcome store wired
+there is nothing to consult and the evidence store alone decides, as before; in the daemon the
+store is always wired.
+
+**The filtered scope.** An impact run of P at K_P ran a subset of the very tests the full green
+ran, over the same bytes. A fail there contradicts that green exactly as a full fail does, so one
+filed after it refuses the reuse. An impact fail filed before the full green does not bear: the
+full run re-ran every test after it. A later impact pass does not clear it, because it may have run
+other tests; only a later full green (or a §25 clearance of a newer full fail) does. That can cost a
+checkout at that K_P a run it might have skipped, never a green it did not earn, and K_P moves on
+any edit to the closure.
+
+**One function for every reuse.** AUTOMATION-1587's restart skip (`RecordedSkip`, not yet on
+main) carried its own newer-fail check (`newerFails`, a full-key `Lookup`), which read an
+unreadable record as no fail and did not see impact fails. It reads `plan.Reused`, which now has
+every refused project removed with the reason in `plan.Misses`, so it needs no check of its own.

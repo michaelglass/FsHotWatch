@@ -529,3 +529,20 @@ let ``a key whose records are all readable still answers with its newest beside 
         unreadable badFile (fun () ->
             test <@ store.Lookup good |> Option.map _.Outcome = Some Outcome.Pass @>
             test <@ store.Lookup bad = None @>))
+
+// AUTOMATION-1615: a reader that must not take "could not be read" for "nothing on file" (an
+// evidence reuse asking whether a newer fail is filed) gets the two apart.
+[<Fact>]
+let ``TryHistory tells an unreadable key from an empty one, and answers a readable one in order`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        test <@ store.TryHistory key.Value = Ok [] @>
+        store.Record(recordOf key Outcome.Pass t0) |> ignore
+        let passFile = recordFiles dir |> List.exactlyOne
+        store.Record(recordOf key Outcome.Fail (t0.AddMinutes 1.0)) |> ignore
+
+        test <@ store.TryHistory key.Value |> Result.map (List.map _.Outcome) = Ok [ Outcome.Pass; Outcome.Fail ] @>
+
+        unreadable passFile (fun () ->
+            test <@ Result.isError (store.TryHistory key.Value) @>
+            test <@ File.Exists passFile @>))

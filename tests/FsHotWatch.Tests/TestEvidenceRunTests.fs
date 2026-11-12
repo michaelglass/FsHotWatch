@@ -528,9 +528,7 @@ let ``an outstanding failure blocks reuse until the project earns a green itself
         test <@ not (List.contains "TX" (reusedIn completed2)) @>
         test <@ TestResult.verifiedGreen completed2.Results["TX"] @>)
 
-[<Fact(Timeout = RunsTestCapMs,
-       Skip =
-           "AUTOMATION-1615: red today. Ordinary reuse reads only TestEvidenceStore (TestEvidenceRun.plan) and never the outcome store's newest record, so C reuses A's green. Unskip with the fix.")>]
+[<Fact(Timeout = RunsTestCapMs)>]
 let ``a newer full fail at a project's key is not answered by an older green under that key`` () =
     // ADR-059 §2: the answer for a key is its NEWEST record, and §25 keeps a newer fail at
     // the same key red. Checkout A earns TX's green under K_P; checkout B, on the same bytes,
