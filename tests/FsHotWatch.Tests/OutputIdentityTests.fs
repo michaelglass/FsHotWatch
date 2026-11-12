@@ -228,6 +228,25 @@ let ``a root inside a longer string, or at the start, is replaced and no length 
     test <@ obj.ReferenceEquals(OutputIdentity.normalizeResource [||] none, none) @>
 
 [<Fact>]
+let ``a sibling directory whose name starts with the root's is left as it is, so two roots never share it`` () =
+    // AUTOMATION-1640: the root is replaced only at a path boundary. Without one, the
+    // pickled `/w/e2a-old/x.fs` under `/w/e2a` and `/w/e2-old/x.fs` under `/w/e2` both
+    // normalized to a re-stated length of 9, the placeholder and `-old/x.fs`.
+    let normalized (root: string) (text: string) =
+        OutputIdentity.normalizeResource (Encoding.UTF8.GetBytes root) (FakeFSharpAssembly.pickled text)
+
+    test <@ normalized "/w/e2a" "/w/e2a-old/x.fs" = FakeFSharpAssembly.pickled "/w/e2a-old/x.fs" @>
+    test <@ normalized "/w/e2a" "/w/e2a-old/x.fs" <> normalized "/w/e2" "/w/e2-old/x.fs" @>
+
+    let inside = Encoding.UTF8.GetBytes "see:/w/e2ab/x"
+    test <@ OutputIdentity.normalizeResource (Encoding.UTF8.GetBytes "/w/e2a") inside = inside @>
+
+    // The control: a path under the root, and a pickled string that IS the root, are
+    // still normalized, so twin checkouts agree.
+    test <@ normalized "/w/e2a" "/w/e2a/x.fs" = normalized "/w/e2a-old" "/w/e2a-old/x.fs" @>
+    test <@ normalized "/w/e2a" "/w/e2a" = Array.append (restatedLength 0) placeholder @>
+
+[<Fact>]
 let ``a length that cannot cover the root is not read as one`` () =
     let root = Encoding.UTF8.GetBytes "/root"
     // One byte that is shorter than the root; two bytes that run past the data, or that

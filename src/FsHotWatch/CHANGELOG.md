@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a check-record key no longer names a sibling directory whose name starts with the checkout root's by the
+  root's placeholder (AUTOMATION-1640). `CheckCache.relativizeOption` replaced the bare root anywhere in a compiler
+  option, so under the root `/w/e2a` the sibling `/w/e2a-old/x.dll` became `${repo}-old/x.dll`, which `/v/e2a-old/x.dll`
+  under `/v/e2a` (or `/w/e2-old/x.dll` under `/w/e2`) also became: different files, one options hash, one key, and a
+  record replayable for inputs it was not filed for. `OutputIdentity.normalizeResource` did the same inside an F#
+  resource. Both now replace the root only at a path boundary: followed by a directory separator or the end of the
+  string (for a resource, the end of the data or of the pickled string). A path under the root, and the root itself,
+  still relativize exactly as before, so replay across checkouts is unchanged; a root given with a trailing separator
+  now also relativizes a bare occurrence of itself. **One-time re-key:** `CheckRecordSchema` is now
+  `fshw-check-semantics-v2` and `OutputIdentity.Schema` `pe-v3`, so the first check under this release replays nothing,
+  and every test-evidence K_P (which folds the checker build) moves with it.
+
 - fix: the daemon evaluates projects only with an SDK whose MSBuild its own runtime can host (AUTOMATION-1621). With no
   `global.json`, `dotnet` resolves the newest installed SDK; once a .NET 11 SDK is installed (GitHub's ubuntu-26.04 image
   20261111.196 ships 11.0.100), a .NET 10 daemon loaded its MSBuild and every evaluation failed with "Could not load file

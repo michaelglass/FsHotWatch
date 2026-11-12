@@ -579,6 +579,66 @@ let ``the project options hash keeps out-of-repo references absolute`` () =
         @>
 
 [<Fact(Timeout = 15000)>]
+let ``a sibling directory whose name starts with the root's stays absolute, so two roots never share its key`` () =
+    // AUTOMATION-1640: the root is replaced only at a path boundary. Without one,
+    // `/w/e2a-old/x.dll` under the root `/w/e2a` read `${repo}-old/x.dll` — the string
+    // `/v/e2a-old/x.dll` under `/v/e2a`, or `/w/e2-old/x.dll` under `/w/e2`, also reads.
+    // Those are three different files, and one key would replay a check for all three.
+    let relativize root option =
+        CheckCache.relativizeOption (Some root) option
+
+    test <@ relativize "/w/e2a" "-r:/w/e2a-old/x.dll" = "-r:/w/e2a-old/x.dll" @>
+
+    test
+        <@
+            relativize "/w/e2a" "-r:/w/e2a-old/x.dll"
+            <> relativize "/v/e2a" "-r:/v/e2a-old/x.dll"
+        @>
+
+    test
+        <@
+            relativize "/w/e2a" "-r:/w/e2a-old/x.dll"
+            <> relativize "/w/e2" "-r:/w/e2-old/x.dll"
+        @>
+
+    test <@ relativize "/w/e2a" "--out:/w/e2ab" = "--out:/w/e2ab" @>
+
+    let referencing (root: string) (reference: string) =
+        { optionsAt root with
+            OtherOptions = Array.append (optionsAt root).OtherOptions [| "-r:" + reference |] }
+
+    let hashReferencing (root: string) (reference: string) =
+        CheckCache.getProjectOptionsHashRelativeTo (Some root) (referencing root reference)
+
+    test
+        <@
+            hashReferencing "/w/e2a" "/w/e2a-old/x.dll"
+            <> hashReferencing "/v/e2a" "/v/e2a-old/x.dll"
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``a path at the root, under it, or the root itself still relativizes, so twin checkouts agree`` () =
+    // The control for the boundary above: in-repo paths are named relatively, exactly
+    // as before, so replay across workspaces keeps working.
+    let placeholder = CheckCache.RepoRootPlaceholder
+
+    for root in [ "/w/e2a"; "/w/e2a/" ] do
+        test <@ CheckCache.relativizeOption (Some root) "-r:/w/e2a/src/x.dll" = "-r:" + placeholder + "/src/x.dll" @>
+        test <@ CheckCache.relativizeOption (Some root) "--out-dir:/w/e2a" = "--out-dir:" + placeholder @>
+
+        let expected = $"--lib:%s{placeholder}/a,%s{placeholder}/b"
+        test <@ CheckCache.relativizeOption (Some root) "--lib:/w/e2a/a,/w/e2a/b" = expected @>
+
+    // A root that is all separators (the filesystem root) leaves nothing to match a
+    // boundary against: the option is kept as written, never looped over.
+    test <@ CheckCache.relativizeOption (Some "/") "-r:/w/x.dll" = "-r:/w/x.dll" @>
+
+    let hashAt (root: string) =
+        CheckCache.getProjectOptionsHashRelativeTo (Some root) (optionsAt root)
+
+    test <@ hashAt "/w/e2a" = hashAt "/w/e2a-old" @>
+
+[<Fact(Timeout = 15000)>]
 let ``the project options hash without a repository root is unchanged`` () =
     // The no-root behaviour is the historical one, and callers that have no root
     // (tests, tooling) must keep getting it rather than a silently portable hash.
