@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: checks held back from filing behind a file with no check record are logged (AUTOMATION-1606). After each
+  filing, the daemon logs `N check(s) not filed: provisional behind <file>, which has no check record in its project`,
+  so a file that never gets a record (a check that never completes in that project) is visible instead of silently
+  costing its project's tail, and every project downstream, a re-check on every start. A file with errors is not such a
+  file: it is filed, and named by its content. The checks held for later filing are bounded by one per (file,
+  registered project), each holding only the check's stored outputs, never its FCS objects; an entry checked under
+  options since replaced is now released.
+
 - perf: `OutcomeStore.Store.HoldsKey` answers whether a record is filed under a key from the directory listing alone,
   without reading, checksumming or decoding any payload (AUTOMATION-1609). TestPrune's task-cache read guard asks it
   once per file on every warm start. On a synthetic store the size of intelligence's (2,781 records of 120 KB), asking

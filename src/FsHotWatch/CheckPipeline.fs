@@ -608,6 +608,10 @@ type CheckPipeline
     /// its content, where a walk taken now names it by the API signature it declared.
     let mutable pendingVersion = 0L
 
+    /// After the last `PersistCheckRecords`: each file with no record that held checks back
+    /// from filing, and how many (AUTOMATION-1606).
+    let mutable provisional: (string * int) list = []
+
     /// What the store answered for each key this generation, shared by every replay walk:
     /// an early cutoff walks a project again for each file that waited (`CheckRecords.Walk`).
     let storeReads = ConcurrentDictionary<string, CheckOutputs option>()
@@ -842,18 +846,41 @@ type CheckPipeline
                     if record.File = file && record.Outputs.IsSome then
                         reached.Add(struct (file, projectFile)) |> ignore
 
-            // Filed, found filed already, or moved: none of these is waiting any more. A check
-            // behind an earlier file with no record yet waits, while its inputs hold, to be
-            // filed once that file is known (AUTOMATION-1606). A newer check of the same file
-            // replaced its entry and stays.
+            // Whether `pending` was checked under its project's options as registered now.
+            let current (pending: PendingRecord) =
+                match projectOptionsByProject.TryGetValue pending.Options.ProjectFileName with
+                | true, registered -> getProjectOptionsHashRelativeTo repoRoot registered = pending.OptionsHash
+                | false, _ -> false
+
+            // Filed, found filed already, moved, or checked under options since replaced: none
+            // of these is waiting any more. A check behind an earlier file with no record yet
+            // waits, while its inputs hold, to be filed once that file is known
+            // (AUTOMATION-1606). A newer check of the same file replaced its entry and stays.
+            //
+            // The bound: one entry per (file, registered project), each holding the check's
+            // `CheckOutputs` (diagnostics and three hashes), never its FCS objects. An entry
+            // behind a file that never resolves is held for the daemon's life within that bound,
+            // and counted in `ProvisionalAfterFiling`; dropping it would cost only its filing.
+            let held = Collections.Generic.Dictionary<string, int>()
+
             for entry in snapshot do
                 let struct (file, _) = entry.Key
 
                 if
                     reached.Contains entry.Key
+                    || not (current entry.Value)
                     || not (pendingHolds contentTableOf entry.Value.Options file entry.Value)
                 then
                     pendingRecords.TryRemove entry |> ignore
+                else
+                    walk.Unknown entry.Value.Options
+                    |> Option.iter (fun unknown ->
+                        held[unknown] <-
+                            match held.TryGetValue unknown with
+                            | true, count -> count + 1
+                            | false, _ -> 1)
+
+            provisional <- [ for KeyValue(unknown, count) in held -> unknown, count ] |> List.sortBy fst
 
             // New records: the next replay walks the store again.
             if filed > 0 then
@@ -881,6 +908,13 @@ type CheckPipeline
         | None -> []
         | Some store ->
             CheckRecords.Walk(store, checkToolchain, repoRoot, hashFile, CheckRecords.readOnly).Project(options)
+
+    /// After the last `PersistCheckRecords`: each file with no record that held checks back
+    /// from filing, with how many checks it held (AUTOMATION-1606).
+    member internal _.ProvisionalAfterFiling: (string * int) list = provisional
+
+    /// How many checks wait to be filed (`PersistCheckRecords`).
+    member internal _.PendingRecordCount: int = pendingRecords.Count
 
     /// The most checks this pipeline has had building a snapshot or in FCS at once.
     member internal _.CheckConcurrencyPeak: int = Volatile.Read &checksInSlotsPeak
