@@ -626,3 +626,36 @@ let openFor (repoRoot: string) (log: string -> unit) =
           MaxBytes = defaultMaxBytes
           Log = log }
     )
+
+/// Work a plugin files here, box-wide, and also caches per workspace (AUTOMATION-1609).
+///
+/// A per-workspace task-cache hit skips the work, and with it the filing: a workspace whose
+/// own cache answered every file filed nothing, and every fresh workspace re-did the work
+/// live. A cache entry records THAT the work was done, not what it produced, so it cannot
+/// file the record itself. The rule is therefore: the per-workspace cache answers only
+/// once the store holds the work's record; until then the work runs again, and is filed
+/// only when its key is absent (AUTOMATION-1596: filing without a lookup re-filed one
+/// analysis per checkout). `holds` says whether the store holds a USABLE record under a
+/// key, as the plugin's reader would take it.
+module FiledWork =
+    /// Whether a per-workspace cache entry may stand in for work filed under `key`: always
+    /// when nothing would be filed (no store, or work with no key), otherwise only once
+    /// `store` holds it.
+    let mayAnswerLocally
+        (holds: Store -> ActionKey.ActionKey -> bool)
+        (store: Store option)
+        (key: ActionKey.ActionKey option)
+        : bool =
+        match store, key with
+        | Some store, Some key -> holds store key
+        | _ -> true
+
+    /// File through `file` only when `store` holds nothing under `key`. Returns whether
+    /// it filed.
+    let fileIfAbsent
+        (holds: Store -> ActionKey.ActionKey -> bool)
+        (store: Store)
+        (key: ActionKey.ActionKey)
+        (file: unit -> bool)
+        : bool =
+        not (holds store key) && file ()

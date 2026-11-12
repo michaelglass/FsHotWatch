@@ -489,10 +489,11 @@ let internal onFileCheckedWith
                         analyzeSourceFromResults analysisFile result.Source parseResults checkResults projectName
 
                     // Filed, so another checkout's replay of the same check is answered
-                    // without a live one (AUTOMATION-1482).
+                    // without a live one (AUTOMATION-1482). Only when absent: a key already
+                    // filed is never filed again (AUTOMATION-1596, AUTOMATION-1609).
                     match analysed, env.AnalysisRecords, AnalysisRecords.keyFor repoRoot result with
                     | Ok analysis, Some store, Some key ->
-                        AnalysisRecords.file store analysisRoot relPath key analysis |> ignore
+                        AnalysisRecords.fileIfAbsent store analysisRoot relPath key analysis |> ignore
                     | _ -> ()
 
                     analysed

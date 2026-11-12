@@ -282,3 +282,24 @@ let holds (store: OutcomeStore.Store) (repoRoot: string) (result: FsHotWatch.Eve
     keyFor repoRoot result
     |> Option.bind (fun key -> lookup store repoRoot key)
     |> Option.isSome
+
+/// Whether `store` holds an analysis under `key` that reads under `root`.
+let private readable (root: string) (store: OutcomeStore.Store) (key: ActionKey.ActionKey) : bool =
+    lookup store root key |> Option.isSome
+
+/// Whether TestPrune's task-cache entry for `result` may stand in for analysing it: only
+/// once its analysis is filed in `store`, or when none would be (`OutcomeStore.FiledWork`,
+/// AUTOMATION-1609). A refusal re-analyses the check, which files it.
+let mayAnswerLocally (store: OutcomeStore.Store option) (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) =
+    OutcomeStore.FiledWork.mayAnswerLocally (readable repoRoot) store (keyFor repoRoot result)
+
+/// `file`, only when `store` holds no readable analysis under `key` (AUTOMATION-1596,
+/// AUTOMATION-1609). Returns whether it filed.
+let fileIfAbsent
+    (store: OutcomeStore.Store)
+    (root: string)
+    (relPath: string)
+    (key: ActionKey.ActionKey)
+    (analysis: AnalysisResult)
+    : bool =
+    OutcomeStore.FiledWork.fileIfAbsent (readable root) store key (fun () -> file store root relPath key analysis)

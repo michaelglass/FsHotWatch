@@ -58,6 +58,11 @@
   unpublished, for its own record. A cold scan costs one more check per extra project of a shared file; a warm one
   replays them.
 
+- feat: `OutcomeStore.FiledWork` states the rule for work a plugin files box-wide and also caches per workspace
+  (AUTOMATION-1609). `mayAnswerLocally` lets a per-workspace cache entry answer only once the store holds the work's
+  record. `fileIfAbsent` files only when the key is absent. TestPrune's analyses use it; the analyzers' records
+  (AUTOMATION-1585) are meant to use it the same way, through the state's `IFileCacheReadGuard`.
+
 ## 0.10.0-alpha.109 - 2026-11-11
 
 - fix: the outcome store's GC no longer evicts one kind's records to pay for another's (AUTOMATION-1583). The store
