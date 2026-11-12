@@ -1579,7 +1579,9 @@ filed after it refuses the reuse. An impact fail filed before the full green doe
 full run re-ran every test after it. A later impact pass does not clear it, because it may have run
 other tests; only a later full green (or a §25 clearance of a newer full fail) does. That can cost a
 checkout at that K_P a run it might have skipped, never a green it did not earn, and K_P moves on
-any edit to the closure.
+any edit to the closure. Do not optimise this away: an impact-scope fail filed at or after the full
+green blocks a full reuse, and only a later full green clears it, because it contradicts that green
+on the same bytes; the cost of blocking is a run, never a false green.
 
 **One function for every reuse.** AUTOMATION-1587's restart skip (`RecordedSkip`, not yet on
 main) carried its own newer-fail check (`newerFails`, a full-key `Lookup`), which read an
