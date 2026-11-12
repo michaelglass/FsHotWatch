@@ -30,25 +30,45 @@ let Kind = "testprune-analysis"
 [<Literal>]
 let Schema = "fshw-testprune-analysis-v1"
 
-/// The analyser build: TestPrune.Core's identity and fshw's TestPrune plugin, which choose
-/// what an analysis contains.
-type private Marker = class end
+/// What fshw's TestPrune plugin contributes to an analysis record's key: which analysis it
+/// asks TestPrune.Core for and how it files one (`keyOf`'s terms, the record's format).
+///
+/// BUMP IT BY HAND for any change that makes a record an older fshw filed wrong for this
+/// one. It replaces the plugin assembly's identity (AUTOMATION-1616), whose module version
+/// id moved with every build, so every release re-analysed every file.
+/// `RecordKeyGoldenTests` pins the key and fails on any change to how it is computed.
+[<Literal>]
+let AnalysisSchema = "fshw-testprune-analysis-semantics-v1"
 
+/// The analyser identity, from its parts: TestPrune.Core's release (`name@version`) and
+/// the plugin's analysis `schema`.
+let analyzerIdentityOf (testPruneCore: Reflection.AssemblyName) (schema: string) : string =
+    $"%s{testPruneCore.Name}@%O{testPruneCore.Version};fshw-testprune-analysis-schema=%s{schema}"
+
+/// The analyser build: TestPrune.Core, which computes what an analysis contains, and
+/// `AnalysisSchema` for the plugin's part.
+///
+/// TestPrune.Core is named by its release, its assembly version being its package version:
+/// a release that changes it publishes a new version. Not by module version id: every fshw
+/// release rebuilds it with the release commit in its informational version, so its id moved
+/// with every release whether or not the analyser had changed. Between releases a local build
+/// carries the last version, so a change to what TestPrune.Core analyses that must reach
+/// records before it is released bumps `AnalysisSchema` too.
 let analyzerIdentity: string =
-    [ typeof<AnalysisResult>.Assembly; typeof<Marker>.Assembly ]
-    |> List.map (fun assembly ->
-        let name = assembly.GetName()
-        $"%s{name.Name}@%O{name.Version}/%O{assembly.ManifestModule.ModuleVersionId}")
-    |> String.concat ";"
+    analyzerIdentityOf (typeof<AnalysisResult>.Assembly.GetName()) AnalysisSchema
 
-/// The key an analysis is filed under.
-let keyOf (identity: string) (relPath: string) (projectName: string) : ActionKey.ActionKey =
+/// The key an analysis is filed under by the analyser `analyzer` (`analyzerIdentityOf`).
+let keyWith (analyzer: string) (identity: string) (relPath: string) (projectName: string) : ActionKey.ActionKey =
     ActionKey.create
         Kind
-        [ "analyzer", analyzerIdentity
+        [ "analyzer", analyzer
           "analysis", identity
           "file", relPath
           "project", projectName ]
+
+/// The key an analysis is filed under by this process's analyser.
+let keyOf (identity: string) (relPath: string) (projectName: string) : ActionKey.ActionKey =
+    keyWith analyzerIdentity identity relPath projectName
 
 [<Literal>]
 let private RootPlaceholder = "${analysis-root}"

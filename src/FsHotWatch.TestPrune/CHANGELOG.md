@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- perf: a new fshw build no longer re-keys every test-prune analysis record (AUTOMATION-1616).
+  `AnalysisRecords.analyzerIdentity` named TestPrune.Core's and this plugin's assemblies by module version id, and both
+  ids moved with every fshw release (TestPrune.Core is rebuilt with the release commit in its informational version),
+  so each release re-analysed every file. TestPrune.Core is now named by its release (`name@version`, its assembly
+  version being its package version), and the plugin's part by the hand-bumped `AnalysisRecords.AnalysisSchema`
+  constant, which carries the duty the plugin assembly's id stood for: a change in which analysis the plugin asks for
+  or how it files one. New: `analyzerIdentityOf`, `keyWith`. A golden test pins a fixed analysis's key. fshw
+  0.14.0-alpha.144's first analysis is cold once more; the saving starts at alpha.145.
+
 ## 0.13.0-alpha.110 - 2026-11-12
 
 - fix: flakiness history and the declared-class reader keep the rows of a CTRF report whose string literals carry raw
