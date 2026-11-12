@@ -704,6 +704,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       CheckRecords = false
       OptionsRecords = false
       AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
+      OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
       Analyzers = None
       Tests = None
       FileCommands = []

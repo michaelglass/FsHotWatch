@@ -720,6 +720,18 @@ let rec waitPast (now: unit -> DateTime) (sleep: int -> unit) (deadline: DateTim
         sleep (int (Math.Ceiling left.TotalMilliseconds) + 1)
         waitPast now sleep deadline
 
+/// The portable-record shadow (AUTOMATION-1602 (b), `OptionsPortable.shadow`): it runs beside
+/// the root-keyed records and never answers a load.
+[<NoComparison; NoEquality>]
+type OptionsShadow =
+    {
+        /// Before an evaluation the root-keyed lookup missed: looks up what a portable record
+        /// would replay, and returns what to do with what the evaluation then loaded.
+        BeforeEvaluation: Request -> (string * string) list -> (Types.ProjectOptions list -> unit)
+        /// After the root-keyed filer filed `projects`, evaluated from `inputs`.
+        AfterFiled: Request -> EvaluationInputs -> Types.ProjectOptions list -> (string * string) list -> unit
+    }
+
 /// A workspace loader that answers from the outcome store when every input of the last
 /// evaluation of the same request is byte-identical, and otherwise evaluates through
 /// `inner`, lists what that read with `listInputs`, and files it.
@@ -735,10 +747,19 @@ type CachingLoader
         environment: unit -> (string * string) list,
         log: string -> unit,
         ?racyWindow: TimeSpan,
-        ?stamp: string -> FileStamp.Stamp voption
+        ?stamp: string -> FileStamp.Stamp voption,
+        ?shadow: OptionsShadow
     ) =
     let racyWindow = defaultArg racyWindow CheckCache.FileContentHasher.RacyWindow
     let stamp = defaultArg stamp FileStamp.read
+
+    // The shadow runs beside a load and answers none of it: what it throws is logged, never
+    // raised into the load.
+    let besideTheLoad (what: unit -> unit) =
+        try
+            what ()
+        with ex ->
+            log $"options: portable shadow failed: %s{ex.GetType().Name}: %s{ex.Message}"
 
     // The probes the last evaluation of this request listed, as its index record names them.
     let filedProbes (req: Request) =
@@ -765,19 +786,19 @@ type CachingLoader
         let loaded = inner.LoadProjects projects |> Seq.toList
         let loadedAt = DateTime.UtcNow
 
-        let listed, filing =
+        let inputs, filing =
             if failed.Count > 0 then
-                [], Refused $"%d{failed.Count} project(s) failed to load"
+                None, Refused $"%d{failed.Count} project(s) failed to load"
             elif List.isEmpty loaded then
-                [], Refused "no project loaded"
+                None, Refused "no project loaded"
             else
                 try
                     let inputs = listInputs loaded
-                    inputs.Probes, file store req inputs loaded env (startedAt - racyWindow) absentAtStart stamp
+                    Some inputs, file store req inputs loaded env (startedAt - racyWindow) absentAtStart stamp
                 with ex ->
-                    [], Refused $"its inputs could not be listed: %s{ex.Message}"
+                    None, Refused $"its inputs could not be listed: %s{ex.Message}"
 
-        loaded, filing, loadedAt, listed
+        loaded, filing, loadedAt, inputs
 
     // The directories of the projects asked for. The first design-time build in a checkout
     // that was never built writes there: each project's generated compile items under
@@ -811,7 +832,7 @@ type CachingLoader
         let rec attempt (known: string list option) =
             let retried = Option.isSome known
 
-            let loaded, filing, loadedAt, listed =
+            let loaded, filing, loadedAt, inputs =
                 evaluateOnce req env projects (Option.defaultValue [] known @ filed)
 
             match filing with
@@ -840,9 +861,14 @@ type CachingLoader
 
                 waitPast (fun () -> DateTime.UtcNow) Threading.Thread.Sleep (loadedAt + racyWindow)
 
-                attempt (Some listed)
+                attempt (Some(inputs |> Option.map _.Probes |> Option.defaultValue []))
             | Filed ->
                 log $"options: filed the evaluation of %d{loaded.Length} project(s)"
+
+                match shadow, inputs with
+                | Some shadow, Some inputs -> besideTheLoad (fun () -> shadow.AfterFiled req inputs loaded env)
+                | _ -> ()
+
                 loaded
             | Moved moved ->
                 // Name an input outside the projects when one moved: it decides whether a
@@ -872,7 +898,22 @@ type CachingLoader
             options
         | Missed why ->
             log $"options: evaluating: %s{why}"
-            evaluateAndFile req env projects
+
+            match shadow with
+            | None -> evaluateAndFile req env projects
+            | Some shadow ->
+                // Looked up BEFORE the evaluation, which writes the generated compile items a
+                // fresh checkout lacks; compared after it.
+                let compare =
+                    try
+                        shadow.BeforeEvaluation req env
+                    with ex ->
+                        log $"options: portable shadow failed: %s{ex.GetType().Name}: %s{ex.Message}"
+                        ignore
+
+                let loaded = evaluateAndFile req env projects
+                besideTheLoad (fun () -> compare loaded)
+                loaded
         |> Seq.ofList
 
     interface IWorkspaceLoader with

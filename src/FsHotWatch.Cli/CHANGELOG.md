@@ -11,6 +11,11 @@
   Exit 0 agree, 1 mismatch, 3 nothing compared, 2 usage. Reads both stores; quarantines nothing; never contacts the
   daemon.
 
+- feat: `.fshw.json` `optionsRecordsPortable: "off" | "shadow"` (AUTOMATION-1602 (b)), default `"off"`, and
+  `FSHW_OPTIONS_PORTABLE` to override it. `"shadow"` logs what an options record filed in another checkout
+  of the same tree would have replayed, and whether it agrees with the evaluation, without serving it; see
+  the FsHotWatch core changelog. `"on"` is refused until the shadow has earned it.
+
 - feat: `"analyzerRecords"` in `.fshw.json` (`"off"`, `"shadow"`, `"on"`; `FSHW_ANALYZER_RECORDS` overrides it) files
   each analysis box-wide as an `analyze` record, so daemons at different trees stop evicting each other's analyses
   (AUTOMATION-1585, ADR-059 §36). **Default `shadow`:** records are filed and each live analysis of a filed key is

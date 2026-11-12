@@ -3449,6 +3449,7 @@ let internal daemonWith
             ExcludePatterns = config.Exclude
             CheckRecords = resolveCheckRecords config.CheckRecords Environment.GetEnvironmentVariable
             OptionsRecords = resolveOptionsRecords config.OptionsRecords Environment.GetEnvironmentVariable
+            OptionsPortable = resolveOptionsPortable config.OptionsPortable Environment.GetEnvironmentVariable
             ExtraWatchPatterns = extraWatchPatterns
             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
             IdleExitMin = idleExit.ThresholdMin

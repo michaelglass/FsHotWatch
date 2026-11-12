@@ -2417,7 +2417,17 @@
         "reason": "new file (AUTOMATION-1617). Pure path and JSON/XML logic, platform-independent; the same unit tests cover it on Linux. Set from the macOS measurement (51/53); refresh from a CI run if Linux differs.",
         "platform": "linux"
       }
-    ]
+    ],
+    "PathToken.fs": {
+      "line": 94,
+      "branch": 73,
+      "reason": "new file (AUTOMATION-1602 (b): the checkout root as a token, for options records that replay across checkouts). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by OptionsPortableTests + OptionsRecordsTests + RecordKeyGoldenTests + DaemonConfigTests with coverage (a subset of the suite, so a lower bound): line 94.9%, branch 73.1% (38/52). Uncovered: the Windows refusal (unreachable on macOS and Linux), a null string, and edges of the boundary and segment matches."
+    },
+    "OptionsPortable.fs": {
+      "line": 95,
+      "branch": 72,
+      "reason": "new file (AUTOMATION-1602 (b): portable options records in shadow, and the shadow log). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by OptionsPortableTests + OptionsRecordsTests + RecordKeyGoldenTests + DaemonConfigTests with coverage (a subset of the suite, so a lower bound): line 95.3%, branch 72.1% (215/298). Uncovered: unreadable index and options records, the store refusing a write, a key that moves between its two readings, and compiler-generated edges of the JSON and option matches. Platform-neutral: file IO, hashing and JSON only."
+    }
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [

@@ -8,6 +8,20 @@
   Seeded, deterministic sampling per kind; a kind list open to new kinds (`AuditKind.find`). `OutcomeStore` gains two
   pure reads that quarantine nothing: `readAllWithOutputs` and `readKeyAt`.
 
+- feat: options records that replay across checkouts, in SHADOW only (AUTOMATION-1602 (b)). Behind
+  `optionsRecordsPortable: "shadow"` (with `optionsRecords`), each filed evaluation is filed a second time
+  with the checkout root as the token `${repo}` (`PathToken`), under two new record kinds
+  (`options-portable-inputs`, `options-portable`) whose keys name no root: files under the root are keyed
+  by their bytes with the root tokenized (so `project.assets.json` is the same in every checkout), and
+  generated compile items by the bytes filed with them (so a fresh checkout that has not written them yet
+  still matches). Before an evaluation the root-keyed lookup missed, the portable lookup runs; the
+  evaluation runs anyway, and one line of `<store>/../shadow/options-portable.jsonl` records whether the
+  portable key matched, which inputs moved, and every field where the filed options differ from the
+  evaluated ones. Nothing is served from a portable record. The existing kinds and keys are untouched, so
+  this re-keys nothing. A root reached through a symlink or spelled in another case, an option naming a
+  temporary directory, a value the root survives tokenizing in, and a path into a nested checkout are
+  never filed portably.
+
 - fix: a configured test project outside the discovery roots is hashed, and never carried as covered
   (AUTOMATION-1617). A `tests.projects` entry under `bench/` was in no tree hash, so an edit to it, or to a project it
   references, left a green earned before the edit applying; and a first whole run of it counted as whole-project

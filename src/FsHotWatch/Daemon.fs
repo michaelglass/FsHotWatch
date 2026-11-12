@@ -5429,6 +5429,10 @@ module Daemon =
             /// restart whose every input is byte-identical, instead of evaluating again
             /// (ADR-059 §18, AUTOMATION-1372). OFF by default: `"optionsRecords": true`.
             OptionsRecords: bool
+            /// Whether options records are also filed through the checkout-root token, and each
+            /// evaluation compared with what such a record would have replayed (AUTOMATION-1602 (b)).
+            /// OFF by default; `Shadow` never serves a replay. Only with `OptionsRecords`.
+            OptionsPortable: OptionsPortable.Mode
         }
 
     module DaemonOptions =
@@ -5448,7 +5452,8 @@ module Daemon =
               Restore = DepsFreshness.productionRestoreRunner
               LiveResultBound = LiveResults.DefaultBound
               CheckRecords = false
-              OptionsRecords = false }
+              OptionsRecords = false
+              OptionsPortable = OptionsPortable.Mode.Off }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -5508,10 +5513,29 @@ module Daemon =
     let internal msbuildWorkspaceLoader (repoRoot: string) : IWorkspaceLoader =
         WorkspaceLoader.Create(msbuildToolsPath repoRoot, [])
 
+    /// The checkout's commit as jj names `@` at its last snapshot, or git's `HEAD`, for the
+    /// portable shadow's log (AUTOMATION-1602 (b)): its trust criterion spans commits. Never
+    /// snapshots the working copy.
+    let internal workingCopyCommit (repoRoot: string) : string option =
+        let bounds = ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 10.0)
+
+        let commitIn (command: string) (args: string) =
+            match ProcessHelper.runProcess command args repoRoot [] bounds with
+            | ProcessHelper.Succeeded output ->
+                (ProcessHelper.ProcessOutput.text output).Split('\n')
+                |> Array.map _.Trim()
+                |> Array.tryFindBack (fun line -> line.Length = 40 && line |> Seq.forall Uri.IsHexDigit)
+            | _ -> None
+
+        if Directory.Exists(Path.Combine(repoRoot, ".jj")) then
+            commitIn "jj" "log -r @ --no-graph --ignore-working-copy -T commit_id"
+        else
+            commitIn "git" "rev-parse HEAD"
+
     /// The daemon's MSBuild loader with options records (ADR-059 §18, AUTOMATION-1372): an
     /// evaluation is filed in `repoRoot`'s outcome store, and replayed by a later daemon
     /// for as long as every input it read is byte-identical.
-    let internal optionsRecordsLoader (repoRoot: string) : IWorkspaceLoader =
+    let internal optionsRecordsLoader (repoRoot: string) (portable: OptionsPortable.Mode) : IWorkspaceLoader =
         let (Types.ToolsPath sdk) = msbuildToolsPath repoRoot
         let inner = WorkspaceLoader.Create(Types.ToolsPath sdk, [])
         let root = Path.GetFullPath repoRoot
@@ -5520,10 +5544,25 @@ module Daemon =
         let globalProperties =
             [ for KeyValue(name, value) in ProjectLoader.getGlobalProps None [] Set.empty -> name, value ]
 
+        let store = OutcomeStore.openFor repoRoot (Logging.info "options-records")
+
+        let shadow =
+            match portable with
+            | OptionsPortable.Mode.Off -> None
+            | OptionsPortable.Mode.Shadow ->
+                OptionsPortable.shadow
+                    store
+                    (Path.TrimEndingDirectorySeparator root)
+                    (OptionsPortable.logPathFor store.Root)
+                    (DaemonIdentity.versionOf typeof<OptionsPortable.Mode>.Assembly
+                     |> Option.defaultValue "unknown")
+                    (fun () -> workingCopyCommit repoRoot)
+                    (Logging.info "options-records")
+
         OptionsRecords.CachingLoader(
             inner,
             OptionsInputs.list,
-            OutcomeStore.openFor repoRoot (Logging.info "options-records"),
+            store,
             (fun projects ->
                 { Root = root
                   Projects = projects |> List.map Path.GetFullPath
@@ -5531,7 +5570,8 @@ module Daemon =
                   Sdk = sdk
                   GlobalProperties = globalProperties }),
             OptionsRecords.processEnvironment,
-            Logging.info "options-records"
+            Logging.info "options-records",
+            ?shadow = shadow
         )
         :> IWorkspaceLoader
 
@@ -5670,7 +5710,7 @@ module Daemon =
             let loader =
                 match workspaceLoader with
                 | Some loader -> loader
-                | None when opts.OptionsRecords -> optionsRecordsLoader repoRoot
+                | None when opts.OptionsRecords -> optionsRecordsLoader repoRoot opts.OptionsPortable
                 | None -> msbuildWorkspaceLoader repoRoot
 
             // Plugins read the model from the host publication. A settled model is

@@ -242,6 +242,44 @@ let ``GOLDEN: the options-record keys of a fixed request and every component the
          "ak1:5041e894015bfdec089ad7242230414053e82970b9a1ce97ace1cc437c536b49")
         (requestKey.Value.Text, optionsKey.Value.Text)
 
+// AUTOMATION-1602 (b): the portable request key names no checkout root, so one tree's
+// request is the same key in every checkout of it, whatever the root's length.
+[<Fact(Timeout = 15000)>]
+let ``GOLDEN: the portable options request key names no root and is one key for every checkout of a tree`` () =
+    let toolchain =
+        OptionsInputs.toolchainOf
+            "Ionide.ProjInfo@0.74.2.0/55555555-5555-5555-5555-555555555555"
+            "Microsoft.Build@15.1.0.0/66666666-6666-6666-6666-666666666666"
+            OptionsInputs.OptionsRecordSchema
+
+    let requestAt (root: string) : OptionsRecords.Request =
+        { Root = root
+          Projects = [ root + "/A.fsproj" ]
+          Toolchain = toolchain
+          Sdk = "/sdk/10.0.401"
+          GlobalProperties = [ "Configuration", "Debug"; "SolutionDir", root + "/" ] }
+
+    let short = OptionsPortable.requestKey (requestAt "/golden/repo")
+
+    let long =
+        OptionsPortable.requestKey (requestAt "/golden/a-much-longer-checkout-root")
+
+    test <@ short = long @>
+
+    golden
+        "The portable options request key's components"
+        [ "global-properties", "8d9179da762f77804197e51dff6612241a9d227f920f90a845f45a5a146903a8"
+          "path-token", "fshw-root-token-v1"
+          "projects", "f3274e397cf3720ae9545289c63dcdc8d15a7a3a1ee10228ee61d78cbf63a194"
+          "sdk", "/sdk/10.0.401"
+          "toolchain", goldenOptionsToolchain ]
+        short.Inputs
+
+    golden
+        "The portable options request key"
+        "ak1:a6fed0d49ebcdd7e3f9b8049f84661d371cfce459bee414b7ed216b45e67fbd2"
+        short.Value.Text
+
 // --- the golden test-prune analysis-record key ---
 
 let private testPruneCore (version: string) =

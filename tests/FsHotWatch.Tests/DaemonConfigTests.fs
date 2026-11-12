@@ -562,6 +562,51 @@ let ``parseConfig optionsRecords is off unless set true, refuses anything else, 
     raises<ConfigErrorException> <@ parseConfig """{"optionsRecords": 1}""" defaults @>
 
 [<Fact(Timeout = 15000)>]
+let ``parseConfig optionsRecordsPortable is off unless shadow, and refuses on until the shadow period has run`` () =
+    test <@ (parseConfig "{}" defaults).OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off @>
+
+    test
+        <@
+            (parseConfig """{"optionsRecordsPortable": "shadow"}""" defaults).OptionsPortable = FsHotWatch.OptionsPortable.Mode.Shadow
+        @>
+
+    test
+        <@
+            (parseConfig """{"optionsRecordsPortable": "off"}""" defaults).OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
+        @>
+
+    test
+        <@
+            (parseConfig """{"optionsRecordsPortable": null}""" defaults).OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
+        @>
+
+    raises<ConfigErrorException> <@ parseConfig """{"optionsRecordsPortable": "on"}""" defaults @>
+    raises<ConfigErrorException> <@ parseConfig """{"optionsRecordsPortable": true}""" defaults @>
+
+[<Fact(Timeout = 15000)>]
+let ``FSHW_OPTIONS_PORTABLE overrides the configured optionsRecordsPortable, and anything else keeps it`` () =
+    let env (value: string) : string -> string =
+        fun name -> if name = "FSHW_OPTIONS_PORTABLE" then value else null
+
+    test
+        <@
+            resolveOptionsPortable FsHotWatch.OptionsPortable.Mode.Off (env "shadow") = FsHotWatch.OptionsPortable.Mode.Shadow
+        @>
+
+    test
+        <@
+            resolveOptionsPortable FsHotWatch.OptionsPortable.Mode.Shadow (env "off") = FsHotWatch.OptionsPortable.Mode.Off
+        @>
+
+    test
+        <@
+            resolveOptionsPortable FsHotWatch.OptionsPortable.Mode.Shadow (env null) = FsHotWatch.OptionsPortable.Mode.Shadow
+        @>
+
+    test
+        <@ resolveOptionsPortable FsHotWatch.OptionsPortable.Mode.Off (env "on") = FsHotWatch.OptionsPortable.Mode.Off @>
+
+[<Fact(Timeout = 15000)>]
 let ``FSHW_OPTIONS_RECORDS overrides the configured optionsRecords either way, and FSHW_CHECK_RECORDS does not`` () =
     let env (variable: string) (value: string) : string -> string =
         fun name -> if name = variable then value else null
