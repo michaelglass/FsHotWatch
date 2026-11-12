@@ -87,8 +87,12 @@ let private scans (log: string) =
 /// loaded runner the request can land after it. The tally counts across scans, so a second scan
 /// adds every file again, each answered from the record the first scan read or filed: none is
 /// started in FCS, and no plugin demands one.
-let private assertTally (firstReplayed, firstStarted) (log: string) (replayed, started, demanded) =
-    let files = firstReplayed + firstStarted
+///
+/// `recordOnly` of those checks are of a file compiled into several projects, made in a project
+/// that did not claim it, for that project's check record only: counted in the tally, never
+/// published, so never in the scan's "Checked N files" (AUTOMATION-1606).
+let private assertTallyWith recordOnly (firstReplayed, firstStarted) (log: string) (replayed, started, demanded) =
+    let checks = firstReplayed + firstStarted
     let ran = scans log
 
     Assert.True(
@@ -97,10 +101,12 @@ let private assertTally (firstReplayed, firstStarted) (log: string) (replayed, s
     )
 
     for checkedFiles, unchecked in ran do
-        Assert.True((checkedFiles, unchecked) = (files, 0), log)
+        Assert.True((checkedFiles, unchecked) = (checks - recordOnly, 0), log)
 
-    Assert.True((replayed, started, demanded) = (firstReplayed + files * (ran.Length - 1), firstStarted, 0), log)
+    Assert.True((replayed, started, demanded) = (firstReplayed + checks * (ran.Length - 1), firstStarted, 0), log)
     ran.Length
+
+let private assertTally first log found = assertTallyWith 0 first log found
 
 /// Each plugin's name and outcome in a verdict.
 let private outcomes (verdict: JsonElement) =
@@ -319,6 +325,8 @@ let ``a file compiled into three projects of one tier is replayed after a restar
         commit clock root "a file linked into three projects"
 
         let found, log = checkTwice clock root ignore false
-        // Every checkable file once: Replay's four, LinkA's and LinkB's Lib.fs, and
-        // Shared.fs under the one project that claims it in both daemons.
-        assertTally (7, 0) log found |> ignore)
+        // Every checkable file published once: Replay's four, LinkA's and LinkB's Lib.fs, and
+        // Shared.fs under the one project that claims it in both daemons. Shared.fs is also
+        // checked, unpublished, in the other two projects, so each has its own record and
+        // the Lib.fs after it there is keyed by it (AUTOMATION-1606): 9 replays, no FCS check.
+        assertTallyWith 2 (9, 0) log found |> ignore)

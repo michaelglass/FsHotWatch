@@ -15,8 +15,9 @@
 ///   * `upstream`  — the CANONICAL API chain: the project's options, its assembly and
 ///                   non-F# references (`CheckCache.addAssemblyParts`), each referenced F#
 ///                   project's whole chain, then each earlier file in compile order named
-///                   by the API signature IN ITS OWN RECORD under its own canonical key,
-///                   or by its content where it has no record or no signature;
+///                   by what its check declared under its own canonical key: its API
+///                   signature, or its content when that check declared none (an error, an
+///                   `inline`). A generated compile item, never checked, is named by content;
 ///   * `project-outputs` — every referenced project's output, which FCS types against
 ///                   instead of the sources whenever it is newer (ADR-037), named by
 ///                   `OutputIdentity`: what a check reads of it, not the checkout path
@@ -24,18 +25,23 @@
 ///                   records alike (AUTOMATION-1478). An in-repo `-r:` assembly in
 ///                   `upstream` is named the same way.
 ///
-/// The in-memory API key cannot be persisted as it is: `UpstreamFingerprints.ForApi` names
-/// earlier files by whatever signatures were recorded BEFORE the table was built, so the
-/// same bytes get a content key in a cold scan and a signature key later. Here an earlier
-/// file is named by its signature exactly when the store holds its record, and a record is
-/// filed only in compile order (`Walk` with a filer), so writer and reader compute the same
-/// key. Soundness is by induction over the compile order, as for the in-memory API key: an
-/// equal `upstream` means each earlier file had equal bytes, or a check under an equal key
-/// declared an equal signature.
+/// An earlier file's name comes from its record, or from a pending check that would be
+/// filed as that record (`Filer`). A file the walk can name neither way is UNKNOWN, and so
+/// is every file after it, in its project and in every project referencing it: an unknown
+/// file's key is provisional, never read and never filed. The key is therefore a function of
+/// the bytes and what checks of them declared, never of which records happened to exist
+/// when it was filed (AUTOMATION-1606). Naming an unrecorded file by its content instead
+/// made a record for file k+1 filed before k's record unreachable the moment k's was filed:
+/// a reader then names k by its signature.
 ///
-/// A miss is never wrong, only slow: an earlier file with no record names its content, so
-/// the files after it miss until it is re-checked and filed. That is the "lazily, in
-/// dependency order" of the spike.
+/// Soundness is by induction over the compile order, as for the in-memory API key: an equal
+/// `upstream` means each earlier file was checked under an equal key and declared an equal
+/// signature (or had equal bytes, where it declared none), so an API change upstream moves
+/// every key after it, while a body edit that keeps the signature moves only its own file's
+/// key: the early cutoff (ADR-059 §14), whose pending check names it before it is filed.
+///
+/// A miss is never wrong, only slow: the files after an unknown one miss until it is
+/// checked, and a check behind it waits, pending, to be filed once it is known.
 module FsHotWatch.CheckRecords
 
 open System
@@ -167,14 +173,16 @@ module CheckOutputs =
         | :? FormatException -> None
 
 /// What a walk found for one file: its canonical key, and its record's outputs when the
-/// store holds one.
+/// store holds one. Behind an unknown file (see the module) the key is provisional: it is
+/// neither read nor filed, so `Outputs` is None.
 type FileRecord =
     { File: string
       Key: ActionKey.ActionKey
       Outputs: CheckOutputs option }
 
-/// Called for a file the store has no record of, with the key it would be filed under:
-/// the outputs it filed there, or None.
+/// Called for a file the store has no record of, with the key it would be filed under,
+/// when every file before it is known: the outputs it filed there, or None. A file it
+/// answers None for is unknown, and so is every file after it.
 type Filer = FSharpProjectOptions -> string -> ActionKey.ActionKey -> CheckOutputs option
 
 /// One pass over the canonical chains of some projects: each project's chain is computed
@@ -195,7 +203,8 @@ type Walk
     ) =
     let relativize = relativizeOption repoRoot
     let outputIdentity = OutputIdentity.identity repoRoot hashFile
-    let chains = Dictionary<string, FileRecord list * string>()
+    /// Each project's records, its chain, and whether every file of it is known.
+    let chains = Dictionary<string, FileRecord list * string * bool>()
 
     let read (key: ActionKey.ActionKey) =
         store.LookupWithOutputs key
@@ -207,7 +216,7 @@ type Walk
         | Some reads -> reads.GetOrAdd(key.Value.Text, fun _ -> read key)
         | None -> read key
 
-    let rec chain (opts: FSharpProjectOptions) : FileRecord list * string =
+    let rec chain (opts: FSharpProjectOptions) : FileRecord list * string * bool =
         let optionsHash = getProjectOptionsHashRelativeTo repoRoot opts
         let memoKey = $"%s{opts.ProjectFileName}|%s{optionsHash}"
 
@@ -216,7 +225,7 @@ type Walk
         | false, _ ->
             // Marked before the walk, so a reference cycle names the project instead of
             // recursing without end.
-            chains[memoKey] <- ([], $"cycle:%s{relativize opts.ProjectFileName}")
+            chains[memoKey] <- ([], $"cycle:%s{relativize opts.ProjectFileName}", true)
             let computed = walkProject opts optionsHash
             chains[memoKey] <- computed
             computed
@@ -244,10 +253,15 @@ type Walk
             opts.ReferencedProjects
             |> Array.filter (fun reference -> compiled.Contains reference.OutputFile)
 
+        // Every file of every referenced F# project is known: otherwise so is none of these.
+        let mutable known = true
+
         for reference in references do
             match reference with
             | FSharpReferencedProject.FSharpReference(_, referenced) ->
-                parts.Add $"project:%s{relativize referenced.ProjectFileName}=%s{snd (chain referenced)}"
+                let _, referencedChain, referencedKnown = chain referenced
+                known <- known && referencedKnown
+                parts.Add $"project:%s{relativize referenced.ProjectFileName}=%s{referencedChain}"
             | FSharpReferencedProject.PEReference(getStamp, _) ->
                 parts.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
             | FSharpReferencedProject.ILModuleReference(output, getStamp, _) ->
@@ -287,10 +301,15 @@ type Walk
                                       "upstream", running
                                       "project-outputs", projectOutputs ]
 
+                            // Behind an unknown file the key is provisional: read and filed
+                            // under it, a record would be orphaned once that file is known.
                             let outputs =
-                                match lookup key with
-                                | Some outputs -> Some outputs
-                                | None -> filer opts source key
+                                if not known then
+                                    None
+                                else
+                                    match lookup key with
+                                    | Some outputs -> Some outputs
+                                    | None -> filer opts source key
 
                             records.Add
                                 { File = source
@@ -299,17 +318,22 @@ type Walk
 
                             match outputs with
                             | Some { ApiSignature = Some signature } -> "api:" + signature
-                            | _ -> "content:" + content
+                            | Some { ApiSignature = None } -> "content:" + content
+                            | None ->
+                                known <- false
+                                "content:" + content
 
                     partOf[source] <- part
                     part
 
             running <- sha256Hex $"%s{running}\n%s{relativize source}=%s{part}"
 
-        List.ofSeq records, running
+        List.ofSeq records, running, known
 
     /// Each file of `options`' project with its canonical key and record, in compile order.
-    member _.Project(options: FSharpProjectOptions) : FileRecord list = fst (chain options)
+    member _.Project(options: FSharpProjectOptions) : FileRecord list =
+        let records, _, _ = chain options
+        records
 
     /// `filePath`'s canonical key and record in `options`' project; None for a file the
     /// project does not check on its own.

@@ -5341,6 +5341,22 @@ let ``a file an earlier tier never claimed is still available to a later one`` (
 
     test <@ laterTier = [ refused ] @>
 
+[<Fact>]
+let ``a file another project claimed is still checked in this project's context, for its record only`` () =
+    // AUTOMATION-1606: a check record is keyed by the API signature of every earlier file
+    // of ITS project. A shared file checked only under the project that claimed it has no
+    // record in the other project's context, so nothing after it there could be filed.
+    let shared = AbsFilePath.create "/repo/src/Shared.fs"
+    let a = AbsFilePath.create "/repo/src/A.fs"
+    let b = AbsFilePath.create "/repo/src/B.fs"
+
+    let first = Daemon.claimForScan Set.empty [ shared; a ]
+    let second = Daemon.claimForScan first.Claimed [ shared; b ]
+
+    test <@ (first.Published, first.RecordOnly) = ([ shared; a ], []) @>
+    test <@ (second.Published, second.RecordOnly) = ([ b ], [ shared ]) @>
+    test <@ second.Claimed = Set.ofList [ shared; a; b ] @>
+
 // --- a scoped invalidation says WHICH projects, not just how many ---
 
 [<Fact>]

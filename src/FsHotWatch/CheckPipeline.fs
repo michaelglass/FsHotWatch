@@ -819,8 +819,13 @@ type CheckPipeline
                     tables[memoKey] <- table
                     table
 
+            // Each slot the walk reached with every file before it known.
+            let reached = Collections.Generic.HashSet<struct (string * string)>()
+
             let filer: CheckRecords.Filer =
                 fun options file key ->
+                    reached.Add(struct (file, options.ProjectFileName)) |> ignore
+
                     match pendingRecords.TryGetValue(struct (file, options.ProjectFileName)) with
                     | true, pending when pendingHolds contentTableOf options file pending ->
                         if CheckRecords.file store repoRoot checkToolchain file key pending.Outputs then
@@ -832,13 +837,23 @@ type CheckPipeline
 
             let walk = CheckRecords.Walk(store, checkToolchain, repoRoot, hashFile, filer)
 
-            for KeyValue(_, pending) in snapshot do
-                walk.Project pending.Options |> ignore
+            for KeyValue(struct (file, projectFile), pending) in snapshot do
+                for record in walk.Project pending.Options do
+                    if record.File = file && record.Outputs.IsSome then
+                        reached.Add(struct (file, projectFile)) |> ignore
 
-            // Filed, found filed already, or moved: none of these is waiting any more. A
-            // newer check of the same file replaced its entry and stays.
+            // Filed, found filed already, or moved: none of these is waiting any more. A check
+            // behind an earlier file with no record yet waits, while its inputs hold, to be
+            // filed once that file is known (AUTOMATION-1606). A newer check of the same file
+            // replaced its entry and stays.
             for entry in snapshot do
-                pendingRecords.TryRemove entry |> ignore
+                let struct (file, _) = entry.Key
+
+                if
+                    reached.Contains entry.Key
+                    || not (pendingHolds contentTableOf entry.Value.Options file entry.Value)
+                then
+                    pendingRecords.TryRemove entry |> ignore
 
             // New records: the next replay walks the store again.
             if filed > 0 then

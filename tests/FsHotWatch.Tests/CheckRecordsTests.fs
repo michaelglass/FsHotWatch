@@ -526,6 +526,121 @@ let ``with nothing on file, files dispatched together are all checked and none w
         test <@ counter.Started = 3 @>
         test <@ results |> Map.forall (fun _ result -> not (isReplayed result)) @>)
 
+// ---------------------------------------------------------------------------
+// A record's key does not depend on which records existed when it was filed
+// (AUTOMATION-1606). An earlier file is named by the API signature its check declared;
+// a file filed before an earlier one had a record must not be keyed by that file's
+// content, or the earlier file's record, filed later, orphans it.
+// ---------------------------------------------------------------------------
+
+let private checkEach (pipeline: CheckPipeline) (cut: Cut) (files: string list) =
+    for file in files do
+        checkIn pipeline cut file |> Async.RunSynchronously |> ignore
+
+[<Fact(Timeout = 240000)>]
+let ``a record filed late for an earlier file lets every file after it replay`` () =
+    withTempDir "check-records-late" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let store = storeIn dir
+        let cut = projectC tree
+        let pipeline, _ = pipelineC tree (Some store) cut
+        // C2 has no check yet: C1, C3 and D1 do, and are filed first.
+        checkEach pipeline cut [ cut.Files[0]; cut.Files[2]; cut.D1 ]
+        pipeline.PersistCheckRecords() |> ignore
+        // C2 is checked and filed later, by the same daemon.
+        checkEach pipeline cut [ cut.Files[1] ]
+        pipeline.PersistCheckRecords() |> ignore
+
+        // A new process reads every file from the store, the files after C2 included.
+        let restarted, counter = pipelineC tree (Some store) cut
+
+        let results =
+            [ for file in cut.Files @ [ cut.D1 ] -> checkIn restarted cut file |> Async.RunSynchronously ]
+            |> Map.ofList
+
+        test <@ results |> Map.forall (fun _ result -> isReplayed result) @>
+        test <@ counter.Started = 0 @>
+        let fresh = forcedC tree cut
+
+        for KeyValue(file, result) in results do
+            test <@ outputsOf tree result = fresh[file] @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a record filed late after an API edit does not let the files checked before the edit replay`` () =
+    withTempDir "check-records-late-api" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let store = storeIn dir
+        let cut = projectC tree
+        let pipeline, _ = pipelineC tree (Some store) cut
+        checkEach pipeline cut [ cut.Files[0]; cut.D1 ]
+        let _, before = checkIn pipeline cut cut.Files[2] |> Async.RunSynchronously
+        pipeline.PersistCheckRecords() |> ignore
+        // C2's API changes before it is checked: C3 and D1 were checked against the old one.
+        File.WriteAllLines(cut.Files[1], [| "module C2"; "let two () : string = \"two\"" |])
+        checkEach pipeline cut [ cut.Files[1] ]
+        pipeline.PersistCheckRecords() |> ignore
+
+        let restarted, _ = pipelineC tree (Some store) cut
+        test <@ restarted.ReplayCheck(AbsFilePath.create cut.Files[1], cut.C) |> Option.isSome @>
+        test <@ restarted.ReplayCheck(AbsFilePath.create cut.Files[2], cut.C) = None @>
+        test <@ restarted.ReplayCheck(AbsFilePath.create cut.D1, cut.D) = None @>
+        // The positive control: C3's answer really moved with C2's API.
+        test <@ (forcedC tree cut)[cut.Files[2]] <> outputsOf tree before @>)
+
+/// Projects E and F, each compiling Shared.fs and then a file of its own that uses it.
+let private sharedProjects (tree: Tree) =
+    let path name = Path.Combine(tree.Root, name)
+    File.WriteAllLines(path "Shared.fs", [| "module Shared"; "let one () : int = 1" |])
+    File.WriteAllLines(path "E1.fs", [| "module E1"; "let e () : int = Shared.one () + 1" |])
+    File.WriteAllLines(path "F1.fs", [| "module F1"; "let f () : int = Shared.one () + 2" |])
+    let e = tree.Project "E" [ path "Shared.fs"; path "E1.fs" ] [] []
+    let f = tree.Project "F" [ path "Shared.fs"; path "F1.fs" ] [] []
+    e, f, path "Shared.fs", path "E1.fs", path "F1.fs"
+
+[<Fact(Timeout = 240000)>]
+let ``a file compiled into two projects is filed, and replayed, in each project's context`` () =
+    withTempDir "check-records-shared" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let store = storeIn dir
+        let e, f, shared, e1, f1 = sharedProjects tree
+        let slots = [ e, shared; e, e1; f, shared; f, f1 ]
+
+        let pipelineEF () =
+            let counter = CheckCounter()
+
+            let pipeline =
+                CheckPipeline(
+                    FsHotWatch.Daemon.Daemon.createChecker (),
+                    activity = counter,
+                    repoRoot = tree.Root,
+                    checkRecords = store,
+                    checkToolchain = toolchain
+                )
+
+            pipeline.RegisterProject(e.ProjectFileName, e)
+            pipeline.RegisterProject(f.ProjectFileName, f)
+            pipeline, counter
+
+        let checkWith (pipeline: CheckPipeline) (options: FSharpProjectOptions) (file: string) =
+            (pipeline.CheckFileWithOptions(AbsFilePath.create file, options)
+             |> Async.RunSynchronously)
+                .Value
+
+        let seeding, _ = pipelineEF ()
+
+        for options, file in slots do
+            checkWith seeding options file |> ignore
+
+        test <@ seeding.PersistCheckRecords() = 4 @>
+
+        let restarted, counter = pipelineEF ()
+        let results = [ for options, file in slots -> checkWith restarted options file ]
+        test <@ results |> List.forall isReplayed @>
+        test <@ counter.Started = 0 @>)
+
 let private sampleOutputs (root: string) : CheckOutputs =
     let bFile = Path.Combine(root, "src", "B.fs")
 
