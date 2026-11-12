@@ -103,16 +103,14 @@ let ``a restarted daemon whose tree moved by a non-source edit does not skip`` (
     test <@ launch.ZeroSelection = ZeroSelection.NotAZero @>
 
 // ---------------------------------------------------------------------------
-// The nothing-to-verify route, across a restart. Once the restarted daemon's symbol diff
-// has found the edited symbol and proved no test covers it, that route used to skip
-// without a session baseline. A skip earns no evidence, it only keeps what an earlier run
-// of this session earned, so a daemon that had run nothing could never answer `check`: the
-// verdict waits for evidence under the current model (AUTOMATION-1587). Its first launch
-// runs instead.
+// The nothing-to-verify route, across a restart: once the restarted daemon's symbol diff
+// has found the edited symbol and proved no test covers it, that route skips without a
+// session baseline. Pinned so the design can say which half of the measured case is the
+// refusal and which half is the cold scan's ordering (BuildCompleted before the diff).
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 30000)>]
-let ``a restarted daemon whose diff found only an uncovered symbol runs rather than skip with no evidence`` () =
+let ``a restarted daemon whose diff found only an uncovered symbol runs nothing`` () =
     let f, _ = setUp ()
 
     let orphan: TestPrune.AstAnalyzer.SymbolInfo =
@@ -137,8 +135,11 @@ let ``a restarted daemon whose diff found only an uncovered symbol runs rather t
 
     let _, launch = buildAndLaunch next owed
 
-    test <@ launch.ZeroSelection = ZeroSelection.NotAZero @>
-    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectInFull; "ProjB", ProjectInFull ] @>
+    test <@ Map.isEmpty launch.Selection @>
+
+    match launch.ZeroSelection with
+    | ZeroSelection.ChangesUncovered _ -> ()
+    | other -> Assert.Fail($"expected the nothing-to-verify skip, got %A{other}")
 
 // ---------------------------------------------------------------------------
 // The same seam over the box-wide evidence store (AUTOMATION-1587 design §4.2). A restart
