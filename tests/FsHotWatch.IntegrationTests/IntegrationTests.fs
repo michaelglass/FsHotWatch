@@ -1866,7 +1866,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
 // rerun — end-to-end: clear cache + synthetic file event re-runs plugin
 // ===========================================================================
 
-[<WallClock("negative window: asserts that something does NOT happen while it waits; load only delays events, so it can hide a defect on a slow box but cannot fail a correct one (docs/wall-clock-bounds.md rule 3)")>]
+[<WallClock("real host: a real `sh` child writes the sentinel the test counts; the waits are hang caps on that child and on owned event commits, never the claim")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``rerun re-executes a cached FileCommandPlugin`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-rerun-{Guid.NewGuid():N}")
@@ -1900,7 +1900,11 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
             { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
               AfterTests = None }
 
-        let handler = create (PluginName.create pluginName) trigger cmd args "/tmp" None
+        // The test's own directory is the repo root. A FileChanged key lists every file the
+        // pattern matches under the root (`InputListing`), and the first event walks it: over
+        // "/tmp" that walk read a whole shared temp directory (413k files on the CI box,
+        // 15 s of system time alone, past 30 s under concurrent gates) before the command ran.
+        let handler = create (PluginName.create pluginName) trigger cmd args tmpDir None
 
         let parsedPattern = FsHotWatch.Watcher.FilePattern.parse pattern
         host.RegisterHandler(handler)
@@ -1911,15 +1915,18 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         // flipped the plugin to Running, so under load it returns before the command
         // has written the sentinel.
         host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
-        waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 1) 5000
-        waitForStatusSettled host pluginName 5000
+        waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 1) HangWaitMs
+        waitForStatusSettled host pluginName HangWaitMs
         test <@ File.Exists(sentinel) @>
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
 
         // Same commit id ⇒ cache hit ⇒ the plugin must not run again.
+        // Wait for the plugin to COMMIT the second event, not for time to pass: only then does
+        // "still one line" mean the replay ran and did not execute, rather than not yet.
+        let committedBefore = committedBy host pluginName
         host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
-        Thread.Sleep(500) // cache replay is synchronous but give dispatch time to settle
-        waitForStatusSettled host pluginName 5000
+        test <@ waitForCommitted host pluginName committedBefore 1L HangWaitMs @>
+        waitForStatusSettled host pluginName HangWaitMs
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
 
         // Rerun via the public host API — same call the IPC endpoint makes.
@@ -1928,8 +1935,8 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
 
         // Status still reads Completed from the previous run, so `waitForStatusSettled`
         // would return immediately — wait for the second sentinel line instead.
-        waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 2) 5000
-        waitForStatusSettled host pluginName 5000
+        waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 2) HangWaitMs
+        waitForStatusSettled host pluginName HangWaitMs
 
         test <@ File.ReadAllLines(sentinel).Length = 2 @>
     finally
