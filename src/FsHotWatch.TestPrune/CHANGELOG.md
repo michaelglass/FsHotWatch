@@ -21,6 +21,21 @@
   says so; before, all read `no K_P key at the current tree`. `TestEvidenceRun.currentOutcomeKeyResults` returns each
   candidate's key or why it has none.
 
+- fix: a restarted daemon diffs from its own checkout's last full pass instead of running the full suite
+  (AUTOMATION-1587 steps 4-5). The first `BuildSucceeded` after a restart arrives before the cold scan's check results,
+  so it launched every project in full and the edit ran again in a queued re-run. Now, when the tree MOVED from the
+  tree T this checkout's full-suite ledger records as its last full pass, the impact index is still sealed at T (a new
+  seal file beside the index, written at each `BatchChecked` and cleared by any flush that writes rows outside one), and
+  the box-wide `test-baseline` record for exactly T is a pass from this analyser build with a manifest hashing to T, the
+  launch waits for the fold and then selects from the diff T to T' as a warm session would. T's manifest is the
+  evidence the tree moved from, so a non-symbol path in T to T' still runs every project in full (AUTOMATION-1559,
+  ADR-039); an unknown symbol or incomplete index, local reds and the shared reuse refusal still apply. An unchanged
+  tree does NOT wait: the skip on records answers it at once. Every other case is a miss and today's launch. The
+  5-minute bound stays; on expiry the launch is the full suite and a later diff queues a re-run. The ledger keeps the
+  tree its baseline was earned on (`full-suite-baseline.json` `tree`, only when the index was sealed there). Every build
+  launch and held release logs `diff-wait: held=yes|no waited-ms=<n> reason=none|session-baseline|checkout-baseline
+  tree=… record=… run=… timed-out=yes|no`, and a miss logs `diff-wait: no checkout baseline: <why>`.
+
 ## 0.13.0-alpha.111 - 2026-11-12
 
 - perf: a new fshw build no longer re-keys every test-prune analysis record (AUTOMATION-1616).

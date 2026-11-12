@@ -532,7 +532,8 @@ let ``FullSuiteBaseline round-trips, reads a missing file as none, and an existi
         let baseline: FullSuiteBaseline.Baseline =
             { RunId = Guid.NewGuid()
               EarnedAt = DateTime(2026, 9, 6, 10, 30, 0, DateTimeKind.Utc)
-              Projects = Set.ofList [ "A"; "B" ] }
+              Projects = Set.ofList [ "A"; "B" ]
+              Tree = None }
 
         FullSuiteBaseline.save tmpDir baseline
         test <@ FullSuiteBaseline.load tmpDir = FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) @>
@@ -548,7 +549,8 @@ let ``FullSuiteBaseline.staleness names exactly the configured projects the base
     let baseline: FullSuiteBaseline.Baseline =
         { RunId = Guid.NewGuid()
           EarnedAt = DateTime.UtcNow
-          Projects = Set.ofList [ "A"; "B" ] }
+          Projects = Set.ofList [ "A"; "B" ]
+          Tree = None }
 
     test <@ FullSuiteBaseline.staleness (Set.ofList [ "A" ]) baseline = None @>
     test <@ FullSuiteBaseline.staleness (Set.ofList [ "A"; "B" ]) baseline = None @>
