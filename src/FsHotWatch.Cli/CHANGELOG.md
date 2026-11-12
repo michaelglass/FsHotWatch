@@ -7,7 +7,10 @@
   builds, which move every release; each now names an explicit schema constant instead, bumped by hand when a change
   makes older records wrong, and still names FCS, FSharp.Core, Ionide, MSBuild and TestPrune.Core's release. **This
   release (0.14.0-alpha.144) changes those keys once more, since the term is removed, so its first scan is cold; the
-  saving starts at alpha.145.** See the FsHotWatch core and FsHotWatch.TestPrune changelogs.
+  saving starts at alpha.145.** See the FsHotWatch core and FsHotWatch.TestPrune changelogs. One-time effects of upgrading
+  to alpha.144: one more cold first scan in every workspace; stored test evidence stops applying once, since every
+  test-evidence K_P changes, so each test project runs once more. From the next release on, a release that does not
+  change the compiler service, FSharp.Core or a record schema constant replays the records the previous one filed.
 
 ## 0.14.0-alpha.143 - 2026-11-12
 
