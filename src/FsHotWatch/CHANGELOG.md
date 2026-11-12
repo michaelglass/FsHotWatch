@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a task-cache miss reason no longer depends on unrelated work (AUTOMATION-1647). The process-wide key-fingerprint
+  registry behind miss reasons (`TaskCache.KeyFingerprints`) is bounded at 8192 and used to drop every entry when it
+  filled, so a key minted before some other work crossed the bound lost its fingerprint and its miss reason degraded from
+  `InputsChanged [...]` to `InputsNotComparable`. It now evicts the least-recently-used entry one at a time, and a read
+  counts as a use. Only the reason was ever affected: whether a lookup hits is key equality, unchanged.
+
 ## 0.10.0-alpha.112 - 2026-11-12
 
 - fix: the daemon evaluates projects only with an SDK whose MSBuild its own runtime can host (AUTOMATION-1621). With no

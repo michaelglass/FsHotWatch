@@ -41,6 +41,32 @@ let ``the same tree under a different resolved SDK is a miss naming the toolchai
 
     test <@ fixedEnv.Lookup buildKey tree = CacheMiss(CacheMissReason.InputsChanged [ ToolchainLabel ]) @>
 
+// AUTOMATION-1647: `KeyFingerprints` is process-wide and bounded. It used to drop the
+// WHOLE map on reaching capacity, so a test (or a daemon event) whose keys were minted
+// just before some unrelated work crossed the bound lost its miss reason and fell back
+// to `InputsNotComparable` — nondeterministically, depending on what ran beside it.
+// Bring the registry to the brink first, so that crossing happens inside this test.
+//
+// RED-BEFORE-GREEN: clear the whole registry on overflow and this misses with
+// `InputsNotComparable`.
+[<Fact(Timeout = 15000)>]
+let ``a key minted as the fingerprint registry fills still names the toolchain`` () =
+    while KeyFingerprints.count () < KeyFingerprints.Capacity - 1 do
+        merkleCacheKey [ "filler", string (System.Guid.NewGuid()) ] |> ignore
+
+    let store = InMemoryTaskCache() :> ITaskCache
+    let tree = merkleCacheKey [ "inputs", "tree-at-capacity" ]
+
+    (ToolchainScopedTaskCache(store, wrongSdk) :> ITaskCache).Set buildKey tree (failedBuild tree)
+
+    for i in 1..16 do
+        merkleCacheKey [ "filler-after", string i ] |> ignore
+
+    let fixedEnv = ToolchainScopedTaskCache(store, pinnedSdk) :> ITaskCache
+
+    test <@ fixedEnv.Lookup buildKey tree = CacheMiss(CacheMissReason.InputsChanged [ ToolchainLabel ]) @>
+    test <@ KeyFingerprints.count () <= KeyFingerprints.Capacity @>
+
 [<Fact(Timeout = 15000)>]
 let ``the same tree under the same resolved SDK is a hit under the requested key`` () =
     let store = InMemoryTaskCache() :> ITaskCache
