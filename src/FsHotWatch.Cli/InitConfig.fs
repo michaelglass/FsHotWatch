@@ -100,6 +100,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       Cache = NoCache
       CheckRecords = false
       OptionsRecords = false
+      AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
       Analyzers = None
       Tests =
         if testProjects.IsEmpty then

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: `"analyzerRecords"` in `.fshw.json` (`"off"`, `"shadow"`, `"on"`; `FSHW_ANALYZER_RECORDS` overrides it) files
+  each analysis box-wide as an `analyze` record, so daemons at different trees stop evicting each other's analyses
+  (AUTOMATION-1585, ADR-059 §35). **Default `shadow`:** records are filed and each live analysis of a filed key is
+  compared with its record (a disagreement is logged at warning, naming the field), but a record never answers; `on`
+  lets records answer, so a start at a tree any checkout already analysed analyses nothing. One-time effect of
+  upgrading: the first start of each workspace re-analyses, once, the files its task cache answered before their
+  records were filed. With `includeOutsideRepo` there is no repository root to name paths under, and records are off.
+
 ## 0.14.0-alpha.144 - 2026-11-12
 
 - perf: upgrading fshw no longer cold-scans every workspace when the release changed nothing a check computes

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: each analysis is filed box-wide as an `analyze` record, many keys per file (AUTOMATION-1585, ADR-059 §35).
+  The analyzers' shared task cache keeps one entry per file, so daemons at two trees evicted each other's analyses and
+  every start at the other tree re-analysed (and demanded a live check of) each file the trees differ in. New:
+  `AnalyzeRecords` (the key: the task key's terms plus the checker build, the project options, the analyzer SDK release,
+  the toolchain and the hand-bumped `AnalyzeRecordSchema`; the record; the shadow comparison) and
+  `AnalyzersPlugin.createRecorded`. Modes: `off`; `shadow` files and compares, never answering from a record; `on`
+  answers from a record in place of a live analysis, a replayed check included. A record is filed only after a miss,
+  and the task cache answers a file only once its record is filed (AUTOMATION-1609's rule).
+
 ## 0.7.0-alpha.56 - 2026-11-11
 
 - AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered
