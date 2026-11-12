@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- FsHotWatch.Core (AUTOMATION-1635): the re-architecture's pure foundation types. Its
+       rules hold from day one, because each is cheap to keep and expensive to restore:
+       - NO FSharp.Compiler.Service, NO MSBuild, NO xUnit. Only FSharp.Core.
+       - NO `%A` and no reflection-based serialisation. `reflectionfree` below makes the
+         compiler refuse `%A` and stop generating the `%+A` ToString on records/unions,
+         so a type that wants text writes it.
+       - IsTrimmable/IsAotCompatible are kept as package metadata for consumers who trim,
+         but the trim/AOT analyzers do NOT run for F# (they are Roslyn analyzers; a
+         reflection probe built clean). the `reflectionfree` compiler flag below is the enforcement. An
+         AOT-publish smoke check is deferred to experiment E5. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>5</WarningLevel>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <OtherFlags>$(OtherFlags) --reflectionfree</OtherFlags>
+    <!-- Not published yet: nothing consumes it. Registering it with semantic-tagger.json,
+         the release workflow and the docs belongs to the first change that migrates a
+         package onto it. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Digests.fs" />
+    <Compile Include="RepoRelativePath.fs" />
+    <Compile Include="RecordKind.fs" />
+    <Compile Include="VerdictAndPurity.fs" />
+    <Compile Include="KindedOutcome.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>

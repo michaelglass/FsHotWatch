@@ -14,6 +14,31 @@
         "platform": "linux"
       }
     ],
+    "Digests.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: the five digest newtypes and their shared 64-lowercase-hex validation). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (32/32), branch 100% (16/16). Pure, no I/O or platform branch, so platform-neutral."
+    },
+    "RepoRelativePath.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: the repository-relative path parser and its refusals). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (24/24), branch 100% (20/20). Pure, no I/O or platform branch, so platform-neutral."
+    },
+    "RecordKind.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: IRecordKind, typed ActionKey and its canonical text). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (29/29), branch 100% (14/14). Pure, no I/O or platform branch, so platform-neutral."
+    },
+    "VerdictAndPurity.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: the closed Verdict and Purity unions and Verdict.ofParts). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (8/8), branch 100% (6/6). Pure, no I/O or platform branch, so platform-neutral."
+    },
+    "KindedOutcome.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: typed Outcome, its erased record and the typed miss on recall). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (14/14), branch 100% (6/6). Pure, no I/O or platform branch, so platform-neutral."
+    },
     "InProcessProcessTable.fs": [
       {
         "line": 82,

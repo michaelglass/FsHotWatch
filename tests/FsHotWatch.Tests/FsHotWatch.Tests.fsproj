@@ -356,6 +356,7 @@
     <Compile Include="NuGetPublicationBarrierTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />
     <Compile Include="LoggingTests.fs" />
+    <Compile Include="CoreTypesTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -378,6 +379,7 @@
     <ProjectReference Include="../../src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Core/FsHotWatch.Core.fsproj" />
   </ItemGroup>
 
   <!-- OptionsRecordsTests drives `OptionsInputs.RecordingFileSystem`, an MSBuild file system,
