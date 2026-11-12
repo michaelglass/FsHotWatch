@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- perf: `OutcomeStore.Store.HoldsKey` answers whether a record is filed under a key from the directory listing alone,
+  without reading, checksumming or decoding any payload (AUTOMATION-1609). TestPrune's task-cache read guard asks it
+  once per file on every warm start. On a synthetic store the size of intelligence's (2,781 records of 120 KB), asking
+  by reading each record read 327.6 MB of payload and allocated 3,007 MB. That is a lower bound, since TestPrune also
+  parsed each payload. `HoldsKey` read none and allocated 3.4 MB, taking 76 ms against 1.6 s (`fshw-bench probe-cost`).
+  A corrupt record still passes the probe. It becomes a miss, and is quarantined, where it is actually read.
+
 - feat: `OutcomeStore.FiledWork` states the rule for work a plugin files box-wide and also caches per workspace
   (AUTOMATION-1609). `mayAnswerLocally` lets a per-workspace cache entry answer only once the store holds the work's
   record. `fileIfAbsent` files only when the key is absent. TestPrune's analyses use it; the analyzers' records

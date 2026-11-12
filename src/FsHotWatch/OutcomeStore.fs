@@ -416,6 +416,19 @@ type Store(settings: Settings) =
 
     member _.Root = root
 
+    /// Whether any record file is filed under `key`, by name alone: no payload is read,
+    /// checksummed or verified (AUTOMATION-1609). A corrupt record answers yes here; it is a
+    /// miss, and quarantined, where it is read (`History`, `LookupWithOutputs`).
+    member _.HoldsKey(key: ActionKey.ActionKey) : bool =
+        let dir = directoryOf key.Value
+
+        try
+            Directory.Exists dir
+            && not (Seq.isEmpty (Directory.EnumerateFiles(dir, "*.json")))
+        with :? DirectoryNotFoundException ->
+            // GC removed the key between the two calls: nothing is filed.
+            false
+
     /// The directory the records of `keyValue` are filed in.
     member _.DirectoryOf(keyValue: ActionKey.KeyValue) = directoryOf keyValue
 

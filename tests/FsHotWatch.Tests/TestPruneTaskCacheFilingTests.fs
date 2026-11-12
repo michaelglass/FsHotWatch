@@ -280,3 +280,33 @@ let ``a filed analysis under another key is not taken for this one`` () =
         let files, live, store = warmRestartsIn root 1 fileForeign
         test <@ copiesIn store (analysisKeysOf root live) = List.replicate files.Length 1 @>
         test <@ copiesIn store (List.ofSeq foreignKeys) = List.replicate files.Length 1 @>)
+
+/// AUTOMATION-1609: whether a task-cache entry may answer is a key-only probe: it reads no
+/// payload, so a CORRUPT record under the key reads as present there and is left where it
+/// is. The record is verified where it is actually read: a fresh workspace's replay reads
+/// it, quarantines it, takes the miss, demands the file live and files it again.
+[<Fact(Timeout = 240000)>]
+let ``a corrupt filed analysis passes the key probe, and is quarantined and re-analysed where it is read`` () =
+    withTempDir "tp-1609-corrupt" (fun root ->
+        let files, live, store = warmRestartsIn root 1 (fun _ _ -> ())
+
+        let value =
+            live |> List.find (fun r -> (AbsFilePath.value r.File).EndsWith "Value.fs")
+
+        let key = (AnalysisRecords.keyFor root value).Value
+        let dir = store.DirectoryOf key
+        let filed = Directory.GetFiles(dir, "*.json") |> Array.exactlyOne
+        File.WriteAllText(filed, "{ not a record")
+        let quarantine = Path.Combine(store.Root, "quarantine")
+
+        // The probe says yes, and reads nothing: the corrupt file is not quarantined by it.
+        test <@ AnalysisRecords.mayAnswerLocally (Some store) root value @>
+        test <@ File.Exists filed @>
+        test <@ not (Directory.Exists quarantine) @>
+
+        // Where it is read, it is a miss: quarantined, demanded live, analysed and filed again.
+        let demanded, covering = freshWorkspaceDemands root files
+        test <@ demanded = [ "Value.fs" ] @>
+        test <@ Directory.GetFiles(quarantine).Length = 1 @>
+        test <@ (AnalysisRecords.lookup store root key).IsSome @>
+        test <@ covering |> List.exists (fun name -> name.Contains "observes the value") @>)
