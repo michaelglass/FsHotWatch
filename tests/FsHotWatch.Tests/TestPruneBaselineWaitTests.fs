@@ -336,6 +336,36 @@ let ``a covered edit beside a non-symbol edit runs every project in full`` () =
     update d.F (withDiff held) (BatchChecked(batch ())) |> ignore
     test <@ (scheduledLaunch d.F).Selection = everyProjectInFull @>
 
+/// A restart after the covered edit with a local red in ProjB, the record for T filed or not.
+let private firstLaunchWithLocalRed (record: bool) =
+    let v = verified record
+    editLib v
+
+    OutstandingFailures.OutstandingFailure.save
+        v.F.Ctx.RepoRoot
+        [ { Project = "ProjB"
+            Class = Some "ProjBTests"
+            Method = Some "bTest"
+            File = "<tests/ProjB>"
+            Entry = FsHotWatch.ErrorLedger.ErrorEntry.error "failed ProjBTests.bTest" } ]
+
+    let d = restart v
+    let held, _ = firstBuild d
+    held, scheduledLaunch d.F
+
+[<Fact(Timeout = 30000)>]
+let ``a local red is not narrowed by a checkout baseline: the launch is today's, at once`` () =
+    // §4.2 condition 5: local reds beat the baseline. T passed in full, but this checkout's
+    // own ledger names a red in ProjB since, so something is owed and the launch does not
+    // wait: it runs the red, exactly as it does with no record for T.
+    let held, launched = firstLaunchWithLocalRed true
+    let _, control = firstLaunchWithLocalRed false
+
+    test <@ held.AwaitingDiff.IsNone @>
+    test <@ held.CheckoutBaseline.IsNone @>
+    test <@ launched.Selection.ContainsKey "ProjB" @>
+    test <@ launched.Selection = control.Selection @>
+
 // ---------------------------------------------------------------------------
 // (3) The bound runs out: the launch is today's full suite, and the diff that folds later
 // queues today's re-run. Never a narrowed set.
