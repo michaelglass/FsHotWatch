@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 16.1.1 - 2026-11-12
+
+- fix(testprune-core): AUTOMATION-1569 B: index inherited tests under the concrete class
+
+
 ## 16.1.0 - 2026-11-11
 
 - fix: AUTOMATION-784 a coverage write outwaits a cold indexer flush instead of failing as locked

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.110 - 2026-11-12
+
 - fix: an options record is no longer refused because a directory above the checkout changed, and is never filed under
   bytes it was not evaluated from (AUTOMATION-1602, AUTOMATION-1592). A probed path that was absent was judged by the
   change time of the nearest directory above it that exists, so an absent `~/Directory.Build.targets` was judged by `~`,

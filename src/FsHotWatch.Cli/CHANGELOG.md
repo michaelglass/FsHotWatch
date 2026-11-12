@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.143 - 2026-11-12
+
 - fix: the ADR-059 shadow requires `plugin:<name>` for every non-test plugin `.fshw.json` configures, not for the ones the
   verdict happened to report (AUTOMATION-1568). A configured plugin that never ran is left out of `plugins[]`, so the lookup
   agreed green without it. It is now missing (`stricter`). The test plugin is required beside its configured projects, so a

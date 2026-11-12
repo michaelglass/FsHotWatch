@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.3 - 2026-11-12
+
+- fix: AUTOMATION-1073 CTRF readers tolerate raw control characters in string literals
+- fix(testprune-core): AUTOMATION-1569 B: index inherited tests under the concrete class
+
+
 ## 0.9.2 - 2026-11-11
 
 - chore: rebuild to bundle updated dependencies

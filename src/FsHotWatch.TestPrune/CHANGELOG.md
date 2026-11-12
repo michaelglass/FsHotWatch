@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.110 - 2026-11-12
+
 - fix: flakiness history and the declared-class reader keep the rows of a CTRF report whose string literals carry raw
   control characters, such as an ANSI-coloured xUnit v3 failure message (AUTOMATION-1073); they read it through
   `FsHotWatch.Ctrf.parseReport`. The shared-infrastructure probe reads the same repaired text: it used to parse the raw

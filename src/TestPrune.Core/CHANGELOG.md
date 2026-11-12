@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 16.1.1 - 2026-11-12
+
 - fix: a test declared on a base class is indexed under each concrete class that inherits it (AUTOMATION-1569). xUnit runs
   such a test as `<Derived>.<test>`, and for an abstract base `--filter-class <Base>` runs zero tests (measured on xUnit v3
   4.0.0), so the test was selected, filtered by a class that runs nothing, and its project could read as verified. Each

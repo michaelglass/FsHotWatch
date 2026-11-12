@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.3 - 2026-11-12
+
 - fix: `Ctrf.parse` keeps the rows of a report whose string literals carry raw control characters, such as an
   ANSI-coloured xUnit v3 failure message, instead of reading the whole report as empty (AUTOMATION-1073).
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.31 - 2026-11-12
+
 - fix: a command that exits nonzero now reports its command line and exit code in the error entry, ahead of
   whatever it printed (AUTOMATION-888). The raw output used to be the whole entry, so a command that failed
   without printing anything reddened the run with an empty message, and a reader had a red with no cause.
