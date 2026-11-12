@@ -240,14 +240,16 @@ let private checkEach (pipeline: CheckPipeline) (files: string list) =
         |> Option.defaultWith (fun () -> failwith $"no check result for {file}"))
 
 /// TestPrune analyses every file of `P` from live checks and seals the cohort, filing the
-/// checks as records; then a restart replays each file from its record and hands the
-/// replays to a new TestPrune instance over `restartCache`. The files the restarted plugin
-/// demanded a live check of, and its status.
+/// checks as records; then `restarts` restarts each replay every file from its record and
+/// hand the replays to a new TestPrune instance over `restartCache` (one cache, shared by
+/// the restarts). Per restart: the files it demanded a live check of, its status and the
+/// tests covering `P.Value.answer`; and the replays.
 let private restartedTestPruneDemandsIn
     (root: string)
     (restartCache: FsHotWatch.TaskCache.ITaskCache -> FsHotWatch.TaskCache.ITaskCache)
     (restartDb: string -> string)
     (keepAnalyses: bool)
+    (restarts: int)
     =
     let files = writeProject root
     let dbPath = Path.Combine(root, "tp.db")
@@ -306,55 +308,93 @@ let private restartedTestPruneDemandsIn
         if Directory.Exists analyses then
             Directory.Delete(analyses, true)
 
-    let demanded = Collections.Concurrent.ConcurrentQueue<string>()
     let restartDbPath = restartDb dbPath
+    let restartTaskCache = restartCache cache
 
-    let restarted =
-        FsHotWatch.PluginHost.PluginHost(sharedChecker.Value, root, taskCache = restartCache cache)
+    // Each restart is a new daemon over the same task cache and index, handed the replays.
+    let restartOnce () =
+        let demanded = Collections.Concurrent.ConcurrentQueue<string>()
 
-    restarted.WorkStore.PublishProjectModel(model 1L)
+        let restarted =
+            FsHotWatch.PluginHost.PluginHost(sharedChecker.Value, root, taskCache = restartTaskCache)
 
-    restarted.SetCheckDemand(fun replay ->
-        demanded.Enqueue(Path.GetFileName(AbsFilePath.value replay.File))
-        second.CheckFileLive(replay.File, replay.ProjectOptions))
+        restarted.WorkStore.PublishProjectModel(model 1L)
 
-    restarted.RegisterHandler(TestPrunePlugin.create restartDbPath root (Some [ config root ]) None None None None [])
+        restarted.SetCheckDemand(fun replay ->
+            demanded.Enqueue(Path.GetFileName(AbsFilePath.value replay.File))
+            second.CheckFileLive(replay.File, replay.ProjectOptions))
 
-    try
-        for result in replayed do
-            restarted.EmitFileChecked(stamped 1L result)
+        restarted.RegisterHandler(
+            TestPrunePlugin.create restartDbPath root (Some [ config root ]) None None None None []
+        )
 
-        waitForQuiescent restarted 20000
-        restarted.EmitBatchChecked(batch 1L files)
-        waitForQuiescent restarted 20000
+        try
+            for result in replayed do
+                restarted.EmitFileChecked(stamped 1L result)
 
-        let covering =
-            (TestPrune.Database.Database.create restartDbPath).QueryAffectedTests [ "P.Value.answer" ]
-            |> List.map (fun t -> t.TestClass + "." + t.TestMethod)
+            waitForQuiescent restarted 20000
+            restarted.EmitBatchChecked(batch 1L files)
+            waitForQuiescent restarted 20000
 
-        List.ofSeq demanded |> List.sort, restarted.GetStatus FsHotWatch.PluginActivity.TestPrunePluginName, covering
-    finally
-        restarted.Teardown()
+            let covering =
+                (TestPrune.Database.Database.create restartDbPath).QueryAffectedTests [ "P.Value.answer" ]
+                |> List.map (fun t -> t.TestClass + "." + t.TestMethod)
 
-let private restartedTestPruneDemands root restartCache =
-    let demanded, status, _ = restartedTestPruneDemandsIn root restartCache id false
-    demanded, status
+            List.ofSeq demanded |> List.sort,
+            restarted.GetStatus FsHotWatch.PluginActivity.TestPrunePluginName,
+            covering
+        finally
+            restarted.Teardown()
 
-/// ADR-059 §17 step 3: a restarted daemon hands TestPrune replayed checks. TestPrune's
-/// per-file analysis is keyed by the stored FCS signature and the indexed analysis, so with
-/// its task cache warm it replays every file without demanding a live check.
+    [ for _ in 1..restarts -> restartOnce () ], replayed
+
+let private restartedTestPruneDemands root restartCache keepAnalyses =
+    match restartedTestPruneDemandsIn root restartCache id keepAnalyses 1 with
+    | [ demanded, status, _ ], _ -> demanded, status
+    | _ -> failwith "expected one restart"
+
+let private completed status =
+    match status with
+    | Some(Completed _) -> true
+    | _ -> false
+
+/// ADR-059 §17 step 3: a restarted daemon hands TestPrune replayed checks. With its task
+/// cache warm and every analysis still filed box-wide, it replays every file without
+/// demanding a live check.
 [<Fact(Timeout = 240000)>]
 let ``a restarted TestPrune answers replayed checks from its own task cache, demanding no live check`` () =
     withTempDir "tp-replayed-warm" (fun root ->
-        let demanded, status = restartedTestPruneDemands root id
+        let demanded, status = restartedTestPruneDemands root id true
         test <@ List.isEmpty demanded @>
+        test <@ completed status @>)
 
-        test
-            <@
-                match status with
-                | Some(Completed _) -> true
-                | _ -> false
-            @>)
+/// AUTOMATION-1609: the task cache answers a file only once its analysis is filed box-wide.
+/// With the analyses gone (wiped, or evicted by GC) and the cache warm, the first restart
+/// has only replays, so no check in hand to analyse: it demands each file live once and
+/// files its analysis. The second restart demands nothing: an eviction costs one restart's
+/// live checks, never one per restart.
+[<Fact(Timeout = 240000)>]
+let ``after the analyses are evicted a warm restart demands each file once and files it, and the next demands none``
+    ()
+    =
+    withTempDir "tp-replayed-evicted" (fun root ->
+        match restartedTestPruneDemandsIn root id id false 2 with
+        | [ firstDemanded, firstStatus, _; secondDemanded, secondStatus, covering ], replayed ->
+            test <@ firstDemanded = [ "Attr.fs"; "Tests.fs"; "Value.fs" ] @>
+            test <@ completed firstStatus @>
+
+            let store = OutcomeStore.openFor root ignore
+
+            let copies =
+                replayed
+                |> List.map (fun r ->
+                    (store.History (FsHotWatch.TestPrune.AnalysisRecords.keyFor root r).Value).Length)
+
+            test <@ copies = [ 1; 1; 1 ] @>
+            test <@ List.isEmpty secondDemanded @>
+            test <@ completed secondStatus @>
+            test <@ covering |> List.exists (fun name -> name.Contains "observes the value") @>
+        | other, _ -> failwith $"expected two restarts, got %d{other.Length}")
 
 /// The control: with no task cache to answer from, every replayed file is demanded live,
 /// so the warm test's empty list is a measurement, not a demand path that never fires.
@@ -362,17 +402,13 @@ let ``a restarted TestPrune answers replayed checks from its own task cache, dem
 let ``a restarted TestPrune with no cached analysis demands a live check of every replayed file`` () =
     withTempDir "tp-replayed-cold" (fun root ->
         let demanded, status =
-            restartedTestPruneDemands root (fun _ ->
-                FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
+            restartedTestPruneDemands
+                root
+                (fun _ -> FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
+                false
 
         test <@ demanded = [ "Attr.fs"; "Tests.fs"; "Value.fs" ] @>
-
-        test
-            <@
-                match status with
-                | Some(Completed _) -> true
-                | _ -> false
-            @>)
+        test <@ completed status @>)
 
 /// AUTOMATION-1482: a fresh workspace of an already-checked tree has no task cache and an
 /// empty impact index, yet TestPrune answers every replayed check from the analyses the
@@ -380,21 +416,18 @@ let ``a restarted TestPrune with no cached analysis demands a live check of ever
 [<Fact(Timeout = 240000)>]
 let ``a fresh workspace's TestPrune answers replayed checks from filed analyses, and indexes them`` () =
     withTempDir "tp-replayed-fresh" (fun root ->
-        let demanded, status, covering =
+        match
             restartedTestPruneDemandsIn
                 root
                 (fun _ -> FsHotWatch.TaskCache.InMemoryTaskCache() :> FsHotWatch.TaskCache.ITaskCache)
                 (fun db -> db + ".fresh")
                 true
-
-        test <@ List.isEmpty demanded @>
-        // The false-green guard: the index the replays built selects the test that calls
-        // `answer`, exactly as a live analysis would have.
-        test <@ covering |> List.exists (fun name -> name.Contains "observes the value") @>
-
-        test
-            <@
-                match status with
-                | Some(Completed _) -> true
-                | _ -> false
-            @>)
+                1
+        with
+        | [ demanded, status, covering ], _ ->
+            test <@ List.isEmpty demanded @>
+            // The false-green guard: the index the replays built selects the test that calls
+            // `answer`, exactly as a live analysis would have.
+            test <@ covering |> List.exists (fun name -> name.Contains "observes the value") @>
+            test <@ completed status @>
+        | _ -> failwith "expected one restart")
