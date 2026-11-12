@@ -1766,6 +1766,18 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
     member internal this.IsIndexIncomplete() : bool =
         this.GetIndexState() = TestPrune.Domain.IndexState.Incomplete
 
+    /// Every indexed file's stored cache key, in one query: the per-file analysis identities a
+    /// `test-baseline` manifest records (AUTOMATION-1587). One connection, not one per file.
+    member _.GetFileKeys() : Map<string, string> =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "SELECT source_file, key FROM file_keys"
+        use reader = cmd.ExecuteReader()
+
+        [ while reader.Read() do
+              yield reader.GetString(0), reader.GetString(1) ]
+        |> Map.ofList
+
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =
         use conn = openConnection dbPath

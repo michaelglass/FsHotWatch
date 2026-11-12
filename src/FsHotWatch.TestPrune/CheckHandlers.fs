@@ -175,14 +175,17 @@ let internal onBatchCheckedWith
             // ledger leaves the in-memory queue empty because we cannot name
             // what it held, and reading that as "nothing to drain" lets a
             // corrupt sidecar run ZERO tests and still go green.
-            // The tree these check results describe, for `DiffWait`: read after
-            // the fold, so bytes written since read as a moved tree.
+            // The tree these check results describe: read after the fold, so bytes
+            // written since read as a moved tree. Read on every seal, including those
+            // before this session's first run: a cold daemon's first full run is the run
+            // a `test-baseline` record most often describes, and it files one only when
+            // the index is sealed at its receipt tree (AUTOMATION-1587 step 2). Every
+            // DECISION that reads it is still guarded by a session baseline of its own
+            // (`DiffWait.awaits`, the symbol-free-edit narrowing, and the covered boot
+            // scan's `CoveredFullSuite`), so reading it earlier decides nothing new.
             let flushedState =
-                if flushedState.LastResults.IsSome then
-                    { flushedState with
-                        SealedTree = ReceiptInputTree.read repoRoot }
-                else
-                    flushedState
+                { flushedState with
+                    SealedTree = ReceiptInputTree.read repoRoot }
 
             let flushedState = dischargeCoveredBootScan ctx batch flushedState
 

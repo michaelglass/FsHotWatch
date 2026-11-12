@@ -209,8 +209,8 @@ type TestPruneState =
         /// not made (`onlyRetriesRed`). In memory only: a restart may retry once.
         LastRed: RedConclusion option
         /// The receipt identity of the input tree when the last `BatchChecked` folded its
-        /// check results. Read only once a session baseline exists, the only time
-        /// `DiffWait` asks for it.
+        /// check results, on every seal. `DiffWait` asks for it only once a session baseline
+        /// exists; a `test-baseline` record asks whether it is the receipt tree.
         SealedTree: string option
         /// A build's launch held back for its tree's check results (`DiffWait`). Cleared
         /// by the next `BatchChecked`, by any launch, or by its expiry.

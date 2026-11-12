@@ -1428,6 +1428,26 @@ module ``GetFileKey`` =
             let key = db.GetFileKey "src/Mod.fs"
             test <@ key = Some "abc123" @>)
 
+    [<Fact>]
+    let ``GetFileKeys reads every indexed file's key in one query`` () =
+        withDb (fun db ->
+            test <@ db.GetFileKeys() = Map.empty @>
+
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        Location = InSource("src/Mod.fs", 1, 5, "") } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ], fileKeys = [ "src/Mod.fs", "abc123"; "src/Other.fs", "def456" ])
+
+            test <@ db.GetFileKeys() = Map.ofList [ "src/Mod.fs", "abc123"; "src/Other.fs", "def456" ] @>)
+
 module ``openConnection error handling`` =
 
     [<Fact>]
