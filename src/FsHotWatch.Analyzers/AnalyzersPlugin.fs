@@ -579,10 +579,85 @@ let internal runSafely: AnalyzerRunner =
             return List.concat perPath
         }
 
-/// The handler, with two test seams: `slowHook` is invoked inside the
-/// timeout-guarded region before the analyzers run, and `runAnalyzersOver` stands in
-/// for the SDK's run so a test can supply analyzers without loading an assembly.
-let internal createScopedWithSeams
+/// What fshw's analyzer host contributes to an analyzers task-cache key: how it runs the
+/// analyzers over a check (which load, the context it builds, how it filters, promotes and
+/// renders their findings) and how it files the result (the key's terms, the entry's
+/// format). A cached entry is stored AFTER all of that, so it is the host's answer, not
+/// only the analyzers'.
+///
+/// BUMP IT BY HAND for any change that makes an entry an older fshw filed wrong for this
+/// one: a filtering or promotion rule, a change to the context the analyzers see, a new or
+/// re-spelled key term. It stands where fshw's own assembly identity would, which moves
+/// with every build (AUTOMATION-1616, AUTOMATION-1629). `AnalyzerCacheKeyTests`' golden key
+/// fails on any change to how the key is computed and says to bump this.
+///
+/// v8 (AUTOMATION-1629) adds the checker build and the analyzer SDK release, and orphans
+/// every entry keyed without them; v7 added the shape of what the file resolved upstream.
+[<Literal>]
+let AnalyzerTaskSchema = "analyzers-merkle-v8"
+
+/// The host an analysis runs under: every component of an analyzers task-cache key that
+/// is neither the analyzers nor the file. fshw's own build is NOT one: it moves with every
+/// release, and `TaskSchema` carries its duty.
+type AnalyzerHost =
+    {
+        /// `AnalyzerTaskSchema`. Keyed.
+        TaskSchema: string
+        /// The checker build (`CheckCache.toolchainIdentity`): FCS and FSharp.Core exactly,
+        /// and the check-record schema. The analyzers read the typed tree FCS built, which
+        /// an FCS or FSharp.Core build can change without moving the file's diagnostics.
+        /// Keyed.
+        Checker: string
+        /// The analyzer SDK fshw hosts the analyzers with, by release (`sdkIdentityOf`):
+        /// it builds the context they run against. Keyed.
+        AnalyzerSdk: string
+    }
+
+module AnalyzerHost =
+    /// An SDK build as a key names it: `name@release`, the release being its informational
+    /// version without build metadata, or its assembly version when it states none. A
+    /// release, not a module version id: a rebuild of the same release replays.
+    let sdkIdentityOf (name: string) (version: Version) (informational: string option) : string =
+        let release =
+            match informational with
+            | Some text -> text.Split('+').[0]
+            | None -> version.ToString()
+
+        $"%s{name}@%s{release}"
+
+    let private analyzerSdkIdentity: string =
+        let assembly = typeof<FSharp.Analyzers.SDK.CliContext>.Assembly
+
+        let informational =
+            assembly.GetCustomAttributes(typeof<Reflection.AssemblyInformationalVersionAttribute>, false)
+            |> Array.tryHead
+            |> Option.map (fun attribute ->
+                (attribute :?> Reflection.AssemblyInformationalVersionAttribute).InformationalVersion)
+
+        sdkIdentityOf (assembly.GetName().Name) (assembly.GetName().Version) informational
+
+    /// This process's host.
+    let current: AnalyzerHost =
+        { TaskSchema = AnalyzerTaskSchema
+          Checker = FsHotWatch.CheckCache.toolchainIdentity
+          AnalyzerSdk = analyzerSdkIdentity }
+
+    /// The host's terms of an analyzers task-cache key.
+    let keyTerms (host: AnalyzerHost) : (string * string) list =
+        [ "plugin-version", host.TaskSchema
+          "checker", host.Checker
+          "analyzer-sdk", host.AnalyzerSdk ]
+
+/// An analyzers task-cache key: the host's terms, then the analysis's own.
+let taskKeyWith (host: AnalyzerHost) (terms: (string * string) list) : ContentHash =
+    FsHotWatch.TaskCache.merkleCacheKey (AnalyzerHost.keyTerms host @ terms)
+
+/// The handler under a given `host` (the analyzers task-cache key's host terms), with two
+/// test seams: `slowHook` is invoked inside the timeout-guarded region before the analyzers
+/// run, and `runAnalyzersOver` stands in for the SDK's run so a test can supply analyzers
+/// without loading an assembly.
+let internal createHostedWithSeams
+    (host: AnalyzerHost)
     (repoRoot: string option)
     (analyzerPaths: string list)
     (scopes: Map<string, AnalyzerScope>)
@@ -1237,11 +1312,9 @@ let internal createScopedWithSeams
                     // run and nothing is read from or written to the cache.
                     FsHotWatch.CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
                     |> Option.map (fun usedSignatures ->
-                        FsHotWatch.TaskCache.merkleCacheKey
-                            // v7 orphans every entry keyed without the shape of what the
-                            // file resolved upstream.
-                            [ "plugin-version", "analyzers-merkle-v7"
-                              "analyzer-paths", analyzerPathsHash
+                        taskKeyWith
+                            host
+                            [ "analyzer-paths", analyzerPathsHash
                               "analyzer-inputs", analyzerInputs
                               // Entries are stored AFTER promotion, so the same finding is
                               // a failure under one threshold and a pass under another.
@@ -1269,6 +1342,26 @@ let internal createScopedWithSeams
             // Unloading is cooperative too: a still-running analyzer keeps its context
             // alive until it returns.
             Volatile.Read(&loaded) |> List.iter AnalyzerLoad.unload) }
+
+/// `createHostedWithSeams` under this process's host (`AnalyzerHost.current`).
+let internal createScopedWithSeams
+    (repoRoot: string option)
+    (analyzerPaths: string list)
+    (scopes: Map<string, AnalyzerScope>)
+    (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
+    (slowHook: (unit -> unit) option)
+    (runAnalyzersOver: AnalyzerRunner)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    createHostedWithSeams
+        AnalyzerHost.current
+        repoRoot
+        analyzerPaths
+        scopes
+        timeoutSec
+        failOnSeverity
+        slowHook
+        runAnalyzersOver
 
 /// `createScopedWithSeams` with no scope: every analyzer runs on every file.
 let internal createWithSeams

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: an analyzers task-cache key names the host it was computed under (AUTOMATION-1629). An entry is stored after the
+  host has filtered and promoted the findings, and the analyzers read the typed tree the compiler service built, yet the
+  key named neither the checker build nor the analyzer SDK, and the host's own code only through an unnamed
+  `plugin-version` literal. The key now names `AnalyzersPlugin.AnalyzerTaskSchema` (a hand-bumped constant standing where
+  fshw's assembly would, per AUTOMATION-1616), the checker build (FCS and FSharp.Core exactly) and the analyzer SDK by
+  release; fshw's own build is still not a term. A golden key test says to bump the constant. **One-time re-key:** the
+  schema moves to `analyzers-merkle-v8`, so the first check after upgrading re-runs the analyzers on every file once.
+
 ## 0.7.0-alpha.56 - 2026-11-11
 
 - AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered
