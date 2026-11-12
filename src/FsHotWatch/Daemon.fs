@@ -135,6 +135,13 @@ let private persistCheckRecords (pipeline: CheckPipeline) =
     if filed > 0 then
         Logging.info "check-records" $"filed %d{filed} check record(s) in %d{sw.ElapsedMilliseconds} ms"
 
+    // Checks whose key is provisional behind a file with no record: not filed, so a later
+    // start re-checks them until that file is checked and filed (AUTOMATION-1606).
+    for unknown, held in pipeline.ProvisionalAfterFiling do
+        Logging.info
+            "check-records"
+            $"%d{held} check(s) not filed: provisional behind %s{unknown}, which has no check record in its project"
+
 let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) (checkResult: Events.FileCheckResult) =
     // Live or replayed (ADR-059 §17): a replay reports the diagnostics its check filed.
     match FileCheckResult.diagnostics checkResult with

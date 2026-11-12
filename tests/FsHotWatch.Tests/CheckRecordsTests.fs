@@ -589,6 +589,57 @@ let ``a record filed late after an API edit does not let the files checked befor
         // The positive control: C3's answer really moved with C2's API.
         test <@ (forcedC tree cut)[cut.Files[2]] <> outputsOf tree before @>)
 
+[<Fact(Timeout = 240000)>]
+let ``checks behind a file that never gets a record are reported as provisional behind it, and not filed`` () =
+    withTempDir "check-records-provisional" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let store = storeIn dir
+        let cut = projectC tree
+        let pipeline, _ = pipelineC tree (Some store) cut
+        // C2 is never checked in this daemon: C3, and D1 downstream, wait behind it.
+        checkEach pipeline cut [ cut.Files[0]; cut.Files[2]; cut.D1 ]
+        test <@ pipeline.PersistCheckRecords() = 1 @>
+        test <@ pipeline.ProvisionalAfterFiling = [ cut.Files[1], 2 ] @>
+
+        let restarted, _ = pipelineC tree (Some store) cut
+        test <@ restarted.ReplayCheck(AbsFilePath.create cut.Files[2], cut.C) = None @>
+        test <@ restarted.ReplayCheck(AbsFilePath.create cut.D1, cut.D) = None @>
+
+        // The control: a file with errors is not unknown. C3 reports one, and is filed with
+        // D1 after it, keyed by its content.
+        checkEach pipeline cut [ cut.Files[1] ]
+        test <@ pipeline.PersistCheckRecords() = 3 @>
+        test <@ List.isEmpty pipeline.ProvisionalAfterFiling @>)
+
+[<Fact(Timeout = 240000)>]
+let ``checks held behind an unknown file are bounded by one per file and current project`` () =
+    withTempDir "check-records-held" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let store = storeIn dir
+        let cut = projectC tree
+        let pipeline, _ = pipelineC tree (Some store) cut
+        checkEach pipeline cut [ cut.Files[0]; cut.Files[2]; cut.D1 ]
+        pipeline.PersistCheckRecords() |> ignore
+        test <@ pipeline.PendingRecordCount = 2 @>
+
+        // A re-check replaces its slot's entry: the set does not grow with checks.
+        checkEach pipeline cut [ cut.Files[2]; cut.Files[2]; cut.D1 ]
+        pipeline.PersistCheckRecords() |> ignore
+        test <@ pipeline.PendingRecordCount = 2 @>
+
+        // C's options are replaced: an entry checked under the old ones is released, though
+        // its file's bytes still hold.
+        let redefined =
+            { cut.C with
+                OtherOptions = Array.append cut.C.OtherOptions [| "--define:REDEFINED" |] }
+
+        pipeline.RegisterProject(redefined.ProjectFileName, redefined)
+        pipeline.PersistCheckRecords() |> ignore
+        test <@ pipeline.PendingRecordCount = 1 @>
+        test <@ pipeline.ProvisionalAfterFiling = [ cut.Files[1], 1 ] @>)
+
 /// Projects E and F, each compiling Shared.fs and then a file of its own that uses it.
 let private sharedProjects (tree: Tree) =
     let path name = Path.Combine(tree.Root, name)

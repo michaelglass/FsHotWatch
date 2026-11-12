@@ -203,8 +203,9 @@ type Walk
     ) =
     let relativize = relativizeOption repoRoot
     let outputIdentity = OutputIdentity.identity repoRoot hashFile
-    /// Each project's records, its chain, and whether every file of it is known.
-    let chains = Dictionary<string, FileRecord list * string * bool>()
+    /// Each project's records, its chain, and the first file of it, or of a project it
+    /// references, that the walk could not name (None when every file is known).
+    let chains = Dictionary<string, FileRecord list * string * string option>()
 
     let read (key: ActionKey.ActionKey) =
         store.LookupWithOutputs key
@@ -216,16 +217,16 @@ type Walk
         | Some reads -> reads.GetOrAdd(key.Value.Text, fun _ -> read key)
         | None -> read key
 
-    let rec chain (opts: FSharpProjectOptions) : FileRecord list * string * bool =
+    let rec chain (opts: FSharpProjectOptions) : FileRecord list * string * string option =
         let optionsHash = getProjectOptionsHashRelativeTo repoRoot opts
         let memoKey = $"%s{opts.ProjectFileName}|%s{optionsHash}"
 
         match chains.TryGetValue memoKey with
-        | true, known -> known
+        | true, walked -> walked
         | false, _ ->
             // Marked before the walk, so a reference cycle names the project instead of
             // recursing without end.
-            chains[memoKey] <- ([], $"cycle:%s{relativize opts.ProjectFileName}", true)
+            chains[memoKey] <- ([], $"cycle:%s{relativize opts.ProjectFileName}", None)
             let computed = walkProject opts optionsHash
             chains[memoKey] <- computed
             computed
@@ -254,13 +255,13 @@ type Walk
             |> Array.filter (fun reference -> compiled.Contains reference.OutputFile)
 
         // Every file of every referenced F# project is known: otherwise so is none of these.
-        let mutable known = true
+        let mutable unknownAt: string option = None
 
         for reference in references do
             match reference with
             | FSharpReferencedProject.FSharpReference(_, referenced) ->
-                let _, referencedChain, referencedKnown = chain referenced
-                known <- known && referencedKnown
+                let _, referencedChain, referencedUnknown = chain referenced
+                unknownAt <- Option.orElse referencedUnknown unknownAt
                 parts.Add $"project:%s{relativize referenced.ProjectFileName}=%s{referencedChain}"
             | FSharpReferencedProject.PEReference(getStamp, _) ->
                 parts.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
@@ -304,7 +305,7 @@ type Walk
                             // Behind an unknown file the key is provisional: read and filed
                             // under it, a record would be orphaned once that file is known.
                             let outputs =
-                                if not known then
+                                if unknownAt.IsSome then
                                     None
                                 else
                                     match lookup key with
@@ -320,7 +321,7 @@ type Walk
                             | Some { ApiSignature = Some signature } -> "api:" + signature
                             | Some { ApiSignature = None } -> "content:" + content
                             | None ->
-                                known <- false
+                                unknownAt <- Some(defaultArg unknownAt source)
                                 "content:" + content
 
                     partOf[source] <- part
@@ -328,12 +329,18 @@ type Walk
 
             running <- sha256Hex $"%s{running}\n%s{relativize source}=%s{part}"
 
-        List.ofSeq records, running, known
+        List.ofSeq records, running, unknownAt
 
     /// Each file of `options`' project with its canonical key and record, in compile order.
     member _.Project(options: FSharpProjectOptions) : FileRecord list =
         let records, _, _ = chain options
         records
+
+    /// The first file, of `options`' project or of a project it references, the walk could
+    /// not name: every key after it is provisional. None when every file is known.
+    member _.Unknown(options: FSharpProjectOptions) : string option =
+        let _, _, unknownAt = chain options
+        unknownAt
 
     /// `filePath`'s canonical key and record in `options`' project; None for a file the
     /// project does not check on its own.
