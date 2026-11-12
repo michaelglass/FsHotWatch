@@ -153,25 +153,77 @@ let getProjectOptionsHashRelativeTo (repoRoot: string option) (options: FSharpPr
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     getProjectOptionsHashRelativeTo None options
 
-/// The checker build a result was computed by: the module version id of the compiler
-/// service, of FSharp.Core and of fshw itself, which change with every build of each.
+/// One assembly's build as a key names it: `name@version/mvid`. The module version id
+/// changes with every build of the assembly, so it names its code more exactly than a
+/// version does.
+let assemblyIdentity (assembly: System.Reflection.Assembly) : string =
+    let name = assembly.GetName()
+    $"%s{name.Name}@%O{name.Version}/%O{assembly.ManifestModule.ModuleVersionId}"
+
+/// What fshw itself contributes to a check record's key: how it computes a check (the
+/// settings it creates its checker with, `Daemon.createCheckerWithCacheSizes`) and how it
+/// files one (the key's terms, the record's format).
+///
+/// BUMP IT BY HAND for any change that makes a record an older fshw filed wrong for this
+/// one: a checker setting that changes what a check reports, a new or re-spelled key term,
+/// a change to what a term names (AUTOMATION-1606's re-naming of an unknown earlier file
+/// was one). A bump costs every workspace one cold scan; a missed bump replays a check this
+/// build would not have reported, so when in doubt, bump.
+///
+/// It replaces fshw's own assembly identity in the key (AUTOMATION-1616). That identity
+/// moved with every build, so every release re-keyed every record, though most releases
+/// change nothing a check computes. `CheckCacheTests`' golden key fails on any change to how
+/// the key is computed and says to bump this.
+[<Literal>]
+let CheckRecordSchema = "fshw-check-semantics-v1"
+
+/// A checker build: the components a check's answer depends on beyond the code it checks.
+type CheckerBuild =
+    {
+        /// The compiler service (`assemblyIdentity`). Keyed.
+        Fcs: string
+        /// The FSharp.Core fshw runs on, which FCS links. Keyed.
+        FSharpCore: string
+        /// fshw's own build. NOT keyed: `RecordSchema` carries its duty. Provenance only.
+        Fshw: string
+        /// `CheckRecordSchema`. Keyed.
+        RecordSchema: string
+    }
+
+module CheckerBuild =
+    /// This process's checker build.
+    let current: CheckerBuild =
+        { Fcs = assemblyIdentity typeof<FSharpChecker>.Assembly
+          FSharpCore = assemblyIdentity typeof<option<int>>.Assembly
+          Fshw = assemblyIdentity typeof<CacheKey>.Assembly
+          RecordSchema = CheckRecordSchema }
+
+    /// The identity a check result's key names: FCS, FSharp.Core and the record schema.
+    /// fshw's own build is left out, so a release that changes neither FCS nor what a check
+    /// computes replays every record the previous one filed.
+    let keyIdentity (build: CheckerBuild) : string =
+        [ build.Fcs; build.FSharpCore; $"fshw-check-schema=%s{build.RecordSchema}" ]
+        |> String.concat ";"
+
+    /// Every component, fshw's build included: which binary produced a result, for
+    /// provenance. Never a key.
+    let provenance (build: CheckerBuild) : string =
+        [ keyIdentity build; $"fshw=%s{build.Fshw}" ] |> String.concat ";"
+
+/// The checker build a result was computed by (`CheckerBuild.keyIdentity` of this
+/// process's): the exact compiler service and FSharp.Core builds, and the record schema.
 /// A result is the checker's answer, not only the code's, so the cache key names it.
 ///
 /// Within one process this is constant, so it separates nothing there. It is what keeps
 /// a cache shared by daemons on different builds — a repository host's, or one that
-/// outlives the process — from serving one build's answers to another. fshw's own id
-/// stands for the settings the daemon creates its checker with
-/// (`Daemon.createCheckerWithCacheSizes`): they are code in that assembly. The SDK,
+/// outlives the process — from serving one build's answers to another. The SDK,
 /// FSharp.Core reference and package versions a project compiles against are already
 /// named by the version-qualified `-r:` paths in its options hash.
-let toolchainIdentity: string =
-    [ typeof<FSharpChecker>.Assembly
-      typeof<option<int>>.Assembly
-      typeof<CacheKey>.Assembly ]
-    |> List.map (fun assembly ->
-        let name = assembly.GetName()
-        $"%s{name.Name}@%O{name.Version}/%O{assembly.ManifestModule.ModuleVersionId}")
-    |> String.concat ";"
+let toolchainIdentity: string = CheckerBuild.keyIdentity CheckerBuild.current
+
+/// `CheckerBuild.provenance` of this process: names fshw's build too. For records of who
+/// produced a result, never for a key.
+let producerIdentity: string = CheckerBuild.provenance CheckerBuild.current
 
 /// Content hash of a file, re-read only when its `FileStamp` moves.
 ///

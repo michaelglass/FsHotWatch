@@ -322,7 +322,7 @@ let moved (stored: (string * string) list) (current: (string * string) list) : s
     fromCurrent @ onlyStored
 
 /// The toolchain half of every key: the SDK `dotnet` resolves here, the checker build
-/// (FCS, FSharp.Core and fshw module version ids), the platform, and the values of the
+/// (`CheckCache.toolchainIdentity`: FCS, FSharp.Core and the check-record schema), the platform, and the values of the
 /// environment variables that can change what MSBuild produces.
 let toolchainOf (repoRoot: string) : string =
     let msbuildEnvironment =

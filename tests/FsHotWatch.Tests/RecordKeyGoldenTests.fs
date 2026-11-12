@@ -1,0 +1,192 @@
+/// What a persisted record's key names, pinned (AUTOMATION-1616).
+///
+/// A record filed by one fshw build is read by the next. Its key must move when what it
+/// would answer moves — a different compiler service, FSharp.Core, or a change in how fshw
+/// computes or files it — and at no other time: a key that moves every release turns every
+/// release into a cold scan of every workspace. fshw's own build is therefore NOT a term;
+/// a hand-bumped schema constant carries its duty, and the goldens here are what make
+/// forgetting the bump loud: any change to how a key is computed fails one of them.
+module FsHotWatch.Tests.RecordKeyGoldenTests
+
+open System
+open System.IO
+open Xunit
+open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
+open FsHotWatch
+open FsHotWatch.Events
+open FsHotWatch.CheckCache
+open FsHotWatch.Tests.TestHelpers
+
+/// Fails with the instruction a changed key needs, naming what changed.
+let private golden (what: string) (expected: 'T) (actual: 'T) =
+    if actual <> expected then
+        failwith
+            $"%s{what} changed. A record key is a contract with every record an earlier fshw filed: \
+              bump the schema constant, then update the golden.\nexpected: %A{expected}\nactual:   %A{actual}"
+
+/// A checker build with every component spelled out, so a key under it is the same on
+/// every machine and every build of fshw.
+let private buildN: CheckerBuild =
+    { Fcs = "FSharp.Compiler.Service@43.12.402.0/11111111-1111-1111-1111-111111111111"
+      FSharpCore = "FSharp.Core@10.0.0.0/22222222-2222-2222-2222-222222222222"
+      Fshw = "FsHotWatch@0.10.0.110/33333333-3333-3333-3333-333333333333"
+      RecordSchema = CheckRecordSchema }
+
+/// The next fshw build: same FCS, FSharp.Core and schema, a new version and module id.
+let private buildNPlus1 =
+    { buildN with
+        Fshw = "FsHotWatch@0.10.0.111/44444444-4444-4444-4444-444444444444" }
+
+// --- the checker build a check record is keyed by ---
+
+[<Fact(Timeout = 15000)>]
+let ``toolchainIdentity is this process's checker build: the exact FCS and FSharp.Core builds and the schema`` () =
+    let current = CheckerBuild.current
+    test <@ toolchainIdentity = CheckerBuild.keyIdentity current @>
+    test <@ current.Fcs = assemblyIdentity typeof<FSharpChecker>.Assembly @>
+    test <@ current.FSharpCore = assemblyIdentity typeof<option<int>>.Assembly @>
+    test <@ current.Fshw = assemblyIdentity typeof<CacheKey>.Assembly @>
+    test <@ current.RecordSchema = CheckRecordSchema @>
+
+    // A module version id changes with every build of an assembly, so it names the
+    // checker's code more exactly than a version.
+    let mvid (t: Type) =
+        string t.Assembly.ManifestModule.ModuleVersionId
+
+    test <@ toolchainIdentity.Contains(mvid typeof<FSharpChecker>) @>
+    test <@ toolchainIdentity.Contains(mvid typeof<option<int>>) @>
+
+[<Fact(Timeout = 15000)>]
+let ``a new fshw build with the same FCS, FSharp.Core and schema keys its checks alike`` () =
+    test <@ CheckerBuild.keyIdentity buildNPlus1 = CheckerBuild.keyIdentity buildN @>
+    test <@ not ((CheckerBuild.keyIdentity buildN).Contains "FsHotWatch@") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a schema bump, an FCS version or an FSharp.Core version each re-key every check`` () =
+    let keyed = CheckerBuild.keyIdentity buildN
+
+    let moved =
+        [ { buildN with
+              RecordSchema = CheckRecordSchema + "-bumped" }
+          { buildN with
+              Fcs = "FSharp.Compiler.Service@43.12.403.0/11111111-1111-1111-1111-111111111111" }
+          { buildN with
+              FSharpCore = "FSharp.Core@10.0.1.0/22222222-2222-2222-2222-222222222222" } ]
+
+    for build in moved do
+        test <@ CheckerBuild.keyIdentity build <> keyed @>
+
+[<Fact(Timeout = 15000)>]
+let ``provenance names fshw's own build, which the key leaves out`` () =
+    test <@ (CheckerBuild.provenance buildN).Contains buildN.Fshw @>
+    test <@ CheckerBuild.provenance buildNPlus1 <> CheckerBuild.provenance buildN @>
+    test <@ producerIdentity = CheckerBuild.provenance CheckerBuild.current @>
+
+// --- the golden check-record key ---
+
+/// A two-file library with nothing outside the repository in its options, so every
+/// component of its keys is a function of the bytes below and the fixed checker build.
+let private goldenProject (root: string) : FSharpProjectOptions =
+    let a = Path.Combine(root, "A.fs")
+    let b = Path.Combine(root, "B.fs")
+    File.WriteAllText(a, "module A\nlet v : int = 1\n")
+    File.WriteAllText(b, "module B\nlet w : int = A.v + 1\n")
+
+    { ProjectFileName = Path.Combine(root, "Golden.fsproj")
+      ProjectId = None
+      SourceFiles = [| a; b |]
+      OtherOptions = [| "--target:library"; "--define:GOLDEN" |]
+      ReferencedProjects = [||]
+      IsIncompleteTypeCheckEnvironment = false
+      UseScriptResolutionRules = false
+      LoadTime = DateTime.UnixEpoch
+      UnresolvedReferences = None
+      OriginalLoadReferences = []
+      Stamp = None }
+
+/// The fixture's options hash, in-repo paths relative.
+[<Literal>]
+let private GoldenOptions =
+    "56905e9d4f44d6e128cddaf4cef807a2906b587a1a7420c86e738086cec70384"
+
+/// No referenced project: the digest of the empty string.
+[<Literal>]
+let private NoProjectOutputs =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+let private goldenToolchain =
+    "FSharp.Compiler.Service@43.12.402.0/11111111-1111-1111-1111-111111111111;\
+     FSharp.Core@10.0.0.0/22222222-2222-2222-2222-222222222222;\
+     fshw-check-schema=fshw-check-semantics-v1"
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``GOLDEN: the check-record key of a fixture project and every component it is folded from`` () =
+    withTempDir "golden-check-key" (fun dir ->
+        let root = Path.Combine(dir, "repo")
+        Directory.CreateDirectory root |> ignore
+        let options = goldenProject root
+
+        let store =
+            OutcomeStore.Store(
+                { Root = Path.Combine(dir, "outcomes")
+                  Ttl = OutcomeStore.defaultTtl
+                  MaxBytes = OutcomeStore.defaultMaxBytes
+                  Log = ignore }
+            )
+
+        golden "The checker build a check is keyed by" goldenToolchain (CheckerBuild.keyIdentity buildN)
+
+        let records =
+            CheckRecords
+                .Walk(
+                    store,
+                    CheckerBuild.keyIdentity buildN,
+                    Some root,
+                    FileContentHasher().Hash,
+                    CheckRecords.readOnly
+                )
+                .Project(options)
+
+        let keys = records |> List.map (fun r -> Path.GetFileName r.File, r.Key)
+
+        golden
+            "The check-record key's components"
+            [ "A.fs",
+              [ "content", "d0c34d1ef5d2b2a7d63e3c059a01e397a9910c7938ba3e1e2ca0622adb748747"
+                "file", "repo:A.fs"
+                "options", GoldenOptions
+                "project-outputs", NoProjectOutputs
+                "toolchain", goldenToolchain
+                "upstream", "5d165528df7e099050eb1e7be9b23d96070570be2400cc335826a84063450e47" ]
+              "B.fs",
+              [ "content", "bad3ec53512a110420de668c95a871a266ea9923220f3cf66a776473ccd3dd8d"
+                "file", "repo:B.fs"
+                "options", GoldenOptions
+                "project-outputs", NoProjectOutputs
+                "toolchain", goldenToolchain
+                "upstream", "af4bdd5a53f6e8396eb5cc9f22d1b595acfd223e2db4805a5491be8456d6855d" ] ]
+            (keys |> List.map (fun (file, key) -> file, key.Inputs))
+
+        golden
+            "The check-record key"
+            [ "A.fs", "ak1:a6dc2cdbe350b5a3c676428fcd02010ac0c064457895a9f7dba4fa3d488b9293"
+              "B.fs", "ak1:de59061dea1b09c2705e770f4eb966fd33f502386cff02d510268cb2cd65b89d" ]
+            (keys |> List.map (fun (file, key) -> file, key.Value.Text))
+
+        // The in-memory cache key folds the same toolchain, by a recipe of its own.
+        let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+        let memoryKey =
+            makeCacheKeyWith
+                provider
+                (CheckerBuild.keyIdentity buildN)
+                (getProjectOptionsHashRelativeTo (Some root) options)
+                "upstream"
+                options.SourceFiles[0]
+            |> Option.map (fun k -> ContentHash.value k.ProjectOptionsHash)
+
+        golden
+            "The in-memory check cache key's options half"
+            (Some "3bfa4190c87b01f75468411f7ea8fd75571b1e8e68a5efb44609b4198b81174b")
+            memoryKey)

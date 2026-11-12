@@ -612,7 +612,7 @@ let internal evidenceWiringWhen
                       Configs = configs
                       Toolchain = lazy (TestEvidenceKey.toolchainOf repoRoot)
                       Loaded = loaded
-                      ProducerHash = ContentHash.ofText CheckCache.toolchainIdentity
+                      ProducerHash = ContentHash.ofText CheckCache.producerIdentity
                       ExcludePatterns = excludePatterns
                       // ADR-059 step 7: every completed project run is recorded, box-wide,
                       // under the K_P it ran over. The shadow verdict reads these next.

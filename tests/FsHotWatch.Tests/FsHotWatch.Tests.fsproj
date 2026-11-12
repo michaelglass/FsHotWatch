@@ -274,6 +274,7 @@
     <Compile Include="OutputIdentityTests.fs" />
     <Compile Include="CheckRecordsTests.fs" />
     <Compile Include="OptionsRecordsTests.fs" />
+    <Compile Include="RecordKeyGoldenTests.fs" />
     <Compile Include="SolutionScopeTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />

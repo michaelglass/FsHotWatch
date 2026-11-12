@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- perf: a new fshw build no longer re-keys every check record (AUTOMATION-1616). `CheckCache.toolchainIdentity` named
+  fshw's own assembly (version and module version id) beside FCS and FSharp.Core, and every check-record key, every
+  in-memory check-cache key and every test-evidence K_P folds it in, so each release made every workspace on every
+  machine cold-scan (the alpha.143 canary: 0 checks replayed, 2842 started, with FCS and FSharp.Core unchanged). That
+  term stood for a change in how fshw computes or files a check that makes an older build's records wrong; the new
+  `CheckCache.CheckRecordSchema` constant carries that duty and is bumped by hand for such a change. FCS and
+  FSharp.Core are still named exactly (`name@version/mvid`). New: `CheckCache.assemblyIdentity`, `CheckerBuild`
+  (`current`, `keyIdentity`, `provenance`) and `producerIdentity`, which still names fshw's build for a test-evidence
+  record's provenance. A golden test pins a fixture project's check-record key and every component, and fails with
+  "bump the schema constant, then update the golden". **The release that ships this (fshw 0.14.0-alpha.144) changes
+  the key once more, since the term is removed, so its first scan is cold too; the saving starts at alpha.145.**
+
 - feat: `OutcomeStore.Store.Supersede` files a record as its key's ONLY record, deleting the key's older ones, and
   returns its size (AUTOMATION-1587). A lookup answers as before; only the history is gone, so a record that is
   rewritten rather than accumulated (an index) does not grow history for GC to trim oldest first. A record's outputs may
