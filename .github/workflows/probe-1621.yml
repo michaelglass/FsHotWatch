@@ -1,0 +1,23 @@
+name: probe-1621
+on:
+  push:
+    branches: [probe-1621]
+jobs:
+  probe:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: probe local tools across SDK majors
+        run: |
+          echo "IMAGE=$ImageOS $ImageVersion"
+          dotnet --list-sdks
+          echo "--- repo root (global.json):"; dotnet --version
+          dotnet tool restore
+          S=$(mktemp -d); mkdir -p "$S/.config"; cp .config/dotnet-tools.json "$S/.config/"
+          cd "$S"
+          echo "--- scratch, no global.json:"; dotnet --version
+          echo "A: run in scratch after restoring only under the repo's SDK:"
+          dotnet tool run fantomas --version || echo "A FAILED rc=$?"
+          echo "B: restore in scratch under its own SDK, then run:"
+          dotnet tool restore || echo "B restore FAILED rc=$?"
+          dotnet tool run fantomas --version || echo "B FAILED rc=$?"
