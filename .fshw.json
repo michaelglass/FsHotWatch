@@ -178,5 +178,11 @@
     "artifacts/",
     "output/",
     "examples/SampleSolution/"
-  ]
+  ],
+  "cache": {
+    "maxEntries": "all",
+    "scope": "all"
+  },
+  "checkRecords": true,
+  "optionsRecords": true
 }
