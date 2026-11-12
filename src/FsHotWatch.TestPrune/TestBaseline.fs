@@ -2,9 +2,10 @@
 /// full-scope on tree T", filed box-wide in the ADR-059 outcome store under T's receipt
 /// identity, with what a neighbour tree would need to diff against T.
 ///
-/// STEP 2 IS A SHADOW. These records are WRITTEN and logged, and nothing reads them for a
-/// decision: no selection, skip, cache or verdict consults them. Their purpose is to be
-/// counted and measured (records per land, bytes) before anything is allowed to rest on one.
+/// STEP 2 IS A SHADOW. These records are WRITTEN and logged, and no selection, skip, cache
+/// or verdict consults them. Their purpose is to be counted and measured (records per land,
+/// bytes) before anything is allowed to rest on one. Their one reader (step 4, `findFor`)
+/// decides only whether a build's first launch WAITS for its tree's diff to fold.
 ///
 /// A record is filed only when all of these hold at a run's completion:
 ///   * the completion EARNED the full-suite baseline (`earnsBaseline`: a full run that passed
@@ -153,6 +154,25 @@ let readIndex (store: OutcomeStore.Store) : IndexEntry list =
     match store.LookupWithOutputs indexKey with
     | Some(_, Some outputs) -> parseIndex outputs
     | _ -> []
+
+/// The baseline the index names for exactly `tree`, when its record is still the store's
+/// passing answer for that tree; otherwise why not. READ-ONLY, and the first reader of
+/// these records (AUTOMATION-1587 step 4): its answer decides only whether a launch WAITS
+/// for its tree's diff, never what the launch selects. Every failure is a miss: an absent
+/// or unreadable index, an index naming no baseline for this tree, or a baseline record
+/// the store no longer holds. The store's reads never throw: a record it cannot read is
+/// one it does not hold, so an unreadable index reads as no index.
+let findFor (store: OutcomeStore.Store) (tree: string) : Result<IndexEntry, string> =
+    match
+        readIndex store
+        |> List.tryFind (fun e -> String.Equals(e.Tree, tree, StringComparison.Ordinal))
+    with
+    | None -> Error "the index names no baseline for this tree"
+    | Some entry ->
+        match store.Lookup(keyOf tree) with
+        | Some record when record.Outcome = OutcomeStore.Outcome.Pass -> Ok entry
+        | Some _ -> Error "the baseline record for this tree is not a pass"
+        | None -> Error "the index names a baseline for this tree the store no longer holds"
 
 let private indexOutputs (entries: IndexEntry list) : string =
     let o = JsonObject()

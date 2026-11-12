@@ -396,6 +396,8 @@ let internal updateWith
                     "test-prune"
                     $"No check results were folded within %.0f{DiffWait.bound.TotalSeconds}s of the build that held its launch for them"
 
+                Logging.info "test-prune" (DiffWait.released held true)
+
                 return launchHeld ctx state "its wait expired, so it selects without the diff"
             | _ -> return state
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: a restarted daemon's first launch waits for its cold scan's fold when a `test-baseline` record names the tree on
+  disk (AUTOMATION-1587 step 4). A scan waits for the build before it type-checks, so the first `BuildSucceeded` used to
+  launch before the diff folded, and an edit ran only in the queued re-run behind a full suite. `DiffWait` held such a
+  launch only with a session baseline; a `test-baseline` record for exactly the current receipt tree, named by the
+  box-wide index, now counts too. The record decides only WHETHER the launch waits, never what it selects: the launch
+  selects from the state the fold leaves exactly as before, and an index that is absent or unreadable, names no baseline
+  for this tree, or names a record the store no longer holds is a miss, and no wait. The wait keeps its 5-minute bound;
+  on expiry the launch takes what it has (the full suite, as today) and a later diff queues today's re-run. Every launch
+  from a build, and every held launch's release, logs one line: `diff-wait: held=yes|no waited-ms=<n>
+  reason=none|session-baseline|baseline-record <key> timed-out=yes|no` (and `diff-wait: holding reason=…` when it holds).
+
 - feat: a completion that earns the full-suite baseline files a shadow `test-baseline` record in the box-wide outcome
   store, keyed by the receipt identity of the tree it passed (AUTOMATION-1587 step 2). Nothing reads it yet: it is
   written so that how often one can be earned, and how large it is, can be measured before anything rests on it. It is

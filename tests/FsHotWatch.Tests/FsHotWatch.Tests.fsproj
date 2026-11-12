@@ -190,6 +190,7 @@
     <Compile Include="TestPruneSettlingTests.fs" />
     <Compile Include="TestPruneModelChangeTests.fs" />
     <Compile Include="TestPruneRestartSkipTests.fs" />
+    <Compile Include="TestPruneBaselineWaitTests.fs" />
     <Compile Include="TestPruneAlwaysClassesTests.fs" />
     <Compile Include="TestPruneCheckSkipClassesTests.fs" />
     <Compile Include="TestPruneSelectionAttributionTests.fs" />

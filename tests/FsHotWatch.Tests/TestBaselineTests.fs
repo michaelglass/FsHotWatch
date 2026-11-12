@@ -1,8 +1,9 @@
 /// AUTOMATION-1587 step 2: the shadow `test-baseline` record. "Every runnable project passed
 /// full-scope on tree T", filed box-wide under T's receipt identity with the manifest a
 /// neighbour tree could diff against, and named by ONE per-repository index record that GC
-/// keeps alive. Nothing reads these records for a decision yet; these tests pin what is
-/// written, when nothing is, and that the index stays one bounded record.
+/// keeps alive. Their one reader (`findFor`, step 4) decides only whether a launch waits;
+/// these tests pin what is written, when nothing is, that the index stays one bounded
+/// record, and what `findFor` counts as a hit.
 module FsHotWatch.Tests.TestBaselineTests
 
 open System
@@ -433,3 +434,65 @@ let ``a store that cannot file the baseline refuses it as not-filed, and the lin
                 @>
         finally
             File.SetUnixFileMode(keyDir, writable))
+
+// ---------------------------------------------------------------------------
+// `findFor` (AUTOMATION-1587 step 4): the one reader, which decides only whether a launch
+// waits. Every answer but an exact, still-passing baseline is a miss.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``findFor finds the baseline the index names for exactly this tree, and misses every other case`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+
+        // No index at all.
+        test <@ TestBaseline.findFor store (fst tree) = Error "the index names no baseline for this tree" @>
+
+        projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+
+        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        | Ok _ -> ()
+        | Error refusals -> failwith $"refused: %A{refusals}"
+
+        let key = TestBaseline.keyOf (fst tree)
+
+        match TestBaseline.findFor store (fst tree) with
+        | Ok entry ->
+            test
+                <@
+                    entry.Tree = fst tree
+                    && entry.Baseline = key.Value.Text
+                    && entry.RunId = "run-1"
+                @>
+        | Error why -> failwith $"expected a hit: %s{why}"
+
+        // Another tree is a miss: the lookup is by exact identity.
+        test <@ TestBaseline.findFor store "sha256:tree-2" |> Result.isError @>
+
+        // The baseline record turned into a fail under its key is not a baseline in hand.
+        store.Supersede(
+            OutcomeStore.Record.ofAction key (fst tree) OutcomeStore.Outcome.Fail "fshw-test" "/ws/a" t0,
+            None
+        )
+        |> ignore
+
+        test <@ TestBaseline.findFor store (fst tree) = Error "the baseline record for this tree is not a pass" @>
+
+        // A record the store no longer holds is a miss, though the index still names it.
+        Directory.Delete(store.DirectoryOf key, true)
+
+        test
+            <@
+                TestBaseline.findFor store (fst tree) = Error
+                    "the index names a baseline for this tree the store no longer holds"
+            @>)
+
+[<Fact>]
+let ``findFor over a store it cannot read is a miss that names why, and never throws`` () =
+    withTempDir "baseline" (fun dir ->
+        // The store's root is a regular file: every read under it fails.
+        let blocker = Path.Combine(dir, "blocker")
+        File.WriteAllText(blocker, "")
+        let unreadable = storeIn (Path.Combine(blocker, "store"))
+
+        test <@ TestBaseline.findFor unreadable (fst tree) |> Result.isError @>)

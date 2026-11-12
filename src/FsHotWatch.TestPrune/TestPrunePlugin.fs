@@ -495,6 +495,7 @@ let internal createWithEvidenceAndQueries
           TestConfigs = testConfigs
           Launch = launchSteps
           HoldForDiff = holdForDiff
+          FindBaseline = findBaselineIn evidence
           JoinRefresh = joinRefresh
           LaunchScopeOf = launchScopeOf
           ObserveModelGeneration = observeModelGeneration }

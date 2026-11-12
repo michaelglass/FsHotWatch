@@ -70,9 +70,33 @@ type LaunchScope =
     | LaunchedFullSuite
     | LaunchedSelection
 
+/// The baseline a build's launch has in hand, which is what makes its diff worth waiting
+/// for (`DiffWait`).
+[<RequireQualifiedAccess>]
+type WaitBasis =
+    /// Neither a run completed this session nor a `test-baseline` record for the tree.
+    | NoBaseline
+    /// A run has completed this session.
+    | SessionBaseline
+    /// No run has completed this session, but the box-wide index names a `test-baseline`
+    /// record, filed under `key`, for exactly the tree on disk (AUTOMATION-1587 step 4).
+    /// It decides only WHETHER the launch waits: nothing selects from it.
+    | BaselineRecord of key: string
+
+module WaitBasis =
+    /// The `reason=` token of a `diff-wait:` line.
+    let describe (basis: WaitBasis) =
+        match basis with
+        | WaitBasis.NoBaseline -> "none"
+        | WaitBasis.SessionBaseline -> "session-baseline"
+        | WaitBasis.BaselineRecord key -> $"baseline-record %s{key}"
+
 /// A launch `BuildSucceeded` held back because the symbol diff of the tree it built was
-/// not folded yet (`DiffWait`).
-type AwaitedDiff = { Id: Guid; Since: DateTime }
+/// not folded yet (`DiffWait`), and the baseline that made it wait.
+type AwaitedDiff =
+    { Id: Guid
+      Since: DateTime
+      Basis: WaitBasis }
 
 /// Holding a build's launch until the check results of the tree it built are folded.
 ///
@@ -81,6 +105,12 @@ type AwaitedDiff = { Id: Guid; Since: DateTime }
 /// then selects from a diff that does not have them yet: with nothing owed, zero classes
 /// are affected, the tree has moved since the last evidence, and the run widens to every
 /// project in full, for an edit the diff would have narrowed to one.
+///
+/// A restarted daemon's first launch is the same race over its cold scan: it took its
+/// inputs before the diff folded, and the edit ran only in a queued re-run. When a
+/// `test-baseline` record names the tree on disk, that launch waits too (AUTOMATION-1587
+/// step 4). The wait changes WHEN the launch takes its inputs, never how it selects from
+/// them; on expiry it launches what it would have launched without waiting.
 module internal DiffWait =
     /// How long a held launch waits for the next `BatchChecked` before it launches
     /// without it. Longer than a warm scan of a large repository.
@@ -90,8 +120,9 @@ module internal DiffWait =
     /// that decide whether the diff is in hand.
     type Launch =
         {
-            /// A run has completed this session, so the launch is not the baseline run.
-            HasSessionBaseline: bool
+            /// The baseline in hand: a run completed this session, or a `test-baseline`
+            /// record for the current tree. With neither, the launch is the baseline run.
+            Basis: WaitBasis
             /// The host publishes a project model. Without one every seal is ignored, so
             /// none could release the wait.
             HasModel: bool
@@ -118,7 +149,7 @@ module internal DiffWait =
     /// which the zero-affected skip already answers. A tree that cannot be read is never
     /// waited on.
     let awaits (launch: Launch) : bool =
-        launch.HasSessionBaseline
+        launch.Basis <> WaitBasis.NoBaseline
         && launch.HasModel
         && launch.OwesNothing
         && Set.isEmpty launch.RunsInFullAnyway
@@ -130,6 +161,20 @@ module internal DiffWait =
                 launch.SealedTree <> Some current
                 && not (ReceiptInputTree.matches launch.EvidenceTree launch.CurrentTree)
             | None -> false)
+
+    /// The one line saying when a build's launch took its inputs: `waitedMs` after the
+    /// build (0 when it did not wait), on what baseline, and whether the bound ran out.
+    /// Every line starts `diff-wait:`, so a land's log shows the added wait by grep.
+    let describe (held: bool) (basis: WaitBasis) (waitedMs: int64) (timedOut: bool) =
+        let heldText = if held then "yes" else "no"
+        let timedOutText = if timedOut then "yes" else "no"
+
+        $"diff-wait: held=%s{heldText} waited-ms=%d{waitedMs} reason=%s{WaitBasis.describe basis} timed-out=%s{timedOutText}"
+
+    /// The line for a held launch that takes its inputs now.
+    let released (awaited: AwaitedDiff) (timedOut: bool) =
+        let waited = int64 (DateTime.UtcNow - awaited.Since).TotalMilliseconds
+        describe true awaited.Basis waited timedOut
 
 /// The run holding the "tests" key, as its launch here claimed it.
 type InFlightRun =

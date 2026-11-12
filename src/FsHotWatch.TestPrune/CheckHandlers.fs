@@ -180,12 +180,18 @@ let internal onBatchCheckedWith
             // before this session's first run: a cold daemon's first full run is the run
             // a `test-baseline` record most often describes, and it files one only when
             // the index is sealed at its receipt tree (AUTOMATION-1587 step 2). Every
-            // DECISION that reads it is still guarded by a session baseline of its own
-            // (`DiffWait.awaits`, the symbol-free-edit narrowing, and the covered boot
-            // scan's `CoveredFullSuite`), so reading it earlier decides nothing new.
+            // DECISION that reads it is still guarded by a baseline of its own: a session
+            // baseline (the symbol-free-edit narrowing, the covered boot scan's
+            // `CoveredFullSuite`), or for `DiffWait.awaits` a session baseline or a
+            // `test-baseline` record for the tree (step 4).
             let flushedState =
                 { flushedState with
                     SealedTree = ReceiptInputTree.read repoRoot }
+
+            // A held launch takes its inputs from this fold, whichever branch launches it.
+            match flushedState.AwaitingDiff with
+            | Some awaited -> Logging.info "test-prune" (DiffWait.released awaited false)
+            | None -> ()
 
             let flushedState = dischargeCoveredBootScan ctx batch flushedState
 
@@ -271,13 +277,18 @@ let internal onBatchCheckedWith
 
 /// What `onBuildCompletedWith` reads from the plugin.
 type internal BuildCompletedEnv =
-    { RepoRoot: string
-      TestConfigs: TestConfig list option
-      Launch: LaunchSteps
-      HoldForDiff: StateStep
-      JoinRefresh: StateStep
-      LaunchScopeOf: TestRunInputs -> LaunchScope
-      ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option }
+    {
+        RepoRoot: string
+        TestConfigs: TestConfig list option
+        Launch: LaunchSteps
+        HoldForDiff: WaitBasis -> StateStep
+        /// The `test-baseline` record the box-wide index names for a tree, or why there is
+        /// none (`TestBaseline.findFor`). Read only to decide whether a launch waits.
+        FindBaseline: string -> Result<TestBaseline.IndexEntry, string>
+        JoinRefresh: StateStep
+        LaunchScopeOf: TestRunInputs -> LaunchScope
+        ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
+    }
 
 /// A completed build: flush, select, and launch or hold the impact run it owes.
 let internal onBuildCompletedWith
@@ -296,6 +307,7 @@ let internal onBuildCompletedWith
     let nothingOwed = env.Launch.NothingOwed
     let tryRepairSchemaDrift = env.Launch.TryRepairSchemaDrift
     let holdForDiff = env.HoldForDiff
+    let findBaseline = env.FindBaseline
     let joinRefresh = env.JoinRefresh
     let launchScopeOf = env.LaunchScopeOf
     let observeModelGeneration = env.ObserveModelGeneration
@@ -440,12 +452,33 @@ let internal onBuildCompletedWith
                     match testConfigs with
                     | Some configs when not configs.IsEmpty ->
                         let hasCachedResults = state.LastResults.IsSome
+                        let currentTree = ReceiptInputTree.read repoRoot
 
-                        // Only a launch with a session baseline can wait for the
-                        // diff, and whether it does reads the extensions'
-                        // failures. Without one, the run takes them itself.
-                        let stateWithAffected =
+                        // The baseline in hand, which is what a wait for the diff needs: a
+                        // session baseline, or else a `test-baseline` record the box-wide
+                        // index names for exactly this tree (AUTOMATION-1587 step 4). The
+                        // record is read only to decide whether to WAIT; a miss is no wait.
+                        let basis =
                             if hasCachedResults then
+                                WaitBasis.SessionBaseline
+                            else
+                                match currentTree with
+                                | None -> WaitBasis.NoBaseline
+                                | Some tree ->
+                                    match findBaseline tree with
+                                    | Ok entry -> WaitBasis.BaselineRecord entry.Baseline
+                                    | Error why ->
+                                        Logging.debug
+                                            "test-prune"
+                                            $"diff-wait: no baseline record for this tree: %s{why}"
+
+                                        WaitBasis.NoBaseline
+
+                        // Only a launch with a baseline in hand can wait for the diff,
+                        // and whether it does reads the extensions' failures. Without
+                        // one, the run takes them itself.
+                        let stateWithAffected =
+                            if basis <> WaitBasis.NoBaseline then
                                 joinRefresh ctx stateWithAffected
                             else
                                 stateWithAffected
@@ -463,7 +496,7 @@ let internal onBuildCompletedWith
 
                         let awaitsDiff =
                             DiffWait.awaits
-                                { HasSessionBaseline = hasCachedResults
+                                { Basis = basis
                                   HasModel = (observeModelGeneration ctx).IsSome
                                   OwesNothing = nothingOwed launchInputs.Debt
                                   RunsInFullAnyway =
@@ -484,12 +517,14 @@ let internal onBuildCompletedWith
                                   FoldedChanges = UncoveredChanges.isAll launchInputs.ChangedSymbolsAllUncovered
                                   Scope = launchScopeOf launchInputs
                                   EvidenceTree = launchInputs.EvidenceTree
-                                  CurrentTree = ReceiptInputTree.read repoRoot
+                                  CurrentTree = currentTree
                                   SealedTree = launchState.SealedTree }
 
                         if awaitsDiff then
-                            return holdForDiff ctx launchState
+                            return holdForDiff basis ctx launchState
                         else
+                            Logging.info "test-prune" (DiffWait.describe false basis 0L false)
+
                             match launchImpactRun ctx configs launchState hasCachedResults forceRunProjects with
                             | Some launched -> return launched
                             | None when joinsFullRun stateWithAffected false ->

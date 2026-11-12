@@ -408,3 +408,54 @@ let ``selection and the skip decide the same with and without a baseline record 
     let withoutRecord = scenario false
     test <@ withRecord.Length = 4 @>
     test <@ withRecord = withoutRecord @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1587 step 4, end to end: a restarted daemon over a tree its baseline record
+// names holds its first launch until the scan's fold arrives, and the log says for how long.
+// ---------------------------------------------------------------------------
+
+/// The `diff-wait:` line of a held launch's release, and the milliseconds it reports.
+let private releasedWait (c: Checkout) =
+    let line = c.Lines |> Seq.tryFind (fun l -> l.Contains "diff-wait: held=yes")
+
+    line
+    |> Option.map (fun l ->
+        let token = l.Substring(l.IndexOf "waited-ms=" + "waited-ms=".Length)
+        l, Int64.Parse(token.Substring(0, token.IndexOf ' ')))
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a restarted daemon over a tree its baseline record names holds its first launch until the scan folds`` () =
+    withRepo (fun stores rootNamed ->
+        let root = rootNamed "a"
+        let first = checkout stores root
+        seal first
+        let _, earned = run first
+        test <@ (baselineLine first earned).Head.Contains "test-baseline: written" @>
+        let key = (TestBaseline.keyOf (treeOf root).Identity).Value.Text
+
+        // A new daemon over the same checkout. Its build arrives before its scan's fold,
+        // as a cold scan delivers them.
+        let restarted = checkout stores root
+        let completedBefore = restarted.Completions.Count
+        let sinceBuild = Diagnostics.Stopwatch.StartNew()
+        restarted.Host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntilOr
+            "the first launch to be held for the scan's fold"
+            (fun () -> restarted.Lines |> Seq.exists (fun l -> l.Contains "diff-wait: holding"))
+            HangWaitMs
+
+        test <@ restarted.Completions.Count = completedBefore @>
+        seal restarted
+
+        waitUntilOr
+            "the held launch's completion to be recorded"
+            (fun () -> restarted.Completions.Count > completedBefore)
+            HangWaitMs
+
+        match releasedWait restarted with
+        | None -> Assert.Fail "expected a diff-wait release line"
+        | Some(line, waitedMs) ->
+            test <@ line.Contains $"reason=baseline-record %s{key}" && line.Contains "timed-out=no" @>
+            // The added wait is bounded by the time from the build to the fold.
+            test <@ waitedMs >= 0L && waitedMs <= sinceBuild.ElapsedMilliseconds @>)

@@ -62,15 +62,18 @@ open FsHotWatch.TestPrune.PluginFold
 
 /// Hold a build's launch for its tree's check results (`DiffWait`), and post its
 /// expiry. The mailbox is not blocked: the `BatchChecked` it waits for is delivered
-/// through it.
-let internal holdForDiff (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
+/// through it. `basis` is the baseline that makes the diff worth the wait.
+let internal holdForDiff (basis: WaitBasis) (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
     let held =
         { Id = Guid.NewGuid()
-          Since = DateTime.UtcNow }
+          Since = DateTime.UtcNow
+          Basis = basis }
 
     Logging.info
         "test-prune"
         $"BuildSucceeded: the check results for the tree this build compiled are not folded yet, so its symbol diff is unknown — holding the launch for the next BatchChecked (at most %.0f{DiffWait.bound.TotalSeconds}s)"
+
+    Logging.info "test-prune" $"diff-wait: holding reason=%s{WaitBasis.describe basis}"
 
     Tasks.Task
         .Delay(DiffWait.bound)
@@ -535,6 +538,13 @@ let internal currentOutcomeKeysIn
             (fun fsproj -> Map.tryFind fsproj identities)
             (evidenceCandidates graph (defaultArg testConfigs []))
     | _ -> Map.empty
+
+/// The `test-baseline` record the box-wide index names for exactly `tree`, or why there is
+/// none (AUTOMATION-1587 step 4). Read only to decide whether a launch waits for its diff.
+let internal findBaselineIn (evidence: TestEvidenceRun.Wiring option) (tree: string) =
+    match evidence |> Option.bind (fun wiring -> wiring.Outcomes) with
+    | None -> Error "no outcome store is wired"
+    | Some store -> TestBaseline.findFor store tree
 
 /// File the shadow `test-baseline` record a completion may earn (AUTOMATION-1587 step 2) and
 /// log one line saying whether it did, and if not, which conditions refused it. The K_P keys
