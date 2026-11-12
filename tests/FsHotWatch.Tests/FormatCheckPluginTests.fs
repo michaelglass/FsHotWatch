@@ -34,10 +34,9 @@ let private thisRepoPin =
     | Ok p -> p
     | Error e -> failwith $"this repository must pin fantomas for the format tests to run: %A{e}"
 
-/// A temp repository with this repository's tool manifest and nothing else: what a real
-/// checkout with no `global.json` looks like.
-let private withManifestOnly (prefix: string) (body: string -> 'a) : 'a =
-    withTempDir prefix (fun dir ->
+/// A temp repository, made by `inTempDir`, holding this repository's tool manifest.
+let private withManifest inTempDir (prefix: string) (body: string -> 'a) : 'a =
+    inTempDir prefix (fun (dir: string) ->
         Directory.CreateDirectory(Path.Combine(dir, ".config")) |> ignore
 
         File.Copy(
@@ -47,16 +46,10 @@ let private withManifestOnly (prefix: string) (body: string -> 'a) : 'a =
 
         body dir)
 
-/// A temp repository that pins the SAME fantomas this repository pins, under the SAME SDK.
-/// The tool is restored by this repository's own `dotnet tool restore`, under the SDK its
-/// `global.json` selects, and an SDK of another major does not see that restore (`Run
-/// "dotnet tool restore" to make the "fantomas" command available`; AUTOMATION-1621, on
-/// GitHub's ubuntu-26.04 image 20261111.196, which also ships SDK 11.0.100). So the fixture
-/// copies the `global.json` too: it mirrors this repository, not a different checkout.
-let private withPinnedRepo (prefix: string) (body: string -> 'a) : 'a =
-    withManifestOnly prefix (fun dir ->
-        File.Copy(Path.Combine(thisRepoRoot, "global.json"), Path.Combine(dir, "global.json"))
-        body dir)
+/// A temp repository that pins the SAME fantomas this repository pins. Like every scratch
+/// directory it inherits this repository's global.json from above (AUTOMATION-1621), so the
+/// tool resolves under the SDK that restored it.
+let private withPinnedRepo (prefix: string) (body: string -> 'a) : 'a = withManifest withTempDir prefix body
 
 /// A temp repository whose manifest pins a version that exists nowhere — for the
 /// fake-runner tests, where the pin is an input to be echoed, not a tool to run.
@@ -714,7 +707,7 @@ let ``positive control: a new well-formatted file passes the format pass`` () =
 /// run across two SDKs: only a fixture that restores elsewhere can.
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``a checkout with no global.json, restored in place, passes the format pass`` () =
-    withManifestOnly "fmt-no-globaljson" (fun dir ->
+    withManifest withTempDirOutsideRepositorySdk "fmt-no-globaljson" (fun dir ->
         test <@ not (File.Exists(Path.Combine(dir, "global.json"))) @>
 
         match runProcess "dotnet" "tool restore" dir [] (ProcessBounds.silent (TimeSpan.FromMinutes 5.0)) with

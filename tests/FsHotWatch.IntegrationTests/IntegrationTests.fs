@@ -1944,7 +1944,9 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``Full pipeline: format → build → test`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(UserHomeIsolation.scratchRoot.Value, $"fshw-pipeline-{Guid.NewGuid():N}")
+
     Directory.CreateDirectory(tmpDir) |> ignore
 
     // The formatter is the REPOSITORY's pinned tool: a repo without

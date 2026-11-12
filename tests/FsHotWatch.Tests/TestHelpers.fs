@@ -902,11 +902,31 @@ let standLikeTheHostVerb (dir: string) : unit = Directory.SetCurrentDirectory di
 /// Whether the directory the process stands in still exists.
 let processWorkingDirectoryExists () : bool = (processWorkingDirectory ()).IsSome
 
+/// A scratch directory under `UserHomeIsolation.scratchRoot`, which holds this repository's
+/// global.json: a `dotnet` run in it resolves the SDK this repository builds with
+/// (AUTOMATION-1621). Deleted afterwards.
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
     // across test+plugin views of the same path (macOS temp dir is a symlink).
     let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-{prefix}-{Guid.NewGuid():N}")
+        Path.Combine(UserHomeIsolation.scratchRoot.Value, $"fshw-{prefix}-{Guid.NewGuid():N}")
+        |> Path.GetFullPath
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        body tmpDir
+    finally
+        deleteTempDir tmpDir
+
+/// `withTempDir`, but in the temp directory this process started with, where NO
+/// global.json above it selects an SDK: `dotnet` there resolves the machine's newest. Every
+/// other scratch directory inherits this repository's global.json
+/// (`UserHomeIsolation.scratchRoot`, AUTOMATION-1621). Only a test about the no-global.json
+/// case may use it.
+let withTempDirOutsideRepositorySdk (prefix: string) (body: string -> 'a) =
+    let tmpDir =
+        Path.Combine(UserHomeIsolation.originalTempPath.Value, $"fshw-{prefix}-{Guid.NewGuid():N}")
         |> Path.GetFullPath
 
     Directory.CreateDirectory(tmpDir) |> ignore
