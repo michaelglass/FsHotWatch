@@ -85,14 +85,14 @@ jobs:
       # an empty cache home and filed what it computed. Every record the box-wide store shares
       # a key with must say the same; a difference is a key that missed an input. Seeded by the
       # commit, so a red reproduces with the uploaded stores.
-      # Kinds: `check` (compared field by field) and `analyze` (AUTOMATION-1585, compared
-      # generically: outcome and the outputs digest). Other kinds join as they get comparators.
+      # Kinds: every kind (`--kind all`), each by its own comparator (AUTOMATION-1633 b). A kind
+      # that shares no key audits nothing and the audit exits 3 (vacuous), on purpose.
       - name: Audit stored records against the clean recompute
         if: always()
         run: |
           dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll audit \
             --target "$GITHUB_WORKSPACE" --clean-home "$RUNNER_TEMP/clean-home" \
-            --kind check --kind analyze \
+            --kind all \
             --sample 0 --seed "$GITHUB_SHA" --out "$RUNNER_TEMP/$OUT_NAME/audit.json"
       - name: Upload the replay
         if: always()
