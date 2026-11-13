@@ -128,8 +128,10 @@ description = "The fast LANDING gate: compile the solution, run ci's cheap check
 # The cheap steps `ci` runs also run here, so their red never first appears after a land
 # (AUTOMATION-1654): `check-commit-messages` and `sync-docs-check` (milliseconds),
 # `tp-example-build` (the example solution, seconds) and `check-msbuild-deps` (reads the
-# deps.json `compile` already built, seconds). Each is the task, or for check-msbuild-deps
-# the command, that `ci` runs; PackagingInputsGateTests pins both halves.
+# deps.json `compile` already built, seconds). `fantomas-check` (seconds) is CI's own format
+# check, because the daemon's format pass rewrites rather than fails (AUTOMATION-1680).
+# Each is the task, or for check-msbuild-deps the command, that `ci` runs;
+# PackagingInputsGateTests pins both halves.
 #
 # GatePurityTests pins this task's closure: no writing `coverageratchet` verb, and none of
 # `test-direct`, `coverage-check` or `tp-test`.
@@ -142,6 +144,7 @@ depends = [
   "sync-docs-check",
   "tp-example-build",
   "check-msbuild-deps",
+  "fantomas-check",
 ]
 
 [tasks.package-floors-if-changed]
@@ -390,7 +393,7 @@ run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-pac
 # which is the very thing this repo refuses to ship.
 # `check-msbuild-deps` is NOT listed here — it is in the `run` command above, so
 # that CI runs it too. `compile` stays, because the check reads a BUILT deps.json.
-depends = ["compile", "lint-project", "tp-example-build", "sync-docs-check", "check-commit-messages"]
+depends = ["compile", "lint-project", "tp-example-build", "sync-docs-check", "check-commit-messages", "fantomas-check"]
 
 [tasks.ci-linux]
 description = "Run GitHub Actions' CI jobs (build, integration, lint-project) in a local Linux container. Required before every push to main."
@@ -411,6 +414,17 @@ description = "Refuse private references (agent-session links, private hostnames
 # `ci` depends on this, and GitHub CI runs the same script on the pushed range (the
 # `commit-messages` job). jj runs no hooks, so nothing earlier can stop such a message.
 run = "bash scripts/check-commit-messages.sh --jj-revset 'main@origin..@'"
+
+[tasks.fantomas-check]
+description = "Check formatting with CI's exact command (the pinned dotnet fantomas, --check)"
+# GitHub CI's build job runs this command (the reusable workflow's "Format check" step over
+# ci.yml's `fantomas-paths`), and CiParityTests pins it to that file. It is here because the
+# daemon is not a format GATE in this repository: `.fshw.json` sets `"format": true`, which
+# registers the format-on-save preprocessor, and that REWRITES an unformatted file during a
+# check instead of failing it. main went red on this step three times over trees land-check
+# and ci had passed (AUTOMATION-1680). Seconds; reads the tree, writes nothing.
+run = "dotnet fantomas src/ tests/ examples/ --check"
+depends = ["tool-restore"]
 
 [tasks.check-msbuild-deps]
 description = "Verify app-local MSBuild support assemblies are not downgraded"
