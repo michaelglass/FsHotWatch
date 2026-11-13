@@ -4461,6 +4461,111 @@ let ``a run whose beforeRun generates output is not revoked as moved`` () =
                 )
             @>)
 
+/// AUTOMATION-1660: between the last test host's exit and "Tests complete", every step a
+/// run takes logs its start and its end, in the order it runs, and nothing overlaps.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``every step after the last test host exits logs its start and end in order`` () =
+    withReceiptSource (fun repoRoot _ ->
+        let logged =
+            runWithGeneratingBeforeRun
+                repoRoot
+                [ { projConfig "ProjA" with
+                      FilterTemplate = None } ]
+
+        let marker = " post-run "
+
+        let steps =
+            logged
+            |> List.choose (fun line ->
+                match line.IndexOf marker with
+                | -1 -> None
+                | at ->
+                    // "post-run <runId> <step>: start" / "…: end after Nms"
+                    let rest = line.Substring(at + marker.Length)
+                    let afterRunId = rest.Substring(rest.IndexOf ' ' + 1)
+                    let colon = afterRunId.LastIndexOf ": "
+                    let step = afterRunId.Substring(0, colon)
+                    let edge = afterRunId.Substring(colon + 2)
+
+                    Some(step, (if edge = "start" then "start" else edge.Split(' ').[0])))
+
+        let around step = [ step, "start"; step, "end" ]
+
+        // The run's own steps, up to "Tests complete" (`executeTests`), with the coverage
+        // ingest's sub-steps nested inside it.
+        let runSteps =
+            around "starvation re-run"
+            @ around "evidence reconcile"
+            @ [ "coverage ingest", "start" ]
+            @ around "coverage receipt invalidation"
+            @ around "coverage emit"
+            @ [ "coverage ingest", "end" ]
+            @ around "flakiness record"
+            @ around "test-runs tidy"
+
+        // Then the completion's fold into the plugin's state (`onRunFinishedWith`).
+        let foldSteps =
+            [ "fold: assemble results"
+              "fold: prune unanalyzable"
+              "fold: report outstanding"
+              "fold: decide receipt"
+              "fold: record completion"
+              "fold: settle debt"
+              "fold: earned evidence"
+              "fold: file baseline"
+              "fold: report outcome" ]
+            |> List.collect around
+
+        test <@ steps = runSteps @ foldSteps @>
+
+        let indexOf (text: string) =
+            logged |> List.findIndex (fun l -> l.Contains text)
+
+        test <@ indexOf "test-runs tidy: end" < indexOf "Tests complete:" @>
+        test <@ indexOf "Tests complete:" < indexOf "fold: assemble results: start" @>)
+
+/// A step that throws logs its failure instead of an end, and the exception reaches the
+/// caller unchanged, synchronous or not.
+[<Fact>]
+let ``a post-run step that throws logs its failure and re-raises it`` () =
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _sink =
+        FsHotWatch.Logging.installSink
+            { Write = lines.Enqueue
+              Level = FsHotWatch.Logging.LogLevel.Debug
+              File = None }
+
+    let sync =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            FsHotWatch.TestPrune.PostRunStep.timed "r1" "sync step" (fun () -> invalidOp "boom")
+            |> ignore)
+
+    let asyncStep =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            FsHotWatch.TestPrune.PostRunStep.timedAsync "r1" "async step" (fun () -> async { return invalidOp "bang" })
+            |> Async.RunSynchronously
+            |> ignore)
+
+    let logged = List.ofSeq lines
+
+    test <@ sync.Message = "boom" && asyncStep.Message = "bang" @>
+    test <@ logged |> List.exists (fun l -> l.Contains "post-run r1 sync step: start") @>
+
+    test
+        <@
+            logged
+            |> List.exists (fun l -> l.Contains "post-run r1 sync step: failed after" && l.Contains "boom")
+        @>
+
+    test
+        <@
+            logged
+            |> List.exists (fun l -> l.Contains "post-run r1 async step: failed after" && l.Contains "bang")
+        @>
+
+    test <@ not (logged |> List.exists (fun l -> l.Contains ": end after")) @>
+
 /// The control: the same generating `beforeRun`, but the TESTS write under `src/` while
 /// they run. Binding after `beforeRun` must not launder that: the run is still revoked,
 /// and the revocation names the stylesheet the tests wrote, not the bundle `beforeRun`

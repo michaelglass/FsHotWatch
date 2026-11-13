@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: every step a run takes after its last test host exits logs its start and its end (AUTOMATION-1660). A measured
+  edit check spent 48.5 s between the last host exit and `Tests complete`, 35.6 s of it with no log line at all. Each
+  step now logs `post-run <runId> <step>: start` and `post-run <runId> <step>: end after <n>ms` (or `failed after
+  <n>ms (<exception>)`, re-raised unchanged) through `PostRunStep.timed`/`timedAsync`: `starvation re-run`, `evidence
+  reconcile`, `coverage ingest` (with `coverage receipt invalidation`, `coverage ratchet prune`, `coverage ingest
+  <project>` per project and `coverage emit` inside it), `evidence publish` (with `outcome store gc` inside it),
+  `flakiness record`, `trace ingestion`, `test-runs tidy` and `afterRun hook`; then the completion's fold: `fold:
+  assemble results`, `prune unanalyzable`, `report outstanding`, `decide receipt`, `record completion`, `settle debt`,
+  `earned evidence`, `file baseline` and `report outcome`. Nothing else changes.
+
 ## 0.13.0-alpha.113 - 2026-11-13
 
 - feat: `tests.projects[].runtimeSelection: "decide" | "shadow"` (AUTOMATION-1645). `"decide"`, the default, is

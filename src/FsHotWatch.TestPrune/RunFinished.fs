@@ -172,14 +172,18 @@ let internal onRunFinishedWith
         // TestRunCompleted (FileCommandPlugin) must see it on a hit.
         ctx.EmitTestRunCompleted completed
 
+        // AUTOMATION-1660: each step of the fold logs its start and end, under the run's id.
+        let postRun = completed.RunId.ToString("N")
+
         let assembled =
-            assembleRunResults
-                { State = state
-                  Completed = completed
-                  Launch = launch
-                  RepoRoot = repoRoot
-                  RunnableProjects = runnableProjects
-                  Traces = traces }
+            PostRunStep.timed postRun "fold: assemble results" (fun () ->
+                assembleRunResults
+                    { State = state
+                      Completed = completed
+                      Launch = launch
+                      RepoRoot = repoRoot
+                      RunnableProjects = runnableProjects
+                      Traces = traces })
 
         let testResults = assembled.TestResults
         let coverage = assembled.Coverage
@@ -190,12 +194,15 @@ let internal onRunFinishedWith
         // rewrite, because this is the one place the outstanding set is
         // recomputed — pruning anywhere else would leave the ledger and the
         // state disagreeing about what is still owed.
-        let unanalyzable = pruneDeletedUnanalyzable File.Exists state.UnanalyzableFiles
+        let unanalyzable =
+            PostRunStep.timed postRun "fold: prune unanalyzable" (fun () ->
+                pruneDeletedUnanalyzable File.Exists state.UnanalyzableFiles)
 
         // The ONLY path to the ledger: clear the slate, re-report the whole
         // outstanding set. There is no wholesale clear a filtered run can
         // reach for.
-        reportOutstanding ctx unanalyzable state.FailedExtensions outstandingFailures
+        PostRunStep.timed postRun "fold: report outstanding" (fun () ->
+            reportOutstanding ctx unanalyzable state.FailedExtensions outstandingFailures)
 
         // `LastCoverage` is the moment the process acquires test evidence — a
         // run completed and we know what it covered. Until a state carrying it
@@ -204,15 +211,16 @@ let internal onRunFinishedWith
         let debtDuringFullRun = state.DebtDuringFullRun
 
         let receipt =
-            decideReceipt
-                ctx
-                { State = state
-                  Completed = completed
-                  Launch = launch
-                  Coverage = coverage
-                  RepoRoot = repoRoot
-                  RunnableProjects = runnableProjects
-                  ObserveModelGeneration = observeModelGeneration }
+            PostRunStep.timed postRun "fold: decide receipt" (fun () ->
+                decideReceipt
+                    ctx
+                    { State = state
+                      Completed = completed
+                      Launch = launch
+                      Coverage = coverage
+                      RepoRoot = repoRoot
+                      RunnableProjects = runnableProjects
+                      ObserveModelGeneration = observeModelGeneration })
 
         let currentInputTree = receipt.CurrentInputTree
         let currentModelGeneration = receipt.CurrentModelGeneration
@@ -222,21 +230,23 @@ let internal onRunFinishedWith
         let evidenceReceipt = receipt.EvidenceReceipt
 
         let state =
-            recordCompletion endRun state completed launch assembled receipt unanalyzable
+            PostRunStep.timed postRun "fold: record completion" (fun () ->
+                recordCompletion endRun state completed launch assembled receipt unanalyzable)
 
 
         let settled =
-            settleDebt
-                { State = state
-                  Completed = completed
-                  Launch = launch
-                  RunnableProjects = runnableProjects
-                  CurrentInputTree = currentInputTree
-                  CurrentModelGeneration = currentModelGeneration
-                  DebtDuringFullRun = debtDuringFullRun
-                  OwedTo = owedTo
-                  NoUnrunnableCoverers = noUnrunnableCoverers
-                  Debt = env.Debt }
+            PostRunStep.timed postRun "fold: settle debt" (fun () ->
+                settleDebt
+                    { State = state
+                      Completed = completed
+                      Launch = launch
+                      RunnableProjects = runnableProjects
+                      CurrentInputTree = currentInputTree
+                      CurrentModelGeneration = currentModelGeneration
+                      DebtDuringFullRun = debtDuringFullRun
+                      OwedTo = owedTo
+                      NoUnrunnableCoverers = noUnrunnableCoverers
+                      Debt = env.Debt })
 
         let aborted = settled.Aborted
         let projectPassed = settled.ProjectPassed
@@ -264,25 +274,26 @@ let internal onRunFinishedWith
             | _ -> debt
 
         let earned =
-            earnedEvidenceOf
-                ctx
-                { State = state
-                  Started = started
-                  Completed = completed
-                  Launch = launch
-                  Debt = debt
-                  RunnableProjects = runnableProjects
-                  Aborted = aborted
-                  ExecutedFullSuite = executedFullSuite
-                  ProjectPassed = projectPassed
-                  Unanalyzable = unanalyzable
-                  OutstandingFailures = outstandingFailures
-                  CurrentInputTree = currentInputTree
-                  CurrentInputs = currentInputs
-                  CurrentModelGeneration = currentModelGeneration
-                  ReceiptTransition = receiptTransition
-                  EvidenceReceipt = evidenceReceipt
-                  StandingEvidence = standingEvidence }
+            PostRunStep.timed postRun "fold: earned evidence" (fun () ->
+                earnedEvidenceOf
+                    ctx
+                    { State = state
+                      Started = started
+                      Completed = completed
+                      Launch = launch
+                      Debt = debt
+                      RunnableProjects = runnableProjects
+                      Aborted = aborted
+                      ExecutedFullSuite = executedFullSuite
+                      ProjectPassed = projectPassed
+                      Unanalyzable = unanalyzable
+                      OutstandingFailures = outstandingFailures
+                      CurrentInputTree = currentInputTree
+                      CurrentInputs = currentInputs
+                      CurrentModelGeneration = currentModelGeneration
+                      ReceiptTransition = receiptTransition
+                      EvidenceReceipt = evidenceReceipt
+                      StandingEvidence = standingEvidence })
 
         let state =
             { state with
@@ -310,13 +321,14 @@ let internal onRunFinishedWith
         // AUTOMATION-1587 step 2: the box-wide, per-TREE record of the same fact, in shadow.
         // Asked on EVERY completion, so the log counts both the baselines written and, for
         // each completion that wrote none, the condition that refused it.
-        env.FileBaseline
-            ctx
-            { RunId = completed.RunId.ToString("N")
-              EarnsBaseline = earnsBaseline
-              RunnableProjects = runnableProjects
-              SealedTree = state.SealedTree
-              ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries) }
+        PostRunStep.timed postRun "fold: file baseline" (fun () ->
+            env.FileBaseline
+                ctx
+                { RunId = completed.RunId.ToString("N")
+                  EarnsBaseline = earnsBaseline
+                  RunnableProjects = runnableProjects
+                  SealedTree = state.SealedTree
+                  ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries) })
 
         // The in-memory hot view must shed ONLY the committed symbols,
         // never the whole list — symbols left in the queue (mid-run
@@ -352,15 +364,16 @@ let internal onRunFinishedWith
         // the trigger that owed it (`enqueueImpactRun`, a queued `run-tests`),
         // and is delivered only after this fold is committed. Nothing is
         // launched from here.
-        reportRunOutcome
-            ctx
-            { Completed = completed
-              CarriedFailures = carriedFailures
-              QueueAfterCommit = queueAfterCommit
-              PendingDescription = pendingDescription
-              ReceiptTransition = receiptTransition
-              EvidenceReceipt = evidenceReceipt }
-            testResults
+        PostRunStep.timed postRun "fold: report outcome" (fun () ->
+            reportRunOutcome
+                ctx
+                { Completed = completed
+                  CarriedFailures = carriedFailures
+                  QueueAfterCommit = queueAfterCommit
+                  PendingDescription = pendingDescription
+                  ReceiptTransition = receiptTransition
+                  EvidenceReceipt = evidenceReceipt }
+                testResults)
 
         let replies =
             match message with

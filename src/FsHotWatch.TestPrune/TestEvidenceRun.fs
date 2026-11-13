@@ -695,7 +695,8 @@ let publish
 
         // The box-wide store is bounded by TTL and bytes (ADR-059 §2). GC can only turn a hit
         // into a miss, and it spares what this run just filed.
-        outcomes.Gc(producer.EarnedAt, Set.ofList filed) |> ignore
+        PostRunStep.timed producer.RunId "outcome store gc" (fun () -> outcomes.Gc(producer.EarnedAt, Set.ofList filed))
+        |> ignore
     | None -> ()
 
     let outcomes =

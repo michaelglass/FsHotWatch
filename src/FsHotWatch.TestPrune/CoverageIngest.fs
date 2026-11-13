@@ -412,47 +412,43 @@ let internal ingestAndEmitCoverageForProjects
     : CoverageIngestOutcome =
     let existing = inputs |> List.filter (fun input -> File.Exists input.RawPath)
 
-    let legacyOutputInvalidated =
+    let legacyOutputInvalidated, removedContributions =
         if coverageOutput.IsNone && inputs.IsEmpty && Set.isEmpty enabledRatchetProjects then
-            false
+            false, 0
         else
-            invalidateLegacyRatchetOutput db coverageOutput
-
-    let removedContributions =
-        if coverageOutput.IsNone && inputs.IsEmpty && Set.isEmpty enabledRatchetProjects then
-            0
-        else
-            pruneProjectRatchetCoverage db enabledRatchetProjects
+            PostRunStep.timed runId "coverage ratchet prune" (fun () ->
+                invalidateLegacyRatchetOutput db coverageOutput, pruneProjectRatchetCoverage db enabledRatchetProjects)
 
     let accepted, failures, coverageMissing =
         (([], [], []), existing)
         ||> List.fold (fun (accepted, failures, coverageMissing) input ->
             try
-                let xml = File.ReadAllText input.RawPath
+                PostRunStep.timed runId $"coverage ingest %s{input.Project}" (fun () ->
+                    let xml = File.ReadAllText input.RawPath
 
-                match coverageMissingFromFullReceipt db input xml with
-                | Some missing ->
-                    Logging.warn
-                        "test-prune"
-                        $"%s{input.Project}: %s{missing.Reason}; its prior runtime coverage is kept"
+                    match coverageMissingFromFullReceipt db input xml with
+                    | Some missing ->
+                        Logging.warn
+                            "test-prune"
+                            $"%s{input.Project}: %s{missing.Reason}; its prior runtime coverage is kept"
 
-                    accepted, failures, missing :: coverageMissing
-                | None ->
-                    // Runtime selection needs every configured project's provenance,
-                    // including projects excluded from the consumer ratchet.
-                    ingestRuntimeCoverage db (Some repoRoot) input.Project input.Scope runId xml
-                    |> ignore
+                        accepted, failures, missing :: coverageMissing
+                    | None ->
+                        // Runtime selection needs every configured project's provenance,
+                        // including projects excluded from the consumer ratchet.
+                        ingestRuntimeCoverage db (Some repoRoot) input.Project input.Scope runId xml
+                        |> ignore
 
-                    let ratchetResult =
-                        if input.IncludeInRatchet && Set.contains input.Project enabledRatchetProjects then
-                            let result = ingestCobertura db (Some repoRoot) xml
-                            persistProjectRatchetCoverage db repoRoot input xml
-                            Some result
-                        else
-                            removeProjectRatchetCoverage db input.Project |> ignore
-                            None
+                        let ratchetResult =
+                            if input.IncludeInRatchet && Set.contains input.Project enabledRatchetProjects then
+                                let result = ingestCobertura db (Some repoRoot) xml
+                                persistProjectRatchetCoverage db repoRoot input xml
+                                Some result
+                            else
+                                removeProjectRatchetCoverage db input.Project |> ignore
+                                None
 
-                    (input, ratchetResult) :: accepted, failures, coverageMissing
+                        (input, ratchetResult) :: accepted, failures, coverageMissing)
             with ex ->
                 // A malformed FULL receipt has the same replacement semantics as
                 // a missing one: neither runtime selection nor the consumer ratchet
@@ -481,47 +477,48 @@ let internal ingestAndEmitCoverageForProjects
 
     let results = ratchetInputs |> List.map snd
 
-    try
+    PostRunStep.timed runId "coverage emit" (fun () ->
+        try
 
-        let totalIngested = results |> List.sumBy (fun r -> r.Ingested)
-        let totalSkipped = results |> List.sumBy (fun r -> r.Skipped)
+            let totalIngested = results |> List.sumBy (fun r -> r.Ingested)
+            let totalSkipped = results |> List.sumBy (fun r -> r.Skipped)
 
-        // Cold-start guard: emitting while the graph is still indexing writes a partial
-        // cobertura that DROPS every not-yet-indexed file's coverage, clobbering a prior good
-        // emission and failing the ratchet. Skip — the DB persists and max-merges, so a later
-        // warm run emits in full.
-        match coverageOutput with
-        | None -> ()
-        | Some _ when
-            not legacyOutputInvalidated
-            && removedContributions = 0
-            && not ratchetInputs.IsEmpty
-            && symbolGraphLooksIncomplete totalIngested totalSkipped
-            ->
-            Logging.warn
-                "test-prune"
-                $"coverage: only %d{totalIngested} of %d{totalIngested + totalSkipped} lines mapped to a symbol — symbol graph still indexing; skipping emit to avoid a partial snapshot (will emit once warm)."
-        | Some out ->
-            match projectRatchetCobertura db with
-            | Some xml ->
-                let dir = Path.GetDirectoryName(out)
-
-                if not (String.IsNullOrEmpty dir) then
-                    Directory.CreateDirectory(dir) |> ignore
-
-                File.WriteAllText(out, xml)
-            | None when
-                legacyOutputInvalidated
-                || Set.isEmpty enabledRatchetProjects
-                || removedContributions > 0
-                ->
-                // An old shared file has no project identity. Once the eligible set
-                // shrinks, preserving that file would preserve the removed project's
-                // contribution. Absence is the only honest empty aggregate.
-                File.Delete out
+            // Cold-start guard: emitting while the graph is still indexing writes a partial
+            // cobertura that DROPS every not-yet-indexed file's coverage, clobbering a prior good
+            // emission and failing the ratchet. Skip — the DB persists and max-merges, so a later
+            // warm run emits in full.
+            match coverageOutput with
             | None -> ()
-    with ex ->
-        Logging.error "test-prune" $"coverage emission failed: %s{ex.Message}"
+            | Some _ when
+                not legacyOutputInvalidated
+                && removedContributions = 0
+                && not ratchetInputs.IsEmpty
+                && symbolGraphLooksIncomplete totalIngested totalSkipped
+                ->
+                Logging.warn
+                    "test-prune"
+                    $"coverage: only %d{totalIngested} of %d{totalIngested + totalSkipped} lines mapped to a symbol — symbol graph still indexing; skipping emit to avoid a partial snapshot (will emit once warm)."
+            | Some out ->
+                match projectRatchetCobertura db with
+                | Some xml ->
+                    let dir = Path.GetDirectoryName(out)
+
+                    if not (String.IsNullOrEmpty dir) then
+                        Directory.CreateDirectory(dir) |> ignore
+
+                    File.WriteAllText(out, xml)
+                | None when
+                    legacyOutputInvalidated
+                    || Set.isEmpty enabledRatchetProjects
+                    || removedContributions > 0
+                    ->
+                    // An old shared file has no project identity. Once the eligible set
+                    // shrinks, preserving that file would preserve the removed project's
+                    // contribution. Absence is the only honest empty aggregate.
+                    File.Delete out
+                | None -> ()
+        with ex ->
+            Logging.error "test-prune" $"coverage emission failed: %s{ex.Message}")
 
     { Failures = List.rev failures
       CoverageMissing = List.rev coverageMissing }

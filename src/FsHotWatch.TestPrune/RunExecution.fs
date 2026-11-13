@@ -141,16 +141,19 @@ let internal ingestRunCoverage
     let collectedInputs, receiptFailures =
         collected.Read(fun c -> List.rev c.CoverageInputs, List.rev c.CoverageFailures)
 
+    let postRun = runId.ToString("N")
+
     let receiptFailures =
-        receiptFailures
-        |> List.map (fun failure ->
-            try
-                invalidateCoverageReceiptFailure db failure
-                failure
-            with ex ->
-                { failure with
-                    Reason =
-                        $"%s{failure.Reason}; prior coverage invalidation failed (%s{ex.GetType().Name}: %s{ex.Message})" })
+        PostRunStep.timed postRun "coverage receipt invalidation" (fun () ->
+            receiptFailures
+            |> List.map (fun failure ->
+                try
+                    invalidateCoverageReceiptFailure db failure
+                    failure
+                with ex ->
+                    { failure with
+                        Reason =
+                            $"%s{failure.Reason}; prior coverage invalidation failed (%s{ex.GetType().Name}: %s{ex.Message})" }))
 
     let coverageOutcome =
         ingestAndEmitCoverageForProjects
@@ -207,7 +210,9 @@ let internal ingestRunCoverage
               ProducerHash = plan.Wiring.ProducerHash
               EarnedAt = DateTimeOffset.UtcNow }
 
-        let published = TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer
+        let published =
+            PostRunStep.timed postRun "evidence publish" (fun () ->
+                TestEvidenceRun.publish plan repoRoot r reusedNow runOf producer)
 
         // Why each launched project filed nothing, one line apiece, at the default level: a
         // project that never gets evidence is otherwise indistinguishable from a defect.
@@ -360,15 +365,18 @@ let internal concludeRun
         // with every project's records — not one per project, and not racing itself
         // from inside Async.Parallel. Best-effort: the history is a diagnostic, so a
         // failure to record it must never fail the run that produced it.
+        let postRun = runId.ToString("N")
         let collectedFlakiness = collected.Read _.Flakiness
 
-        if not collectedFlakiness.IsEmpty then
-            try
-                Flakiness.appendRecords (Flakiness.historyPath repoRoot) 20 collectedFlakiness
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException
-            | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+        PostRunStep.timed postRun "flakiness record" (fun () ->
+            if not collectedFlakiness.IsEmpty then
+                try
+                    Flakiness.appendRecords (Flakiness.historyPath repoRoot) 20 collectedFlakiness
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException
+                | :? JsonException as ex ->
+                    Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}")
 
         // Traces: every project still being stored, and any that never settled, before
         // `tidyRunsDir` can rotate the run directory holding the dumps. Each ingestion first
@@ -378,13 +386,13 @@ let internal concludeRun
         // never throws, and nothing it does reaches `cumulative`: a trace failure is a log
         // line and a stored row, never a changed result.
         match traceIngestion with
-        | Some ingestion -> do! ingestion.Finish()
+        | Some ingestion -> do! PostRunStep.timedAsync postRun "trace ingestion" ingestion.Finish
         | None -> ()
 
         // Bound what `.fshw/test-runs/` retains, and purge the DEAD `.log` format.
         // Runs AFTER this run's reports were written, so the
         // evidence the verdict is about to point at is always among the survivors.
-        Ctrf.tidyRunsDir repoRoot Ctrf.RetainedRuns
+        PostRunStep.timed postRun "test-runs tidy" (fun () -> Ctrf.tidyRunsDir repoRoot Ctrf.RetainedRuns)
 
         sw.Stop()
 
@@ -731,8 +739,11 @@ let internal executeTests
         // canonical run-wide aggregate.
         groupResults |> ignore
 
+        // AUTOMATION-1660: from here to "Tests complete" every step logs its start and end.
+        let postRun = runId.ToString("N")
+
         // STARVATION: the held-back projects, re-run alone now that every group is done.
-        let! rerunResults = rerunStarved ()
+        let! rerunResults = PostRunStep.timedAsync postRun "starvation re-run" rerunStarved
 
         if not rerunResults.IsEmpty then
             foldAndEmit rerunResults
@@ -740,33 +751,35 @@ let internal executeTests
         let rerunProjects = rerunResults |> List.map fst |> Set.ofList
 
         let reconciledEvidence =
-            reconcileEvidence collected logToCtx evidence repoRoot runDir
+            PostRunStep.timed postRun "evidence reconcile" (fun () ->
+                reconcileEvidence collected logToCtx evidence repoRoot runDir)
 
         let reusedNow = reconciledEvidence.ReusedNow
         let reconciled = reconciledEvidence.Reconciled
         let evidenceHeld = reconciledEvidence.EvidenceHeld
 
-        ingestRunCoverage
-            collected
-            logToCtx
-            runId
-            db
-            repoRoot
-            runDir
-            enabledRatchetProjects
-            configuredCoverageOutput
-            coverageIngestFailed
-            coveragePathsByProject
-            launchTree
-            reconciled
-            rerunProjects
-            reusedNow
+        PostRunStep.timed postRun "coverage ingest" (fun () ->
+            ingestRunCoverage
+                collected
+                logToCtx
+                runId
+                db
+                repoRoot
+                runDir
+                enabledRatchetProjects
+                configuredCoverageOutput
+                coverageIngestFailed
+                coveragePathsByProject
+                launchTree
+                reconciled
+                rerunProjects
+                reusedNow)
 
         let! testResults, completed =
             concludeRun ctx collected traceIngestion repoRoot runId sw configuredCoverageProjects
 
         match afterRun with
-        | Some hook -> hook testResults
+        | Some hook -> PostRunStep.timed postRun "afterRun hook" (fun () -> hook testResults)
         | None -> ()
 
         Logging.info
