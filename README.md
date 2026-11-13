@@ -326,7 +326,7 @@ hand. Every field is optional — sensible defaults apply when omitted.
 |-------|------|---------|-------------|
 | `build` | `object \| bool` | `{"command": "dotnet", "args": "build"}` | Build command. `false` disables. |
 | `timeoutSec` | `number \| false` | `1200` | Default bound (seconds) on every build, test project, file command and preprocessor run; a per-entry `timeoutSec` overrides it. `0` or `false` disables it. See [Memory & tuning](docs/memory-and-tuning.md#per-task-timeouts). |
-| `format` | `bool` | `true` | Enable Fantomas format-on-save preprocessor. |
+| `format` | `bool` | `true` | Enable Fantomas format-on-save preprocessor. A file it has to rewrite during the scan `check` forces fails the check ([Preprocessors](#preprocessors)). |
 | `lint` | `bool` | `true` | Enable FSharpLint plugin. Uses `fsharplint.json` if found. |
 | `cache` | `string \| bool \| object` | none | Check-result cache: `"none"`/`false`, `"memory"`/`true`, or `{ "maxEntries", "scope", "include", "exclude" }` (`scope`: `"all"` or `"default-workspace"`). The removed `"file"`/`"jj"` backends fail the load. Overridden per daemon by `FSHW_CHECK_CACHE`; see [Memory & tuning](docs/memory-and-tuning.md#one-workspaces-check-result-cache-fshw_check_cache). |
 | `tests` | `object` | — | Test runner config. See below. |
@@ -668,6 +668,13 @@ an input the compiler never reads, for instance.
   is a failed status under the entry's `name`, and `check` / `confirm` are red. A run
   is never silently skipped: an entry whose `triggers` match nothing in the batch
   reports `not triggered`.
+- **A scan judges; a save rewrites.** Inside a change batch (a save) and `fshw format`, a
+  rewrite is what was asked for. Inside the scan that `check` and `confirm` force before they
+  grade, it is not: the check is about the tree as it was handed over, so a file a
+  preprocessor (the formatter included) has to rewrite there FAILS that preprocessor, naming
+  the file. The rewrite stays on disk, and the failure stands through later change batches
+  until a scan rewrites nothing. A check over an unformatted commit is red once, and green
+  once the rewrite is part of the change.
 - **Every mode.** The daemon, `check --run-once`, and `confirm` register the same
   entries through the same code; one-shot runs have no watcher and scan the whole
   tree, so an `always` entry runs once before that scan.
