@@ -266,6 +266,32 @@ let ``waitForPluginTerminalIfRunningWith returns after timeout when plugin stays
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
+/// A watcher the test drives by hand: the daemon gets an inert watcher, and the test
+/// gets the daemon's own change callback. No FSEvents stream and no
+/// `FileSystemWatcher` is opened (AUTOMATION-1543: each one is an fseventsd client).
+/// For tests about what the daemon does with a change, not how a change is observed:
+/// WatcherTests and MacFsEventsTests own observation, and
+/// ``daemon dispatches file change events to plugins`` keeps one real watcher end to end.
+type private InjectedWatcher() =
+    let callback = ref None
+    let mutable constructed = 0
+
+    member _.Factory: Daemon.WatcherFactory =
+        fun _ onChange _ _ _ ->
+            Interlocked.Increment(&constructed) |> ignore
+            callback.Value <- Some onChange
+
+            { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+              Disposables = [] }
+
+    /// How many watchers the daemon asked for: one, at construction.
+    member _.Constructed = Volatile.Read(&constructed)
+
+    member _.Deliver(change: FileChangeKind) =
+        match callback.Value with
+        | Some deliver -> deliver change
+        | None -> failwith "the daemon never constructed its watcher"
+
 /// Probe the watched directory until the daemon processes an event (proves watcher is live).
 /// Uses repeated file writes so however long watcher setup takes doesn't cause timeouts.
 /// Then waits for events to stabilize before returning.
@@ -432,7 +458,10 @@ let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
         let genFile = Path.Combine(srcDir, "Gen.fs")
         let mutable receivedBatches: string list list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
+        let watcher = InjectedWatcher()
+
+        let daemon =
+            Daemon.createWithWatcherFactory nullChecker tmpDir watchingDaemonOptions watcher.Factory
 
         daemon.RegisterPreprocessor(
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
@@ -471,8 +500,6 @@ let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
         daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        waitForDaemonReady srcDir (fun () -> receivedBatches.Length)
-        receivedBatches <- []
 
         let newFile = Path.Combine(srcDir, "New.fs")
 
@@ -485,7 +512,16 @@ let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
                 let batch = batch |> List.map real
                 List.contains (real newFile) batch && List.contains (real genFile) batch)
 
-        probeLoop (fun n -> File.WriteAllText(newFile, $"module New // v{n}")) joined 60000
+        // Delivered until it lands: a change that arrives before `Run` has subscribed
+        // the plugins is the only way this loop repeats.
+        probeLoop
+            (fun n ->
+                File.WriteAllText(newFile, $"module New // v{n}")
+                watcher.Deliver(SourceChanged [ real newFile ]))
+            joined
+            60000
+
+        test <@ watcher.Constructed = 1 @>
 
         cts.Cancel()
 
@@ -552,7 +588,10 @@ let ``daemon debounces rapid file changes into one batch`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
+        let watcher = InjectedWatcher()
+
+        let daemon =
+            Daemon.createWithWatcherFactory nullChecker tmpDir watchingDaemonOptions watcher.Factory
 
         let handler =
             { Name = PluginName.create "debounce-recorder"
@@ -575,28 +614,26 @@ let ``daemon debounces rapid file changes into one batch`` () =
         daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
-        receivedChanges <- []
 
         let fileA = Path.Combine(tmpDir, "src", "A.fs")
         let fileB = Path.Combine(tmpDir, "src", "B.fs")
         let fileC = Path.Combine(tmpDir, "src", "C.fs")
-        // Probe-loop: write all 3 files together each iteration so they're still
-        // rapid-fire for debounce purposes, but we retry if fseventsd batches them.
+
+        let oneBatchHoldsAll () =
+            receivedChanges
+            |> List.exists (fun c ->
+                match c with
+                | SourceChanged files -> List.forall (fun f -> List.contains f files) [ fileA; fileB; fileC ]
+                | _ -> false)
+
+        // Three changes inside one debounce window, as three separate notifications.
+        // Repeated only while `Run` has not yet subscribed the plugins.
         probeLoop
             (fun n ->
-                File.WriteAllText(fileA, $"module A // v{n}")
-                File.WriteAllText(fileB, $"module B // v{n}")
-                File.WriteAllText(fileC, $"module C // v{n}"))
-            (fun () ->
-                let allFiles =
-                    receivedChanges
-                    |> List.collect (fun c ->
-                        match c with
-                        | SourceChanged files -> files
-                        | _ -> [])
-
-                allFiles.Length >= 3)
+                for file in [ fileA; fileB; fileC ] do
+                    File.WriteAllText(file, $"module {Path.GetFileNameWithoutExtension file} // v{n}")
+                    watcher.Deliver(SourceChanged [ file ]))
+            oneBatchHoldsAll
             60000
 
         cts.Cancel()
@@ -616,7 +653,9 @@ let ``daemon debounces rapid file changes into one batch`` () =
         test <@ sourceChanges.Length >= 1 @>
 
         let allFiles = sourceChanges |> List.collect id
-        test <@ allFiles.Length >= 3 @>)
+        test <@ allFiles.Length >= 3 @>
+        test <@ oneBatchHoldsAll () @>
+        test <@ watcher.Constructed = 1 @>)
 
 [<Fact(Timeout = 150000)>]
 let ``daemon handles ProjectChanged events`` () =
@@ -624,7 +663,10 @@ let ``daemon handles ProjectChanged events`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
+        let watcher = InjectedWatcher()
+
+        let daemon =
+            Daemon.createWithWatcherFactory nullChecker tmpDir watchingDaemonOptions watcher.Factory
 
         let handler =
             { Name = PluginName.create "project-recorder"
@@ -647,13 +689,13 @@ let ``daemon handles ProjectChanged events`` () =
         daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
-        receivedChanges <- []
 
         let projFile = Path.Combine(tmpDir, "src", "Test.fsproj")
-        // Probe-loop: keep writing Test.fsproj until a ProjectChanged event fires.
+        // Delivered until a ProjectChanged reaches the plugin.
         probeLoop
-            (fun n -> File.WriteAllText(projFile, $"<Project Sdk=\"Microsoft.NET.Sdk\"><!-- v{n} --></Project>"))
+            (fun n ->
+                File.WriteAllText(projFile, $"<Project Sdk=\"Microsoft.NET.Sdk\"><!-- v{n} --></Project>")
+                watcher.Deliver(ProjectChanged [ projFile ]))
             (fun () ->
                 receivedChanges
                 |> List.exists (fun c ->
@@ -676,7 +718,8 @@ let ``daemon handles ProjectChanged events`` () =
                 | ProjectChanged _ -> true
                 | _ -> false)
 
-        test <@ projectChanges @>)
+        test <@ projectChanges @>
+        test <@ watcher.Constructed = 1 @>)
 
 [<Fact(Timeout = 150000)>]
 let ``daemon handles SolutionChanged events`` () =
@@ -684,7 +727,10 @@ let ``daemon handles SolutionChanged events`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir watchingDaemonOptions
+        let watcher = InjectedWatcher()
+
+        let daemon =
+            Daemon.createWithWatcherFactory nullChecker tmpDir watchingDaemonOptions watcher.Factory
 
         let handler =
             { Name = PluginName.create "solution-recorder"
@@ -707,13 +753,13 @@ let ``daemon handles SolutionChanged events`` () =
         daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
-        receivedChanges <- []
 
         let slnFile = Path.Combine(tmpDir, "Test.sln")
-        // Probe-loop: keep writing Test.sln until a SolutionChanged event fires.
+        // Delivered until a SolutionChanged reaches the plugin.
         probeLoop
-            (fun n -> File.WriteAllText(slnFile, $"Microsoft Visual Studio Solution File <!-- v{n} -->"))
+            (fun n ->
+                File.WriteAllText(slnFile, $"Microsoft Visual Studio Solution File <!-- v{n} -->")
+                watcher.Deliver SolutionChanged)
             (fun () ->
                 receivedChanges
                 |> List.exists (fun c ->
@@ -736,7 +782,8 @@ let ``daemon handles SolutionChanged events`` () =
                 | SolutionChanged -> true
                 | _ -> false)
 
-        test <@ solutionChanges @>)
+        test <@ solutionChanges @>
+        test <@ watcher.Constructed = 1 @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon Run completes when cancellation is immediate`` () =
