@@ -83,3 +83,33 @@ let ``a direct call is found`` (line: string) =
 [<InlineData("/// calls `GetProjectOptionsFromScript`, whose `assumeDotNetFramework` defaults to `true`")>]
 let ``a helper call or a mention is not a direct call`` (line: string) =
     test <@ not (callsScriptOptionsDirectly line) @>
+
+/// The guard above checks that fixtures use the helper; this checks that the helper is right.
+/// A fixture's "clean" file must check clean on a checker no other test has warmed: script
+/// options left to FCS's default assume the .NET Framework, and a check under them reports an
+/// error on even this one-liner, which only some full-suite orderings hide (AUTOMATION-1653).
+[<Fact(Timeout = 60000)>]
+let ``script options from the shared helper check a one-line module clean on a cold checker`` () =
+    withTempDir "core-script-options" (fun dir ->
+        let path = Path.Combine(dir, "Clean.fsx")
+        let source = "module Clean\nlet value = 1\n"
+        File.WriteAllText(path, source)
+        let checker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+        let text = FSharp.Compiler.Text.SourceText.ofString source
+
+        let options, _ =
+            scriptProjectOptions (checker, path, text) |> Async.RunSynchronously
+
+        let errors =
+            match
+                checker.ParseAndCheckFileInProject(path, 0, text, options)
+                |> Async.RunSynchronously
+            with
+            | _, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded check ->
+                check.Diagnostics
+                |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.map _.Message
+                |> List.ofArray
+            | _, FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted -> [ "the check was aborted" ]
+
+        test <@ List.isEmpty errors @>)
