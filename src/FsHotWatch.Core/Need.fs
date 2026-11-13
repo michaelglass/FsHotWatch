@@ -171,9 +171,6 @@ module NeedTrace =
     let needs (trace: NeedTrace) : Needed list =
         trace.Needs |> Map.toList |> List.map snd
 
-    /// Whether nothing was needed.
-    let isEmpty (trace: NeedTrace) : bool = Map.isEmpty trace.Needs
-
     /// The action's key: what it needed, as a key of kind `'Kind`.
     let key<'Kind when 'Kind :> IRecordKind> (trace: NeedTrace) : Result<ActionKey<'Kind>, KeyError> =
         trace |> needs |> List.map Needed.toKeyInput |> ActionKey.create<'Kind>

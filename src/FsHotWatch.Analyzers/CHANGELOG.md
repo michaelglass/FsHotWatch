@@ -14,6 +14,9 @@
   the canonical text, so the duplicate check let a key claim a file is there and is not. No producer builds one (a
   Need trace holds one answer per file); the canonical text of every accepted key is unchanged.
 
+- refactor: `NeedTrace.isEmpty` is gone from the bundled `FsHotWatch.Core` (AUTOMATION-1635). Nothing called it, and an
+  emptiness test invites a guard; `NeedTrace.needs` answers the same question where one is wanted.
+
 - feat: the analyzer action as a Need trace, in shadow (AUTOMATION-1636, the S1/S2 pilot of ADR-059 §35). New:
   `AnalyzeNeeds`. On every analysis the plugin computes today's task key and also the trace of the action written
   with `action { Need.* }`. The action needs its file, the upstream outputs (check signatures, project options,

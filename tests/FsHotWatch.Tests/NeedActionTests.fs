@@ -345,7 +345,6 @@ let ``an action that needs nothing has an empty trace`` () =
     let value, trace = run (worldOf [] [] []) (action { return 42 })
     test <@ value = 42 @>
     test <@ List.isEmpty (NeedTrace.needs trace) @>
-    test <@ NeedTrace.isEmpty trace @>
 
 [<Fact>]
 let ``return! runs an action inside another`` () =
