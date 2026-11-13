@@ -1794,6 +1794,37 @@ the producing checkout's absolute paths (a comparison to write, or a defect, bef
 `options-inputs` 1 of 1 differs in its directory listing. None of these kinds is in the nightly
 yet.
 
+**Second slice (AUTOMATION-1633): a comparison per kind.** The generic comparison flagged
+differences no recompute can remove, so each kind now compares what its action computed and
+nothing else.
+
+- **Every kind** compares its outputs with each producer's checkout root replaced by a token at a
+  whole path prefix (`PathToken.tokenize`, AUTOMATION-1602 (b)'s helper, which AUTOMATION-1664's
+  API-signature normalisation is to reuse too). A record filed in another checkout names
+  its files under that checkout's root; a sibling such as `<root>-old` is still a different file.
+- **`options-inputs`** compares `reads`, `probes`, `listings` and `envNames` as sets (`envNames`
+  case-insensitively): they are collected concurrently and written in hash order, so two evaluations
+  of one project file them in different orders. The one mismatch of the first audit was only that.
+  Every other field is compared exactly.
+- **`test`** compares the outcome and the counts, never the duration.
+- **`test-evidence`**, read from the evidence store beside the outcome store (`--clean-home` names
+  both), compares the project, the counts, and each test's name and status from the CTRF report.
+  Not deterministic, so not compared: the producer (checkout, run id, tree hash, time), the
+  duration, the report's id, timestamps and per-test durations, and the coverage report (its path
+  names the run; its hit counts follow scheduling).
+- Each comparator has a control: a planted real difference is flagged, a path-only difference (or
+  an order, case or duration difference where the kind allows it) is not.
+
+Measured 2026-11-13 on intelligence, every kind, the box-wide store only read: against the
+nightly-replay checkout's clean store (main `4f7bf60a`) `format` 2782/2782, `testprune-analysis`
+2842/2842 (1451 had differed by path alone), `options` 1/1 and `options-inputs` 1/1 agree; `check`
+4 mismatched of 1251, the API signatures AUTOMATION-1664 tracks. Against an isolated checkout's
+clean store (main `96fa3b4b`): `check` 3 of 1086 (the same three), `format` 2777/2777,
+`testprune-analysis` 2774/2774. `options` and `options-inputs` keys name the checkout's absolute
+paths, so only a recompute in the SAME checkout shares them (the nightly's does); `test` and
+`test-evidence` shared no key in either run, because no other checkout had earned evidence for
+those trees. They need a night whose warm pass files it before they can count.
+
 ## 36. Amendment (AUTOMATION-1585): an analysis is an `analyze` record, many keys per file
 
 §16 put the analyzers' task-cache entries in the box-wide store every checkout shares, but a

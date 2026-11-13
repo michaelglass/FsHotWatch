@@ -50,6 +50,13 @@
   (`ApiSignature.ofResult`, which replaces `ofCheck`) are computed from that set too, so a live check and its replay
   agree. Both signature functions now take the `FileCheckResult`.
 
+- feat: the clean-recompute audit compares every record kind with a comparison of its own (AUTOMATION-1633). Outputs
+  are compared with each producer's checkout root as a token (`PathToken.tokenize`, the AUTOMATION-1602 (b) rule), so a record filed in another
+  checkout is not a difference. `options-inputs` compares its read, probe, listing and environment-name sets as sets;
+  `test` its outcome and counts, not its duration; `test-evidence`, read from the evidence store beside the outcome
+  store, its project, counts and each test's name and status, not its producer, durations, report id or coverage.
+  `AuditKind.all` lists every kind a clean recompute files.
+
 - feat: `RecordAudit`, the clean-recompute audit (ADR-059 §35 Change 1a, AUTOMATION-1633): for every key a clean
   store and an audited store both hold, every stored record must equal the clean one (check records field by field:
   outcome, diagnostics as a multiset, FCS, used and API signatures; any other kind by outcome and outputs digest).

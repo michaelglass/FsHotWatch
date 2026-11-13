@@ -503,3 +503,368 @@ let ``a history mismatch is rendered as history`` () =
 
         let lines = RecordAudit.render (RecordAudit.audit audited.Root clean.Root everyKey)
         test <@ lines |> List.exists (fun l -> l.Contains "(history): apiSignature") @>)
+
+// --- per-kind comparators (AUTOMATION-1633, second slice) ---
+
+/// One key filed in both stores: `stored` by checkout `storedAt`, `clean` by `cleanAt`.
+let private pair
+    (dir: string)
+    (kind: string)
+    (stored: OutcomeStore.Record -> OutcomeStore.Record)
+    (storedOutputs: string option)
+    (clean: OutcomeStore.Record -> OutcomeStore.Record)
+    (cleanOutputs: string option)
+    =
+    let key = ActionKey.create kind [ "file", "a" ]
+    let audited = storeAt (Path.Combine(dir, "audited"))
+    let cleanStore = storeAt (Path.Combine(dir, "clean"))
+    let t0 = DateTimeOffset(2026, 11, 13, 0, 0, 0, TimeSpan.Zero)
+    let base' = recordAt key OutcomeStore.Outcome.Pass t0
+    audited.RecordWithOutputs(stored base', storedOutputs) |> ignore
+    cleanStore.RecordWithOutputs(clean base', cleanOutputs) |> ignore
+
+    RecordAudit.audit audited.Root cleanStore.Root { everyKey with Kinds = [ kind ] }
+    |> fun report -> report.Mismatches |> List.collect _.Fields, report.Verdict
+
+let private inCheckout (worktree: string) (record: OutcomeStore.Record) =
+    { record with
+        Producer =
+            { record.Producer with
+                Worktree = worktree } }
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``CONTROL testprune-analysis: a path-only difference agrees, a planted real one does not`` () =
+    let analysis (path: string) =
+        Some $"""{{"schema":"fshw-testprune-analysis-v1","symbols":[["%s{path}",26]]}}"""
+
+    withTempDir "audit-tp-path" (fun dir ->
+        let fields, verdict =
+            pair
+                dir
+                "testprune-analysis"
+                (inCheckout "/w/a")
+                (analysis "/w/a/tests/T.fs")
+                (inCheckout "/w/b")
+                (analysis "/w/b/tests/T.fs")
+
+        test <@ List.isEmpty fields && verdict = RecordAudit.Verdict.Agree @>)
+
+    withTempDir "audit-tp-real" (fun dir ->
+        let fields, _ =
+            pair
+                dir
+                "testprune-analysis"
+                (inCheckout "/w/a")
+                (analysis "/w/a/tests/T.fs")
+                (inCheckout "/w/b")
+                (analysis "/w/b/tests/U.fs")
+
+        test <@ fields = [ "outputs" ] @>)
+
+    // The shape test-prune files: the path inside a string that holds JSON, so the store
+    // escapes its quotes (\u0022) and only the decoded string shows the path's boundary.
+    let span (path: string) =
+        Some $"""{{"schema":"fshw-testprune-analysis-v1","spans":["[\"%s{path}\",26]"]}}"""
+
+    withTempDir "audit-tp-escaped" (fun dir ->
+        let fields, verdict =
+            pair dir "testprune-analysis" (inCheckout "/w/a") (span "/w/a/T.fs") (inCheckout "/w/b") (span "/w/b/T.fs")
+
+        test <@ List.isEmpty fields && verdict = RecordAudit.Verdict.Agree @>)
+
+    // A sibling of the root is a different file, not the root: never a token.
+    withTempDir "audit-tp-sibling" (fun dir ->
+        let fields, _ =
+            pair
+                dir
+                "testprune-analysis"
+                (inCheckout "/w/a")
+                (analysis "/w/a-old/T.fs")
+                (inCheckout "/w/b")
+                (analysis "/w/b-old/T.fs")
+
+        test <@ fields = [ "outputs" ] @>)
+
+let private optionsInputs (root: string) (reads: string list) (envNames: string list) =
+    let strings (xs: string list) =
+        xs |> List.map (sprintf "\"%s\"") |> String.concat ","
+
+    Some
+        $"""{{"schema":"s","optionsKey":"k","reads":[%s{strings reads}],"probes":[],"listings":[{{"directory":"%s{root}/src","kind":"files"}}],"envNames":[%s{strings envNames}]}}"""
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``CONTROL options-inputs: its sets in another order, case or checkout agree; a missing read does not`` () =
+    withTempDir "audit-oi-order" (fun dir ->
+        let fields, verdict =
+            pair
+                dir
+                "options-inputs"
+                (inCheckout "/w/a")
+                (optionsInputs "/w/a" [ "/w/a/x.fsproj"; "/w/a/Directory.Build.props" ] [ "NoWarn"; "Configuration" ])
+                (inCheckout "/w/b")
+                (optionsInputs "/w/b" [ "/w/b/Directory.Build.props"; "/w/b/x.fsproj" ] [ "configuration"; "NoWarn" ])
+
+        test <@ List.isEmpty fields && verdict = RecordAudit.Verdict.Agree @>)
+
+    withTempDir "audit-oi-real" (fun dir ->
+        let fields, _ =
+            pair
+                dir
+                "options-inputs"
+                (inCheckout "/w/a")
+                (optionsInputs "/w/a" [ "/w/a/x.fsproj"; "/w/a/Directory.Build.props" ] [ "NoWarn" ])
+                (inCheckout "/w/b")
+                (optionsInputs "/w/b" [ "/w/b/x.fsproj" ] [ "NoWarn" ])
+
+        test <@ fields = [ "reads" ] @>)
+
+    withTempDir "audit-oi-unreadable" (fun dir ->
+        let fields, _ =
+            pair dir "options-inputs" id (Some "[1]") id (optionsInputs "/w/b" [] [])
+
+        test <@ fields = [ "outputs-unreadable" ] @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``CONTROL test: a duration differs and agrees; the counts differ and do not`` () =
+    let counts passed : OutcomeStore.Counts option =
+        Some
+            { Total = 10
+              Passed = passed
+              Failed = 10 - passed
+              Skipped = 0 }
+
+    let run passed (ms: int64) (record: OutcomeStore.Record) =
+        { record with
+            Counts = counts passed
+            DurationMs = Some ms }
+
+    withTempDir "audit-test-duration" (fun dir ->
+        let fields, verdict = pair dir "test" (run 10 100L) None (run 10 900L) None
+        test <@ List.isEmpty fields && verdict = RecordAudit.Verdict.Agree @>)
+
+    withTempDir "audit-test-counts" (fun dir ->
+        let fields, _ = pair dir "test" (run 10 100L) None (run 9 100L) None
+        test <@ fields = [ "counts" ] @>)
+
+/// A test-evidence entry as `TestEvidenceStore` files it, under `root`.
+let private fileEvidence
+    (root: string)
+    (key: string)
+    (worktree: string)
+    (runId: string)
+    (passed: int)
+    (tests: (string * string) list)
+    =
+    let ctrfTests =
+        tests
+        |> List.map (fun (name, status) ->
+            $"""{{"name":"%s{name}","status":"%s{status}","duration":%d{name.Length * 7},"start":1,"stop":2}}""")
+        |> String.concat ","
+
+    let entry: TestEvidenceStore.Entry =
+        { Key = key
+          Project = "tests/T/T.fsproj"
+          KeyInputs = [ "toolchain", "sha256:t" ]
+          Producer =
+            { Worktree = worktree
+              RunId = runId
+              TreeHash = "sha256:" + runId
+              ProducerHash = "p"
+              EarnedAt = DateTimeOffset(2026, 11, 13, 0, 0, 0, TimeSpan.Zero) }
+          Summary =
+            { Tests = tests.Length
+              Passed = passed
+              Failed = 0
+              Skipped = tests.Length - passed
+              DurationMs = int64 (runId.Length * 1000) }
+          Report =
+            $"""{{"reportFormat":"CTRF","reportId":"%s{runId}","timestamp":"%s{runId}","results":{{"tests":[%s{ctrfTests}]}}}}"""
+          Coverage =
+            Some
+                { Path = $".fshw/test-runs/%s{runId}/T.coverage.cobertura.xml"
+                  Content = runId } }
+
+    let path = Path.Combine(root, key.Substring(0, 2), key + ".json")
+    Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+    File.WriteAllText(path, TestEvidenceStore.envelope entry)
+
+let private evidenceAudit (dir: string) (fileBoth: string -> string -> unit) =
+    let auditedEvidence = Path.Combine(dir, "audited-evidence")
+    let cleanEvidence = Path.Combine(dir, "clean-evidence")
+    fileBoth auditedEvidence cleanEvidence
+
+    RecordAudit.auditStores
+        { Audited = Path.Combine(dir, "audited")
+          Clean = Path.Combine(dir, "clean")
+          AuditedEvidence = Some auditedEvidence
+          CleanEvidence = Some cleanEvidence }
+        { everyKey with
+            Kinds = [ "test-evidence" ] }
+
+let private evidenceKey = String('e', 64)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``CONTROL test-evidence: another run's producer, durations, report id and coverage agree; a test's status does not``
+    ()
+    =
+    let tests = [ "A.one", "passed"; "A.two", "passed" ]
+
+    withTempDir "audit-ev-run" (fun dir ->
+        let report =
+            evidenceAudit dir (fun audited clean ->
+                fileEvidence audited evidenceKey "/w/a" "run-1" 2 tests
+                fileEvidence clean evidenceKey "/w/b" "run-22" 2 (List.rev tests))
+
+        test <@ report.Kinds |> List.map (fun k -> k.Shared, k.Audited) = [ 1, 1 ] @>
+        test <@ report.Verdict = RecordAudit.Verdict.Agree @>)
+
+    withTempDir "audit-ev-status" (fun dir ->
+        let report =
+            evidenceAudit dir (fun audited clean ->
+                fileEvidence audited evidenceKey "/w/a" "run-1" 2 tests
+                fileEvidence clean evidenceKey "/w/b" "run-2" 1 [ "A.one", "passed"; "A.two", "skipped" ])
+
+        test <@ report.Mismatches |> List.collect _.Fields = [ "counts"; "tests" ] @>
+        test <@ report.Verdict = RecordAudit.Verdict.Mismatch @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``test evidence is vacuous without evidence stores, and its unreadable files are counted`` () =
+    withTempDir "audit-ev-none" (fun dir ->
+        let report =
+            RecordAudit.audit
+                (Path.Combine(dir, "a"))
+                (Path.Combine(dir, "c"))
+                { everyKey with
+                    Kinds = [ "test-evidence" ] }
+
+        test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>)
+
+    withTempDir "audit-ev-torn" (fun dir ->
+        let report =
+            evidenceAudit dir (fun audited clean ->
+                fileEvidence clean evidenceKey "/w/b" "run-2" 1 [ "A.one", "passed" ]
+                let torn = Path.Combine(audited, "ee", evidenceKey + ".json")
+                Directory.CreateDirectory(Path.GetDirectoryName torn) |> ignore
+                File.WriteAllText(torn, "{")
+                let cleanTorn = Path.Combine(clean, "ff", String('f', 64) + ".json")
+                Directory.CreateDirectory(Path.GetDirectoryName cleanTorn) |> ignore
+                File.WriteAllText(cleanTorn, "{")
+                // The project index is not an entry.
+                Directory.CreateDirectory(Path.Combine(clean, "projects")) |> ignore)
+
+        test <@ report.UnreadableClean = 1 && report.UnreadableAudited = 1 @>
+        test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a report with an unreadable CTRF report names it`` () =
+    withTempDir "audit-ev-report" (fun dir ->
+        let report =
+            evidenceAudit dir (fun audited clean ->
+                fileEvidence audited evidenceKey "/w/a" "run-1" 1 [ "A.one", "passed" ]
+                fileEvidence clean evidenceKey "/w/b" "run-2" 1 [ "A.one", "passed" ]
+                // Rewrite the clean entry's report as text no CTRF reader can parse.
+                let path = Path.Combine(clean, "ee", evidenceKey + ".json")
+
+                match TestEvidenceStore.decode (File.ReadAllText path) with
+                | TestEvidenceStore.Decoded.Entry entry ->
+                    File.WriteAllText(path, TestEvidenceStore.envelope { entry with Report = "{}" })
+                | _ -> failwith "the entry did not read back")
+
+        test <@ report.Mismatches |> List.collect _.Fields = [ "report-unreadable" ] @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a clean home names its evidence store, --store drops the box-wide one, and --kind all is every kind`` () =
+    let fromHome =
+        RecordAudit.resolve
+            "/repo"
+            { RecordAudit.Request.empty with
+                CleanHome = Some "/h"
+                Kinds = [ "all" ] }
+        |> Result.toOption
+        |> Option.get
+
+    test <@ fromHome.CleanEvidence = Some(RecordAudit.evidenceUnderCacheHome "/h" "/repo") @>
+    test <@ fromHome.AuditedEvidence = Some(TestEvidenceStore.directoryFor "/repo") @>
+    test <@ fromHome.Options.Kinds = RecordAudit.AuditKind.all @>
+
+    let named =
+        RecordAudit.resolve
+            "/repo"
+            { RecordAudit.Request.empty with
+                Clean = Some "/c"
+                Store = Some "/s" }
+        |> Result.toOption
+        |> Option.get
+
+    test <@ named.CleanEvidence = None && named.AuditedEvidence = None @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a CTRF report that is torn JSON has no results to compare`` () =
+    test <@ RecordAudit.AuditKind.ctrfResults "{" = None @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``test evidence names a different project, and evidence stores that do not exist compare nothing`` () =
+    let side (project: string) (worktree: string) =
+        let entry: TestEvidenceStore.Entry =
+            { Key = evidenceKey
+              Project = project
+              KeyInputs = []
+              Producer =
+                { Worktree = worktree
+                  RunId = "r"
+                  TreeHash = "t"
+                  ProducerHash = "p"
+                  EarnedAt = DateTimeOffset.UnixEpoch }
+              Summary =
+                { Tests = 0
+                  Passed = 0
+                  Failed = 0
+                  Skipped = 0
+                  DurationMs = 0L }
+              Report = """{"results":{"tests":[]}}"""
+              Coverage = None }
+
+        RecordAudit.evidenceSide entry |> Option.get
+
+    let fields =
+        RecordAudit.AuditKind.testEvidence.Differences (side "tests/A/A.fsproj" "/w/a") (side "tests/B/B.fsproj" "/w/b")
+
+    test <@ fields = [ "project" ] @>
+
+    withTempDir "audit-ev-absent" (fun dir ->
+        let report =
+            RecordAudit.auditStores
+                { Audited = Path.Combine(dir, "a")
+                  Clean = Path.Combine(dir, "c")
+                  AuditedEvidence = Some(Path.Combine(dir, "ae"))
+                  CleanEvidence = Some(Path.Combine(dir, "ce")) }
+                { everyKey with
+                    Kinds = [ "test-evidence" ] }
+
+        test <@ report.Kinds |> List.map _.CleanKeys = [ 0 ] @>
+        test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``outputs are tokenized in every string, keeping nulls, numbers and booleans, and text that is not JSON`` () =
+    let side (outputs: string) : RecordAudit.Side =
+        { Record =
+            OutcomeStore.Record.ofAction
+                (ActionKey.create "k" [ "f", "a" ])
+                "a"
+                OutcomeStore.Outcome.Pass
+                "b"
+                "/w/a"
+                DateTimeOffset.UnixEpoch
+          Outputs = Some outputs }
+
+    let normalized text =
+        RecordAudit.AuditKind.normalizedOutputs (side text)
+
+    test
+        <@
+            normalized """{"a":null,"b":[null,1,true,"/w/a/x.fs"],"c":{"d":"/w/a"}}""" = Some
+                """{"a":null,"b":[null,1,true,"${repo}/x.fs"],"c":{"d":"${repo}"}}"""
+        @>
+
+    test <@ normalized "null" = Some "null" @>
+    test <@ normalized "/w/a/x.fs {" = Some "${repo}/x.fs {" @>

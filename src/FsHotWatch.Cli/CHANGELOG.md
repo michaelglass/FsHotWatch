@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `fshw audit --kind all` audits every record kind, including the test-evidence store when the clean store is
+  named by `--clean-home` (AUTOMATION-1633). A path-only difference between two checkouts is no longer a mismatch.
+
 - feat: `fshw audit`, the clean-recompute audit of ADR-059 §35 (AUTOMATION-1633): `nix build --check` for the
   outcome store. It compares the records this repository's box-wide store holds with the records a from-scratch
   recompute filed (a check run with an empty `FSHW_CACHE_HOME`, named by `--clean-home <dir>` or `--clean <store>`)
