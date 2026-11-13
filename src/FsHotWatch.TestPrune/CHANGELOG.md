@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.113 - 2026-11-13
+
 - feat: `tests.projects[].runtimeSelection: "decide" | "shadow"` (AUTOMATION-1645). `"decide"`, the default, is
   today's behaviour. In `"shadow"`, runtime coverage is still collected for impact and what it selects is still computed,
   but it is split out (`splitRuntimeSelection`) into `VerificationDebt.ShadowRuntime` instead of the obligation ledger:

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.146 - 2026-11-13
+
 - feat: `.fshw.json` `coverage` may be an array of floor sets, and a set may name `projects`
   instead of `searchDir` / `reports`: each project's report as the full-suite run being judged
   kept it in its own run directory (AUTOMATION-1642). A project that is not a coverage-collecting

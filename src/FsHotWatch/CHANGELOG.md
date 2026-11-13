@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.113 - 2026-11-13
+
 - fix: a wait takes one reading of its clock per sample (AUTOMATION-1646). `waitForAllTerminal`'s loop read its clock
   three times a tick (the wedge sample, the deadline, the log cadence), so a clock moved between them was seen by the
   deadline and log reads but not by the wedge sample. Declared work outlasting the stall threshold could then be charged

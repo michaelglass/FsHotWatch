@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.35 - 2026-11-13
+
 - AUTOMATION-1642: a floor set can grade each test project's report from the run being
   judged (`CoverageReports.OfRun`, resolved by `reportsForRun` to
   `.fshw/test-runs/<runId>/<project>.coverage.cobertura.xml`), which no later run and no
