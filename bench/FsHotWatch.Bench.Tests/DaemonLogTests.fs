@@ -91,7 +91,7 @@ let ``test totals come from the LAST summary block of a run log`` () =
   succeeded: 8
   skipped: 0
 retrying
-Test run summary: Passed! - a.dll (net10.0|arm64)
+Test run summary: Passed! - a.dll (net11.0|arm64)
   total: 3767
   failed: 0
   succeeded: 3767

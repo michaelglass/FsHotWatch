@@ -55,7 +55,7 @@ type CopyPair =
         /// used to name a file in a message; every verdict is over the whole set.
         PrimaryOrigin: string
         /// The producer's other per-TFM outputs. Which framework MSBuild chose is not
-        /// knowable from the graph, and a net10.0 consumer takes a netstandard2.0
+        /// knowable from the graph, and a net11.0 consumer takes a netstandard2.0
         /// dependency's netstandard2.0 output quite happily.
         OtherOrigins: string list
         /// The file in the consumer's output directory a `--no-build` run would load.

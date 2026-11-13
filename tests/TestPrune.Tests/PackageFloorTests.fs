@@ -51,7 +51,7 @@ let private writePackage directory (id: string) (dependencies: (string * string)
         $"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata>
 <id>%s{id}</id><version>1.0.0</version>
-<dependencies><group targetFramework="net10.0">%s{dependencyXml}</group></dependencies>
+<dependencies><group targetFramework="net11.0">%s{dependencyXml}</group></dependencies>
 </metadata></package>"""
     )
 

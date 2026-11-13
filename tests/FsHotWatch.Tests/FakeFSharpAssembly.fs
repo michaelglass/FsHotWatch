@@ -64,7 +64,7 @@ type Spec =
 let spec (name: string) (root: string) =
     { Name = name
       Root = root
-      Sources = [ "src/A/A1.fs"; "src/A/A2.fs"; "src/A/obj/Debug/net10.0/A.AssemblyInfo.fs" ]
+      Sources = [ "src/A/A1.fs"; "src/A/A2.fs"; "src/A/obj/Debug/net11.0/A.AssemblyInfo.fs" ]
       Entities = [ "A1"; "v"; "A2"; "w" ]
       Methods = [ "v"; "w" ]
       Literal = ""
@@ -342,7 +342,7 @@ let build (spec: Spec) : byte[] =
         |> ignore
 
     let debug = DebugDirectoryBuilder()
-    let pdb = path $"src/A/obj/Debug/net10.0/%s{spec.Name}.pdb"
+    let pdb = path $"src/A/obj/Debug/net11.0/%s{spec.Name}.pdb"
     debug.AddCodeViewEntry(pdb, BlobContentId(Guid(SHA256.HashData(Encoding.UTF8.GetBytes pdb)[..15]), 0u), 0x0100us)
     debug.AddReproducibleEntry()
 

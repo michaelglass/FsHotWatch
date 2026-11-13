@@ -22,7 +22,7 @@ let repoRoot = RepoTasks.repoRoot ()
 /// Repository-relative location of the house-rules build output, as `.fshw.json`
 /// `analyzers.paths` names it.
 let rulesBinRel =
-    Path.Combine("analyzers", "FsHotWatch.Rules", "bin", "Debug", "net10.0")
+    Path.Combine("analyzers", "FsHotWatch.Rules", "bin", "Debug", "net11.0")
 
 let rulesProjectRel =
     Path.Combine("analyzers", "FsHotWatch.Rules", "FsHotWatch.Rules.fsproj")

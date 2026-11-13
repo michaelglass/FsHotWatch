@@ -376,7 +376,7 @@ let ``ofPaths semantic is checkout-independent while materialization follows the
 let ``the repository's own analyzer paths identify: house rules first-party, the NuGet shim by bytes`` () =
     // The same DLL set the loader inspects, from the same paths `.fshw.json` names.
     let dlls =
-        [ "tools/fsharplint-shim/bin/Debug/net10.0"; rulesBinRel ]
+        [ "tools/fsharplint-shim/bin/Debug/net11.0"; rulesBinRel ]
         |> List.collect (fun rel ->
             Directory.GetFiles(Path.Combine(repoRoot, rel), "*.dll")
             |> Array.filter (fun dll ->

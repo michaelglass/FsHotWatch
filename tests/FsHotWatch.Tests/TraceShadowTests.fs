@@ -573,7 +573,7 @@ let ``a project's fingerprint is predicted from its build output, with its own D
 
     try
         let projectDir = Path.Combine(root, "app")
-        let out = Path.Combine(projectDir, "bin", "Debug", "net10.0")
+        let out = Path.Combine(projectDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory out |> ignore
         File.WriteAllText(Path.Combine(out, "App.dll"), "")
         File.WriteAllText(Path.Combine(out, "App.deps.json"), "{}")

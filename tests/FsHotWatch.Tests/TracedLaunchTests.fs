@@ -48,7 +48,7 @@ let ``configuration and framework options are consumed with their values`` () =
         <@
             TracedLaunch.appArgs
                 "dotnet"
-                "run -c Debug -f net10.0 -p tests/X --no-restore --no-build --configuration Debug --framework net10.0"
+                "run -c Debug -f net11.0 -p tests/X --no-restore --no-build --configuration Debug --framework net11.0"
                 [] = Ok []
         @>
 
@@ -90,11 +90,11 @@ let ``the apphost is the assembly name under bin/Traced/<tfm>`` () =
 
     test
         <@
-            TracedLaunch.apphostPath false root "net10.0" "X.Tests" = Path.Combine(
+            TracedLaunch.apphostPath false root "net11.0" "X.Tests" = Path.Combine(
                 root,
                 "bin",
                 "Traced",
-                "net10.0",
+                "net11.0",
                 "X.Tests"
             )
         @>
@@ -105,11 +105,11 @@ let ``on Windows the apphost carries .exe`` () =
 
     test
         <@
-            TracedLaunch.apphostPath true root "net10.0" "X.Tests" = Path.Combine(
+            TracedLaunch.apphostPath true root "net11.0" "X.Tests" = Path.Combine(
                 root,
                 "bin",
                 "Traced",
-                "net10.0",
+                "net11.0",
                 "X.Tests.exe"
             )
         @>
@@ -202,7 +202,7 @@ let ``other variables are read as is, and an unset one is None`` () =
 let ``the spec launches the apphost with the app arguments and DOTNET_ROOT`` () =
     let spec =
         TracedLaunch.spec
-            "/r/tests/X/bin/Traced/net10.0/X"
+            "/r/tests/X/bin/Traced/net11.0/X"
             "/usr/share/dotnet"
             "dotnet"
             "run --project tests/X --no-build"
@@ -212,7 +212,7 @@ let ``the spec launches the apphost with the app arguments and DOTNET_ROOT`` () 
     test
         <@
             spec = Ok
-                { Command = "/r/tests/X/bin/Traced/net10.0/X"
+                { Command = "/r/tests/X/bin/Traced/net11.0/X"
                   Args = [ "--filter-class"; "A" ]
                   Environment = [ "APP_ENV", "test"; "DOTNET_ROOT", "/usr/share/dotnet" ] }
         @>

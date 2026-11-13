@@ -37,7 +37,7 @@ let private scaffold (root: string) =
         root
         "src/L/L.fsproj"
         """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Lib.fs" /></ItemGroup>
 </Project>"""
 
@@ -48,7 +48,7 @@ let private scaffold (root: string) =
         "tests/T/T.fsproj"
         """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>

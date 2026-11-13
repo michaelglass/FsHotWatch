@@ -4492,7 +4492,7 @@ let ``the stale-output message names EVERY affected project, untruncated`` () =
     let deferrals =
         [ for i in 1..6 ->
               $"Intelligence.Build.Dev.Tests.Number%d{i}: waiting on build — stale build output — \
-                /repo/src/Intelligence.Build.Ops/bin/Debug/net10.0/Intelligence.Build.Ops.dll has not been copied \
+                /repo/src/Intelligence.Build.Ops/bin/Debug/net11.0/Intelligence.Build.Ops.dll has not been copied \
                 into the test output since it changed. Remedy: run `dotnet build`" ]
 
     let message = Verdict.CheckProse.staleBuildOutput deferrals

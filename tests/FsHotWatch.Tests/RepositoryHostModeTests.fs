@@ -549,7 +549,7 @@ let private withRepository (body: string -> string -> unit) =
 
         File.WriteAllText(
             Path.Combine(lib, "Lib.fsproj"),
-            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include="Lib.fs" /></ItemGroup></Project>"""
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include="Lib.fs" /></ItemGroup></Project>"""
         )
 
         File.WriteAllText(Path.Combine(lib, "Lib.fs"), "module Lib\nlet answer = 42\n")

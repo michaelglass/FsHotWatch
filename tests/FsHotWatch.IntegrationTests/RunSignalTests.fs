@@ -68,7 +68,7 @@ let private cliAssembly () =
     let root = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
 
     let assembly =
-        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net10.0", "FsHotWatch.Cli.dll")
+        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net11.0", "FsHotWatch.Cli.dll")
 
     Assert.True(File.Exists assembly, $"build the real CLI before running this integration test: %s{assembly}")
     assembly
@@ -194,7 +194,7 @@ let ``SIGTERM to a daemon reaps its spawned test host and logs the shutdown`` ()
         File.WriteAllText(
             Path.Combine(project, "Probe.fsproj"),
             """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Probe.fs" /></ItemGroup>
 </Project>
 """
@@ -208,7 +208,7 @@ let ``SIGTERM to a daemon reaps its spawned test host and logs the shutdown`` ()
         // and never finishes on its own inside the test's budget.
         File.WriteAllText(
             Path.Combine(root, "build.sh"),
-            "#!/bin/sh\nmkdir -p tests/Probe/bin/Debug/net10.0 && touch tests/Probe/bin/Debug/net10.0/Probe.dll\n"
+            "#!/bin/sh\nmkdir -p tests/Probe/bin/Debug/net11.0 && touch tests/Probe/bin/Debug/net11.0/Probe.dll\n"
         )
 
         File.WriteAllText(
@@ -346,7 +346,7 @@ let ``SIGTERM to a repository host reaps every session's test host and logs the 
         File.WriteAllText(
             Path.Combine(project, "Probe.fsproj"),
             """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Probe.fs" /></ItemGroup>
 </Project>
 """
@@ -359,7 +359,7 @@ let ``SIGTERM to a repository host reaps every session's test host and logs the 
         // worktree's host announces its pids in that worktree.
         File.WriteAllText(
             Path.Combine(main, "build.sh"),
-            "#!/bin/sh\nmkdir -p tests/Probe/bin/Debug/net10.0 && touch tests/Probe/bin/Debug/net10.0/Probe.dll\n"
+            "#!/bin/sh\nmkdir -p tests/Probe/bin/Debug/net11.0 && touch tests/Probe/bin/Debug/net11.0/Probe.dll\n"
         )
 
         File.WriteAllText(

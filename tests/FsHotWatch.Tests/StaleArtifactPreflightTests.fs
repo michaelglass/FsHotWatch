@@ -36,9 +36,9 @@ let private synth (root: string) : Synth =
     let sourcedAt = builtAt.AddMinutes(-10.0)
 
     let commonDir = Path.Combine(root, "Common")
-    let commonOut = Path.Combine(commonDir, "bin", "Debug", "net10.0")
+    let commonOut = Path.Combine(commonDir, "bin", "Debug", "net11.0")
     let testsDir = Path.Combine(root, "Tests")
-    let testsOut = Path.Combine(testsDir, "bin", "Debug", "net10.0")
+    let testsOut = Path.Combine(testsDir, "bin", "Debug", "net11.0")
 
     writeAt (Path.Combine(commonDir, "Common.fsproj")) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (Path.Combine(commonDir, "Common.fs")) "module Common" sourcedAt
@@ -76,7 +76,7 @@ let private invertCopy (s: Synth) =
 /// since `dotnet restore` writes `obj/project.assets.json` and never touches
 /// `bin/**/*.deps.json`.
 let private supersedeRestore (s: Synth) =
-    let testsOut = Path.Combine(s.Root, "Tests", "bin", "Debug", "net10.0")
+    let testsOut = Path.Combine(s.Root, "Tests", "bin", "Debug", "net11.0")
     writeAt (Path.Combine(testsOut, "Tests.deps.json")) "{}" s.BuiltAt
     writeAt (Path.Combine(s.Root, "Tests", "obj", "project.assets.json")) "{}" (s.BuiltAt.AddMinutes 30.0)
 
@@ -180,7 +180,7 @@ let ``a superseded restore refuses, names both files, and rules out the wrong fi
 let ``a manifest generated after its restore is not reported`` () =
     withTempDir "control" (fun tmpDir ->
         let s = synth tmpDir
-        let testsOut = Path.Combine(tmpDir, "Tests", "bin", "Debug", "net10.0")
+        let testsOut = Path.Combine(tmpDir, "Tests", "bin", "Debug", "net11.0")
         writeAt (Path.Combine(tmpDir, "Tests", "obj", "project.assets.json")) "{}" s.BuiltAt
         writeAt (Path.Combine(testsOut, "Tests.deps.json")) "{}" (s.BuiltAt.AddMinutes 1.0)
 
@@ -210,7 +210,7 @@ let ``every remedy names a command an fshw repository can actually run`` () =
           ArtifactFreshness.DepsManifestOlderThanRestore(
               "P",
               "/P/obj/project.assets.json",
-              "/P/bin/Debug/net10.0/P.deps.json",
+              "/P/bin/Debug/net11.0/P.deps.json",
               DateTime.UtcNow,
               DateTime.UtcNow
           )
@@ -273,7 +273,7 @@ let ``exactly one stale case is repairable`` () =
                 ArtifactFreshness.DepsManifestOlderThanRestore(
                     "P",
                     "/P/obj/project.assets.json",
-                    "/P/bin/Debug/net10.0/P.deps.json",
+                    "/P/bin/Debug/net11.0/P.deps.json",
                     DateTime.UtcNow,
                     DateTime.UtcNow
                 )
@@ -772,13 +772,13 @@ let private synthManyInverted (root: string) (count: int) =
     let builtAt = DateTime.UtcNow.AddHours(-1.0)
     let sourcedAt = builtAt.AddMinutes(-10.0)
     let testsDir = Path.Combine(root, "Tests")
-    let testsOut = Path.Combine(testsDir, "bin", "Debug", "net10.0")
+    let testsOut = Path.Combine(testsDir, "bin", "Debug", "net11.0")
     let libs = [ for i in 1..count -> $"Lib%02d{i}" ]
 
     let pairs =
         [ for lib in libs ->
               let libDir = Path.Combine(root, lib)
-              let origin = Path.Combine(libDir, "bin", "Debug", "net10.0", lib + ".dll")
+              let origin = Path.Combine(libDir, "bin", "Debug", "net11.0", lib + ".dll")
               let copy = Path.Combine(testsOut, lib + ".dll")
               writeAt (Path.Combine(libDir, lib + ".fsproj")) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
               writeAt (Path.Combine(libDir, lib + ".fs")) $"module %s{lib}" sourcedAt

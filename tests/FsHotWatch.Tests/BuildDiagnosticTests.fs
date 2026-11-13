@@ -46,8 +46,8 @@ let ``parseDllPaths extracts project-to-dll mapping from dotnet build output`` (
     let output =
         """
 Build succeeded.
-  FsHotWatch -> /repo/src/FsHotWatch/bin/Debug/net10.0/FsHotWatch.dll
-  FsHotWatch.Cli -> /repo/src/FsHotWatch.Cli/bin/Debug/net10.0/FsHotWatch.Cli.dll
+  FsHotWatch -> /repo/src/FsHotWatch/bin/Debug/net11.0/FsHotWatch.dll
+  FsHotWatch.Cli -> /repo/src/FsHotWatch.Cli/bin/Debug/net11.0/FsHotWatch.Cli.dll
     0 Warning(s)
     0 Error(s)
 """
@@ -55,7 +55,7 @@ Build succeeded.
     let result = parseDllPaths output
     test <@ result |> Map.containsKey "FsHotWatch" @>
     test <@ result |> Map.containsKey "FsHotWatch.Cli" @>
-    test <@ result.["FsHotWatch"] = "/repo/src/FsHotWatch/bin/Debug/net10.0/FsHotWatch.dll" @>
+    test <@ result.["FsHotWatch"] = "/repo/src/FsHotWatch/bin/Debug/net11.0/FsHotWatch.dll" @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseDllPaths ignores lines that contain 'error'`` () =

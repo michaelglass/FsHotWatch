@@ -19,7 +19,7 @@ open FsHotWatch.Tests.TestHelpers
 
 // ---------------------------------------------------------------------------
 // A two-project tree on disk: Lib (producer) ← App (consumer), each with a
-// `bin/Debug/net10.0` output dir, registered THE WAY THE DAEMON DOES —
+// `bin/Debug/net11.0` output dir, registered THE WAY THE DAEMON DOES —
 // `RegisterProject` with real `ReferencedProjects` plus `RegisterProjectOutput` with
 // MSBuild's `TargetPath`. Fixtures that register through
 // `RegisterFromFsproj`'s XML parse prove a gate works on a path no live daemon takes.
@@ -28,11 +28,11 @@ open FsHotWatch.Tests.TestHelpers
 type private TwoProjects =
     {
         Graph: ProjectGraph
-        /// `Lib/bin/Debug/net10.0/Lib.dll` — what the build produced.
+        /// `Lib/bin/Debug/net11.0/Lib.dll` — what the build produced.
         Origin: string
-        /// `App/bin/Debug/net10.0/Lib.dll` — the copy a run would load.
+        /// `App/bin/Debug/net11.0/Lib.dll` — the copy a run would load.
         Copy: string
-        /// `App/bin/Debug/net10.0/App.dll`.
+        /// `App/bin/Debug/net11.0/App.dll`.
         ConsumerDll: string
     }
 
@@ -44,11 +44,11 @@ let private withTwoProjects (label: string) (settled: bool) (body: TwoProjects -
     withTempDir label (fun tmpDir ->
         let mk name =
             let dir = Path.Combine(tmpDir, name)
-            let outDir = Path.Combine(dir, "bin", "Debug", "net10.0")
+            let outDir = Path.Combine(dir, "bin", "Debug", "net11.0")
             Directory.CreateDirectory(outDir) |> ignore
             let proj = Path.Combine(dir, name + ".fsproj")
             let src = Path.Combine(dir, "Lib.fs")
-            writeMinimalFsproj proj "net10.0" [ "Lib.fs" ]
+            writeMinimalFsproj proj "net11.0" [ "Lib.fs" ]
             File.WriteAllText(src, "let x = 1")
             proj, src, Path.Combine(outDir, name + ".dll")
 
@@ -224,7 +224,7 @@ let ``a byte-divergent copy at the same size and timestamp is NOT pending`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``verdict matches a copy against any origin, not only the primary one`` () =
-    // Which target framework MSBuild copied from is not knowable here — a net10.0
+    // Which target framework MSBuild copied from is not knowable here — a net11.0
     // consumer takes a netstandard2.0 dependency's netstandard2.0 output quite happily
     // — so matching ANY current output is current. Naming the primary is presentation.
     let hashes = dict [ "copy", "aaa"; "primary", "bbb"; "other", "aaa" ]
@@ -322,7 +322,7 @@ let ``dependencyCopies skips a producer whose recorded output directory does not
                     |> Path.GetDirectoryName
                     |> Path.GetDirectoryName
 
-                graph.RegisterProjectOutput(p, Path.Combine(libDir, "nowhere", "bin", "Debug", "net10.0", "Lib.dll"))
+                graph.RegisterProjectOutput(p, Path.Combine(libDir, "nowhere", "bin", "Debug", "net11.0", "Lib.dll"))
             | Some dll -> graph.RegisterProjectOutput(p, dll)
             | None -> ()
 
@@ -334,7 +334,7 @@ let ``dependencyCopies does not treat a shared output directory as a copy`` () =
     // copy of it. Comparing a file against itself is always "settled", but enumerating
     // it at all would put a self-referential pair in every diagnostic.
     withTempDir "copyfresh-shared-out" (fun tmpDir ->
-        let outDir = Path.Combine(tmpDir, "out", "net10.0")
+        let outDir = Path.Combine(tmpDir, "out", "net11.0")
         Directory.CreateDirectory(outDir) |> ignore
         let libDll = Path.Combine(outDir, "Lib.dll")
         let appDll = Path.Combine(outDir, "App.dll")
@@ -346,7 +346,7 @@ let ``dependencyCopies does not treat a shared output directory as a copy`` () =
             Directory.CreateDirectory(dir) |> ignore
             let proj = Path.Combine(dir, name + ".fsproj")
             let src = Path.Combine(dir, "Lib.fs")
-            writeMinimalFsproj proj "net10.0" [ "Lib.fs" ]
+            writeMinimalFsproj proj "net11.0" [ "Lib.fs" ]
             File.WriteAllText(src, "let x = 1")
             AbsProjectPath.create proj, AbsFilePath.create src
 
@@ -389,7 +389,7 @@ let ``dependencyCopies offers every target framework the producer built`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``dependencyCopies names an origin even when none was built for the consumer's framework`` () =
-    // A net10.0 consumer takes a netstandard2.0 dependency's netstandard2.0 output quite
+    // A net11.0 consumer takes a netstandard2.0 dependency's netstandard2.0 output quite
     // happily, so "nothing matches my TFM" is a normal tree, not a gap. The pair must
     // still be enumerated, with a named origin.
     withTwoProjects "copyfresh-no-tfm-match" true (fun t ->
@@ -427,11 +427,11 @@ let ``a diamond in the dependent graph yields each consumer once`` () =
     withTempDir "copyfresh-diamond" (fun tmpDir ->
         let mk name =
             let dir = Path.Combine(tmpDir, name)
-            let outDir = Path.Combine(dir, "bin", "Debug", "net10.0")
+            let outDir = Path.Combine(dir, "bin", "Debug", "net11.0")
             Directory.CreateDirectory(outDir) |> ignore
             let proj = Path.Combine(dir, name + ".fsproj")
             let src = Path.Combine(dir, "Lib.fs")
-            writeMinimalFsproj proj "net10.0" [ "Lib.fs" ]
+            writeMinimalFsproj proj "net11.0" [ "Lib.fs" ]
             File.WriteAllText(src, "let x = 1")
             let dll = Path.Combine(outDir, name + ".dll")
             File.WriteAllText(dll, name + "-bytes")

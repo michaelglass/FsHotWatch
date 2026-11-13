@@ -125,7 +125,7 @@ let ``deleting a scratch tree a daemon is evaluating in waits the evaluation out
 
     File.WriteAllText(
         Path.Combine(projectDir, "MyProj.fsproj"),
-        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n"
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>\n"
     )
 
     // The unreadable package graph a daemon test's probe writes leave behind.

@@ -39,9 +39,9 @@ let ``decideBuildOutcome success with warnings yields BuildPassed and parsed war
 // --- how many projects a passed build actually re-emitted ---
 
 let private threeProjectOutput =
-    [ "  Lib -> /repo/src/Lib/bin/Debug/net10.0/Lib.dll"
-      "  App -> /repo/src/App/bin/Debug/net10.0/App.dll"
-      "  Tests -> /repo/tests/Tests/bin/Debug/net10.0/Tests.dll" ]
+    [ "  Lib -> /repo/src/Lib/bin/Debug/net11.0/Lib.dll"
+      "  App -> /repo/src/App/bin/Debug/net11.0/App.dll"
+      "  Tests -> /repo/tests/Tests/bin/Debug/net11.0/Tests.dll" ]
     |> String.concat "\n"
 
 let private buildStarted = DateTime(2026, 9, 24, 1, 0, 0, DateTimeKind.Utc)
@@ -50,8 +50,8 @@ let private buildStarted = DateTime(2026, 9, 24, 1, 0, 0, DateTimeKind.Utc)
 let ``countRebuilt counts only the outputs written after the build started`` () =
     let writtenAt path =
         match path with
-        | "/repo/tests/Tests/bin/Debug/net10.0/Tests.dll" -> Some(buildStarted.AddSeconds 12.0)
-        | "/repo/src/Lib/bin/Debug/net10.0/Lib.dll" -> Some(buildStarted.AddMinutes -20.0)
+        | "/repo/tests/Tests/bin/Debug/net11.0/Tests.dll" -> Some(buildStarted.AddSeconds 12.0)
+        | "/repo/src/Lib/bin/Debug/net11.0/Lib.dll" -> Some(buildStarted.AddMinutes -20.0)
         | _ -> None
 
     test <@ countRebuilt writtenAt buildStarted threeProjectOutput = 1 @>
@@ -79,13 +79,13 @@ let ``withRebuiltCount measures a passed build and leaves failures alone`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``successful build is refused when an MSB3026 migration copy remains unresolved`` () =
-    let source = "/repo/src/Database/bin/Debug/net10.0/Acme.Database.Migrations.dll"
+    let source = "/repo/src/Database/bin/Debug/net11.0/Acme.Database.Migrations.dll"
 
     let destination =
-        "/repo/tests/Integration/bin/Debug/net10.0/Acme.Database.Migrations.dll"
+        "/repo/tests/Integration/bin/Debug/net11.0/Acme.Database.Migrations.dll"
 
     let output =
-        "/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"../../src/Database/bin/Debug/net10.0/Acme.Database.Migrations.dll\" to \"bin/Debug/net10.0/Acme.Database.Migrations.dll\". Beginning retry 1 in 1000ms. The process cannot access the file. [/repo/tests/Integration/Integration.fsproj]"
+        "/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"../../src/Database/bin/Debug/net11.0/Acme.Database.Migrations.dll\" to \"bin/Debug/net11.0/Acme.Database.Migrations.dll\". Beginning retry 1 in 1000ms. The process cannot access the file. [/repo/tests/Integration/Integration.fsproj]"
 
     let rawOutcome, entries = decideBuildOutcome true None output
 
@@ -115,8 +115,8 @@ let ``successful build is refused when an MSB3026 migration copy remains unresol
 
 [<Fact(Timeout = 15000)>]
 let ``MSB3026 retry that eventually copied matching dependency bytes remains successful`` () =
-    let source = "/repo/src/Lib/bin/Debug/net10.0/Dependency.dll"
-    let destination = "/repo/tests/Tests/bin/Debug/net10.0/Dependency.dll"
+    let source = "/repo/src/Lib/bin/Debug/net11.0/Dependency.dll"
+    let destination = "/repo/tests/Tests/bin/Debug/net11.0/Dependency.dll"
 
     let output =
         $"/sdk/Microsoft.Common.CurrentVersion.targets(5034,5): warning MSB3026: Could not copy \"%s{source}\" to \"%s{destination}\". Beginning retry 2 in 1000ms. The process cannot access the file."
@@ -2277,7 +2277,7 @@ let ``BuildInputsHasher includes project files in the merkle`` () =
 /// live daemon stayed green here for two releases).
 ///
 /// The compile items are what MSBuild really hands over: the authored `Lib.fs` AND the
-/// generated `obj/Debug/net10.0/MyLib.AssemblyInfo.fs` that every SDK project compiles.
+/// generated `obj/Debug/net11.0/MyLib.AssemblyInfo.fs` that every SDK project compiles.
 /// The caller controls all three mtimes as offsets from "now" — the generated one
 /// separately, because a design-time evaluation (project discovery) rewrites it without
 /// building anything, and treating that as an edit is what made the gate unpromotable.
@@ -2297,14 +2297,14 @@ let private runVerifyHarness
         let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
         let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
         let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
-        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net11.0")
         let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
-        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net10.0")
+        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net11.0")
         let generatedPath = System.IO.Path.Combine(objDir, "MyLib.AssemblyInfo.fs")
         System.IO.Directory.CreateDirectory(dllDir) |> ignore
         System.IO.Directory.CreateDirectory(objDir) |> ignore
 
-        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        writeMinimalFsproj projPath "net11.0" [ "Lib.fs" ]
         System.IO.File.WriteAllText(srcPath, "let x = 1")
         System.IO.File.WriteAllText(generatedPath, "// generated by MSBuild")
 
@@ -2612,11 +2612,11 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
         let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
         let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
         let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
-        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net11.0")
         let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
         System.IO.Directory.CreateDirectory(dllDir) |> ignore
 
-        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        writeMinimalFsproj projPath "net11.0" [ "Lib.fs" ]
         System.IO.File.WriteAllText(srcPath, "let x = 1")
         System.IO.File.WriteAllText(dllPath, "fake-dll")
         let now = DateTime.UtcNow
@@ -3305,7 +3305,7 @@ let ``dependency success preserves queued input while the build slot is held`` (
 // ---------------------------------------------------------------------------
 
 /// A one-project graph on disk: `MyLib.fsproj` + `Lib.fs` + the generated
-/// `obj/Debug/net10.0/MyLib.AssemblyInfo.fs` every SDK project compiles + a fake DLL.
+/// `obj/Debug/net11.0/MyLib.AssemblyInfo.fs` every SDK project compiles + a fake DLL.
 /// The DLL starts NEWER than both (i.e. fresh), so each test states its own staleness
 /// rather than inheriting it.
 ///
@@ -3318,14 +3318,14 @@ let private withOneProjectGraph (label: string) (body: ProjectGraph * string * s
         let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
         let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
         let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
-        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net11.0")
         let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
-        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net10.0")
+        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net11.0")
         let generatedPath = System.IO.Path.Combine(objDir, "MyLib.AssemblyInfo.fs")
         System.IO.Directory.CreateDirectory(dllDir) |> ignore
         System.IO.Directory.CreateDirectory(objDir) |> ignore
 
-        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        writeMinimalFsproj projPath "net11.0" [ "Lib.fs" ]
         System.IO.File.WriteAllText(srcPath, "let x = 1")
         System.IO.File.WriteAllText(generatedPath, "// generated by MSBuild")
         System.IO.File.WriteAllText(dllPath, "fake-dll")
@@ -3891,12 +3891,12 @@ let private withProducerConsumerGraph
 
         let mk name =
             let dir = System.IO.Path.Combine(tmpDir, name)
-            let outDir = System.IO.Path.Combine(dir, "bin", "Debug", "net10.0")
+            let outDir = System.IO.Path.Combine(dir, "bin", "Debug", "net11.0")
             System.IO.Directory.CreateDirectory(outDir) |> ignore
             let proj = System.IO.Path.Combine(dir, name + ".fsproj")
             let src = System.IO.Path.Combine(dir, "Lib.fs")
             let dll = System.IO.Path.Combine(outDir, name + ".dll")
-            writeMinimalFsproj proj "net10.0" [ "Lib.fs" ]
+            writeMinimalFsproj proj "net11.0" [ "Lib.fs" ]
             System.IO.File.WriteAllText(src, "let x = 1")
             System.IO.File.WriteAllText(dll, name + "-bytes-v2")
             System.IO.File.SetLastWriteTimeUtc(src, now - TimeSpan.FromMinutes 10.0)
@@ -4139,7 +4139,7 @@ let ``a passing build folded over a failed one retires the failure proof`` () =
 // ---------------------------------------------------------------------------
 
 /// One project `MyLib` with its output newer than its sources, and an
-/// `obj/Debug/net10.0/refint` + `ref` pair. `stale` leaves the published `ref` holding
+/// `obj/Debug/net11.0/refint` + `ref` pair. `stale` leaves the published `ref` holding
 /// other bytes than `refint` (same length, so no size difference does the work); otherwise
 /// it holds the same bytes at an OLDER timestamp — what an implementation-only change
 /// leaves, since the compiler rewrites `refint` and `CopyRefAssembly` skips the copy.
@@ -4152,9 +4152,9 @@ let private withRefAssemblyGraph
         let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
         let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
         let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
-        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net11.0")
         let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
-        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net10.0")
+        let objDir = System.IO.Path.Combine(projDir, "obj", "Debug", "net11.0")
         let intermediate = System.IO.Path.Combine(objDir, "refint", "MyLib.dll")
         let published = System.IO.Path.Combine(objDir, "ref", "MyLib.dll")
         System.IO.Directory.CreateDirectory(dllDir) |> ignore
@@ -4165,7 +4165,7 @@ let private withRefAssemblyGraph
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName published)
         |> ignore
 
-        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        writeMinimalFsproj projPath "net11.0" [ "Lib.fs" ]
         System.IO.File.WriteAllText(srcPath, "let x = 1")
         System.IO.File.WriteAllText(dllPath, "fake-dll")
         System.IO.File.WriteAllText(intermediate, "MyLib-ref-v2")
@@ -4284,8 +4284,8 @@ let private withRefAssemblyChain (label: string) (body: ProjectGraph * string * 
             let dir = System.IO.Path.Combine(tmpDir, name)
             let projPath = System.IO.Path.Combine(dir, name + ".fsproj")
             let srcPath = System.IO.Path.Combine(dir, "Lib.fs")
-            let dllPath = System.IO.Path.Combine(dir, "bin", "Debug", "net10.0", name + ".dll")
-            let objDir = System.IO.Path.Combine(dir, "obj", "Debug", "net10.0")
+            let dllPath = System.IO.Path.Combine(dir, "bin", "Debug", "net11.0", name + ".dll")
+            let objDir = System.IO.Path.Combine(dir, "obj", "Debug", "net11.0")
             let intermediate = System.IO.Path.Combine(objDir, "refint", name + ".dll")
             let published = System.IO.Path.Combine(objDir, "ref", name + ".dll")
 
@@ -4293,7 +4293,7 @@ let private withRefAssemblyChain (label: string) (body: ProjectGraph * string * 
                 System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName path)
                 |> ignore
 
-            writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+            writeMinimalFsproj projPath "net11.0" [ "Lib.fs" ]
             System.IO.File.WriteAllText(srcPath, $"module %s{name}")
             System.IO.File.WriteAllText(dllPath, "fake-dll")
             System.IO.File.WriteAllText(intermediate, "ref-v1")

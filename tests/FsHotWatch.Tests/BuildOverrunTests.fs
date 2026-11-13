@@ -228,9 +228,9 @@ let ``accountTeardown: a kill that throws still accounts for the tree`` () =
 [<Fact>]
 let ``lastFinishedProject is the last 'Name -> output' line`` () =
     let output =
-        "  Core -> /repo/src/Core/bin/Debug/net10.0/Core.dll\n\
+        "  Core -> /repo/src/Core/bin/Debug/net11.0/Core.dll\n\
          warning FS0064: whatever\n\
-         \x20 Lib -> /repo/src/Lib/bin/Debug/net10.0/Lib.dll\n"
+         \x20 Lib -> /repo/src/Lib/bin/Debug/net11.0/Lib.dll\n"
 
     test <@ lastFinishedProject output = Some "Lib" @>
 

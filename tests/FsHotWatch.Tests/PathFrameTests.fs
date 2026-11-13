@@ -22,7 +22,7 @@ let ``the roots map to each other`` () =
 [<Fact>]
 let ``paths outside the worktree pass through`` () =
     let sdk =
-        "/usr/local/share/dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0/ref/net10.0/System.Runtime.dll"
+        "/usr/local/share/dotnet/packs/Microsoft.NETCore.App.Ref/10.0.0/ref/net11.0/System.Runtime.dll"
 
     test <@ PathFrame.toVirtual frame sdk = sdk @>
     test <@ PathFrame.toReal frame sdk = sdk @>

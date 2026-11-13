@@ -305,12 +305,12 @@ let ``walk over a root that is a FILE is an absence, not a hole`` () =
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``subdirectories lists one level of a readable directory`` () =
     withTempDir "sw-subdirs" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "net10.0", "nested")) |> ignore
+        Directory.CreateDirectory(Path.Combine(tmpDir, "net11.0", "nested")) |> ignore
         Directory.CreateDirectory(Path.Combine(tmpDir, "net8.0")) |> ignore
         File.WriteAllText(Path.Combine(tmpDir, "not-a-dir"), "")
 
         match SafeWalk.subdirectories tmpDir with
-        | Ok dirs -> test <@ dirs |> Array.map Path.GetFileName |> Array.sort = [| "net10.0"; "net8.0" |] @>
+        | Ok dirs -> test <@ dirs |> Array.map Path.GetFileName |> Array.sort = [| "net11.0"; "net8.0" |] @>
         | Error hole -> failwithf "expected a listing, got %A" hole)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -323,7 +323,7 @@ let ``subdirectories of an UNREADABLE directory is a hole, never an empty listin
     if not (OperatingSystem.IsWindows()) then
         withTempDir "sw-subdirs-sealed" (fun tmpDir ->
             let bin = Path.Combine(tmpDir, "bin")
-            Directory.CreateDirectory(Path.Combine(bin, "net10.0")) |> ignore
+            Directory.CreateDirectory(Path.Combine(bin, "net11.0")) |> ignore
 
             whileSealed bin (fun () ->
                 match SafeWalk.subdirectories bin with
@@ -336,7 +336,7 @@ let ``subdirectories of an UNREACHABLE directory is a hole, never an empty listi
         withTempDir "sw-subdirs-unreachable" (fun tmpDir ->
             let project = Path.Combine(tmpDir, "Proj")
             let bin = Path.Combine(project, "bin")
-            Directory.CreateDirectory(Path.Combine(bin, "net10.0")) |> ignore
+            Directory.CreateDirectory(Path.Combine(bin, "net11.0")) |> ignore
 
             whileSealed project (fun () ->
                 match SafeWalk.subdirectories bin with
@@ -411,9 +411,9 @@ let ``isBuildOutput classifies obj and bin items under the project`` () =
     let projDir = Path.Combine("/repo", "src", "MyLib")
 
     test
-        <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "obj", "Debug", "net10.0", "MyLib.AssemblyInfo.fs")) @>
+        <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "obj", "Debug", "net11.0", "MyLib.AssemblyInfo.fs")) @>
 
-    test <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "bin", "Debug", "net10.0", "MyLib.dll")) @>
+    test <@ SafeWalk.isBuildOutput projDir (Path.Combine(projDir, "bin", "Debug", "net11.0", "MyLib.dll")) @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``isBuildOutput leaves authored sources alone, in the project or beside it`` () =

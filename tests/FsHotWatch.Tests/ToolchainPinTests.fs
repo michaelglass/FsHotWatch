@@ -18,8 +18,8 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Tests.RepoTasks
 
-let private fcsVersion = "43.12.402"
-let private fsharpCoreVersion = "10.1.402"
+let private fcsVersion = "43.13.101"
+let private fsharpCoreVersion = "11.0.101"
 
 let private pinnedPackages =
     Map [ "FSharp.Compiler.Service", fcsVersion; "FSharp.Core", fsharpCoreVersion ]

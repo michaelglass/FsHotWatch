@@ -66,7 +66,7 @@ let private defaultCli () =
     // The CLI built from this checkout, next to the harness's own tree.
     let here = AppContext.BaseDirectory
     let root = Path.GetFullPath(Path.Combine(here, "..", "..", "..", "..", ".."))
-    Path.Combine(root, "src", "FsHotWatch.Cli", "bin", "Debug", "net10.0", "FsHotWatch.Cli.dll")
+    Path.Combine(root, "src", "FsHotWatch.Cli", "bin", "Debug", "net11.0", "FsHotWatch.Cli.dll")
 
 [<EntryPoint>]
 let main argv =

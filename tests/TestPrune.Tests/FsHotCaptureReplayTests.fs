@@ -89,17 +89,17 @@ let private parseOptions captureRoot nugetPackages dotnetRoot path =
         Directory.EnumerateDirectories packRoot
         |> Seq.choose (fun directory ->
             match Version.TryParse(Path.GetFileName directory) with
-            | true, version when Directory.Exists(Path.Combine(directory, "ref", "net10.0")) ->
-                Some(version, Path.Combine(directory, "ref", "net10.0"))
+            | true, version when Directory.Exists(Path.Combine(directory, "ref", "net11.0")) ->
+                Some(version, Path.Combine(directory, "ref", "net11.0"))
             | _ -> None)
         |> Seq.sortByDescending fst
         |> Seq.tryHead
         |> Option.map snd
-        |> Option.defaultWith (fun () -> failwith $"No net10.0 reference pack found below %s{packRoot}")
+        |> Option.defaultWith (fun () -> failwith $"No net11.0 reference pack found below %s{packRoot}")
 
     let resolveOption (value: string) =
         let capturedRefPrefix =
-            "-r:${DOTNET_ROOT}/packs/Microsoft.NETCore.App.Ref/10.0.9/ref/net10.0/"
+            "-r:${DOTNET_ROOT}/packs/Microsoft.NETCore.App.Ref/10.0.9/ref/net11.0/"
 
         if value.StartsWith(capturedRefPrefix, StringComparison.Ordinal) then
             "-r:"

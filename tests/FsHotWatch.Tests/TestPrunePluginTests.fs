@@ -2542,7 +2542,7 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
 
         let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
         let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
-        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net11.0", "Ops.dll")
         let opsAssets = Path.Combine(tmpDir, "Ops", "obj", "project.assets.json")
         Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
@@ -2602,7 +2602,7 @@ let ``a rebuild of a referenced project whose package graph did not move does no
 
         let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
         let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
-        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net11.0", "Ops.dll")
         let opsAssets = Path.Combine(tmpDir, "Ops", "obj", "project.assets.json")
         Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
@@ -2651,7 +2651,7 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
 
         let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
         let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
-        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net11.0", "Ops.dll")
         Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
         File.WriteAllText(testProjFsproj, "<Project></Project>")
@@ -2837,7 +2837,7 @@ let ``parseFailedTests reads the coloured, cancelled and multi-unit-duration sha
           // No duration: not the runner's result line, so not a test (prose can open
           // with "failed" too).
           "failed A.B.g"
-          $"{esc}[31mTest run summary: Failed!{esc}[90m - {esc}[m/x/T.dll (net10.0|x64)"
+          $"{esc}[31mTest run summary: Failed!{esc}[90m - {esc}[m/x/T.dll (net11.0|x64)"
           $"{esc}[m  total: 5"
           $"{esc}[31m  failed: 5" ]
         |> String.concat "\n"
@@ -3169,7 +3169,7 @@ let ``failuresOf: a completed run nobody could name quotes the runner's summary,
 
 /// A full MTP summary for a run that printed "Passed!" and was then killed.
 let private passedThenKilledOutput =
-    "Discovering...\nTest run summary: Passed! - FsHotWatch.Tests.dll (net10.0|arm64)\n  total: 9301\n  failed: 0\n  succeeded: 9301"
+    "Discovering...\nTest run summary: Passed! - FsHotWatch.Tests.dll (net11.0|arm64)\n  total: 9301\n  failed: 0\n  succeeded: 9301"
 
 let private killedAt600s = TimeSpan.FromSeconds 600.0
 
@@ -3358,7 +3358,7 @@ let ``isZeroTestsUnderFilter true for filtered run whose output reports zero tes
         FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
             1,
             FsHotWatch.ProcessHelper.ProcessOutput.Drained
-                "...\nZero tests ran - Foo.Tests.dll (net10.0|arm64)\n  total: 0"
+                "...\nZero tests ran - Foo.Tests.dll (net11.0|arm64)\n  total: 0"
         )
 
     test <@ isZeroTestsUnderFilter true outcome @>

@@ -2438,7 +2438,7 @@ let private preflightSynth (root: string) : PreflightSynth =
     let sourcedAt = builtAt.AddMinutes(-10.0)
 
     let commonDir = Path.Combine(root, "Common")
-    let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
+    let commonOut = p [ commonDir; "bin"; "Debug"; "net11.0" ]
 
     writeAt (Path.Combine(commonDir, "Common.fsproj")) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (Path.Combine(commonDir, "Common.fs")) "module Common" sourcedAt
@@ -2446,7 +2446,7 @@ let private preflightSynth (root: string) : PreflightSynth =
 
     let mkTestProject (name: string) =
         let dir = Path.Combine(root, name)
-        let out = p [ dir; "bin"; "Debug"; "net10.0" ]
+        let out = p [ dir; "bin"; "Debug"; "net11.0" ]
 
         writeAt
             (Path.Combine(dir, $"{name}.fsproj"))

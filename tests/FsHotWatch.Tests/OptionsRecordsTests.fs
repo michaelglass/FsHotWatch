@@ -24,15 +24,15 @@ let private sampleOptions (projectFile: string) (assets: string) : Types.Project
 
     { ProjectId = Some "app-id"
       ProjectFileName = projectFile
-      TargetFramework = "net10.0"
+      TargetFramework = "net11.0"
       SourceFiles =
-        [ Path.Combine(dir, "obj", "Debug", "net10.0", "App.AssemblyInfo.fs")
+        [ Path.Combine(dir, "obj", "Debug", "net11.0", "App.AssemblyInfo.fs")
           Path.Combine(dir, "Lib.fs") ]
       OtherOptions = [ "--define:DEBUG"; "-r:/sdk/ref/System.Runtime.dll" ]
       ReferencedProjects =
         [ { RelativePath = "../Other/Other.fsproj"
             ProjectFileName = Path.Combine(dir, "..", "Other", "Other.fsproj")
-            TargetFramework = "net10.0" } ]
+            TargetFramework = "net11.0" } ]
       PackageReferences =
         [ { Name = "FSharp.Core"
             Version = "10.0.100"
@@ -45,7 +45,7 @@ let private sampleOptions (projectFile: string) (assets: string) : Types.Project
         { IsTestProject = false
           Configuration = "Debug"
           IsPackable = true
-          TargetFramework = "net10.0"
+          TargetFramework = "net11.0"
           TargetFrameworkIdentifier = ".NETCoreApp"
           TargetFrameworkVersion = "v10.0"
           MSBuildAllProjects = [ projectFile ]
@@ -53,7 +53,7 @@ let private sampleOptions (projectFile: string) (assets: string) : Types.Project
           ProjectAssetsFile = assets
           RestoreSuccess = true
           Configurations = [ "Debug"; "Release" ]
-          TargetFrameworks = [ "net10.0" ]
+          TargetFrameworks = [ "net11.0" ]
           RunArguments = Some "exec App.dll"
           RunCommand = Some "dotnet"
           IsPublishable = Some false }
@@ -146,7 +146,7 @@ let private treeAt (root: string) (body: Tree -> unit) =
     writeFile
         project
         """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Lib.fs" /></ItemGroup>
 </Project>
 """
@@ -156,7 +156,7 @@ let private treeAt (root: string) (body: Tree -> unit) =
     writeFile assets """{"version":3,"restore":1}"""
 
     writeFile
-        (Path.Combine(root, "src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        (Path.Combine(root, "src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs"))
         "module AssemblyInfo\n"
 
     let store =
@@ -341,7 +341,7 @@ let ``a restore that changes the assets is evaluated again`` () =
 let ``a generated compile item a clean removed is evaluated again, which regenerates it`` () =
     withTree (fun t ->
         let generated =
-            t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs")
+            t.Path("src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs")
 
         let loads, _ =
             restartAfter t (fun () -> File.Delete generated) (request t) sameEnvironment
@@ -518,7 +518,7 @@ let ``an input removed while the projects were evaluated is never filed with the
 /// nothing, which is what MSBuild's incremental targets do.
 let private firstDesignTimeBuild (t: Tree) () =
     let generated =
-        t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs")
+        t.Path("src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs")
 
     let bin = Path.Combine(t.ProjectDir, "bin", "Debug")
 
@@ -539,7 +539,7 @@ let ``an evaluation whose own design-time build wrote its inputs is filed from a
     ()
     =
     withTree (fun t ->
-        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs"))
 
         let cold, first =
             daemonLoader t (request t) sameEnvironment (firstDesignTimeBuild t) None
@@ -559,7 +559,7 @@ let ``an evaluation whose own design-time build wrote its inputs is filed from a
 [<Fact(Timeout = 120000)>]
 let ``the second evaluation starts after the racy window has passed the first one's writes`` () =
     withTree (fun t ->
-        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs"))
         // The tree was written just now: let the window pass it, so only the design-time
         // build's writes fall inside it.
         Threading.Thread.Sleep(TimeSpan.FromMilliseconds 600.0)
@@ -595,7 +595,7 @@ let ``the second evaluation starts after the racy window has passed the first on
 [<Fact(Timeout = 120000)>]
 let ``the second evaluation starts after the racy window has passed every write of the first one`` () =
     withTree (fun t ->
-        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs"))
         // In a directory no input of the first evaluation is judged by, so writing it moves none.
         let late = Path.Combine(t.ProjectDir, "obj", "late", "late.props")
         Directory.CreateDirectory(Path.GetDirectoryName late) |> ignore
@@ -650,7 +650,7 @@ let ``a project directory that changes on every evaluation is evaluated twice at
             untilFileClockReachesNow ()
 
             writeFile
-                (Path.Combine(t.ProjectDir, "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+                (Path.Combine(t.ProjectDir, "obj", "Debug", "net11.0", "App.AssemblyInfo.fs"))
                 $"// %d{n.Value}\n"
 
         let cold, first = daemonLoader t (request t) sameEnvironment churn None
@@ -685,7 +685,7 @@ let ``the first daemon in a checkout, which writes in the checkout root while it
     ()
     =
     withTree (fun t ->
-        File.Delete(t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+        File.Delete(t.Path("src", "App", "obj", "Debug", "net11.0", "App.AssemblyInfo.fs"))
 
         let firstDaemon () =
             firstDesignTimeBuild t ()

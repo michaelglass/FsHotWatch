@@ -10,7 +10,7 @@ open Swensen.Unquote
 // DisableImplicitFSharpCoreReference=true. A project that does not reference FSharp.Core
 // explicitly then restores with NO FSharp.Core at all: its design-time build hands FCS zero
 // FSharp.Core references (FCS silently substitutes its host's FSharp.Core, which for a
-// net10.0-hosted checker yields false errors on netstandard2.0 such as "The type 'string' is
+// net11.0-hosted checker yields false errors on netstandard2.0 such as "The type 'string' is
 // not defined"), and `dotnet pack` emits dependency groups with no FSharp.Core even though
 // the compiled assembly references it. Restore output is what both consumers read, so assert
 // on it rather than on the project file's text.
@@ -38,7 +38,7 @@ let private tryProperty (name: string) (element: JsonElement) =
 // Floors are deliberately LOW: a PackageReference version is a minimum, and this package is
 // meant to be referenced from any F# project without raising that project's FSharp.Core.
 [<InlineData("netstandard2.0", "6.0.7")>]
-[<InlineData("net10.0", "10.1.201")>]
+[<InlineData("net11.0", "10.1.201")>]
 let ``TestPrune.Attributes restores an explicit low FSharp.Core floor per target framework``
     (targetFramework: string, expectedVersion: string)
     =

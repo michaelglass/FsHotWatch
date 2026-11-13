@@ -357,19 +357,19 @@ let ``GetAllFiles returns empty after PrepareForRediscovery`` () =
 let ``extractTargetFramework returns single TargetFramework`` () =
     let doc =
         System.Xml.Linq.XDocument.Parse(
-            """<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+            """<Project><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>"""
         )
 
-    test <@ extractTargetFramework doc = Some "net10.0" @>
+    test <@ extractTargetFramework doc = Some "net11.0" @>
 
 [<Fact(Timeout = TestHelpers.SyncHangBackstopMs)>]
 let ``extractTargetFramework returns first entry of TargetFrameworks`` () =
     let doc =
         System.Xml.Linq.XDocument.Parse(
-            """<Project><PropertyGroup><TargetFrameworks>net10.0;net9.0</TargetFrameworks></PropertyGroup></Project>"""
+            """<Project><PropertyGroup><TargetFrameworks>net11.0;net9.0</TargetFrameworks></PropertyGroup></Project>"""
         )
 
-    test <@ extractTargetFramework doc = Some "net10.0" @>
+    test <@ extractTargetFramework doc = Some "net11.0" @>
 
 [<Fact(Timeout = TestHelpers.SyncHangBackstopMs)>]
 let ``extractTargetFramework returns None when neither tag present`` () =
@@ -388,12 +388,12 @@ let ``RegisterFromFsproj captures TargetFramework`` () =
 
         File.WriteAllText(
             fsproj,
-            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>"""
         )
 
         let graph = ProjectGraph()
         graph.RegisterFromFsproj(fsproj) |> ignore
-        test <@ graph.GetTargetFramework(AbsProjectPath.create fsproj) = Some "net10.0" @>
+        test <@ graph.GetTargetFramework(AbsProjectPath.create fsproj) = Some "net11.0" @>
     finally
         Directory.Delete(tmpDir, true)
 
@@ -412,7 +412,7 @@ let ``PrepareForRediscovery clears TargetFramework`` () =
 
         File.WriteAllText(
             fsproj,
-            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>"""
         )
 
         let graph = ProjectGraph()
@@ -453,9 +453,9 @@ let ``a recorded MSBuild output path is preferred over the inferred one`` () =
     // made both gates inert.
     test <@ graph.GetCanonicalDllPath proj = None @>
 
-    graph.RegisterProjectOutput(proj, "/repo/src/Thing/bin/Debug/net10.0/Thing.dll")
+    graph.RegisterProjectOutput(proj, "/repo/src/Thing/bin/Debug/net11.0/Thing.dll")
 
-    test <@ graph.GetCanonicalDllPath proj = Some "/repo/src/Thing/bin/Debug/net10.0/Thing.dll" @>
+    test <@ graph.GetCanonicalDllPath proj = Some "/repo/src/Thing/bin/Debug/net11.0/Thing.dll" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a custom AssemblyName is honoured, not inferred from the file name`` () =
@@ -465,7 +465,7 @@ let ``a custom AssemblyName is honoured, not inferred from the file name`` () =
     let proj = pp "/repo/analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj"
 
     let realOutput =
-        "/repo/analyzers/FsHotWatch.Rules/bin/Debug/net10.0/FsHotWatch.ConventionAnalyzers.dll"
+        "/repo/analyzers/FsHotWatch.Rules/bin/Debug/net11.0/FsHotWatch.ConventionAnalyzers.dll"
 
     graph.RegisterProject(proj, [ fp "/repo/analyzers/FsHotWatch.Rules/R.fs" ], [])
     graph.RegisterProjectOutput(proj, realOutput)
@@ -475,7 +475,7 @@ let ``a custom AssemblyName is honoured, not inferred from the file name`` () =
     test
         <@
             graph.GetCanonicalDllPath proj
-            <> Some "/repo/analyzers/FsHotWatch.Rules/bin/Debug/net10.0/FsHotWatch.Rules.dll"
+            <> Some "/repo/analyzers/FsHotWatch.Rules/bin/Debug/net11.0/FsHotWatch.Rules.dll"
         @>
 
 [<Fact(Timeout = 15000)>]
@@ -507,7 +507,7 @@ let ``without a recorded output the path is inferred from the TargetFramework`` 
 
         File.WriteAllText(
             fsproj,
-            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>"""
         )
 
         let graph = ProjectGraph()
@@ -516,7 +516,7 @@ let ``without a recorded output the path is inferred from the TargetFramework`` 
         test
             <@
                 graph.GetCanonicalDllPath(AbsProjectPath.create fsproj) = Some(
-                    Path.Combine(tmpDir, "bin", "Debug", "net10.0", "Foo.dll")
+                    Path.Combine(tmpDir, "bin", "Debug", "net11.0", "Foo.dll")
                 )
             @>
     finally
@@ -543,7 +543,7 @@ let ``without a recorded output the path is inferred from the TargetFramework`` 
 /// never `RegisterFromFsproj`.
 let private withGeneratedSourceProject (label: string) (body: ProjectGraph * string * string -> 'a) : 'a =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-%s{label}-{Guid.NewGuid():N}")
-    let objDir = Path.Combine(tmpDir, "obj", "Debug", "net10.0")
+    let objDir = Path.Combine(tmpDir, "obj", "Debug", "net11.0")
     Directory.CreateDirectory(objDir) |> ignore
 
     try
@@ -557,7 +557,7 @@ let private withGeneratedSourceProject (label: string) (body: ProjectGraph * str
         let graph = ProjectGraph()
 
         graph.RegisterProject(pp projPath, [ fp authored; fp generated ], [])
-        graph.RegisterProjectOutput(pp projPath, Path.Combine(tmpDir, "bin", "Debug", "net10.0", "MyLib.dll"))
+        graph.RegisterProjectOutput(pp projPath, Path.Combine(tmpDir, "bin", "Debug", "net11.0", "MyLib.dll"))
 
         body (graph, authored, generated)
     finally

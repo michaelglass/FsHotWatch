@@ -41,7 +41,7 @@ let private resolved (root: string) =
     | Error e -> failwith (IdentityError.describe e)
 
 let private project =
-    """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include="Lib.fs" /></ItemGroup></Project>"""
+    """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup><ItemGroup><Compile Include="Lib.fs" /></ItemGroup></Project>"""
 
 let private writeWorktree (root: string) =
     let lib = Path.Combine(root, "src", "Lib")

@@ -86,7 +86,7 @@ let ``a Release build of a shipped project names its pdb by a deterministic path
     // Named rather than discovered, so a target framework that stops building fails here
     // instead of leaving the assertions below with less to check.
     let assemblies =
-        [ "net10.0"; "netstandard2.0" ]
+        [ "net11.0"; "netstandard2.0" ]
         |> List.map (fun tfm -> Path.Combine(projectDir, "bin", "Release", tfm, "TestPrune.Attributes.dll"))
 
     // The exact form, so a change in how the root is mapped cannot drift past this test.

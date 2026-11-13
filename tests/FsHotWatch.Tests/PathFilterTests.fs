@@ -11,11 +11,11 @@ open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 15000)>]
 let ``isGeneratedPath returns true for obj directory`` () =
-    test <@ isGeneratedPath "/src/obj/Debug/net10.0/AssemblyInfo.fs" @>
+    test <@ isGeneratedPath "/src/obj/Debug/net11.0/AssemblyInfo.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isGeneratedPath returns true for bin directory`` () =
-    test <@ isGeneratedPath "/src/bin/Release/net10.0/Thing.fs" @>
+    test <@ isGeneratedPath "/src/bin/Release/net11.0/Thing.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isGeneratedPath returns false for normal source file`` () =
@@ -76,13 +76,13 @@ let ``isExcludedPath matches nested glob pattern`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath always excludes obj and bin`` () =
-    test <@ isExcludedPath "/repo" [] "/repo/src/obj/Debug/net10.0/Info.fs" @>
-    test <@ isExcludedPath "/repo" [] "/repo/src/bin/Release/net10.0/Thing.fs" @>
+    test <@ isExcludedPath "/repo" [] "/repo/src/obj/Debug/net11.0/Info.fs" @>
+    test <@ isExcludedPath "/repo" [] "/repo/src/bin/Release/net11.0/Thing.fs" @>
 
 [<Fact>]
 let ``isExcludedPath excludes obj and bin alongside patterns they do not match`` () =
-    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/obj/Debug/net10.0/Info.fs" @>
-    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/bin/Release/net10.0/Thing.fs" @>
+    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/obj/Debug/net11.0/Info.fs" @>
+    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/src/bin/Release/net11.0/Thing.fs" @>
 
 // --- isExcludedDirectory: a directory asked without a trailing `/` ---
 

@@ -61,7 +61,7 @@ let private run executable (arguments: string list) (environment: (string * stri
 let private toolProject =
     """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>fshwprobetool</ToolCommandName>

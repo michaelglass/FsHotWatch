@@ -517,9 +517,9 @@ let ``file inputs are stored repo-relative with their current state`` () =
     Directory.CreateDirectory(Path.Combine(data, "sub")) |> ignore
     File.WriteAllText(Path.Combine(data, "a.json"), "{}")
     File.WriteAllText(Path.Combine(data, "sub", "b.json"), "{}")
-    let traced = Path.Combine(w.Root, "bin", "Traced", "net10.0", "cfg.json")
+    let traced = Path.Combine(w.Root, "bin", "Traced", "net11.0", "cfg.json")
     Directory.CreateDirectory(Path.GetDirectoryName traced) |> ignore
-    let debug = Path.Combine(w.Root, "bin", "Debug", "net10.0", "cfg.json")
+    let debug = Path.Combine(w.Root, "bin", "Debug", "net11.0", "cfg.json")
     Directory.CreateDirectory(Path.GetDirectoryName debug) |> ignore
     File.WriteAllText(debug, "debug")
 
@@ -558,7 +558,7 @@ let ``file inputs are stored repo-relative with their current state`` () =
         <@
             (read store s "N.Tests" "t").Inputs = set
                 [ "read", "data/a.json", Fingerprint.hashFile w.Root "data/a.json"
-                  "read", "bin/Debug/net10.0/cfg.json", Fingerprint.hashFile w.Root "bin/Debug/net10.0/cfg.json"
+                  "read", "bin/Debug/net11.0/cfg.json", Fingerprint.hashFile w.Root "bin/Debug/net11.0/cfg.json"
                   "exists", "data/a.json", "present"
                   "exists", "data/sub", "present"
                   "exists", "data/gone.json", "absent"
@@ -675,7 +675,7 @@ let ``repoRelative maps under-root paths and the traced bin to the debug bin`` (
     test <@ repoRelative root (under [ "bin"; "Traced"; "x.json" ]) = Some "bin/Debug/x.json" @>
 
     test
-        <@ repoRelative root (under [ "p"; "bin"; "Traced"; "net10.0"; "x.json" ]) = Some "p/bin/Debug/net10.0/x.json" @>
+        <@ repoRelative root (under [ "p"; "bin"; "Traced"; "net11.0"; "x.json" ]) = Some "p/bin/Debug/net11.0/x.json" @>
 
     test <@ repoRelative root (root + "-sibling") = None @>
     test <@ repoRelative root root = None @>

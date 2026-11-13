@@ -75,7 +75,7 @@ let private cliAssembly () =
     let root = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
 
     let assembly =
-        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net10.0", "FsHotWatch.Cli.dll")
+        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net11.0", "FsHotWatch.Cli.dll")
 
     Assert.True(File.Exists assembly, $"build the real CLI before running this integration test: {assembly}")
     assembly
@@ -83,7 +83,7 @@ let private cliAssembly () =
 let project =
     """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
   </PropertyGroup>

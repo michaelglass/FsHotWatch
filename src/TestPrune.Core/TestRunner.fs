@@ -15,7 +15,7 @@ type TestResult =
 type ProcessRunner = string -> string -> TestResult
 
 /// Default target framework moniker — update when upgrading .NET SDK.
-let defaultTfm = "net10.0"
+let defaultTfm = "net11.0"
 
 /// Find the test DLL path for a given test project.
 let findTestDll (projectPath: string) : string =

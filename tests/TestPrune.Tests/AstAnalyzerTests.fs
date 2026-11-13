@@ -2322,7 +2322,7 @@ let beta : Beta = identity { B = 2 }
             |> Seq.map _.Symbol
             |> Seq.toList
 
-        let hasEdge fromName toName =
+        let hasEdge (fromName: string) (toName: string) =
             result.Dependencies
             |> List.exists (fun edge ->
                 edge.FromSymbol.EndsWith(fromName, StringComparison.Ordinal)

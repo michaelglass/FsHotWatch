@@ -13,7 +13,7 @@ open FsHotWatch.Tests.ColdCheckFixture
 let private library =
     """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="A.fs" />
@@ -46,7 +46,7 @@ let private build clock (root: string) =
         run clock root "dotnet" [ "build"; "Lib/Lib.fsproj"; "--disable-build-servers" ]
 
     Assert.True((code = 0), text)
-    Path.Combine(root, "Lib", "bin", "Debug", "net10.0", "Lib.dll")
+    Path.Combine(root, "Lib", "bin", "Debug", "net11.0", "Lib.dll")
 
 let private checkout (root: string) =
     Directory.CreateDirectory(Path.Combine(root, "Lib")) |> ignore
@@ -94,7 +94,7 @@ let ``one library built in two checkouts has one identity, and an edit to it ano
             Assert.True((code = 0), text)
 
             let info =
-                Path.Combine(long, "Lib", "obj", "Debug", "net10.0", "Lib.AssemblyInfo.fs")
+                Path.Combine(long, "Lib", "obj", "Debug", "net11.0", "Lib.AssemblyInfo.fs")
 
             Assert.Contains(sha, File.ReadAllText info)
             identity long longDll, OutputIdentity.generatedSource plain info

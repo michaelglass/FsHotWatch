@@ -20,7 +20,7 @@ let private cliAssembly () =
     let root = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
 
     let assembly =
-        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net10.0", "FsHotWatch.Cli.dll")
+        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net11.0", "FsHotWatch.Cli.dll")
 
     Assert.True(File.Exists assembly, $"build the real CLI before running this integration test: {assembly}")
     assembly
@@ -67,7 +67,7 @@ let private prepare (root: string) =
     File.WriteAllText(
         Path.Combine(src, "Stub.fsproj"),
         """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Lib.fs" /></ItemGroup>
 </Project>
 """

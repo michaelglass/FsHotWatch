@@ -1140,7 +1140,7 @@ let ``detectChanges: re-check of unchanged source with externs reports no change
 [<Fact(Timeout = 15000)>]
 let ``looksLikeApphostMissing detects the start-process launch failure`` () =
     let output =
-        "Unhandled exception: System.ComponentModel.Win32Exception (2): An error occurred trying to start process '/repo/tests/Unit/bin/Debug/net10.0/Unit' with working directory '/repo'. No such file or directory"
+        "Unhandled exception: System.ComponentModel.Win32Exception (2): An error occurred trying to start process '/repo/tests/Unit/bin/Debug/net11.0/Unit' with working directory '/repo'. No such file or directory"
 
     test <@ looksLikeApphostMissing output @>
 
@@ -1179,7 +1179,7 @@ let ``tryApphostPresent reports false when the bin dir is absent`` () =
 let ``tryApphostPresent reports false when bin exists but apphost is missing`` () =
     withTempDir "tp-apphost-struct-empty-bin" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         // The DLL landed; the apphost did not.
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
@@ -1189,7 +1189,7 @@ let ``tryApphostPresent reports false when bin exists but apphost is missing`` (
 let ``tryApphostPresent reports true when the apphost binary exists`` () =
     withTempDir "tp-apphost-struct-present" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         // The apphost is the extension-less sibling of the canonical DLL.
         File.WriteAllText(Path.Combine(tfmDir, "Unit"), "")
@@ -1199,7 +1199,7 @@ let ``tryApphostPresent reports true when the apphost binary exists`` () =
 let ``tryApphostPresent resolves an fsproj --project to its assembly name`` () =
     withTempDir "tp-apphost-struct-fsproj" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         let fsproj = Path.Combine(projDir, "MyTests.fsproj")
         File.WriteAllText(fsproj, "<Project/>")
@@ -1211,7 +1211,7 @@ let ``tryApphostPresent resolves an fsproj --project to its assembly name`` () =
 let ``tryApphostPresent finds a Windows .exe apphost`` () =
     withTempDir "tp-apphost-struct-exe" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         File.WriteAllText(Path.Combine(tfmDir, "Unit.exe"), "")
         test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
@@ -1225,8 +1225,8 @@ let ``tryApphostPresent cannot answer for an UNREADABLE bin, rather than throwin
         withTempDir "tp-apphost-struct-sealed-bin" (fun tmpDir ->
             let projDir = Path.Combine(tmpDir, "Unit")
             let binDebug = Path.Combine(projDir, "bin", "Debug")
-            Directory.CreateDirectory(Path.Combine(binDebug, "net10.0")) |> ignore
-            File.WriteAllText(Path.Combine(binDebug, "net10.0", "Unit"), "")
+            Directory.CreateDirectory(Path.Combine(binDebug, "net11.0")) |> ignore
+            File.WriteAllText(Path.Combine(binDebug, "net11.0", "Unit"), "")
             let args = $"run --project {projDir} --no-build --"
 
             // POSITIVE CONTROL: readable, the same bin resolves its TFM dir and the apphost.
@@ -1257,7 +1257,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
         // counter lives in a file under the working dir (repoRoot = tmpDir) to avoid
         // nested shell quoting through the F# arg string.
         let launchFailure =
-            "echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit' with working directory '/x'. No such file or directory\" 1>&2"
+            "echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net11.0/Unit' with working directory '/x'. No such file or directory\" 1>&2"
 
         let script =
             if transient then
@@ -1463,8 +1463,8 @@ let private synth (root: string) : Synth =
     let leafDir = p [ root; "Leaf" ]
     let commonDir = p [ root; "Common" ]
     let testsDir = p [ root; "Tests" ]
-    let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
-    let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
+    let commonOut = p [ commonDir; "bin"; "Debug"; "net11.0" ]
+    let testsOut = p [ testsDir; "bin"; "Debug"; "net11.0" ]
 
     writeAt (p [ leafDir; "Leaf.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (p [ leafDir; "Leaf.fs" ]) "module Leaf" sourcedAt
@@ -1522,7 +1522,7 @@ let ``freshness is None when no build output exists`` () =
 let ``freshness is None when there are no sources to be stale against`` () =
     withTempDir "tp-stale-nosrc" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
         test <@ staleOf $"run --project {projDir} --no-build --" tmpDir = None @>)
@@ -1531,7 +1531,7 @@ let ``freshness is None when there are no sources to be stale against`` () =
 let ``freshness is None when the DLL is newer than every source`` () =
     withTempDir "tp-stale-fresh" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         let src = Path.Combine(projDir, "Foo.fs")
         File.WriteAllText(src, "module Foo")
@@ -1546,7 +1546,7 @@ let ``freshness is None when the DLL is newer than every source`` () =
 let ``freshness is STALE when the project's own DLL predates its own source`` () =
     withTempDir "tp-stale-own" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
         let dll = Path.Combine(tfmDir, "Unit.dll")
         File.WriteAllText(dll, "")
@@ -1596,7 +1596,7 @@ let ``an edit OUTSIDE the test project's closure leaves it FRESH`` () =
 let ``a deps manifest older than its restore is STALE though every assembly is current`` () =
     withTempDir "tp-superseded" (fun tmpDir ->
         let projDir = p [ tmpDir; "Unit" ]
-        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net11.0" ]
         let expectedAssets = p [ projDir; "obj"; "project.assets.json" ]
         let expectedManifest = p [ tfmDir; "Unit.deps.json" ]
         let now = DateTime.UtcNow
@@ -1625,7 +1625,7 @@ let ``a deps manifest older than its restore is STALE though every assembly is c
 let ``a deps manifest at or after its restore is fresh`` () =
     withTempDir "tp-control" (fun tmpDir ->
         let projDir = p [ tmpDir; "Unit" ]
-        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net11.0" ]
         let assets = p [ projDir; "obj"; "project.assets.json" ]
         let manifest = p [ tfmDir; "Unit.deps.json" ]
         let now = DateTime.UtcNow
@@ -1654,7 +1654,7 @@ let ``a deps manifest at or after its restore is fresh`` () =
 let ``neither half of the pair missing is judged as stale`` () =
     withTempDir "tp-absent" (fun tmpDir ->
         let projDir = p [ tmpDir; "Unit" ]
-        let tfmDir = p [ projDir; "bin"; "Debug"; "net10.0" ]
+        let tfmDir = p [ projDir; "bin"; "Debug"; "net11.0" ]
         let assets = p [ projDir; "obj"; "project.assets.json" ]
         let manifest = p [ tfmDir; "Unit.deps.json" ]
         let now = DateTime.UtcNow
@@ -2044,19 +2044,19 @@ let ``a dependency assembly not yet copied into the test output is not reported 
 // the same wolf-cry through a different door: not the wrong project this
 // time, the wrong TARGET FRAMEWORK.
 //
-// A multi-targeted dependency (netstandard2.0/net8.0/net9.0/net10.0) consumed by a
-// net10.0 test project. MSBuild copies the net10.0 output, but the gate resolved the
+// A multi-targeted dependency (netstandard2.0/net8.0/net9.0/net11.0) consumed by a
+// net11.0 test project. MSBuild copies the net11.0 output, but the gate resolved the
 // ORIGIN to whichever TFM output was NEWEST — net8.0, built nine minutes later — so it
-// compared a net10.0 copy against a net8.0 origin, found it "older", and condemned it.
-// Every consumer's copy was byte-identical to net10.0's digest, and a plain `dotnet build`
-// could not answer the accusation because a correct rebuild re-copies net10.0 and it
+// compared a net11.0 copy against a net8.0 origin, found it "older", and condemned it.
+// Every consumer's copy was byte-identical to net11.0's digest, and a plain `dotnet build`
+// could not answer the accusation because a correct rebuild re-copies net11.0 and it
 // re-fires. 4 of 6 test projects refused to run.
 //
 // An mtime comparison ACROSS TFMs is meaningless by construction; these tests pin that it
 // is no longer expressible.
 // =============================================================================
 
-/// A dependency multi-targeting net8.0 and net10.0, consumed by a net10.0 test project.
+/// A dependency multi-targeting net8.0 and net11.0, consumed by a net11.0 test project.
 /// The two TFM outputs carry DIFFERENT BYTES (real per-TFM builds differ at minimum in
 /// `TargetFrameworkAttribute`) and DIFFERENT MTIMES, with net8.0 the NEWER: exactly the
 /// shape that makes "newest output dir wins" pick the framework nobody consumes.
@@ -2075,15 +2075,15 @@ let private multiTfmSynth (root: string) : MultiTfm =
     let depDir = p [ root; "Dep" ]
     let testsDir = p [ root; "Tests" ]
     let depNet8 = p [ depDir; "bin"; "Debug"; "net8.0" ]
-    let depNet10 = p [ depDir; "bin"; "Debug"; "net10.0" ]
-    let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
+    let depNet10 = p [ depDir; "bin"; "Debug"; "net11.0" ]
+    let testsOut = p [ testsDir; "bin"; "Debug"; "net11.0" ]
 
     writeAt (p [ depDir; "Dep.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
     writeAt (p [ depDir; "Dep.fs" ]) "module Dep" sourcedAt
 
-    // Different bytes, and net8.0 built nine minutes later than net10.0 — so net8.0 is the
+    // Different bytes, and net8.0 built nine minutes later than net11.0 — so net8.0 is the
     // newest, and a "newest wins" gate resolves the origin to it.
-    writeAt (p [ depNet10; "Dep.dll" ]) "net10.0 bits" builtAt
+    writeAt (p [ depNet10; "Dep.dll" ]) "net11.0 bits" builtAt
     writeAt (p [ depNet8; "Dep.dll" ]) "net8.0 bits" (builtAt.AddMinutes(9.0))
 
     writeAt
@@ -2094,9 +2094,9 @@ let private multiTfmSynth (root: string) : MultiTfm =
     writeAt (p [ testsDir; "Tests.fs" ]) "module Tests" sourcedAt
     writeAt (p [ testsOut; "Tests" ]) "" builtAt // apphost
     writeAt (p [ testsOut; "Tests.dll" ]) "" builtAt
-    // The copy: MSBuild took the net10.0 output — the TFM this consumer targets —
+    // The copy: MSBuild took the net11.0 output — the TFM this consumer targets —
     // preserving its mtime. It is perfect and current.
-    writeAt (p [ testsOut; "Dep.dll" ]) "net10.0 bits" builtAt
+    writeAt (p [ testsOut; "Dep.dll" ]) "net11.0 bits" builtAt
 
     { Root = root
       TestsDir = testsDir
@@ -2109,7 +2109,7 @@ let private multiTfmStale (m: MultiTfm) =
     let fsproj = Path.Combine(m.TestsDir, "Tests.fsproj")
     staleOf $"run --project {fsproj} --no-build --" m.Root
 
-// Nothing is stale: the copy is byte-identical to the net10.0 output it came from. A
+// Nothing is stale: the copy is byte-identical to the net11.0 output it came from. A
 // newest-mtime gate calls it nine minutes "older" than net8.0 and cries stale.
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a copy of a multi-TFM dependency is FRESH even when a SIBLING TFM is newer`` () =
@@ -2130,7 +2130,7 @@ let ``a copy whose bytes match NO output of its origin is STALE, even at an equa
 
         // Both TFM outputs carry new bytes; the copy was never refreshed and holds the old
         // bits. Every mtime is identical, so no mtime comparison can see it.
-        File.WriteAllText(m.DepNet10Dll, "net10.0 bits v2")
+        File.WriteAllText(m.DepNet10Dll, "net11.0 bits v2")
         File.WriteAllText(m.DepNet8Dll, "net8.0 bits v2")
         File.SetLastWriteTimeUtc(m.DepNet10Dll, m.BuiltAt)
         File.SetLastWriteTimeUtc(m.DepNet8Dll, m.BuiltAt)
@@ -2167,12 +2167,12 @@ let ``an UNREADABLE origin is REFUSED, not called stale`` () =
         let m = multiTfmSynth tmpDir
 
         // No readable candidate matches: net8.0 holds different bytes by construction, and
-        // net10.0 — the one it does match — cannot be read.
+        // net11.0 — the one it does match — cannot be read.
         use _lock =
             new FileStream(m.DepNet10Dll, FileMode.Open, FileAccess.Read, FileShare.None)
 
         match multiTfmStale m with
-        | Some(ArtifactFreshness.InputsUndeterminable(_, reason)) -> test <@ reason.Contains "net10.0" @>
+        | Some(ArtifactFreshness.InputsUndeterminable(_, reason)) -> test <@ reason.Contains "net11.0" @>
         | other -> Assert.Fail($"an unreadable ORIGIN must fail CLOSED, not read as stale, got %A{other}"))
 
 // A multi-targeted project is stale only when EVERY per-TFM output dir is: which TFM
@@ -2184,7 +2184,7 @@ let ``a multi-TFM project with one FRESH output dir is not stale`` () =
         let s = synth tmpDir
         let editedAt = s.BuiltAt.AddMinutes(30.0)
 
-        // net10.0's copy still holds the OLD bytes, so it is stale ...
+        // net11.0's copy still holds the OLD bytes, so it is stale ...
         File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
         File.SetLastWriteTimeUtc(s.CommonFixture, editedAt)
         test <@ (synthStale s).IsSome @>
@@ -2274,7 +2274,7 @@ let ``freshness ignores sources under .devenv and .direnv`` () =
 let ``a present-but-stale apphost defers as 'waiting on build' instead of passing on stale bits`` () =
     withTempDir "tp-stale-defer" (fun tmpDir ->
         let projDir = Path.Combine(tmpDir, "Unit")
-        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net11.0")
         Directory.CreateDirectory(tfmDir) |> ignore
 
         // Apphost and canonical DLL present, so the missing-apphost path does NOT fire ...

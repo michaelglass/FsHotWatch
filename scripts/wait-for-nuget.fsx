@@ -430,7 +430,7 @@ let writeProbeFiles config packageId version probeProject probeConfig =
     File.WriteAllText(
         probeProject,
         $"""<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><PackageReference Include="%s{escapedPackage}" Version="[%s{escapedVersion}]" /></ItemGroup>
 </Project>
 """

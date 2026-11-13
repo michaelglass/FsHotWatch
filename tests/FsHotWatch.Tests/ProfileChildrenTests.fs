@@ -20,7 +20,7 @@ let private row pid parent command : FsHotWatch.ProcessHelper.ProcessRow =
 [<Theory>]
 [<InlineData("/usr/bin/git status --porcelain", "git")>]
 [<InlineData("git", "git")>]
-[<InlineData("dotnet /r/bin/Debug/net10.0/testhost.dll --port 1", "testhost")>]
+[<InlineData("dotnet /r/bin/Debug/net11.0/testhost.dll --port 1", "testhost")>]
 [<InlineData("/nix/store/x-dotnet/bin/dotnet run --project T", "dotnet")>]
 [<InlineData("  sh -c \"sleep 7\"", "sh")>]
 [<InlineData("", "?")>]

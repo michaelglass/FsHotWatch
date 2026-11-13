@@ -318,9 +318,9 @@ let ``RegisterProject registers no obj or bin file, and keeps the project whole`
         dummyOptions
             "/tmp/MyProject.fsproj"
             [ "/tmp/src/Real.fs"
-              "/tmp/src/obj/Debug/net10.0/AssemblyInfo.fs"
-              "/tmp/src/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.fs"
-              "/tmp/src/bin/Release/net10.0/SomeThing.fs"
+              "/tmp/src/obj/Debug/net11.0/AssemblyInfo.fs"
+              "/tmp/src/obj/Debug/net11.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.fs"
+              "/tmp/src/bin/Release/net11.0/SomeThing.fs"
               "/tmp/src/Another.fs" ]
 
     pipeline.RegisterProject("/tmp/MyProject.fsproj", options)

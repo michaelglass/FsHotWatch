@@ -1332,13 +1332,13 @@ let ``parse still accepts leading-wildcard and literal patterns`` () =
 let private assetsJson (restoreExtra: string) (dependencyVersion: string) =
     $$"""{
   "version": 3,
-  "targets": { "net10.0": { "FSharp.Core/{{dependencyVersion}}": { "type": "package" } } },
+  "targets": { "net11.0": { "FSharp.Core/{{dependencyVersion}}": { "type": "package" } } },
   "libraries": { "FSharp.Core/{{dependencyVersion}}": { "type": "package", "path": "fsharp.core/{{dependencyVersion}}" } },
   "packageFolders": { "/home/u/.nuget/packages/": {} },
   "project": {
     "version": "1.0.0",
     "restore": { "projectName": "App", "projectStyle": "PackageReference"{{restoreExtra}} },
-    "frameworks": { "net10.0": { "dependencies": { "FSharp.Core": { "version": "[{{dependencyVersion}}, )" } } } }
+    "frameworks": { "net11.0": { "dependencies": { "FSharp.Core": { "version": "[{{dependencyVersion}}, )" } } } }
   }
 }"""
 

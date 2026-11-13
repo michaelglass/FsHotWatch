@@ -67,7 +67,7 @@ let private runPlain (daemon: FsHotWatch.Daemon.Daemon) =
 let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions =
     { ProjectId = None
       ProjectFileName = projectPath
-      TargetFramework = "net10.0"
+      TargetFramework = "net11.0"
       SourceFiles = []
       OtherOptions = []
       ReferencedProjects = []
@@ -80,7 +80,7 @@ let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions
         { IsTestProject = false
           Configuration = "Debug"
           IsPackable = false
-          TargetFramework = "net10.0"
+          TargetFramework = "net11.0"
           TargetFrameworkIdentifier = ".NETCoreApp"
           TargetFrameworkVersion = "v10.0"
           MSBuildAllProjects = []
@@ -88,7 +88,7 @@ let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions
           ProjectAssetsFile = ""
           RestoreSuccess = true
           Configurations = [ "Debug" ]
-          TargetFrameworks = [ "net10.0" ]
+          TargetFrameworks = [ "net11.0" ]
           RunArguments = None
           RunCommand = None
           IsPublishable = None }
@@ -602,7 +602,7 @@ let private withProjectOnlyRepo (name: string) (f: string -> 'a) : 'a =
             System.IO.Path.Combine(srcDir, "MyProject.fsproj"),
             """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
   </PropertyGroup>
 </Project>"""
         )
@@ -802,7 +802,7 @@ let ``run-once grades the one scan it ran: an unchecked file is Incomplete, with
             projectPath,
             """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>

@@ -1031,7 +1031,7 @@ let ``a different referenced project moves the key, though its bytes are the sam
 /// version attributes.
 let private withAssemblyInfo (tree: Tree) (informational: string) (version: string) =
     let info =
-        Path.Combine(tree.Root, "A", "obj", "Debug", "net10.0", "A.AssemblyInfo.fs")
+        Path.Combine(tree.Root, "A", "obj", "Debug", "net11.0", "A.AssemblyInfo.fs")
 
     Directory.CreateDirectory(Path.GetDirectoryName info) |> ignore
 

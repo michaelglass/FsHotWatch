@@ -165,16 +165,16 @@ let ``Unix backslash filename cannot collide with a directory separator`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``a directory named with a trailing separator has the same portable key as without`` () =
-    // `.fshw.json` analyzer paths are written `tools/x/bin/Debug/net10.0/`; the
+    // `.fshw.json` analyzer paths are written `tools/x/bin/Debug/net11.0/`; the
     // separator made the key fall back to the absolute path, so two checkouts never
     // agreed on the `analyzer-paths` slot.
     let root = Path.Combine(Path.GetTempPath(), "trailing") |> Path.GetFullPath
-    let bare = CachePathIdentity.keyOf (Some root) "tools/shim/bin/Debug/net10.0"
-    let trailing = CachePathIdentity.keyOf (Some root) "tools/shim/bin/Debug/net10.0/"
+    let bare = CachePathIdentity.keyOf (Some root) "tools/shim/bin/Debug/net11.0"
+    let trailing = CachePathIdentity.keyOf (Some root) "tools/shim/bin/Debug/net11.0/"
 
     let absoluteTrailing =
-        CachePathIdentity.keyOf (Some root) (Path.Combine(root, "tools/shim/bin/Debug/net10.0") + "/")
+        CachePathIdentity.keyOf (Some root) (Path.Combine(root, "tools/shim/bin/Debug/net11.0") + "/")
 
-    test <@ bare = "repo:tools/shim/bin/Debug/net10.0" @>
+    test <@ bare = "repo:tools/shim/bin/Debug/net11.0" @>
     test <@ trailing = bare @>
     test <@ absoluteTrailing = bare @>

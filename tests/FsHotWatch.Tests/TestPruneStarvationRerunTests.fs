@@ -187,8 +187,8 @@ let private builtRepo (root: string) : Built =
 
     let commonDir = p [ root; "Common" ]
     let testsDir = p [ root; "Tests" ]
-    let commonOut = p [ commonDir; "bin"; "Debug"; "net10.0" ]
-    let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
+    let commonOut = p [ commonDir; "bin"; "Debug"; "net11.0" ]
+    let testsOut = p [ testsDir; "bin"; "Debug"; "net11.0" ]
     let fsproj = p [ testsDir; "Tests.fsproj" ]
 
     writeAt (p [ commonDir; "Common.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt

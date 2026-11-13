@@ -98,7 +98,7 @@ type Outcome =
 let private loadedProject (projectPath: string) (sources: string list) (targetPath: string) : Types.ProjectOptions =
     { ProjectId = None
       ProjectFileName = projectPath
-      TargetFramework = "net10.0"
+      TargetFramework = "net11.0"
       SourceFiles = sources
       OtherOptions = []
       ReferencedProjects = []
@@ -111,7 +111,7 @@ let private loadedProject (projectPath: string) (sources: string list) (targetPa
         { IsTestProject = false
           Configuration = "Debug"
           IsPackable = false
-          TargetFramework = "net10.0"
+          TargetFramework = "net11.0"
           TargetFrameworkIdentifier = ".NETCoreApp"
           TargetFrameworkVersion = "v10.0"
           MSBuildAllProjects = []
@@ -119,7 +119,7 @@ let private loadedProject (projectPath: string) (sources: string list) (targetPa
           ProjectAssetsFile = ""
           RestoreSuccess = true
           Configurations = [ "Debug" ]
-          TargetFrameworks = [ "net10.0" ]
+          TargetFrameworks = [ "net11.0" ]
           RunArguments = None
           RunCommand = None
           IsPublishable = None }

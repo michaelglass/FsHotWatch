@@ -358,12 +358,12 @@ let private withRecorderPackage (deps: string) (version: string) =
     root.["libraries"].[DepsJson.RecorderName + "/" + version].["type"] <- Nodes.JsonValue.Create "package"
     root.ToJsonString()
 
-/// A scratch test project: FxTests' build output under `<scratch>/FxTests/bin/Debug/net10.0`.
+/// A scratch test project: FxTests' build output under `<scratch>/FxTests/bin/Debug/net11.0`.
 let scratchProject () =
     let projectDir =
         Path.Combine(Fixtures.fixtureRoot, "bin-scratch", Guid.NewGuid().ToString "N", "FxTests")
 
-    let debug = Path.Combine(projectDir, "bin", "Debug", "net10.0")
+    let debug = Path.Combine(projectDir, "bin", "Debug", "net11.0")
 
     for f in Directory.GetFiles(Fixtures.fxTestsDir, "*", SearchOption.AllDirectories) do
         let dst = Path.Combine(debug, Path.GetRelativePath(Fixtures.fxTestsDir, f))
@@ -387,7 +387,7 @@ let private prepared req =
     prepare req |> Result.defaultWith (fun e -> failwith (describeRefusal e))
 
 let private debugDir projectDir =
-    Path.Combine(projectDir, "bin", "Debug", "net10.0")
+    Path.Combine(projectDir, "bin", "Debug", "net11.0")
 
 /// Rewrite an assembly in place (a new file, so a new inode, as a rebuild makes).
 let private rebuild (dll: string) (edit: AssemblyDefinition -> unit) =
@@ -425,7 +425,7 @@ let ``prepare weaves the test project into bin/Traced and leaves bin/Debug untou
         let before = Directory.GetFiles(debug) |> Array.map (fun f -> f, sha f)
         let shadow = prepared (request projectDir)
 
-        test <@ shadow.Dir = Path.Combine(projectDir, "bin", "Traced", "net10.0") @>
+        test <@ shadow.Dir = Path.Combine(projectDir, "bin", "Traced", "net11.0") @>
         test <@ File.Exists shadow.Apphost && not shadow.Reused @>
         test <@ Directory.GetFiles(debug) |> Array.map (fun f -> f, sha f) = before @>
 
@@ -660,7 +660,7 @@ let ``prepare refuses what it cannot shadow`` () =
         Directory.Delete(other, true)
 
         File.Move(Path.Combine(debug, "FxTests"), Path.Combine(debug, "FxTests.bak"))
-        test <@ prepare req = Error(NoApphost(Path.Combine(projectDir, "bin", "Traced", "net10.0", "FxTests"))) @>
+        test <@ prepare req = Error(NoApphost(Path.Combine(projectDir, "bin", "Traced", "net11.0", "FxTests"))) @>
         File.Move(Path.Combine(debug, "FxTests.bak"), Path.Combine(debug, "FxTests"))
 
         let depsPath = Path.Combine(debug, "FxTests.deps.json")

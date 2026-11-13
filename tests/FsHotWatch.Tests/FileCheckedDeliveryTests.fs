@@ -34,14 +34,14 @@ type private FixedWorkspaceLoader(results: Types.ProjectOptions list) =
 let private loadedProject (projectPath: string) (sources: string list) (references: string list) =
     { ProjectId = None
       ProjectFileName = projectPath
-      TargetFramework = "net10.0"
+      TargetFramework = "net11.0"
       SourceFiles = sources
       OtherOptions = []
       ReferencedProjects =
         [ for reference in references ->
               { RelativePath = reference
                 ProjectFileName = reference
-                TargetFramework = "net10.0" }
+                TargetFramework = "net11.0" }
               : Types.ProjectReference ]
       PackageReferences = []
       LoadTime = DateTime.UtcNow
@@ -52,7 +52,7 @@ let private loadedProject (projectPath: string) (sources: string list) (referenc
         { IsTestProject = false
           Configuration = "Debug"
           IsPackable = false
-          TargetFramework = "net10.0"
+          TargetFramework = "net11.0"
           TargetFrameworkIdentifier = ".NETCoreApp"
           TargetFrameworkVersion = "v10.0"
           MSBuildAllProjects = []
@@ -60,7 +60,7 @@ let private loadedProject (projectPath: string) (sources: string list) (referenc
           ProjectAssetsFile = ""
           RestoreSuccess = true
           Configurations = [ "Debug" ]
-          TargetFrameworks = [ "net10.0" ]
+          TargetFrameworks = [ "net11.0" ]
           RunArguments = None
           RunCommand = None
           IsPublishable = None }

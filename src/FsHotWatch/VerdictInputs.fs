@@ -327,7 +327,7 @@ let internal globWalkPrefix (pattern: string) : string =
 /// POINTED AT it. `analyzers/Rules` means the project, not the project plus every
 /// artifact of every configuration ever built there — which would churn the tree
 /// hash on every rebuild and invalidate the verdict a run had just earned.
-/// `analyzers/Rules/bin/Debug/net10.0` still resolves to the assemblies in it,
+/// `analyzers/Rules/bin/Debug/net11.0` still resolves to the assemblies in it,
 /// because `SafeWalk` prunes by directory name during recursion and never prunes the
 /// root it was handed. One rule: you may point at build output, you may not sweep
 /// into it. A glob that would have to descend (`analyzers/**/*.dll`) matches nothing

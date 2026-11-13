@@ -87,7 +87,7 @@ let private configErrorText (register: unit -> unit) : string =
 let private withProjectRepo (prefix: string) (body: string -> unit) =
     withTempDir prefix (fun root ->
         Directory.CreateDirectory(Path.Combine(root, "src", "App")) |> ignore
-        writeMinimalFsproj (Path.Combine(root, "src", "App", "App.fsproj")) "net10.0" []
+        writeMinimalFsproj (Path.Combine(root, "src", "App", "App.fsproj")) "net11.0" []
         body root)
 
 // --- the classifier ---
@@ -96,14 +96,14 @@ let private withProjectRepo (prefix: string) (body: string -> unit) =
 let ``an absent directory classifies as Missing`` () =
     withTempDir "missing" (fun root ->
         test
-            <@ classify (Path.Combine(root, "analyzers", "bin", "Release", "net10.0")) = AnalyzerPathProblem.Missing @>)
+            <@ classify (Path.Combine(root, "analyzers", "bin", "Release", "net11.0")) = AnalyzerPathProblem.Missing @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an absent Release directory whose Debug twin exists classifies as built in the other configuration`` () =
     withTempDir "twin" (fun root ->
-        let debug = Path.Combine(root, "rules", "bin", "Debug", "net10.0")
+        let debug = Path.Combine(root, "rules", "bin", "Debug", "net11.0")
         Directory.CreateDirectory debug |> ignore
-        let release = Path.Combine(root, "rules", "bin", "Release", "net10.0")
+        let release = Path.Combine(root, "rules", "bin", "Release", "net11.0")
 
         test <@ classify release = AnalyzerPathProblem.BuiltInOtherConfiguration debug @>)
 
@@ -132,11 +132,11 @@ let ``a directory whose dlls are not analyzers classifies as NoAnalyzersInDlls w
 let ``the message names every unresolved path with its classification and carries no stack trace`` () =
     let message =
         render
-            [ { Path = "/repo/a/bin/Release/net10.0"
+            [ { Path = "/repo/a/bin/Release/net11.0"
                 Problem = AnalyzerPathProblem.Missing
                 BootstrapHint = None }
-              { Path = "/repo/b/bin/Release/net10.0"
-                Problem = AnalyzerPathProblem.BuiltInOtherConfiguration "/repo/b/bin/Debug/net10.0"
+              { Path = "/repo/b/bin/Release/net11.0"
+                Problem = AnalyzerPathProblem.BuiltInOtherConfiguration "/repo/b/bin/Debug/net11.0"
                 BootstrapHint = None }
               { Path = "/repo/c/bin"
                 Problem = AnalyzerPathProblem.Empty
@@ -153,9 +153,9 @@ let ``the message names every unresolved path with its classification and carrie
 
         lines[index + 1]
 
-    test <@ (classificationOf "/repo/a/bin/Release/net10.0").Contains("MISSING") @>
-    test <@ (classificationOf "/repo/b/bin/Release/net10.0").Contains("WRONG CONFIGURATION") @>
-    test <@ (classificationOf "/repo/b/bin/Release/net10.0").Contains("/repo/b/bin/Debug/net10.0") @>
+    test <@ (classificationOf "/repo/a/bin/Release/net11.0").Contains("MISSING") @>
+    test <@ (classificationOf "/repo/b/bin/Release/net11.0").Contains("WRONG CONFIGURATION") @>
+    test <@ (classificationOf "/repo/b/bin/Release/net11.0").Contains("/repo/b/bin/Debug/net11.0") @>
     test <@ (classificationOf "/repo/c/bin").Contains("EMPTY") @>
     test <@ (classificationOf "/repo/d/bin").Contains("NO ANALYZERS") @>
     test <@ (classificationOf "/repo/d/bin").Contains("3 .dll") @>
@@ -249,7 +249,7 @@ let ``parseConfig refuses a bootstrap hint for an unconfigured path or a non-str
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``daemon start with unbuilt analyzers exits 2 with the message and no unhandled exception`` () =
     withProjectRepo "start" (fun root ->
-        let config = analyzersConfig [ "analyzers/bin/Release/net10.0" ] []
+        let config = analyzersConfig [ "analyzers/bin/Release/net11.0" ] []
 
         let createDaemon (r: string) =
             Daemon.createWith (Unchecked.defaultof<_>) r oneShotDaemonOptions
@@ -261,7 +261,7 @@ let ``daemon start with unbuilt analyzers exits 2 with the message and no unhand
         // Positive control that fail-loud survives: the refusal is still exit 2.
         test <@ exitCode = 2 @>
         test <@ stderr.Contains("MISSING") @>
-        test <@ stderr.Contains(Path.Combine(root, "analyzers", "bin", "Release", "net10.0")) @>
+        test <@ stderr.Contains(Path.Combine(root, "analyzers", "bin", "Release", "net11.0")) @>
         assertNoStackTrace stderr
         // Recorded for the CLI that launched this detached daemon.
         test <@ (DaemonStartupFailure.tryRead root |> Option.defaultValue "").Contains("MISSING") @>

@@ -497,7 +497,7 @@ let private makeGeneratedTree (dir: string) =
     let checker = FsHotWatch.Daemon.Daemon.createChecker ()
     let rDir = Path.Combine(dir, "R")
     let dDir = Path.Combine(dir, "D")
-    let generated = Path.Combine(rDir, "obj", "Debug", "net10.0")
+    let generated = Path.Combine(rDir, "obj", "Debug", "net11.0")
     Directory.CreateDirectory generated |> ignore
     Directory.CreateDirectory dDir |> ignore
 

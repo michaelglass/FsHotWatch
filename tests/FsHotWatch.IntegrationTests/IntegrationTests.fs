@@ -161,7 +161,7 @@ let private buildAnalyzerProject (label: string) (dir: string) : string =
             $"%s{label} build failed (exit %d{proc.ExitCode}): dotnet %s{psi.Arguments} in %s{psi.WorkingDirectory}\n\
               --- stdout ---\n%s{stdout.Result}\n--- stderr ---\n%s{stderr.Result}"
 
-    Path.Combine(dir, "bin/Debug/net10.0")
+    Path.Combine(dir, "bin/Debug/net11.0")
 
 [<Fact(Timeout = 120000)>]
 let ``an in-test analyzer build that fails carries MSBuild's own error`` () =
@@ -831,7 +831,7 @@ let private wrappedLintConfig =
     """{ "typography": { "enabled": true, "config": { "maxCharactersOnLine": { "enabled": true, "maxCharacters": 20 } } } }"""
 
 let private fsharpLintShimPath () =
-    Path.Combine(findRepoRoot (), "tools/fsharplint-shim/bin/Debug/net10.0")
+    Path.Combine(findRepoRoot (), "tools/fsharplint-shim/bin/Debug/net11.0")
 
 /// Lint the planted file, with `configJson` as the fsharplint.json beside it, through the
 /// in-process LintPlugin and (when `withShim`) the analyzer shim on the same check.
@@ -2866,7 +2866,7 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
 
         File.WriteAllText(
             fsprojPath,
-            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n"
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup></Project>\n"
         )
 
         let assetsPath = Path.Combine(objDir, "project.assets.json")
@@ -3083,7 +3083,7 @@ let private scopedProjectXml (name: string) (comment: string) (references: strin
         |> String.concat ""
 
     sprintf
-        "<Project Sdk=\"Microsoft.NET.Sdk\">%s<PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"%s.fs\"/></ItemGroup>%s</Project>\n"
+        "<Project Sdk=\"Microsoft.NET.Sdk\">%s<PropertyGroup><TargetFramework>net11.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"%s.fs\"/></ItemGroup>%s</Project>\n"
         comment
         name
         (if refs = "" then
@@ -3279,7 +3279,7 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
         let fsprojNoPackage =
             """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
@@ -3291,7 +3291,7 @@ let ``daemon resolves a newly-added PackageReference and clears the stale FS0039
         let fsprojWithPackage =
             """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
@@ -3396,7 +3396,7 @@ let ``daemon stays responsive to status while mid auto-rebuild after a multi-fil
                 fileNames |> List.map (sprintf "<Compile Include=\"%s\"/>") |> String.concat ""
 
             sprintf
-                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- %s --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup>%s</ItemGroup></Project>\n"
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- %s --><PropertyGroup><TargetFramework>net11.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup>%s</ItemGroup></Project>\n"
                 comment
                 compiles
 

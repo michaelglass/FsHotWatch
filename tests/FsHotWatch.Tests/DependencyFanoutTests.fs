@@ -280,7 +280,7 @@ module ``fingerprint inputs`` =
 
         for d in
             [ Path.Combine(lib, "obj")
-              Path.Combine(lib, "bin", "Debug", "net10.0")
+              Path.Combine(lib, "bin", "Debug", "net11.0")
               Path.Combine(lib, "Resources")
               tests ] do
             Directory.CreateDirectory d |> ignore
@@ -291,7 +291,7 @@ module ``fingerprint inputs`` =
               LibFsproj = Path.Combine(lib, "Lib.fsproj")
               Source = Path.Combine(lib, "Code.fs")
               Assets = Path.Combine(lib, "obj", "project.assets.json")
-              Dll = Path.Combine(lib, "bin", "Debug", "net10.0", "Lib.dll")
+              Dll = Path.Combine(lib, "bin", "Debug", "net11.0", "Lib.dll")
               Resource = Path.Combine(lib, "Resources", "prompt.txt") }
 
         File.WriteAllText(l.TestFsproj, "<Project></Project>")

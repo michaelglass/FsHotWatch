@@ -28,7 +28,7 @@ let private library =
 
     $"""<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
 %s{compiles}
@@ -42,7 +42,7 @@ let private library =
 let private app =
     """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="App.fs" />
@@ -81,7 +81,7 @@ let private buildArgs = [ "build"; "App/App.fsproj"; "--disable-build-servers" ]
 let private build clock (root: string) = run clock root "dotnet" buildArgs
 
 let private refPair (root: string) =
-    let obj = Path.Combine(root, "Lib", "obj", "Debug", "net10.0")
+    let obj = Path.Combine(root, "Lib", "obj", "Debug", "net11.0")
     Path.Combine(obj, "refint", "Lib.dll"), Path.Combine(obj, "ref", "Lib.dll")
 
 [<Fact(Timeout = 900000)>]
@@ -126,8 +126,8 @@ let ``the build plugin repairs the stale reference assembly and the build passes
 
         graph.RegisterProject(lib, libSources, [])
         graph.RegisterProject(appProject, [ AbsFilePath.create (Path.Combine(root, "App", "App.fs")) ], [ lib ])
-        graph.RegisterProjectOutput(lib, Path.Combine(root, "Lib", "bin", "Debug", "net10.0", "Lib.dll"))
-        graph.RegisterProjectOutput(appProject, Path.Combine(root, "App", "bin", "Debug", "net10.0", "App.dll"))
+        graph.RegisterProjectOutput(lib, Path.Combine(root, "Lib", "bin", "Debug", "net11.0", "Lib.dll"))
+        graph.RegisterProjectOutput(appProject, Path.Combine(root, "App", "bin", "Debug", "net11.0", "App.dll"))
 
         let host = PluginHost.create (Unchecked.defaultof<_>) root
 

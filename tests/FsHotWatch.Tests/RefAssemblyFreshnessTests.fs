@@ -35,7 +35,7 @@ let private withPair (label: string) (subdir: string) (intermediate: string) (pu
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pairsOf finds refint beside ref under obj/<cfg>/<tfm>`` () =
-    withPair "ref-pairs" (Path.Combine("Debug", "net10.0")) "v2" (Some "v1") (fun (project, refint, ref) ->
+    withPair "ref-pairs" (Path.Combine("Debug", "net11.0")) "v2" (Some "v1") (fun (project, refint, ref) ->
         test
             <@
                 pairsOf project = [ { Project = "Lib"
@@ -45,12 +45,12 @@ let ``pairsOf finds refint beside ref under obj/<cfg>/<tfm>`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pairsOf finds a runtime-specific pair one level deeper`` () =
-    withPair "ref-pairs-rid" (Path.Combine("Debug", "net10.0", "osx-arm64")) "v2" (Some "v1") (fun (project, _, ref) ->
+    withPair "ref-pairs-rid" (Path.Combine("Debug", "net11.0", "osx-arm64")) "v2" (Some "v1") (fun (project, _, ref) ->
         test <@ pairsOf project |> List.map _.Published = [ ref ] @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``pairsOf skips an intermediate with no published copy, and a project with no obj`` () =
-    withPair "ref-pairs-none" (Path.Combine("Debug", "net10.0")) "v2" None (fun (project, _, _) ->
+    withPair "ref-pairs-none" (Path.Combine("Debug", "net11.0")) "v2" None (fun (project, _, _) ->
         test <@ List.isEmpty (pairsOf project) @>
         test <@ List.isEmpty (pairsOf (Path.Combine(Path.GetTempPath(), "nowhere", "Missing.fsproj"))) @>
         test <@ List.isEmpty (pairsOf "Bare.fsproj") @>)
@@ -58,24 +58,24 @@ let ``pairsOf skips an intermediate with no published copy, and a project with n
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a published copy holding other bytes is stale`` () =
     // Same length: the size is not what decides it.
-    withPair "ref-stale" (Path.Combine("Debug", "net10.0")) "Lib-v2" (Some "Lib-v1") (fun (project, _, _) ->
+    withPair "ref-stale" (Path.Combine("Debug", "net11.0")) "Lib-v2" (Some "Lib-v1") (fun (project, _, _) ->
         test <@ stalePairs [ project ] |> List.length = 1 @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a published copy with the intermediate's bytes at an older timestamp is fresh`` () =
     // What every implementation-only change leaves: `refint` rewritten, the copy skipped.
-    withPair "ref-fresh-older" (Path.Combine("Debug", "net10.0")) "Lib-v2" (Some "Lib-v2") (fun (project, _, _) ->
+    withPair "ref-fresh-older" (Path.Combine("Debug", "net11.0")) "Lib-v2" (Some "Lib-v2") (fun (project, _, _) ->
         test <@ List.isEmpty (stalePairs [ project ]) @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a published copy matching on size and timestamp is fresh without reading it`` () =
-    withPair "ref-fresh-stat" (Path.Combine("Debug", "net10.0")) "Lib-v2" (Some "Lib-v1") (fun (project, refint, ref) ->
+    withPair "ref-fresh-stat" (Path.Combine("Debug", "net11.0")) "Lib-v2" (Some "Lib-v1") (fun (project, refint, ref) ->
         File.SetLastWriteTimeUtc(ref, File.GetLastWriteTimeUtc refint)
         test <@ List.isEmpty (stalePairs [ project ]) @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a pair whose intermediate has gone is not stale`` () =
-    withPair "ref-gone" (Path.Combine("Debug", "net10.0")) "Lib-v2" (Some "Lib-v1") (fun (project, refint, ref) ->
+    withPair "ref-gone" (Path.Combine("Debug", "net11.0")) "Lib-v2" (Some "Lib-v1") (fun (project, refint, ref) ->
         File.Delete refint
 
         test
@@ -92,7 +92,7 @@ let ``a pair whose intermediate has gone is not stale`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repair copies the intermediate over the published copy, with its timestamp`` () =
-    withPair "ref-repair" (Path.Combine("Debug", "net10.0")) "Lib-v2" (Some "Lib-v1") (fun (project, refint, ref) ->
+    withPair "ref-repair" (Path.Combine("Debug", "net11.0")) "Lib-v2" (Some "Lib-v1") (fun (project, refint, ref) ->
         let stale = stalePairs [ project ]
         test <@ List.isEmpty (repair stale) @>
         test <@ File.ReadAllText ref = "Lib-v2" @>
@@ -101,7 +101,7 @@ let ``repair copies the intermediate over the published copy, with its timestamp
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repair reports a pair it could not copy`` () =
-    withPair "ref-repair-fail" (Path.Combine("Debug", "net10.0")) "Lib-v2" (Some "Lib-v1") (fun (_, refint, ref) ->
+    withPair "ref-repair-fail" (Path.Combine("Debug", "net11.0")) "Lib-v2" (Some "Lib-v1") (fun (_, refint, ref) ->
         let pair =
             { Project = "Lib"
               Intermediate = refint

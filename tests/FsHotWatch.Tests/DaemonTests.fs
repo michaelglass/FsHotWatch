@@ -111,7 +111,7 @@ type private CountingWorkspaceLoader(results: Types.ProjectOptions list, ?onLoad
 let private minimalLoadedProject (projectPath: string) : Types.ProjectOptions =
     { ProjectId = None
       ProjectFileName = projectPath
-      TargetFramework = "net10.0"
+      TargetFramework = "net11.0"
       SourceFiles = []
       OtherOptions = []
       ReferencedProjects = []
@@ -124,7 +124,7 @@ let private minimalLoadedProject (projectPath: string) : Types.ProjectOptions =
         { IsTestProject = false
           Configuration = "Debug"
           IsPackable = false
-          TargetFramework = "net10.0"
+          TargetFramework = "net11.0"
           TargetFrameworkIdentifier = ".NETCoreApp"
           TargetFrameworkVersion = "v10.0"
           MSBuildAllProjects = []
@@ -132,7 +132,7 @@ let private minimalLoadedProject (projectPath: string) : Types.ProjectOptions =
           ProjectAssetsFile = ""
           RestoreSuccess = true
           Configurations = [ "Debug" ]
-          TargetFrameworks = [ "net10.0" ]
+          TargetFrameworks = [ "net11.0" ]
           RunArguments = None
           RunCommand = None
           IsPublishable = None }
@@ -2287,7 +2287,7 @@ let ``observing project content answers the next echo of the same bytes as uncha
 /// only varies the `project.restore` block, which records how the restore was invoked
 /// and not what it resolved.
 let private assetsJson (package: string) (restoredBy: string) =
-    $"""{{"version":3,"targets":{{"net10.0":{{"%s{package}/1.0.0":{{}}}}}},"project":{{"restore":{{"projectPath":"%s{restoredBy}"}}}}}}"""
+    $"""{{"version":3,"targets":{{"net11.0":{{"%s{package}/1.0.0":{{}}}}}},"project":{{"restore":{{"projectPath":"%s{restoredBy}"}}}}}}"""
 
 // A scan evaluates its project model, then waits for the build before type-checking.
 // On a cold tree that build is the first restore: it writes `obj/project.assets.json`
@@ -2713,7 +2713,7 @@ let ``restore output is stale under a model when it appeared, changed or vanishe
         FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore
         test <@ List.isEmpty (stale ()) @>
 
-        File.WriteAllText(assets, "{\"targets\":{\"net10.0\":{}}}")
+        File.WriteAllText(assets, "{\"targets\":{\"net11.0\":{}}}")
         test <@ stale () = [ project ] @>
 
         FsHotWatch.Daemon.observeProjectContent root [] tracker |> ignore

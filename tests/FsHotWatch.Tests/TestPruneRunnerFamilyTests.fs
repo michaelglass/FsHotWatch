@@ -445,10 +445,10 @@ let ``long-running reporting is not injected over a project's own choice`` () =
 // --- which testconfig.json is the project's own: by its built assembly's name ---
 
 /// A project `Proj.Tests.fsproj` under `root/proj` holding `projectXml`, and built files
-/// (path relative to its `bin/Debug/net10.0`, content).
+/// (path relative to its `bin/Debug/net11.0`, content).
 let private builtProject (root: string) (projectXml: string) (built: (string * string) list) =
     let dir = Path.Combine(root, "proj")
-    let output = Path.Combine(dir, "bin", "Debug", "net10.0")
+    let output = Path.Combine(dir, "bin", "Debug", "net11.0")
     Directory.CreateDirectory output |> ignore
     let project = Path.Combine(dir, "Proj.Tests.fsproj")
     File.WriteAllText(project, projectXml)

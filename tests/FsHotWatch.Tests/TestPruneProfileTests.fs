@@ -152,7 +152,7 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` (name
     let fixtureProject = Path.Combine(fixtureDir, "Xunit4RunnerFixture.fsproj")
 
     let apphost =
-        Path.Combine(fixtureDir, "bin", "Debug", "net10.0", "Xunit4RunnerFixture")
+        Path.Combine(fixtureDir, "bin", "Debug", "net11.0", "Xunit4RunnerFixture")
 
     let config =
         { projectOf
@@ -223,7 +223,7 @@ let ``fshw's default launch of a real xUnit host holds none of its thread-pool t
     let fixtureProject = Path.Combine(fixtureDir, "Xunit4RunnerFixture.fsproj")
 
     let apphost =
-        Path.Combine(fixtureDir, "bin", "Debug", "net10.0", "Xunit4RunnerFixture")
+        Path.Combine(fixtureDir, "bin", "Debug", "net11.0", "Xunit4RunnerFixture")
 
     let config =
         { projectOf "sh" $"-c \"shift; exec '%s{apphost}' \\\"$@\\\"\" sh \"%s{fixtureProject}\"" (Some 240) with

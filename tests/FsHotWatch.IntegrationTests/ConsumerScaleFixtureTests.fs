@@ -37,7 +37,7 @@ open FsHotWatch.Tests.ColdCheckFixture
 let private consumerProject (name: string) =
     $"""<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <AssemblyName>{name}</AssemblyName>
@@ -72,7 +72,7 @@ let private writeRepo clock root (name: string) (tests: string) (entry: string) 
     File.WriteAllText(
         Path.Combine(subject, "Subject.fsproj"),
         """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
   <ItemGroup><Compile Include="Value.fs" /></ItemGroup>
   <ItemGroup><PackageReference Update="FSharp.Core" Version="10.1.*" /></ItemGroup>
 </Project>

@@ -344,7 +344,7 @@ let ``a generated obj file is never checked on its own, so a missing one logs no
         let options = (pipeline.GetProjectOptions(Path.Combine(tmpDir, "Mod.fsproj"))).Value
 
         let generated =
-            Path.GetFullPath(Path.Combine(tmpDir, "obj", "Debug", "net10.0", "Mod.AssemblyInfo.fs"))
+            Path.GetFullPath(Path.Combine(tmpDir, "obj", "Debug", "net11.0", "Mod.AssemblyInfo.fs"))
 
         let options =
             { options with

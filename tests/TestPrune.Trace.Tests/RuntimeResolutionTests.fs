@@ -38,7 +38,7 @@ let ``a prerelease is chosen only when the request is a prerelease`` () =
 [<Fact>]
 let ``runtimeconfig framework and rollForward are read`` () =
     let json =
-        """{"runtimeOptions":{"tfm":"net10.0","rollForward":"Major","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}"""
+        """{"runtimeOptions":{"tfm":"net11.0","rollForward":"Major","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}"""
 
     test <@ requestedFramework json = Some("10.0.0", Some "Major") @>
 
@@ -86,13 +86,13 @@ let ``the description is the recorder's for this process`` () =
     let running = Environment.Version.ToString 3
     test <@ describe running = TestPrune.Trace.Recorder.RuntimeIdentity.runtime () @>
 
-/// A project directory holding one build output: `bin/Debug/net10.0/App.dll`, its deps.json
+/// A project directory holding one build output: `bin/Debug/net11.0/App.dll`, its deps.json
 /// and a runtimeconfig asking for this process's runtime.
 let private withBuild (f: string -> string -> unit) =
     let root = Directory.CreateTempSubdirectory("tp-predict-").FullName
 
     try
-        let out = Path.Combine(root, "app", "bin", "Debug", "net10.0")
+        let out = Path.Combine(root, "app", "bin", "Debug", "net11.0")
         Directory.CreateDirectory out |> ignore
         File.WriteAllText(Path.Combine(out, "App.dll"), "")
         File.WriteAllText(Path.Combine(out, "App.deps.json"), """{"libraries":{}}""")
@@ -150,7 +150,7 @@ let ``the predicted fingerprint is the one ingestion gathers from a dump of this
 
         let deps =
             FingerprintPrediction.depsJsonSha256 (
-                File.ReadAllText(Path.Combine(projectDir, "bin", "Debug", "net10.0", "App.deps.json"))
+                File.ReadAllText(Path.Combine(projectDir, "bin", "Debug", "net11.0", "App.deps.json"))
             )
 
         let gathered =
@@ -191,7 +191,7 @@ let ``no build output, two target frameworks, or no resolvable runtime predict n
 [<Fact>]
 let ``a build without a deps.json predicts nothing`` () =
     withBuild (fun root projectDir ->
-        File.Delete(Path.Combine(projectDir, "bin", "Debug", "net10.0", "App.deps.json"))
+        File.Delete(Path.Combine(projectDir, "bin", "Debug", "net11.0", "App.deps.json"))
 
         test
             <@

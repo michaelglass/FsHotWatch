@@ -28,7 +28,7 @@ let private fixtureDll =
             "ConfigCacheAnalyzer",
             "bin",
             "Debug",
-            "net10.0",
+            "net11.0",
             "ConfigCacheAnalyzer.dll"
         )
 

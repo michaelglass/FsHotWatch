@@ -37,7 +37,7 @@ let ``parseCompletion reads the runner's per-test result line``
 [<InlineData("")>]
 [<InlineData("passed")>]
 [<InlineData("passed the gate twice (and then some)")>]
-[<InlineData("Test run summary: Passed! - x.dll (net10.0|arm64)")>]
+[<InlineData("Test run summary: Passed! - x.dll (net11.0|arm64)")>]
 [<InlineData("  succeeded: 3")>]
 [<InlineData("failed to start the host")>]
 // Indented: the "Standard output" block a Detailed console prints under a passed test.

@@ -349,9 +349,9 @@ let ``a traced test project measures the modules its plain launch measures`` () 
         |> Seq.toList
 
     let recorder =
-        "/repo/tests/TestPrune.Tests/bin/Traced/net10.0/TestPrune.Trace.Recorder.dll"
+        "/repo/tests/TestPrune.Tests/bin/Traced/net11.0/TestPrune.Trace.Recorder.dll"
 
-    let core = "/repo/tests/TestPrune.Tests/bin/Traced/net10.0/TestPrune.Core.dll"
+    let core = "/repo/tests/TestPrune.Tests/bin/Traced/net11.0/TestPrune.Core.dll"
 
     test <@ excludes |> List.exists (fun pattern -> Regex.IsMatch(recorder, pattern)) @>
     test <@ not (excludes |> List.exists (fun pattern -> Regex.IsMatch(core, pattern))) @>

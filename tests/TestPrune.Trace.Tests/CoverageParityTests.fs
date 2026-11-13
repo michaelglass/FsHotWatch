@@ -94,7 +94,7 @@ let ``a woven app's coverage keeps the branch points of union matches, field com
         let launch = TraceSession.prepareProject req |> Result.defaultWith failwith
 
         let original =
-            Path.Combine(projectDir, "bin", "Debug", "net10.0", Path.GetFileName launch.Apphost)
+            Path.Combine(projectDir, "bin", "Debug", "net11.0", Path.GetFileName launch.Apphost)
 
         // FxTests reads a repository file only when the repo-root variable is set, which a
         // traced launch always sets. Nothing reads it untraced but that test, so set it there

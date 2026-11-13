@@ -93,8 +93,8 @@ fi
 install_tool() {
   packaged_command="${FAKE_TOOL_COMMAND:-probetool}"
   case "${FAKE_TOOL_SETTINGS:-placed}" in
-    placed)    settings_dir="$tool_path/.store/pkg/1.0.0/tools/net10.0/any" ;;
-    misplaced) settings_dir="$tool_path/.store/pkg/1.0.0/lib/net10.0" ;;
+    placed)    settings_dir="$tool_path/.store/pkg/1.0.0/tools/net11.0/any" ;;
+    misplaced) settings_dir="$tool_path/.store/pkg/1.0.0/lib/net11.0" ;;
     none)      settings_dir="" ;;
   esac
   if [ -n "$settings_dir" ]; then

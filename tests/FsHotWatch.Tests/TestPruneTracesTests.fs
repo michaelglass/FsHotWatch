@@ -89,7 +89,7 @@ let private sessionOf (root: string) name manifest : TraceSession.TraceLaunch =
     Directory.CreateDirectory dumpDir |> ignore
 
     { TestProject = name
-      Apphost = Path.Combine(root, "tests", name, "bin", "Traced", "net10.0", name)
+      Apphost = Path.Combine(root, "tests", name, "bin", "Traced", "net11.0", name)
       Env =
         [ "TESTPRUNE_TRACE_OUT", dumpDir
           "TESTPRUNE_TRACE_IDS", "1"

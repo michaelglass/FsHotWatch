@@ -20,7 +20,7 @@ let repoRoot =
 let fixtureRoot = Path.Combine(repoRoot, "tests", "TraceFixtures")
 
 let private built (sub: string) (project: string) =
-    Path.Combine(fixtureRoot, sub, project, "bin", "Debug", "net10.0")
+    Path.Combine(fixtureRoot, sub, project, "bin", "Debug", "net11.0")
 
 /// Build output of the fixture library.
 let fxLibDir = built "src" "FxLib"
