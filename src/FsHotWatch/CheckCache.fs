@@ -314,7 +314,7 @@ let assemblyIdentity (assembly: System.Reflection.Assembly) : string =
 /// change nothing a check computes. `CheckCacheTests`' golden key fails on any change to how
 /// the key is computed and says to bump this.
 [<Literal>]
-let CheckRecordSchema = "fshw-check-semantics-v4"
+let CheckRecordSchema = "fshw-check-semantics-v5"
 
 /// A checker build: the components a check's answer depends on beyond the code it checks.
 type CheckerBuild =

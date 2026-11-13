@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: **one-time re-key** for the `#nowarn` fix above (AUTOMATION-1664): `CheckRecordSchema` is now
+  `fshw-check-semantics-v5` (AUTOMATION-1613 took v4). A record an earlier fshw filed may carry a diagnostic its file `#nowarn`s, a FAIL outcome
+  and signatures computed from it; under v5 none of them is replayed, so the first check under this release replays
+  nothing, and every test-evidence K_P (which folds the checker build) moves with it. The record-key goldens are updated.
+
 - fix: a live check that reports a code its own file `#nowarn`s is re-checked on a fresh checker (AUTOMATION-1664).
   Such an answer comes from a warm TransparentCompiler that misread the file after a referenced assembly's stamp
   moved, and nothing else it said about the file is trusted either. `CheckPipeline` now detects it
