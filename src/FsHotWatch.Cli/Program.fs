@@ -875,8 +875,8 @@ type IpcOps =
 
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
-    { Shutdown = IpcClient.shutdown
-      ReleaseIfSole = IpcClient.releaseIfSole
+    { Shutdown = fun pipe -> IpcClient.shutdown pipe (FsHotWatch.DaemonStop.StopClient.current ())
+      ReleaseIfSole = fun pipe -> IpcClient.releaseIfSole pipe (FsHotWatch.DaemonStop.StopClient.current ())
       Scan =
         fun pipeName invocation ->
             match invocation with
@@ -2580,7 +2580,8 @@ let internal daemonShutdownLine (signalName: string) (owned: int list) (leaked: 
 /// What a daemon does on a signal: record it, reap every child its registries own, log
 /// the shutdown line, and ask the daemon to stop. The reap comes first and does not wait
 /// for the daemon's own unwind, so the children are gone even when that unwind is slow.
-/// `stop` is what an IPC shutdown request does (cancel the run).
+/// `stop` is what an IPC shutdown request does (cancel the run), handed the signal as
+/// the cause the daemon logs as it stops (`DaemonStop`).
 ///
 /// `registries` is read when the signal arrives: a per-worktree daemon has one, a
 /// repository host one per live session. They are reaped concurrently, so the bounded
@@ -2588,11 +2589,10 @@ let internal daemonShutdownLine (signalName: string) (owned: int list) (leaked: 
 let internal onDaemonSignal
     (signal: RunSignal)
     (registries: unit -> ProcessRegistry.Registry list)
-    (stop: unit -> unit)
-    (signalName: string)
-    (code: int)
+    (stop: DaemonStop.StopCause -> unit)
+    (received: DaemonStop.DaemonSignal)
     : unit =
-    signal.Record code
+    signal.Record(DaemonStop.DaemonSignal.exitCode received)
 
     try
         let registries = registries ()
@@ -2612,10 +2612,10 @@ let internal onDaemonSignal
             leakedPids ()
             |> List.filter (fun pid -> not (leakedBefore.Contains pid) && List.contains pid owned)
 
-        FsHotWatch.Logging.warn "daemon" (daemonShutdownLine signalName owned leaked)
+        FsHotWatch.Logging.warn "daemon" (daemonShutdownLine (DaemonStop.DaemonSignal.name received) owned leaked)
     finally
         signal.MarkFinalized()
-        stop ()
+        stop (DaemonStop.Signal received)
 
 /// Install SIGINT, SIGTERM and SIGHUP handlers for a daemon: each runs `onDaemonSignal`
 /// and cancels the default terminate, so the daemon unwinds (pidfile, lock, pipe) as an
@@ -2624,33 +2624,33 @@ let internal onDaemonSignal
 let internal installDaemonSignalHandlers
     (signal: RunSignal)
     (registries: unit -> ProcessRegistry.Registry list)
-    (stop: unit -> unit)
+    (stop: DaemonStop.StopCause -> unit)
     (exitWith: int -> unit)
     : IDisposable =
-    let register posixSignal signalName code =
+    let register (received: DaemonStop.DaemonSignal) =
         PosixSignalRegistration.Create(
-            posixSignal,
+            DaemonStop.DaemonSignal.posix received,
             fun (ctx: PosixSignalContext) ->
                 ctx.Cancel <- true
 
                 if signal.Code.IsNone then
-                    onDaemonSignal signal registries stop signalName code
+                    onDaemonSignal signal registries stop received
 
                     Threading.Tasks.Task
                         .Delay(DaemonSignalExitBound)
                         .ContinueWith(fun (_: Threading.Tasks.Task) ->
                             FsHotWatch.Logging.error
                                 "daemon"
-                                $"shutdown: still unwinding %s{string DaemonSignalExitBound} after %s{signalName}; exiting without finishing"
+                                $"shutdown: still unwinding %s{string DaemonSignalExitBound} after %s{DaemonStop.DaemonSignal.name received}; exiting without finishing"
 
-                            exitWith code)
+                            exitWith (DaemonStop.DaemonSignal.exitCode received))
                     |> ignore
         )
 
     let registrations =
-        [ register PosixSignal.SIGINT "SIGINT" 130 // 128 + SIGINT(2)
-          register PosixSignal.SIGTERM "SIGTERM" 143 // 128 + SIGTERM(15)
-          register PosixSignal.SIGHUP "SIGHUP" 129 ] // 128 + SIGHUP(1)
+        [ register DaemonStop.SigInt
+          register DaemonStop.SigTerm
+          register DaemonStop.SigHup ]
 
     { new IDisposable with
         member _.Dispose() =
@@ -3670,7 +3670,7 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let signalled = RunSignal()
 
         use _signals =
-            installDaemonSignalHandlers signalled registries (fun () -> cts.Cancel()) exit
+            installDaemonSignalHandlers signalled registries (fun _ -> cts.Cancel()) exit
 
         let run =
             FsHotWatch.RepositoryHost.runObserved
@@ -4129,7 +4129,7 @@ let private executeCommandRendered
                                     installDaemonSignalHandlers
                                         signalled
                                         (fun () -> [ daemon.ProcessRegistry ])
-                                        (fun () -> cts.Cancel())
+                                        (fun cause -> daemon.Stop(cause, cts))
                                         exit
 
                                 // Stop the daemon cleanly if `.fshw.json` is edited. The
@@ -4139,7 +4139,7 @@ let private executeCommandRendered
                                     watchConfig repoRoot (fun reason ->
                                         if configEventStops (computeConfigHash repoRoot) loadedConfigIdentity then
                                             FsHotWatch.Logging.info "config" reason
-                                            cts.Cancel()
+                                            daemon.Stop(FsHotWatch.DaemonStop.ConfigChanged, cts)
                                         else
                                             FsHotWatch.Logging.info
                                                 "config"

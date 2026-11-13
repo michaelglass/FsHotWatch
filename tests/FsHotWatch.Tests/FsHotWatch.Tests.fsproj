@@ -157,6 +157,7 @@
     <Compile Include="IpcTests.fs" />
     <Compile Include="ServeOrderingTests.fs" />
     <Compile Include="RunHookScopeTests.fs" />
+    <Compile Include="DaemonStopCauseTests.fs" />
     <Compile Include="DaemonProcessScopeTests.fs" />
     <Compile Include="HostedRpcScopeTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />

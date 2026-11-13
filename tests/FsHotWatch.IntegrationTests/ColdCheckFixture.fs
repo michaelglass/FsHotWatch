@@ -199,7 +199,7 @@ let withDaemonOutput requireCold clock root body =
         finally
             try
                 if not daemon.Process.HasExited && IpcClient.isRunning pipe then
-                    IpcClient.shutdown pipe
+                    IpcClient.shutdown pipe (FsHotWatch.DaemonStop.StopClient.current ())
                     |> fun shutdown -> Async.RunSynchronously(shutdown, 10000) |> ignore
 
                 daemon.Process.WaitForExit(10000) |> ignore

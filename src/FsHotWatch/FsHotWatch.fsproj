@@ -152,6 +152,7 @@
     <Compile Include="SessionFrames.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="SuspectRecheck.fs" />
+    <Compile Include="DaemonStop.fs" />
     <Compile Include="Ipc.fs" />
     <Compile Include="RepositoryIpc.fs" />
     <Compile Include="ScanActivity.fs" />

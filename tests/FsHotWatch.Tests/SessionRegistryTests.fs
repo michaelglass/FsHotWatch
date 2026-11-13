@@ -218,7 +218,10 @@ let ``a session that asks to shut down ends itself, not its sibling`` () =
         serving sb |> ignore
 
         // The `Shutdown` RPC, an idle-exit and a wedge restart all take this path.
-        configA.RequestShutdown()
+        configA.RequestShutdown
+            { Rpc = DaemonStop.Shutdown
+              Caller = DaemonStop.UnknownClient }
+
         test <@ sa.Ended.Wait(HangWait) @>
         test <@ waitUntilTrue (fun () -> registry.TryGet sa.Id |> Option.isNone) 5000 @>
         test <@ not sb.Ended.IsCompleted @>

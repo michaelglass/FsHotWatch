@@ -338,9 +338,8 @@ let ``a signalled daemon reaps its registry's children before it stops`` () =
         onDaemonSignal
             signal
             (fun () -> [ registry ])
-            (fun () -> aliveWhenStopped <- Some(alive child.Id))
-            "SIGTERM"
-            143
+            (fun _ -> aliveWhenStopped <- Some(alive child.Id))
+            DaemonStop.SigTerm
 
         test <@ aliveWhenStopped = Some false @>
         test <@ signal.Settle 0 = 143 @>
@@ -368,9 +367,8 @@ let ``a signalled host reaps every session's registry before it stops`` () =
         onDaemonSignal
             signal
             (fun () -> [ first; second ])
-            (fun () -> aliveWhenStopped <- Some(alive firstChild.Id || alive secondChild.Id))
-            "SIGTERM"
-            143
+            (fun _ -> aliveWhenStopped <- Some(alive firstChild.Id || alive secondChild.Id))
+            DaemonStop.SigTerm
 
         test <@ aliveWhenStopped = Some false @>
         test <@ signal.Settle 0 = 143 @>

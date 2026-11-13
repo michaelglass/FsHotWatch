@@ -191,7 +191,9 @@ let ``direct Start publishes its loaded identity and stops on a later config edi
         finally
             if not run.IsCompleted then
                 try
-                    IpcClient.shutdown pipe |> Async.RunSynchronously |> ignore
+                    IpcClient.shutdown pipe (FsHotWatch.DaemonStop.StopClient.current ())
+                    |> Async.RunSynchronously
+                    |> ignore
                 with _ ->
                     ()
 

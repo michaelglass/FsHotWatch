@@ -3740,6 +3740,9 @@ type Daemon
     // The trees this daemon has already re-checked suspect answers for (`SuspectRecheck`).
     let retriedTrees = SuspectRecheck.RetriedTrees()
 
+    // The first cause this daemon was asked to stop for, logged as it stops (`DaemonStop`).
+    let stopRecord = DaemonStop.StopRecord()
+
     // This daemon's mark on its root (`VanishedRoot`), made once: by `MarkRoot` when
     // someone can learn of the daemon before it runs, otherwise by `RunWith`.
     let rootMark = lazy (VanishedRoot.mark repoRoot (Logging.warn "daemon"))
@@ -3872,6 +3875,13 @@ type Daemon
     /// it is marked cannot be told from one this daemon never owned, so the session would
     /// never end (AUTOMATION-1486). Idempotent; `RunWith` keeps the first mark.
     member internal _.MarkRoot() : unit = rootMark.Force() |> ignore
+
+    /// Stop this daemon's run `cts` for `cause`. The first cause asked for is the one the
+    /// daemon logs as it stops; every way a serving daemon ends goes through here.
+    member _.Stop(cause: DaemonStop.StopCause, cts: CancellationTokenSource) : unit = stopRecord.Request(cause, cts)
+
+    /// What stopped this daemon (`DaemonStop.Cancelled` while nothing has).
+    member _.StopCause: DaemonStop.StopCause = stopRecord.Cause
 
     /// Signalled when the daemon is ready to accept file change events.
     member _.Ready = ready
@@ -4180,7 +4190,7 @@ type Daemon
 
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
-                      RequestShutdown = fun () -> cts.Cancel()
+                      RequestShutdown = fun request -> this.Stop(DaemonStop.RpcStop request, cts)
                       LiveRunClaims = fun () -> RunClaim.live repoRoot |> List.map RunClaim.describe
                       RequestScan = onScan
                       InvocationReleased = RunClaim.releasedFor repoRoot
@@ -4327,7 +4337,7 @@ type Daemon
                                         (observingClients ())
                                         (ScanActivity.ScanLeases.inFlight scanLeases)
                               LastActivityAt = host.LastActivityAt
-                              Shutdown = fun () -> cts.Cancel()
+                              Shutdown = fun () -> this.Stop(DaemonStop.IdleExit, cts)
                               Log = fun message -> Logging.info "idle-exit" message }
 
                         IdleExit.createTimer deps
@@ -4345,7 +4355,7 @@ type Daemon
                     VanishedRoot.watch
                         vanishedRootCheckEvery
                         rootPresent
-                        (fun () -> cts.Cancel())
+                        (fun () -> this.Stop(DaemonStop.RootVanished, cts))
                         (Logging.warn "daemon")
 
                 // Activity heartbeat. Publishes `<repoRoot>/.fshw/heartbeat` — Unix
@@ -4433,7 +4443,7 @@ type Daemon
                             fun message ->
                                 Logging.error "wedge" message
                                 PluginWedge.writeBreadcrumb repoRoot message
-                                cts.Cancel() }
+                                this.Stop(DaemonStop.Wedged, cts) }
 
                 cancellationTokenRef.Value <- cts.Token
                 ready.Set()
@@ -4470,6 +4480,10 @@ type Daemon
                     |> Async.Ignore
 
                 do! tcs.Task |> Async.AwaitTask
+
+                // One line naming what stopped this daemon, ahead of the caller's
+                // "Daemon stopped." (AUTOMATION-1675).
+                Logging.warn "daemon" (DaemonStop.line this.StopCause)
 
                 let! _ =
                     System.Threading.Tasks.Task.WhenAny(ipcTask, System.Threading.Tasks.Task.Delay serveBound)

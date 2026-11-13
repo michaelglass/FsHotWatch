@@ -719,7 +719,10 @@ let ``shutdown via IPC stops the daemon`` () =
     test <@ FsHotWatch.Ipc.IpcServer.acceptsConnection pipeName @>
 
     try
-        let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
+        let result =
+            IpcClient.shutdown pipeName (FsHotWatch.DaemonStop.StopClient.current ())
+            |> Async.RunSynchronously
+
         test <@ result = "shutting down" @>
 
         try

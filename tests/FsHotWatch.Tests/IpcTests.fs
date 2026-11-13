@@ -1062,7 +1062,7 @@ let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
 
     let config =
         { defaultRpcConfig host with
-            RequestShutdown = fun () -> called <- true }
+            RequestShutdown = fun _ -> called <- true }
 
     let target = DaemonRpcTarget(config)
     let result = target.Shutdown()
@@ -1508,7 +1508,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
 
     let config =
         { defaultRpcConfig host with
-            RequestShutdown = fun () -> cts.Cancel()
+            RequestShutdown = fun _ -> cts.Cancel()
             LiveRunClaims = fun () -> []
             WaitForAllTerminal =
                 fun timeout ->

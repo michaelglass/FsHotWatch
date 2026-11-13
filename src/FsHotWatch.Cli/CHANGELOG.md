@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw stop`, a restart and a one-shot verb's release tell the daemon who is stopping it: the command line, pid
+  and cwd, which the daemon logs as its stop cause ahead of "Daemon stopped." (AUTOMATION-1675). A signal and a
+  `.fshw.json` change are logged as causes too. `installDaemonSignalHandlers` and `onDaemonSignal` hand the stop the
+  `DaemonStop.DaemonSignal` received instead of a name and an exit code.
+
 - fix: the daemon log's default location is `.fshw/logs/daemon.log`, no longer `logs/daemon.log` (AUTOMATION-1543).
   `logs/` sat inside the checkout every native stream watches, so each log flush came back to the daemon as a
   file event that fseventsd queued for every client of the tree until that client drained (one land daemon's log

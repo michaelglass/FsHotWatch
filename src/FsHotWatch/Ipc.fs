@@ -296,7 +296,9 @@ let private releaseSettle = System.TimeSpan.FromSeconds 1.0
 type DaemonRpcConfig =
     {
         Host: PluginHost
-        RequestShutdown: unit -> unit
+        /// Stop the daemon for a client's stop RPC; the request names which RPC and who sent
+        /// it, and is what the daemon logs as its stop cause (`DaemonStop`).
+        RequestShutdown: DaemonStop.RpcStopRequest -> unit
         /// Who else holds this repository's run claims, described for a person. Read inside
         /// `ReleaseIfSole`, so a claim taken between a client asking and the daemon answering
         /// is still seen.
@@ -566,17 +568,37 @@ type DaemonRpcTarget
 
             runCommandUnder requester name argsJson)
 
-    /// Gracefully shut down the daemon.
-    member _.Shutdown() : string =
-        config.RequestShutdown()
+    /// The caller a stop RPC carried: `Described` when the CLI sent its command line, pid
+    /// and cwd, the overloads below with none of them from an older CLI.
+    static member private Described(command: string, pid: int, cwd: string) : DaemonStop.StopCaller =
+        DaemonStop.Described
+            { Command = command
+              Pid = pid
+              Cwd = cwd }
+
+    /// Gracefully shut down the daemon for `caller`.
+    member private _.ShutdownFor(caller: DaemonStop.StopCaller) : string =
+        config.RequestShutdown
+            { Rpc = DaemonStop.Shutdown
+              Caller = caller }
+
         "shutting down"
+
+    /// Gracefully shut down the daemon. A CLI from before AUTOMATION-1675 calls this
+    /// overload, with no description of itself.
+    member this.Shutdown() : string =
+        this.ShutdownFor DaemonStop.UnknownClient
+
+    /// Gracefully shut down the daemon, for the CLI process described.
+    member this.Shutdown(command: string, pid: int, cwd: string) : string =
+        this.ShutdownFor(DaemonRpcTarget.Described(command, pid, cwd))
 
     /// Stop the daemon, but only if nobody else is using it: no other open connection and
     /// no live run claim. This is decided here, not by the client, because only the daemon can
     /// see a `test-rerun` holding a call and no claim. Asked for by a one-shot verb that
     /// started this daemon. The caller's own last connection may still be closing, so the
     /// reading settles for up to `releaseSettle` before it counts as another client.
-    member _.ReleaseIfSole() : Task<string> =
+    member private _.ReleaseIfSoleFor(caller: DaemonStop.StopCaller) : Task<string> =
         task {
             let reading () =
                 max 0 (connectedClients () - 1), config.LiveRunClaims()
@@ -590,7 +612,10 @@ type DaemonRpcTarget
 
             match current with
             | 0, [] ->
-                config.RequestShutdown()
+                config.RequestShutdown
+                    { Rpc = DaemonStop.ReleaseIfSole
+                      Caller = caller }
+
                 return ReleaseReply.Released
             | clients, claims ->
                 let others =
@@ -601,6 +626,14 @@ type DaemonRpcTarget
 
                 return ReleaseReply.kept others
         }
+
+    /// `ReleaseIfSole` from a CLI from before AUTOMATION-1675, with no description of itself.
+    member this.ReleaseIfSole() : Task<string> =
+        this.ReleaseIfSoleFor DaemonStop.UnknownClient
+
+    /// `ReleaseIfSole` for the CLI process described.
+    member this.ReleaseIfSole(command: string, pid: int, cwd: string) : Task<string> =
+        this.ReleaseIfSoleFor(DaemonRpcTarget.Described(command, pid, cwd))
 
     /// Trigger a full scan. Returns the generation counter to pass to WaitForScan. The
     /// scan is the daemon's: it runs to completion whoever is left to read it.
@@ -1292,11 +1325,28 @@ module IpcClient =
     let runCommandFor (pipeName: string) (invocationId: string) (name: string) (argsJson: string) : Async<string> =
         invoke pipeName "RunCommandFor" [| name; argsJson; invocationId |]
 
-    /// Shut down the daemon gracefully.
-    let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]
+    /// A stop RPC, describing `client` so the daemon can log who stopped it. A daemon from
+    /// before AUTOMATION-1675 has no overload taking the description and answers that the
+    /// method is missing; it is asked again without one, as an older CLI would.
+    let internal invokeDescribed
+        (invokeWith: obj array -> Async<string>)
+        (client: DaemonStop.StopClient)
+        : Async<string> =
+        async {
+            try
+                return! invokeWith [| box client.Command; box client.Pid; box client.Cwd |]
+            // `Async.AwaitTask` raises a faulted call as the task's `AggregateException`.
+            with ex when (ex.GetBaseException() :? RemoteMethodNotFoundException) ->
+                return! invokeWith [||]
+        }
 
-    /// Stop the daemon only if this client is its sole user (`DaemonRpcTarget.ReleaseIfSole`).
-    let releaseIfSole (pipeName: string) : Async<string> = invoke pipeName "ReleaseIfSole" [||]
+    /// Shut down the daemon gracefully, on behalf of `client`.
+    let shutdown (pipeName: string) (client: DaemonStop.StopClient) : Async<string> =
+        invokeDescribed (invoke pipeName "Shutdown") client
+
+    /// Stop the daemon only if `client` is its sole user (`DaemonRpcTarget.ReleaseIfSole`).
+    let releaseIfSole (pipeName: string) (client: DaemonStop.StopClient) : Async<string> =
+        invokeDescribed (invoke pipeName "ReleaseIfSole") client
 
     /// Trigger a full scan of all registered files.
     let scan (pipeName: string) : Async<string> = invoke pipeName "Scan" [||]
