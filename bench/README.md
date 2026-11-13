@@ -210,7 +210,7 @@ invocation after N steps (exit 4) and the next one carries on. Only one harness 
 | `--timeout-min` | 120 | a run past it is killed with its process tree |
 | `--forced-every K` | 1 | run the forced re-check at the clean step of every K-th commit (and always at a seeded fault). A step without one still records its shadow lines |
 | `--no-forced` | | forced re-checks at seeded faults only |
-| `--daemon-log` | `logs/daemon.log` | where the workspace's daemon logs, for the records tally |
+| `--daemon-log` | `.fshw/logs/daemon.log` | where the workspace's daemon logs, for the records tally |
 
 Each step runs two cold daemons, so it costs about two cold checks of the consuming
 repository. Run it on a box that is not also the repository's merge machine.
@@ -222,7 +222,7 @@ repository. Run it on a box that is not also the repository's merge machine.
    `dotnet build`. They are built before any daemon starts, so no build can rewrite
    project state under a running scan.
 2. **`cold-scan`.** N daemons start together (`<cli> start`, with output appended to
-   `logs/daemon.log` the same way the CLI's own launcher does it). Each session is
+   `.fshw/logs/daemon.log` the same way the CLI's own launcher does it). Each session is
    sampled when its first `scan-metrics.jsonl` record appears. `physFootprintPeak`
    is the kernel's lifetime high-water mark, so it records the scan's peak even when
    the peak falls between samples.

@@ -1,4 +1,4 @@
-/// Windowing `logs/daemon.log` so a count taken from it describes ONE daemon and ONE
+/// Windowing `.fshw/logs/daemon.log` so a count taken from it describes ONE daemon and ONE
 /// cycle.
 ///
 /// The log appends across restarts, and a single daemon run holds several scan, build

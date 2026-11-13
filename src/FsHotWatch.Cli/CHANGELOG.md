@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the daemon log's default location is `.fshw/logs/daemon.log`, no longer `logs/daemon.log` (AUTOMATION-1543).
+  `logs/` sat inside the checkout every native stream watches, so each log flush came back to the daemon as a
+  file event that fseventsd queued for every client of the tree until that client drained (one land daemon's log
+  reached 207 MB inside its own watched root). `.fshw/` is excluded in the kernel at stream creation and never
+  visited by the polling walk. `"logDir": "logs"` in `.fshw.json` keeps the old place. A start that finds a
+  `logs/daemon.log` left by an earlier fshw says once that it is no longer written; nothing deletes it.
+  `.fshw/verdict.json` and `.fshw/test-runs/` do not move.
+
 - feat: `fshw audit --kind all` audits every record kind, including the test-evidence store when the clean store is
   named by `--clean-home` (AUTOMATION-1633). A path-only difference between two checkouts is no longer a mismatch.
 

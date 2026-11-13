@@ -556,6 +556,44 @@ let ``startFreshDaemonWith leaves loaded config identity to the daemon`` () =
         let hashPath = Path.Combine(tmpDir, ".fshw", "config.hash")
         test <@ not (File.Exists hashPath) @>)
 
+// AUTOMATION-1543: the default log moved out of `logs/`. A log an earlier fshw wrote
+// there is no longer appended to; the launcher says so once per start instead of
+// leaving a reader to tail a file that stopped growing.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``startFreshDaemonWith names a legacy logs/daemon.log the default no longer writes`` () =
+    withTempDir "prog-legacy-log" (fun tmpDir ->
+        let legacy = Path.Combine(tmpDir, "logs", "daemon.log")
+        Directory.CreateDirectory(Path.GetDirectoryName legacy) |> ignore
+        File.WriteAllText(legacy, "old")
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> true
+                LaunchDaemon = fun _ _ _ -> () }
+
+        let stderr, _ =
+            captureStderr (fun () -> startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" DefaultLogDir 5.0)
+
+        test <@ stderr.Contains $"%s{legacy} is no longer written" @>
+        test <@ stderr.Contains(DaemonLog.file tmpDir DefaultLogDir) @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``startFreshDaemonWith is silent about logs/ when the configured logDir is logs`` () =
+    withTempDir "prog-legacy-log-configured" (fun tmpDir ->
+        let legacy = Path.Combine(tmpDir, "logs", "daemon.log")
+        Directory.CreateDirectory(Path.GetDirectoryName legacy) |> ignore
+        File.WriteAllText(legacy, "current")
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> true
+                LaunchDaemon = fun _ _ _ -> () }
+
+        let stderr, _ =
+            captureStderr (fun () -> startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "" "logs" 5.0)
+
+        test <@ not (stderr.Contains "no longer written") @>)
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``startFreshDaemonWith creates log directory from logDirName param`` () =
     withTempDir "prog-log-dir" (fun tmpDir ->

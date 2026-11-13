@@ -1676,6 +1676,17 @@ let internal startFreshDaemonOn
         fileOps.DeleteFile startupFailure
 
     eprintfn "Starting daemon... (log: %s)" logFile
+
+    // The default moved out of the watched tree (AUTOMATION-1543). A log an earlier fshw
+    // left at the old default stops growing; say so rather than leave it to be tailed.
+    if logDirName = DaemonConfig.DefaultLogDir then
+        let legacy = DaemonConfig.DaemonLog.file repoRoot DaemonConfig.LegacyDefaultLogDir
+
+        if fileOps.FileExists legacy then
+            eprintfn
+                "  %s is no longer written: the daemon log moved to %s (set \"logDir\": \"logs\" in .fshw.json to keep the old place). Delete the old file when you no longer need it."
+                legacy
+                logFile
     // No `config.hash` is written here: only the daemon knows which configuration it
     // actually parsed, and it publishes that before its pipe listens. A hash written by
     // the launcher would attest to a file the daemon may never have loaded.

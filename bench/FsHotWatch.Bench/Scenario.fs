@@ -183,7 +183,7 @@ let private start (cfg: Config) (runDir: string) (cacheHome: string) (session: i
     if File.Exists port then
         File.Delete port
 
-    let logFile = Path.Combine(worktree, "logs", "daemon.log")
+    let logFile = Path.Combine(worktree, ".fshw", "logs", "daemon.log")
     Directory.CreateDirectory(Path.GetDirectoryName logFile) |> ignore
     let noCache = if cfg.WarmCache then "" else "--no-cache "
     // `exec`, so the pid we hold IS the daemon; output appended exactly as the CLI's own
@@ -217,7 +217,7 @@ let scanSampleSince (worktree: string) (since: DateTime) : ScanMetrics.ScanSampl
     |> List.tryHead
 
 let private readLog (worktree: string) =
-    let file = Path.Combine(worktree, "logs", "daemon.log")
+    let file = Path.Combine(worktree, ".fshw", "logs", "daemon.log")
 
     if File.Exists file then
         File.ReadAllLines file |> Array.toList |> DaemonLog.sinceLastStart

@@ -42,6 +42,31 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Tests = None @>
     test <@ config.FileCommands |> List.isEmpty @>
     test <@ config.Exclude |> List.isEmpty @>
+    test <@ config.LogDir = DefaultLogDir @>
+
+// AUTOMATION-1543: a daemon log inside the watched tree comes back to the daemon as
+// file events — every flush is one fseventsd queues for every client watching the
+// checkout until that client drains. A laptop land daemon's `logs/daemon.log` reached
+// 207 MB inside its own stream's root.
+[<Fact(Timeout = 15000)>]
+let ``the default daemon log lies under a directory every native stream excludes in the kernel`` () =
+    let root = "/repo"
+    let log = DaemonLog.file root DefaultLogDir
+
+    test
+        <@
+            FsHotWatch.Watcher.kernelExclusions root
+            |> List.exists (fun excluded -> FsHotWatch.WatchRouter.isWithin excluded log)
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``the default daemon log lies under a directory the polling walk never visits`` () =
+    let firstSegment = DefaultLogDir.Replace('\\', '/').Split('/').[0]
+    test <@ FsHotWatch.SafeWalk.ToolingExcludedDirs |> Set.contains firstSegment @>
+
+[<Fact(Timeout = 15000)>]
+let ``an explicit logDir still overrides the default`` () =
+    let config = parseConfig """{ "logDir": "logs" }""" defaults
     test <@ config.LogDir = "logs" @>
 
 // --- Global timeoutSec default (item 1) ---

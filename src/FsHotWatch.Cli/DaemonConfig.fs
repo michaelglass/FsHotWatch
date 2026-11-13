@@ -331,8 +331,18 @@ let DefaultGlobalTimeoutSec = 1200
 /// repo root; `logDir` overrides it, and may be absolute. ONE definition, because every
 /// message that points a reader at the log has to name the same place the daemon writes
 /// it — see `DaemonLog`.
+///
+/// Under `.fshw/`, which every native stream excludes in the kernel
+/// (`Watcher.kernelExclusions`) and the polling walk never visits: a log in the watched
+/// tree comes back to the daemon as file events, one per flush, that fseventsd queues for
+/// every client of the checkout until each drains (AUTOMATION-1543). Until 2026-11 the
+/// default was `logs`; set `"logDir": "logs"` to keep that location.
 [<Literal>]
-let DefaultLogDir = "logs"
+let DefaultLogDir = ".fshw/logs"
+
+/// Where the daemon log was written by default before AUTOMATION-1543.
+[<Literal>]
+let LegacyDefaultLogDir = "logs"
 
 /// Configuration for a single test project.
 ///
@@ -531,7 +541,7 @@ type DaemonConfiguration =
         /// `includeOutsideRepo: true` to report on them anyway. (obj/bin is always skipped
         /// regardless — see `PathFilter.isGeneratedPath`.)
         IncludeOutsideRepo: bool
-        /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
+        /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to `DefaultLogDir`.
         LogDir: string
         /// Global default timeout (seconds). Used when no per-entry override set.
         TimeoutSec: int option
@@ -2095,9 +2105,9 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 /// The daemon's log is `daemon.log` inside `logDir` (see `DefaultLogDir`), and every
 /// sentence that sends a reader there has to agree with that. A sentence that hard-codes
 /// a directory is a guess about someone else's configuration, and the guess loses
-/// silently: the red-cause pointer shipped naming `.fshw/logs/daemon.log` — a directory
-/// fshw writes no daemon log into under ANY configuration — so a reader with nothing else
-/// to go on was sent to a file that was never there.
+/// silently: the red-cause pointer once shipped naming `.fshw/logs/daemon.log` while the
+/// default was `logs/`, so a reader with nothing else to go on was sent to a file that was
+/// never there.
 module DaemonLog =
     [<Literal>]
     let FileName = "daemon.log"

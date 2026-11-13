@@ -736,7 +736,7 @@ opted-in worktree of the same repository. The first command launches it; it logs
 `~/.local/state/fshw/repositories/<id>/host.log` (under `$FSHW_STATE_HOME` or
 `$XDG_STATE_HOME/fshw` when set) and exits after five minutes with
 no worktree attached. Each worktree is still its own session: its own compiler,
-plugins, `.fshw/` state, verdict and `logs/daemon.log`. A change, reload, cancel or
+plugins, `.fshw/` state, verdict and `.fshw/logs/daemon.log`. A change, reload, cancel or
 failure in one session never touches another.
 
 Worth knowing before you opt in:
@@ -767,7 +767,7 @@ Worth knowing before you opt in:
   its own paths, and bootstrapped again by every session, when it uses
   `__SOURCE_DIRECTORY__`, `__SOURCE_FILE__`, a `#line` directive or a type provider in
   code; when it references such a project; or when its content differs from what
-  another worktree already checks. Each session's `logs/daemon.log` says which, and why,
+  another worktree already checks. Each session's `.fshw/logs/daemon.log` says which, and why,
   once; `fshw status --repository` lists them per worktree (`ownPaths` in `-a`).
 
 `fshw status --repository` lists every session the host serves; `fshw stop` detaches

@@ -29,7 +29,7 @@ let private usage =
                     [--out <dir>] [--check-cmd "<cmd>"] [--fshw "dotnet fshw"] [--prepare "<cmd>"]
                     [--before-check "<cmd>"] [--faults <json> --fault-every K [--fault-offset 0] [--all-kinds]]
                     [--timeout-min 120] [--diff-plugins fcs,lint,analyzers,findings] [--forced-every 1 | --no-forced]
-                    [--daemon-log logs/daemon.log] [--max-steps N] [--workspace-path <dir>]
+                    [--daemon-log .fshw/logs/daemon.log] [--max-steps N] [--workspace-path <dir>]
                     [--forced-clean-home <dir>]   forced re-check = records on over an EMPTY cache home
   fshw-bench audit --target <repo> (--clean-home <dir> | --clean <store dir>) [--store <dir>]
                    [--kind check]... [--sample 200 (0 = all)] [--seed <text>] [--key ak1:...]...
@@ -355,7 +355,7 @@ let main argv =
                     |> fun s -> s.Split(',', StringSplitOptions.RemoveEmptyEntries) |> Set.ofArray
                   ForcedEvery = if flag opts "no-forced" then 0 else count "forced-every" 1
                   ForcedCleanHome = one opts "forced-clean-home" |> Option.map Path.GetFullPath
-                  DaemonLog = one opts "daemon-log" |> Option.defaultValue "logs/daemon.log"
+                  DaemonLog = one opts "daemon-log" |> Option.defaultValue ".fshw/logs/daemon.log"
                   MaxSteps = one opts "max-steps" |> Option.map int }
         | _ ->
             eprintf "%s" usage

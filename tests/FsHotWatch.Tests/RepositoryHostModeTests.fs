@@ -598,7 +598,8 @@ let private serveInProcessAndStop (root: string) (stateHome: string) (logged: st
         test <@ repositoryStatus true root = 0 @>
 
         // The session's own log names the host behind it.
-        let log = File.ReadAllText(Path.Combine(root, "logs", "daemon.log"))
+        let log =
+            File.ReadAllText(FsHotWatch.Cli.DaemonConfig.DaemonLog.file root FsHotWatch.Cli.DaemonConfig.DefaultLogDir)
         test <@ log.Contains $"session=%s{SessionId.render session}" @>
         // …and whether it checks under the repository's virtual root.
         test <@ log.Contains $"virtualRoot=%s{logged}" @>

@@ -62,7 +62,7 @@ check waited for a place.
 
 ## Heap valve
 
-The watchdog heartbeat in `logs/daemon.log` reports the GC pause, heap, collections and
+The watchdog heartbeat in `.fshw/logs/daemon.log` reports the GC pause, heap, collections and
 thread count every 30 s. If the heap grows past a quarter of the memory the GC may use
 and no gen2 collection has run for two minutes, the watchdog forces one compacting
 collection and logs `HEAP VALVE FIRED`, and `fshw status` warns `HEAP VALVE: fired N
@@ -313,7 +313,7 @@ If an op does overrun, the daemon is **diagnosable** instead of a black box:
 
 - A watchdog logs a structured `operation exceeded Ns: <op> running Ms` record
   (and a periodic `heartbeat:` line naming the in-flight op + elapsed) to
-  `logs/daemon.log`.
+  `.fshw/logs/daemon.log`.
 - `fshw status` / `fshw scan-status` report the wedge directly —
   `WEDGED: <op> running Ns, exceeded threshold — <recovery>` — even while the
   stuck op holds its own request, because the daemon keeps several IPC

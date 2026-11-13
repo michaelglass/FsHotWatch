@@ -6866,14 +6866,14 @@ let ``the pointer sentence names the repo's CONFIGURED log directory`` () =
             test <@ message.Contains("no cause captured") @>
             // The directory this repo actually configured...
             test <@ message.Contains("var/log/fshw/daemon.log") @>
-            // ...and not the one nothing writes to.
+            // ...and not the default, which this repo does not write to.
             test <@ not (message.Contains(".fshw/logs")) @>
         | other -> failwithf "expected a readable verdict, got %A" other)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the pointer sentence names the DEFAULT log directory when the repo configures none`` () =
     // The positive control for the test above: a repo that says nothing about `logDir`
-    // gets `logs/daemon.log`, which is where the daemon writes. Without this, "names the
+    // gets `.fshw/logs/daemon.log`, which is where the daemon writes. Without this, "names the
     // configured directory" could be satisfied by a message that echoes any string it was
     // handed, including a wrong default.
     withTempDir "verdict-red-cause-default-log-dir" (fun root ->
@@ -6884,8 +6884,7 @@ let ``the pointer sentence names the DEFAULT log directory when the repo configu
                 Verdict.RedCauseMessage.unknownPointing (DaemonConfig.DaemonLog.forRepo root) "fcs" "src/Lib/Thing.fs"
             )
 
-        test <@ message.Contains("logs/daemon.log") @>
-        test <@ not (message.Contains(".fshw/logs")) @>)
+        test <@ message.Contains(".fshw/logs/daemon.log") @>)
 
 // ---------------------------------------------------------------------------
 // The project model a verdict was graded against is ON the record,
