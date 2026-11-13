@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a file's API signature names a path inside the checkout relative to its root, so a test file has one signature
+  in every checkout (AUTOMATION-1664). xUnit v3's `FactAttribute` and `TheoryAttribute` take `[<CallerFilePath>]`,
+  which FCS fills in with the file's absolute path, and `FSharpAttribute.Format` rendered it into the signature: each
+  checkout gave a `[<Fact>]` file its own signature, and since an earlier file's signature is part of every later
+  file's key, test-file keys were shared across two checkouts of one tree only 62 of 1584 times (4%; `src/` 96%).
+  `ApiSignature.signatureText` now renders with the root replaced by `${repo}` wherever it stands as a whole path
+  prefix (`PathToken.tokenize`, the rule portable records use), after making any virtual path real; it and `ofResult` take the
+  repository root. **One-time re-key:** `CheckRecordSchema` is now `fshw-check-semantics-v6`, since a record filed
+  before it carries the checkout's signature under a key that does not name the checkout.
+
 - fix: **one-time re-key** for the `#nowarn` fix above (AUTOMATION-1664): `CheckRecordSchema` is now
   `fshw-check-semantics-v5` (AUTOMATION-1613 took v4). A record an earlier fshw filed may carry a diagnostic its file `#nowarn`s, a FAIL outcome
   and signatures computed from it; under v5 none of them is replayed, so the first check under this release replays

@@ -11,7 +11,8 @@
 /// same assembly sees `internal`, and a namespace's private types), with the attributes and
 /// their arguments, literal values, union cases, record and class fields, members with
 /// their parameter names and types, generic constraints, extension members and XML docs.
-/// It leaves out bodies, comments and positions.
+/// It leaves out bodies, comments and positions, and names a path inside the checkout
+/// relative to its root.
 ///
 /// It refuses (returns None, so the caller falls back to the file's content) whenever a
 /// declaration-only hash cannot stand for the file:
@@ -273,7 +274,15 @@ let private declarationsOf (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFil
 /// "With errors" means errors the file's own `#nowarn` leaves (`FileCheckResult.ownDiagnostics`):
 /// a warm checker reports a `#nowarn`ed code a cold one does not (AUTOMATION-1664), and the
 /// signature must not depend on which checker answered.
-let signatureText (result: FileCheckResult) : string option =
+///
+/// Rendered with the checkout root replaced by `PathToken.Token` wherever it stands as a whole
+/// path prefix (`PathToken.tokenize`, the rule portable records are named by), after
+/// any virtual path is made real (`FileCheckResult.textToReal`). An attribute whose
+/// constructor takes `[<CallerFilePath>]` (xUnit v3's `Fact`, `Theory`) carries the
+/// file's absolute path, and so did the signature: every file after such a file was keyed
+/// per checkout (AUTOMATION-1664). A literal or a doc comment naming a path inside the
+/// checkout is named the same way. `repoRoot` None renders every path as written.
+let signatureText (repoRoot: string option) (result: FileCheckResult) : string option =
     match result.CheckResults with
     | ParseOnly _ -> None
     | Replayed _ -> raise (ReplayedResultException("ApiSignature.signatureText", "(a replayed check)"))
@@ -286,15 +295,27 @@ let signatureText (result: FileCheckResult) : string option =
                 FileCheckResult.ownDiagnostics result results.Diagnostics
                 |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
-            if hasErrors then None else declarationsOf results
+            if hasErrors then
+                None
+            else
+                declarationsOf results
+                |> Option.map (fun text ->
+                    let real = FileCheckResult.textToReal result text
+
+                    match repoRoot with
+                    | Some root ->
+                        PathToken.tokenize
+                            (System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath root))
+                            real
+                    | None -> real)
         with ex ->
             Logging.debug "cache" $"api signature unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
             None
 
 /// The API signature hash of a checked file, or None when the file has no signature of its
 /// own and its content must stand in for it.
-let ofResult (result: FileCheckResult) : string option =
+let ofResult (repoRoot: string option) (result: FileCheckResult) : string option =
     match result.CheckResults with
     // The signature the filed check declared (ADR-059 §17).
     | Replayed outputs -> outputs.ApiSignature
-    | _ -> signatureText result |> Option.map CheckCache.sha256Hex
+    | _ -> signatureText repoRoot result |> Option.map CheckCache.sha256Hex

@@ -92,7 +92,7 @@ module CheckOutputs =
                             Message = toReal d.Message } ]
                   FcsSignature = fcsCheckSignature result
                   UsedSignatures = CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
-                  ApiSignature = ApiSignature.ofResult result }
+                  ApiSignature = ApiSignature.ofResult repoRoot result }
 
     /// Whether any diagnostic is an error: the record's outcome.
     let hasErrors (outputs: CheckOutputs) =

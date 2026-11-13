@@ -880,7 +880,12 @@ let ``a restarted pipeline answers every filed file as Replayed, read by consume
                         liveResult.CheckResults
                 @>
 
-            test <@ ApiSignature.ofResult replayed[file] = ApiSignature.ofResult liveResult @>
+            test
+                <@
+                    ApiSignature.ofResult (Some tree.Root) replayed[file] = ApiSignature.ofResult
+                        (Some tree.Root)
+                        liveResult
+                @>
 
         test <@ liveCounter.Started = files.Length @>
 
@@ -908,7 +913,7 @@ let ``a replayed result refuses, loudly, to stand in for a typed tree`` () =
             (pipeline.CheckFile(AbsFilePath.create tree.A1) |> Async.RunSynchronously).Value
 
         raises<ReplayedResultException> <@ FileCheckResult.requireTypedTree "a test" replayed @>
-        raises<ReplayedResultException> <@ ApiSignature.signatureText replayed @>)
+        raises<ReplayedResultException> <@ ApiSignature.signatureText (Some tree.Root) replayed @>)
 
 /// What a walk keys B's files by in `tree`, with A's output written as an F# build of it
 /// in `tree`'s own checkout (AUTOMATION-1478).

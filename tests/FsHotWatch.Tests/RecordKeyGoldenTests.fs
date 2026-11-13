@@ -118,7 +118,7 @@ let private NoProjectOutputs =
 let private goldenToolchain =
     "FSharp.Compiler.Service@43.12.402.0/11111111-1111-1111-1111-111111111111;\
      FSharp.Core@10.0.0.0/22222222-2222-2222-2222-222222222222;\
-     fshw-check-schema=fshw-check-semantics-v5"
+     fshw-check-schema=fshw-check-semantics-v6"
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``GOLDEN: the check-record key of a fixture project and every component it is folded from`` () =
@@ -172,8 +172,8 @@ let ``GOLDEN: the check-record key of a fixture project and every component it i
 
         golden
             "The check-record key"
-            [ "A.fs", "ak1:54a9b692f01f37edc5d2bd3e68bce453a310a152f1c2ca271be25a89ad6b0111"
-              "B.fs", "ak1:e80206e1732f4cea8d86201a582b62730994c58d3ba3094dc3b13c514bbe4e30" ]
+            [ "A.fs", "ak1:de5a8fffdce6d2a6bdbf7a6d01856c62e1deca03edc4c538acf8623e2bf085f8"
+              "B.fs", "ak1:c1838847da7ceb9ec656f6782fd523ac529d6bd10eeab51678ba5bee45c64a93" ]
             (keys |> List.map (fun (file, key) -> file, key.Value.Text))
 
         // The in-memory cache key folds the same toolchain, by a recipe of its own.
@@ -190,7 +190,7 @@ let ``GOLDEN: the check-record key of a fixture project and every component it i
 
         golden
             "The in-memory check cache key's options half"
-            (Some "57d266d9e5a47a0335f70f9fd263d6c2b0b87d3fdb3eb00ee7dfd1c1617f9a65")
+            (Some "242576f72d6ec9d5a267bb59d285e6c6bfd9bf2089c4830c9a05c2a2dbea84bd")
             memoryKey)
 
 // --- the golden options-record key ---
