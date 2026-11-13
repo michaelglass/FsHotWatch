@@ -51,6 +51,14 @@ type PluginHost
         // measured on. `HostClock.awakeUtc` when absent; a test passes a hand-moved one.
         ?awakeNow: unit -> System.DateTime
     ) =
+    // Every task-cache lookup that missed, by plugin and reason (AUTOMATION-1607). The
+    // plugins see the same cache; this only counts its misses.
+    let taskCacheMisses = CheckCacheTally.MissTallyCounter()
+
+    let taskCache =
+        taskCache
+        |> Option.map (fun inner -> TaskCache.MissTallyingTaskCache(inner, taskCacheMisses) :> TaskCache.ITaskCache)
+
     let awakeNow = defaultArg awakeNow HostClock.awakeUtc
     let fcsSuppressedCodes = defaultArg fcsSuppressedCodes Set.empty
 
@@ -871,6 +879,9 @@ type PluginHost
 
     /// Event fired when any plugin's status changes.
     member _.OnStatusChanged = statusChanged.Publish
+
+    /// The task-cache misses, by plugin and reason, since the last call (AUTOMATION-1607).
+    member internal _.DrainTaskCacheMisses() : CheckCacheTally.MissTally = taskCacheMisses.Drain()
 
     /// Clear all task cache entries.
     member _.ClearTaskCache() =

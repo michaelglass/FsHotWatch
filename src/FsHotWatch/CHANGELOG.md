@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a check-record or plugin task-cache miss says why (AUTOMATION-1607). Each check-record miss logs one debug line
+  naming the key component that moved since the last record filed for that file (`key moved: toolchain`, `options`,
+  `content`, `upstream`, `project-outputs`), or the earlier file it was keyed provisionally behind (`behind
+  src/Lib/A.fs`), or `no earlier record remembered` (never filed, or filed before this side index existed).
+  Every scan then logs one summary line per project, e.g. `check records miss: Tests.Unit.fsproj: 637 missed —
+  636 behind tests/Shared/Scrub.fs; 1 key moved: upstream`, and one per plugin for task-cache misses, e.g. `task cache
+  miss: analyzers: 2780 missed — 2780 inputs moved: analyzer-inputs`. The last key's inputs are kept in a side index
+  beside the outcome store (`last-keys/check/`), one small file per (project, file), read once per miss; no scan of the
+  store. Diagnostics only: no key, record schema or served answer changes.
+
 ## 0.10.0-alpha.113 - 2026-11-13
 
 - fix: a wait takes one reading of its clock per sample (AUTOMATION-1646). `waitForAllTerminal`'s loop read its clock

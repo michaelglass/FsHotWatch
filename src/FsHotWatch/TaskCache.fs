@@ -111,6 +111,15 @@ module CacheMissReason =
         | CacheMissReason.InputsNotComparable -> "key-differs (inputs not comparable)"
         | CacheMissReason.UnreadableEntry detail -> $"unreadable-entry (%s{detail})"
 
+    /// The reason as a scan's summary counts it (AUTOMATION-1607): `describe` in the words
+    /// a check-record miss uses, without an unreadable entry's detail, so equal causes add up.
+    let summary (reason: CacheMissReason) =
+        match reason with
+        | CacheMissReason.NoEntryForKey -> "no entry"
+        | CacheMissReason.InputsChanged labels -> "inputs moved: " + String.concat ", " (List.sort labels)
+        | CacheMissReason.InputsNotComparable -> "key differs (inputs not comparable)"
+        | CacheMissReason.UnreadableEntry _ -> "unreadable entry"
+
 /// Per-label digests of the inputs that produced a merkle cache key, remembered in
 /// process so a miss can be explained.
 ///
@@ -306,6 +315,33 @@ type InMemoryTaskCache() =
         member _.ClearPlugin plugin = clearPlugin plugin
         member _.ClearFile file = clearFile file
         member _.ClearPluginFile plugin file = clearPluginFile plugin file
+
+
+/// Counts every lookup of `inner` that missed, by plugin and `CacheMissReason.summary`
+/// (AUTOMATION-1607), so a scan's log names why each plugin's lookups missed. Diagnostics
+/// only: every answer is `inner`'s `Lookup`, unchanged.
+type MissTallyingTaskCache(inner: ITaskCache, misses: FsHotWatch.CheckCacheTally.MissTallyCounter) =
+    let lookup (compositeKey: CompositeKey) (cacheKey: ContentHash) =
+        let answer = inner.Lookup compositeKey cacheKey
+
+        match answer with
+        | CacheMiss reason -> misses.Missed(compositeKey.Plugin, CacheMissReason.summary reason)
+        | CacheHit _ -> ()
+
+        answer
+
+    interface ITaskCache with
+        member _.TryGet compositeKey cacheKey =
+            match lookup compositeKey cacheKey with
+            | CacheHit result -> Some result
+            | CacheMiss _ -> None
+
+        member _.Lookup compositeKey cacheKey = lookup compositeKey cacheKey
+        member _.Set compositeKey cacheKey result = inner.Set compositeKey cacheKey result
+        member _.Clear() = inner.Clear()
+        member _.ClearPlugin plugin = inner.ClearPlugin plugin
+        member _.ClearFile file = inner.ClearFile file
+        member _.ClearPluginFile plugin file = inner.ClearPluginFile plugin file
 
 /// The fingerprint label a toolchain-scoped key names the toolchain under, so a miss
 /// caused by a different SDK says so.
