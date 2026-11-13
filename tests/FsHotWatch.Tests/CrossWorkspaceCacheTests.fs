@@ -1084,3 +1084,60 @@ let ``an analyzer whose source drifted after its build has no analyzers key at a
 
         File.AppendAllText(Path.Combine(b, rulesSourceRel), "\n// edited, not rebuilt\n")
         test <@ analyzersKeyOf b dllB (Path.Combine(b, "src", "A.fs")) = None @>)
+
+// AUTOMATION-1607: a scan's summary names, per plugin, why its task-cache lookups missed.
+[<Fact(Timeout = 15000)>]
+let ``a miss-tallying cache counts each miss by plugin and reason, and serves what the inner cache serves`` () =
+    let inner = InMemoryTaskCache()
+    let misses = FsHotWatch.CheckCacheTally.MissTallyCounter()
+    let cache = MissTallyingTaskCache(inner, misses) :> ITaskCache
+
+    let composite: CompositeKey =
+        { Plugin = "analyzers"
+          File = Some "repo:A.fs" }
+
+    let written = merkleCacheKey [ "analyzer-inputs", "v1"; "source", "x" ]
+    cache.Set composite written (entryFor written "repo:A.fs")
+
+    test <@ cache.Lookup composite written = CacheHit(entryFor written "repo:A.fs") @>
+    test <@ cache.TryGet composite written = Some(entryFor written "repo:A.fs") @>
+
+    let moved = merkleCacheKey [ "analyzer-inputs", "v2"; "source", "x" ]
+    test <@ cache.Lookup composite moved = CacheMiss(CacheMissReason.InputsChanged [ "analyzer-inputs" ]) @>
+
+    let other: CompositeKey =
+        { composite with
+            File = Some "repo:B.fs" }
+
+    test <@ cache.TryGet other written = None @>
+
+    // An unreadable entry's detail is dropped, so equal causes add up across files.
+    test <@ CacheMissReason.summary (CacheMissReason.UnreadableEntry "IOException: locked") = "unreadable entry" @>
+
+    test <@ misses.Snapshot = Map [ "analyzers", Map [ "inputs moved: analyzer-inputs", 1L; "no entry", 1L ] ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a miss-tallying cache clears what the inner cache holds, and names an incomparable key`` () =
+    let inner = InMemoryTaskCache()
+    let misses = FsHotWatch.CheckCacheTally.MissTallyCounter()
+    let cache = MissTallyingTaskCache(inner, misses) :> ITaskCache
+
+    let composite: CompositeKey =
+        { Plugin = "lint"
+          File = Some "repo:A.fs" }
+
+    let written = merkleCacheKey [ "tool", "v1" ]
+
+    let held (clear: unit -> unit) =
+        cache.Set composite written (entryFor written "repo:A.fs")
+        clear ()
+        inner.TryGet(composite, written)
+
+    test <@ held (fun () -> cache.ClearPluginFile "lint" "repo:A.fs") = None @>
+    test <@ held (fun () -> cache.ClearFile "repo:A.fs") = None @>
+    test <@ held (fun () -> cache.ClearPlugin "lint") = None @>
+    test <@ held (fun () -> cache.Clear()) = None @>
+
+    cache.Set composite written (entryFor written "repo:A.fs")
+    test <@ cache.Lookup composite (ContentHash.create "a-commit-id") = CacheMiss CacheMissReason.InputsNotComparable @>
+    test <@ misses.Drain() = Map [ "lint", Map [ "key differs (inputs not comparable)", 1L ] ] @>

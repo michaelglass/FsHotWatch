@@ -192,3 +192,87 @@ type CacheTallyCounter() =
 
     /// The counts so far.
     member _.Snapshot: CacheTally = Locking.locked lockObj (fun () -> tally)
+
+/// Misses per subject (a project, a plugin), per reason (AUTOMATION-1607): what a scan logs
+/// so its misses explain themselves without comparing stored keys by hand. A reason is a
+/// short label such as `key moved: options, upstream` or `behind src/Lib/A.fs`.
+type MissTally = Map<string, Map<string, int64>>
+
+module MissTally =
+    let empty: MissTally = Map.empty
+
+    /// One more miss of `subject` for `reason`.
+    let add (subject: string) (reason: string) (tally: MissTally) : MissTally =
+        tally
+        |> Map.change subject (fun reasons ->
+            defaultArg reasons Map.empty
+            |> Map.change reason (fun n -> Some(defaultArg n 0L + 1L))
+            |> Some)
+
+    /// The misses in `later` beyond those in `earlier`; a subject or reason with none in
+    /// between is dropped.
+    let since (earlier: MissTally) (later: MissTally) : MissTally =
+        later
+        |> Map.toSeq
+        |> Seq.choose (fun (subject, reasons) ->
+            let before = earlier |> Map.tryFind subject |> Option.defaultValue Map.empty
+
+            let delta =
+                reasons
+                |> Map.toSeq
+                |> Seq.choose (fun (reason, n) ->
+                    match n - (before |> Map.tryFind reason |> Option.defaultValue 0L) with
+                    | d when d > 0L -> Some(reason, d)
+                    | _ -> None)
+                |> Map.ofSeq
+
+            if Map.isEmpty delta then None else Some(subject, delta))
+        |> Map.ofSeq
+
+    let private total (reasons: Map<string, int64>) =
+        reasons |> Map.fold (fun sum _ n -> sum + n) 0L
+
+    /// How many reasons a subject's line names; the rest are counted.
+    [<Literal>]
+    let private NamedReasons = 5
+
+    /// One line per subject, the most-missed first, e.g.
+    /// `Tests.Unit.fsproj: 637 missed — 636 behind tests/Shared/Scrub.fs; 1 key moved: upstream`.
+    let describe (tally: MissTally) : string list =
+        tally
+        |> Map.toList
+        |> List.sortBy (fun (subject, reasons) -> -(total reasons), subject)
+        |> List.map (fun (subject, reasons) ->
+            let counts = reasons |> Map.toList |> List.sortBy (fun (reason, n) -> -n, reason)
+
+            let named =
+                counts
+                |> List.truncate NamedReasons
+                |> List.map (fun (reason, n) -> $"%d{n} %s{reason}")
+                |> String.concat "; "
+
+            let rest =
+                match counts.Length - NamedReasons with
+                | more when more > 0 -> $"; and %d{more} more reason(s)"
+                | _ -> ""
+
+            $"%s{subject}: %d{total reasons} missed — %s{named}%s{rest}")
+
+/// A `MissTally` many lookups add to at once. Diagnostics only: nothing reads it to decide
+/// a lookup.
+type MissTallyCounter() =
+    let lockObj = System.Threading.Lock()
+    let mutable tally = MissTally.empty
+
+    member _.Missed(subject: string, reason: string) =
+        Locking.locked lockObj (fun () -> tally <- MissTally.add subject reason tally)
+
+    /// The misses so far.
+    member _.Snapshot: MissTally = Locking.locked lockObj (fun () -> tally)
+
+    /// The misses since the last drain, and start counting afresh.
+    member _.Drain() : MissTally =
+        Locking.locked lockObj (fun () ->
+            let drained = tally
+            tally <- MissTally.empty
+            drained)

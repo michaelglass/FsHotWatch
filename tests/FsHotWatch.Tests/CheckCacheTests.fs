@@ -1378,3 +1378,47 @@ let ``CacheTally.since counts the replays between two snapshots`` () =
         |> CacheTally.lookedUp CacheLookupOutcome.Replayed
 
     test <@ (CacheTally.since atScanStart atScanEnd).Replayed = 2L @>
+
+// AUTOMATION-1607: misses per subject (a project, a plugin), per reason.
+
+[<Fact(Timeout = 15000)>]
+let ``MissTally.describe gives one line per subject, the most-missed first, each reason counted`` () =
+    let tally =
+        MissTally.empty
+        |> MissTally.add "Tests.Unit.fsproj" "behind tests/Shared/Scrub.fs"
+        |> MissTally.add "Tests.Unit.fsproj" "behind tests/Shared/Scrub.fs"
+        |> MissTally.add "Tests.Unit.fsproj" "key moved: upstream"
+        |> MissTally.add "Lib.fsproj" "key moved: toolchain"
+
+    test
+        <@
+            MissTally.describe tally = [ "Tests.Unit.fsproj: 3 missed — 2 behind tests/Shared/Scrub.fs; 1 key moved: upstream"
+                                         "Lib.fsproj: 1 missed — 1 key moved: toolchain" ]
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``MissTally.describe names at most five reasons per subject, the most-missed first`` () =
+    let tally =
+        [ for i in 1..7 do
+              for _ in 1..i -> $"reason %d{i}" ]
+        |> List.fold (fun tally reason -> MissTally.add "P" reason tally) MissTally.empty
+
+    test
+        <@
+            MissTally.describe tally = [ "P: 28 missed — 7 reason 7; 6 reason 6; 5 reason 5; 4 reason 4; 3 reason 3; and 2 more reason(s)" ]
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``MissTally.since is what missed between two snapshots`` () =
+    let earlier = MissTally.empty |> MissTally.add "A" "x"
+    let later = earlier |> MissTally.add "A" "x" |> MissTally.add "B" "y"
+
+    test <@ MissTally.since earlier later = Map [ "A", Map [ "x", 1L ]; "B", Map [ "y", 1L ] ] @>
+    test <@ MissTally.since later later = MissTally.empty @>
+
+[<Fact(Timeout = 15000)>]
+let ``a MissTallyCounter drains what it counted since the last drain`` () =
+    let counter = MissTallyCounter()
+    counter.Missed("A", "x")
+    test <@ counter.Drain() = Map [ "A", Map [ "x", 1L ] ] @>
+    test <@ counter.Drain() = MissTally.empty @>

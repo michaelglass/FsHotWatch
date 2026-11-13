@@ -1189,3 +1189,108 @@ let ``the clean-recompute audit agrees with real FCS records filed by two indepe
         test <@ List.isEmpty report.Mismatches @>
         test <@ report.Kinds |> List.map (fun k -> k.Shared, k.Audited) = [ 4, 4 ] @>
         test <@ report.Verdict = RecordAudit.Verdict.Agree @>)
+
+// AUTOMATION-1607: a record that missed says WHY — which key component moved since the
+// last record filed for the file, or which earlier file it waited behind.
+
+[<Fact(Timeout = 240000)>]
+let ``a record miss names the key component that moved, and the files behind it name the file they wait on`` () =
+    withTempDir "check-records-why" (fun dir ->
+        let tree, store, files, _, _ = seeded dir
+
+        // A define on B moves B's options (and so its upstream chain); A is untouched.
+        let defined = tree.BWith [ "--define:EXTRA" ]
+        let pipeline, _ = restart tree (Some store) toolchain defined
+        checkAll tree pipeline files |> ignore
+
+        test
+            <@
+                pipeline.RecordMisses = Map
+                    [ "B.fsproj", Map [ "key moved: options, upstream", 1L; "behind B1.fs", 1L ] ]
+            @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a record miss under another checker build names the toolchain`` () =
+    withTempDir "check-records-why-toolchain" (fun dir ->
+        let tree, store, _, _, _ = seeded dir
+        let pipeline, _ = restart tree (Some store) "another-toolchain" tree.B
+        checkAll tree pipeline [ tree.A1 ] |> ignore
+
+        test <@ pipeline.RecordMisses = Map [ "A.fsproj", Map [ "key moved: toolchain", 1L ] ] @>)
+
+[<Fact(Timeout = 240000)>]
+let ``a file with no earlier record remembered says so, and nothing is explained while every record replays`` () =
+    withTempDir "check-records-why-never" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let store = storeIn dir
+        let pipeline, _ = restart tree (Some store) toolchain tree.B
+        checkAll tree pipeline [ tree.A1 ] |> ignore
+        test <@ pipeline.RecordMisses = Map [ "A.fsproj", Map [ "no earlier record remembered", 1L ] ] @>
+
+        let tree, store, files, _, _ = seeded (Path.Combine(dir, "seeded"))
+        let replaying, _ = restart tree (Some store) toolchain tree.B
+        checkAll tree replaying files |> ignore
+        test <@ replaying.RecordMisses = Map.empty @>)
+
+let private keyOf (content: string) =
+    ActionKey.create
+        CheckRecords.CheckKind
+        [ "toolchain", toolchain
+          "options", "o"
+          "file", "f"
+          "content", content
+          "upstream", "u"
+          "project-outputs", "p" ]
+
+let private unread (file: string) (key: ActionKey.ActionKey) : CheckRecords.FileRecord =
+    { File = file
+      Key = key
+      Outputs = None
+      Behind = None }
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a miss whose last filed inputs are its own says the store no longer holds the record`` () =
+    withTempDir "check-records-why-not-held" (fun dir ->
+        let store = storeIn dir
+        let root = Some dir
+        let project = Path.Combine(dir, "P.fsproj")
+        let file = Path.Combine(dir, "A.fs")
+        let subject = CheckRecords.LastKeys.subjectOf root project file
+        CheckRecords.LastKeys.remember store subject (keyOf "c1")
+
+        let explain key =
+            CheckRecords.explain store root project (unread file key)
+            |> CheckRecords.RecordMiss.describe
+
+        test <@ explain (keyOf "c1") = "filed under these inputs, not held now" @>
+        test <@ explain (keyOf "c2") = "key moved: content" @>
+
+        // Without a repository root a file is named as given.
+        let behind =
+            { unread file (keyOf "c1") with
+                Behind = Some "/elsewhere/Z.fs" }
+
+        test <@ CheckRecords.explain store None project behind = CheckRecords.RecordMiss.Behind "/elsewhere/Z.fs" @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an unreadable or foreign side-index entry explains nothing, and a failed write never throws`` () =
+    withTempDir "check-records-why-unreadable" (fun dir ->
+        let store = storeIn dir
+        let subject = "P.fsproj|A.fs"
+        let path = CheckRecords.LastKeys.pathOf store subject
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+
+        for text in
+            [ "not json"
+              """{"subject":"another","inputs":{"content":"c"}}"""
+              """{"subject":"P.fsproj|A.fs","inputs":["content"]}""" ] do
+            File.WriteAllText(path, text)
+            test <@ CheckRecords.LastKeys.tryRead store subject = None @>
+
+        // The index's directory cannot be made: the write is lost, quietly.
+        let blocked = storeIn (Path.Combine(dir, "blocked"))
+        Directory.CreateDirectory blocked.Root |> ignore
+        File.WriteAllText(Path.Combine(blocked.Root, "last-keys"), "a file where a directory goes")
+        CheckRecords.LastKeys.remember blocked subject (keyOf "c1")
+        test <@ CheckRecords.LastKeys.tryRead blocked subject = None @>)

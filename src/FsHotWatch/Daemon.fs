@@ -126,6 +126,11 @@ let internal fcsLedgerWrites
             @ suspectCheckEntries reportable
           SelfIncompatible = selfIncompatible }
 
+/// Log why `what`'s lookups missed: one line per project or plugin (AUTOMATION-1607).
+let private logMissSummary (what: string) (misses: CheckCacheTally.MissTally) =
+    for line in CheckCacheTally.MissTally.describe misses do
+        Logging.info "cache" $"%s{what} miss: %s{line}"
+
 /// File the checks a scan or change batch completed as `check` records (ADR-059 §17), and
 /// say how many and how long it took. A no-op when check records are off.
 let private persistCheckRecords (pipeline: CheckPipeline) =
@@ -3901,6 +3906,8 @@ type Daemon
                 pipeline.CheckRecordsTally
                 |> Option.iter (fun tally -> Logging.info "check-records" $"this daemon: %s{tally}")
 
+                logMissSummary "task cache" (host.DrainTaskCacheMisses())
+
                 match host.DemandTally with
                 | "" -> ()
                 | tally -> Logging.info "check-records" $"live checks demanded, by plugin: %s{tally}"
@@ -4635,6 +4642,8 @@ let private performScan
     let checkStartsAtScanStart = ref 0L
     // The cache's tally then, likewise: the scan's own hits and misses are the difference.
     let cacheTallyAtScanStart = ref CheckCacheTally.CacheTally.empty
+    // The check-record misses then, likewise (AUTOMATION-1607).
+    let recordMissesAtScanStart = ref CheckCacheTally.MissTally.empty
 
     let scanAttempt =
         async {
@@ -5208,6 +5217,15 @@ let private performScan
             then
                 Logging.info "cache" (CheckCacheTally.describeCacheTally cacheScan)
 
+            // Why this scan's check records and plugin task-cache entries missed, one line
+            // per project or plugin (AUTOMATION-1607). A plugin's lookups can trail the
+            // scan, so its tally is what missed since the last summary.
+            logMissSummary
+                "check records"
+                (CheckCacheTally.MissTally.since recordMissesAtScanStart.Value pipeline.RecordMisses)
+
+            logMissSummary "task cache" (host.DrainTaskCacheMisses())
+
             let sample: ScanMetrics.ScanSample =
                 { Generation = newGeneration
                   Kind = ScanActivity.ScanKind.describe (scanKindFor state)
@@ -5287,6 +5305,7 @@ let private performScan
         async {
             checkStartsAtScanStart.Value <- ctx.Pipeline.CheckStarts
             cacheTallyAtScanStart.Value <- ctx.Pipeline.CacheTally
+            recordMissesAtScanStart.Value <- ctx.Pipeline.RecordMisses
 
             try
                 return! completeCurrent 1

@@ -75,9 +75,12 @@ let private checkOf (file: string) : CheckOutputs =
 /// keyed by the real check-record walk over `hashFile`.
 let private fileAll (store: OutcomeStore.Store) (repoRoot: string) (hashFile: string -> string) options =
     let filer: CheckRecords.Filer =
-        fun _ file key ->
+        fun (projectOptions: FSharpProjectOptions) file key ->
             let outputs = checkOf file
-            CheckRecords.file store (Some repoRoot) toolchain file key outputs |> ignore
+
+            CheckRecords.file store (Some repoRoot) toolchain projectOptions.ProjectFileName file key outputs
+            |> ignore
+
             Some outputs
 
     CheckRecords.Walk(store, toolchain, Some repoRoot, hashFile, filer).Project(options)

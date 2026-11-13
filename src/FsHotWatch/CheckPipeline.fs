@@ -758,6 +758,33 @@ type CheckPipeline
                 None
         | _ -> None
 
+    /// Every check-record miss, by project and why (AUTOMATION-1607).
+    let recordMisses = CheckCacheTally.MissTallyCounter()
+
+    /// Say why `absPath`'s record did not answer, in one log line, and count it. Reads at
+    /// most one small side-index entry (`CheckRecords.LastKeys`); decides nothing.
+    let noteRecordMiss
+        (store: OutcomeStore.Store)
+        (walk: ReplayWalk)
+        (absPath: string)
+        (options: FSharpProjectOptions)
+        =
+        match Map.tryFind absPath walk.ByFile with
+        // Not checked on its own (a generated item): no record was looked up.
+        | None -> ()
+        | Some record ->
+            let miss =
+                match record.Outputs with
+                // The walk read a record for other bytes than the file holds now.
+                | Some _ -> CheckRecords.RecordMiss.Moved [ "content" ]
+                | None -> CheckRecords.explain store repoRoot options.ProjectFileName record
+
+            let project = CheckRecords.shown repoRoot options.ProjectFileName
+            let reason = CheckRecords.RecordMiss.describe miss
+            recordMisses.Missed(project, reason)
+
+            Logging.debug "check-records" $"miss %s{CheckRecords.shown repoRoot absPath} in %s{project}: %s{reason}"
+
     /// `replayFrom` the generation's walk; on a miss behind a dispatched check of an
     /// earlier file (`blockingCheck`), wait for that check and look again.
     let replayAwaiting (absPath: string) (options: FSharpProjectOptions) (contentHash: string) (ct: CancellationToken) =
@@ -772,8 +799,12 @@ type CheckPipeline
                     | Some replayed -> return Some replayed
                     | None ->
                         match afterMiss walk absPath options with
-                        | AfterMiss.Check -> return None
-                        | AfterMiss.WalkAgain when walkedAgain -> return None
+                        | AfterMiss.Check ->
+                            noteRecordMiss store walk absPath options
+                            return None
+                        | AfterMiss.WalkAgain when walkedAgain ->
+                            noteRecordMiss store walk absPath options
+                            return None
                         | AfterMiss.WalkAgain -> return! attempt (rewalkOf store options) true
                         | AfterMiss.WaitFor earlier ->
                             do! Async.AwaitTask(earlier.WaitAsync ct)
@@ -842,7 +873,16 @@ type CheckPipeline
 
                     match pendingRecords.TryGetValue(struct (file, options.ProjectFileName)) with
                     | true, pending when pendingHolds contentTableOf options file pending ->
-                        if CheckRecords.file store repoRoot checkToolchain file key pending.Outputs then
+                        if
+                            CheckRecords.file
+                                store
+                                repoRoot
+                                checkToolchain
+                                options.ProjectFileName
+                                file
+                                key
+                                pending.Outputs
+                        then
                             filed <- filed + 1
                             Some pending.Outputs
                         else
@@ -986,6 +1026,10 @@ type CheckPipeline
     /// What this pipeline's check-result cache has done, cumulative; `CacheTally.since`
     /// two of these is one scan's. Empty while no cache is configured.
     member internal _.CacheTally: CacheTally = cacheTally.Snapshot
+
+    /// Every check-record miss so far, by project and why (AUTOMATION-1607);
+    /// `MissTally.since` two of these is one scan's.
+    member internal _.RecordMisses: CheckCacheTally.MissTally = recordMisses.Snapshot
 
     /// Whether this pipeline runs a check-result cache at all: false when none is
     /// configured or `cache.scope` leaves this checkout out, so its tally stays empty.

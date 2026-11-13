@@ -176,9 +176,14 @@ module CheckOutputs =
 /// store holds one. Behind an unknown file (see the module) the key is provisional: it is
 /// neither read nor filed, so `Outputs` is None.
 type FileRecord =
-    { File: string
-      Key: ActionKey.ActionKey
-      Outputs: CheckOutputs option }
+    {
+        File: string
+        Key: ActionKey.ActionKey
+        Outputs: CheckOutputs option
+        /// The unknown file, of this project or one it references, this file's key is
+        /// provisional behind; None when its key was read.
+        Behind: string option
+    }
 
 /// Called for a file the store has no record of, with the key it would be filed under,
 /// when every file before it is known: the outputs it filed there, or None. A file it
@@ -315,7 +320,8 @@ type Walk
                             records.Add
                                 { File = source
                                   Key = key
-                                  Outputs = outputs }
+                                  Outputs = outputs
+                                  Behind = unknownAt }
 
                             match outputs with
                             | Some { ApiSignature = Some signature } -> "api:" + signature
@@ -350,11 +356,83 @@ type Walk
 /// A filer that files nothing: a walk that only reads.
 let readOnly: Filer = fun _ _ _ -> None
 
-/// File `outputs` under `key` for `file`. Returns whether it is filed.
+/// The inputs of the last `check` record filed for each file of each project, kept beside
+/// the store's records and outside them (AUTOMATION-1607), so a lookup that missed can name
+/// the key component that moved without scanning the store.
+///
+/// Diagnostics only. Nothing reads it to decide a lookup, and it changes no key: an entry
+/// that is stale, torn, missing or another workspace's can only make a miss's explanation
+/// vaguer, never turn a miss into a hit. One small file per (project, file), overwritten.
+module LastKeys =
+    /// The side index's directory in `store`.
+    let directoryOf (store: OutcomeStore.Store) =
+        Path.Combine(store.Root, "last-keys", CheckKind)
+
+    /// What an entry is filed by: the project and the file, repository-relative.
+    let subjectOf (repoRoot: string option) (projectFile: string) (file: string) =
+        $"%s{CachePathIdentity.keyOf repoRoot projectFile}|%s{CachePathIdentity.keyOf repoRoot file}"
+
+    /// Where `subject`'s entry lives.
+    let pathOf (store: OutcomeStore.Store) (subject: string) =
+        let digest = sha256Hex subject
+        Path.Combine(directoryOf store, digest.Substring(0, 2), digest + ".json")
+
+    /// Remember that `subject` was last filed under `key`. Never throws: a failed write
+    /// loses only an explanation.
+    let remember (store: OutcomeStore.Store) (subject: string) (key: ActionKey.ActionKey) : unit =
+        let path = pathOf store subject
+        let temporary = path + "." + Guid.NewGuid().ToString "N" + ".tmp"
+
+        try
+            try
+                let o = JsonObject()
+                o["subject"] <- subject
+                let inputs = JsonObject()
+
+                for label, digest in key.Inputs do
+                    inputs[label] <- digest
+
+                o["inputs"] <- inputs
+                Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+                File.WriteAllText(temporary, o.ToJsonString())
+                File.Move(temporary, path, true)
+            finally
+                if File.Exists temporary then
+                    File.Delete temporary
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException as ex ->
+            Logging.debug "check-records" $"could not remember the last key of %s{subject}: %s{ex.Message}"
+
+    /// The labelled inputs `subject` was last filed under; None when none is remembered or
+    /// the entry cannot be read as one of `subject`'s.
+    let tryRead (store: OutcomeStore.Store) (subject: string) : (string * string) list option =
+        let path = pathOf store subject
+
+        try
+            if File.Exists path then
+                use doc = JsonDocument.Parse(File.ReadAllText path)
+
+                if Json.tryString doc.RootElement "subject" = Some subject then
+                    Json.tryProp doc.RootElement "inputs"
+                    |> Option.filter (fun el -> el.ValueKind = JsonValueKind.Object)
+                    |> Option.map (fun el -> [ for prop in el.EnumerateObject() -> prop.Name, prop.Value.GetString() ])
+                else
+                    None
+            else
+                None
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? JsonException
+        | :? InvalidOperationException -> None
+
+/// File `outputs` under `key` for `file` of `projectFile`. Returns whether it is filed.
 let file
     (store: OutcomeStore.Store)
     (repoRoot: string option)
     (toolchain: string)
+    (projectFile: string)
     (file: string)
     (key: ActionKey.ActionKey)
     (outputs: CheckOutputs)
@@ -365,13 +443,68 @@ let file
         else
             OutcomeStore.Outcome.Pass
 
-    store.RecordWithOutputs(
-        OutcomeStore.Record.ofAction
-            key
-            (CachePathIdentity.keyOf repoRoot file)
-            outcome
-            toolchain
-            (defaultArg repoRoot "")
-            DateTimeOffset.UtcNow,
-        Some(CheckOutputs.toJson repoRoot outputs)
-    )
+    let filed =
+        store.RecordWithOutputs(
+            OutcomeStore.Record.ofAction
+                key
+                (CachePathIdentity.keyOf repoRoot file)
+                outcome
+                toolchain
+                (defaultArg repoRoot "")
+                DateTimeOffset.UtcNow,
+            Some(CheckOutputs.toJson repoRoot outputs)
+        )
+
+    if filed then
+        LastKeys.remember store (LastKeys.subjectOf repoRoot projectFile file) key
+
+    filed
+
+/// Why a file's `check` record did not answer (AUTOMATION-1607).
+[<RequireQualifiedAccess>]
+type RecordMiss =
+    /// Its key was provisional behind this earlier file (shown repository-relative), which
+    /// has no record: never read. That file's own miss says why.
+    | Behind of file: string
+    /// The last record filed for it was keyed by inputs that differ on these labels
+    /// (`toolchain`, `options`, `file`, `content`, `upstream`, `project-outputs`).
+    | Moved of labels: string list
+    /// No record of it in its project is remembered as filed: never filed, or filed
+    /// before the side index existed.
+    | NoneRemembered
+    /// The last record filed for it has exactly these inputs, yet the store does not hold
+    /// it: collected, or unreadable.
+    | NotHeld
+
+module RecordMiss =
+    /// The reason as a log line and a scan's summary name it.
+    let describe (miss: RecordMiss) : string =
+        match miss with
+        | RecordMiss.Behind file -> $"behind %s{file}"
+        | RecordMiss.Moved labels -> $"""key moved: %s{String.concat ", " labels}"""
+        | RecordMiss.NoneRemembered -> "no earlier record remembered"
+        | RecordMiss.NotHeld -> "filed under these inputs, not held now"
+
+/// `path` as a miss names it: repository-relative, `/`-separated.
+let shown (repoRoot: string option) (path: string) =
+    match repoRoot with
+    | Some root -> Path.GetRelativePath(root, path).Replace('\\', '/')
+    | None -> path
+
+/// Why `record`, of `projectFile`, has no outputs: compared with the inputs its file was
+/// last filed under (`LastKeys`), one small read. Diagnostics only.
+let explain
+    (store: OutcomeStore.Store)
+    (repoRoot: string option)
+    (projectFile: string)
+    (record: FileRecord)
+    : RecordMiss =
+    match record.Behind with
+    | Some unknown -> RecordMiss.Behind(shown repoRoot unknown)
+    | None ->
+        match LastKeys.tryRead store (LastKeys.subjectOf repoRoot projectFile record.File) with
+        | None -> RecordMiss.NoneRemembered
+        | Some stored ->
+            match ActionKey.moved stored record.Key.Inputs with
+            | [] -> RecordMiss.NotHeld
+            | labels -> RecordMiss.Moved labels
