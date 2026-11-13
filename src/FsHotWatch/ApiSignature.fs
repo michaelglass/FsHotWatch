@@ -268,18 +268,22 @@ let private declarationsOf (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFil
     else
         Some(lines |> Seq.sort |> String.concat "\n")
 
-/// The text `ofCheck` hashes, or None when the file has no signature of its own.
-let signatureText (source: string) (checkResults: FileCheckState) : string option =
-    match checkResults with
+/// The text `ofResult` hashes, or None when the file has no signature of its own.
+///
+/// "With errors" means errors the file's own `#nowarn` leaves (`FileCheckResult.ownDiagnostics`):
+/// a warm checker reports a `#nowarn`ed code a cold one does not (AUTOMATION-1664), and the
+/// signature must not depend on which checker answered.
+let signatureText (result: FileCheckResult) : string option =
+    match result.CheckResults with
     | ParseOnly _ -> None
     | Replayed _ -> raise (ReplayedResultException("ApiSignature.signatureText", "(a replayed check)"))
-    | _ when assemblyAttribute.IsMatch source -> None
+    | _ when assemblyAttribute.IsMatch result.Source -> None
     | FullCheck(_, results) ->
         // FCS can throw from a symbol property on partially-checked code. A file it cannot
         // describe has no signature, so its content stands in.
         try
             let hasErrors =
-                results.Diagnostics
+                FileCheckResult.ownDiagnostics result results.Diagnostics
                 |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
             if hasErrors then None else declarationsOf results
@@ -289,8 +293,8 @@ let signatureText (source: string) (checkResults: FileCheckState) : string optio
 
 /// The API signature hash of a checked file, or None when the file has no signature of its
 /// own and its content must stand in for it.
-let ofCheck (source: string) (checkResults: FileCheckState) : string option =
-    match checkResults with
+let ofResult (result: FileCheckResult) : string option =
+    match result.CheckResults with
     // The signature the filed check declared (ADR-059 §17).
     | Replayed outputs -> outputs.ApiSignature
-    | _ -> signatureText source checkResults |> Option.map CheckCache.sha256Hex
+    | _ -> signatureText result |> Option.map CheckCache.sha256Hex

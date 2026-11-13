@@ -42,7 +42,7 @@ let identity (source: string) (fcsSignature: string) (usedSignatures: string) : 
 /// resolved upstream cannot be described: no index entry can then vouch for the analysis.
 let identityOf (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) : string option =
     CacheInputs.usedSignaturesHash (Some repoRoot) result.ProjectOptions result.CheckResults
-    |> Option.map (identity result.Source (CheckCache.fcsCheckSignature result.CheckResults))
+    |> Option.map (identity result.Source (CheckCache.fcsCheckSignature result))
 
 /// What a flush records for an analysis `identityOf` cannot describe: unique, so no
 /// later check's identity ever matches it and the analysis is never replayed.

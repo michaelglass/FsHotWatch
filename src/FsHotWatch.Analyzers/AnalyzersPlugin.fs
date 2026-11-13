@@ -1455,7 +1455,7 @@ let internal createShadowedWithSeams
                         FsHotWatch.CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
                         |> Option.map (fun usedSignatures ->
                             let fileIdentity = FsHotWatch.CachePathIdentity.keyOf repoRoot file
-                            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
+                            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result
                             let threshold = DiagnosticSeverity.toString failOnSeverity
 
                             // AUTOMATION-1585: the same analysis as a box-wide record, keyed

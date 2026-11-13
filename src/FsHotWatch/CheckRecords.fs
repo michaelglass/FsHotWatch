@@ -75,9 +75,12 @@ module CheckOutputs =
         | FullCheck(_, results) ->
             let toReal = FileCheckResult.textToReal result
 
+            // What the file's own `#nowarn` leaves, never the raw set: a warm checker reports a
+            // `#nowarn`ed code a cold one does not (AUTOMATION-1664), and a record must not
+            // depend on which answered. The outcome and both signatures follow from it.
             Some
                 { Diagnostics =
-                    [ for d in results.Diagnostics ->
+                    [ for d in FileCheckResult.ownDiagnostics result results.Diagnostics ->
                           { FileName = toReal d.FileName
                             StartLine = d.StartLine
                             StartColumn = d.StartColumn
@@ -87,9 +90,9 @@ module CheckOutputs =
                             Severity = d.Severity
                             Subcategory = d.Subcategory
                             Message = toReal d.Message } ]
-                  FcsSignature = fcsCheckSignature result.CheckResults
+                  FcsSignature = fcsCheckSignature result
                   UsedSignatures = CacheInputs.usedSignaturesHash repoRoot result.ProjectOptions result.CheckResults
-                  ApiSignature = ApiSignature.ofCheck result.Source result.CheckResults }
+                  ApiSignature = ApiSignature.ofResult result }
 
     /// Whether any diagnostic is an error: the record's outcome.
     let hasErrors (outputs: CheckOutputs) =
