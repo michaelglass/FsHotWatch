@@ -186,6 +186,20 @@ executed`. Agent mode tokens it `warn` (so `next:` points at `status`, never `do
 **status** stays `Completed` on purpose — nothing failed, and reporting a failure would
 turn an honest exit 3 (no verdict) into an exit 1 (failures found).
 
+### `--run-once` beside a live daemon — exit 2
+
+`check --run-once` and `confirm --run-once` build and test the tree in-process. A daemon
+still running on the same workspace (left by an earlier `fshw check`) does the same work
+over the same `.fshw/` state and build outputs at the same time, so a gate run beside it
+would grade a tree that daemon is also changing. When `.fshw/daemon.pid` names a live
+process, the gate refuses with **exit 2** before any hook, claim or run, and names the pid:
+
+```bash
+fshw stop               # then re-run the gate
+```
+
+A pid file whose process is gone (a crash, a `kill -9`) is cleaned up and does not refuse.
+
 ### The run finished and its answer was lost — exit 7
 
 `check` and `confirm` exit **7** when the daemon **settled** — it built, ran the suite and

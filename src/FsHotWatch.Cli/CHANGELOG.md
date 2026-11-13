@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: `check --run-once` and `confirm --run-once` refuse to run beside a live daemon on the same workspace
+  (AUTOMATION-1657). A daemon left by an earlier `fshw check` builds and tests the same tree over the same
+  `.fshw/` state while the gate's in-process host does, so the gate's verdict depended on it: `mise run ci`
+  went red 3/3 in a workspace holding one and green on the same tree without. When `.fshw/daemon.pid` names a
+  live process, the gate now exits **2** before any hook, claim or run, naming the pid and `fshw stop`. A pid
+  file whose process is gone does not refuse.
+
 ## 0.14.0-alpha.146 - 2026-11-13
 
 - feat: `.fshw.json` `coverage` may be an array of floor sets, and a set may name `projects`

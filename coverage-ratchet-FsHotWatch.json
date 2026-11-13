@@ -1040,6 +1040,13 @@
         "platform": "linux"
       }
     ],
+    "RunOnceBesideDaemon.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1657: a run-once gate refuses beside a live daemon). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value, on macOS by RunOnceBesideDaemonTests with coverage 2026-11-13: line 100%, branch 100%. Pure file reads and string building, no platform branch, so Linux is expected to measure the same; loosen from the first CI artifact if it does not."
+      }
+    ],
     "RunOnceCheck.fs": [
       {
         "line": 84,

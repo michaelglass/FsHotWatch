@@ -3808,13 +3808,24 @@ let private executeCommandRendered
     // daemon. A reused already-running daemon is already past discovery,
     // and tests/integration paths that bypass real launch (with stub IPCs)
     // don't need the pre-check.
-    let zeroProjectsExit =
+    let zeroProjectsExit () =
         if needsProjects && not (ipc.IsRunning pipeName) then
             RunOnceOutput.failIfNoProjects repoRoot config.Exclude
         else
             None
 
-    match zeroProjectsExit with
+    // A `--run-once` gate refuses to run BESIDE a live daemon on this workspace
+    // (`RunOnceBesideDaemon`, AUTOMATION-1657). Decided before the run-level hooks, the
+    // in-flight claim, or the host, so a refusal starts nothing. The hygiene pass above
+    // has already removed a pid file whose process is provably gone.
+    let besideDaemonExit =
+        match command with
+        | Check flags when isRunOnce flags -> RunOnceBesideDaemon.refuseBesideLiveDaemon daemonPidAlive "check" repoRoot
+        | Confirm flags when confirmsRunOnce flags ->
+            RunOnceBesideDaemon.refuseBesideLiveDaemon daemonPidAlive "confirm" repoRoot
+        | _ -> None
+
+    match besideDaemonExit |> Option.orElseWith zeroProjectsExit with
     | Some exitCode -> exitCode
     | None ->
 
