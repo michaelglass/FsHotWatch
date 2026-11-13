@@ -612,7 +612,7 @@ let upstreamFingerprint
     : string =
     upstreamFingerprintWith hashFile fileStampText repoRoot filePath options
 
-/// A file's recorded API signature (`ApiSignature.ofCheck`) when it holds for these
+/// A file's recorded API signature (`ApiSignature.ofResult`) when it holds for these
 /// inputs: `signatureOf project file contentHash apiUpstream contentUpstream`, where the
 /// upstreams are the file's own `apiUpstreamFingerprintsWith` and `upstreamFingerprintsWith`
 /// entries. A record holds when its bytes are these and EITHER upstream is the one it was
@@ -798,7 +798,7 @@ type UpstreamFingerprints(repoRoot: string option) =
         keyedMemo.Clear()
         System.Threading.Volatile.Write(&generationsDeclared, true)
 
-    /// Record what a check of `filePath` declared: `signature` (`ApiSignature.ofCheck`)
+    /// Record what a check of `filePath` declared: `signature` (`ApiSignature.ofResult`)
     /// for the bytes hashing to `contentHash`, checked against `upstream` (its `ForApi`
     /// entry). Supersedes the file's previous record in that project.
     member internal _.RecordSignature
@@ -934,14 +934,18 @@ let hashDiagnosticsOrFailure (extract: unit -> DiagnosticSignature seq) : string
 ///
 /// Returns "parse-only" for ParseOnly results (FCS aborted before type
 /// checking, so no useful signature is available).
-let fcsCheckSignature (checkResults: FileCheckState) : string =
-    match checkResults with
+///
+/// Hashes what the file's own `#nowarn` leaves (`FileCheckResult.ownDiagnostics`), never
+/// the raw set: a warm checker reports a `#nowarn`ed code a cold one does not
+/// (AUTOMATION-1664), and a replay answers with what the check filed.
+let fcsCheckSignature (result: FileCheckResult) : string =
+    match result.CheckResults with
     | ParseOnly _ -> "parse-only"
     // What the filed check answered (ADR-059 §17): computed from the live diagnostics then.
     | Replayed outputs -> outputs.FcsSignature
     | FullCheck(_, results) ->
         hashDiagnosticsOrFailure (fun () ->
-            results.Diagnostics
+            FileCheckResult.ownDiagnostics result results.Diagnostics
             |> Array.map (fun d ->
                 { StartLine = d.StartLine
                   StartColumn = d.StartColumn

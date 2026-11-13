@@ -142,7 +142,7 @@ type CheckOutputs =
         FcsSignature: string
         /// `CacheInputs.usedSignaturesHash` of the check; None when it could not be described.
         UsedSignatures: string option
-        /// `ApiSignature.ofCheck`: None when the file has no signature of its own.
+        /// `ApiSignature.ofResult`: None when the file has no signature of its own.
         ApiSignature: string option
     }
 
@@ -223,6 +223,36 @@ module FileCheckResult =
     /// read against the compiler flags it was checked under (`FcsSuppression`).
     let suppression (configured: Set<int>) (result: FileCheckResult) : FcsSuppression.Suppression =
         FcsSuppression.Suppression.forFile configured result.ProjectOptions.OtherOptions result.Source
+
+    /// What the file alone silences: its own `#nowarn`, read against the compiler flags it
+    /// was checked under, and never the host's configured codes. A function of the file's
+    /// content and its options only, both of which a `check` record's key names.
+    let ownSuppression (result: FileCheckResult) : FcsSuppression.Suppression = suppression Set.empty result
+
+    /// `diagnostics` of a live check of `result`'s file, less what the file's own `#nowarn`
+    /// silences (`ownSuppression`): what a `check` record files, and what the check's
+    /// signatures (`CheckCache.fcsCheckSignature`, `ApiSignature.ofResult`) are computed
+    /// from (AUTOMATION-1664).
+    ///
+    /// The raw set is not a function of the key. A long-lived TransparentCompiler checker
+    /// that has seen a referenced assembly's stamp move reports, from then on, a warning the
+    /// file `#nowarn`s (made an error by `--warnaserror`); a cold checker of the same
+    /// inputs does not. Filed raw, one such check put a FAIL under a key whose clean
+    /// recompute passes.
+    let ownDiagnostics
+        (result: FileCheckResult)
+        (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
+        : FSharp.Compiler.Diagnostics.FSharpDiagnostic[] =
+        let own = ownSuppression result
+
+        diagnostics
+        |> Array.filter (fun d ->
+            not (
+                FcsSuppression.Suppression.silences
+                    own
+                    (d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                    d.ErrorNumber
+            ))
 
     /// `text` from `result`'s check (a diagnostic's message) as the worktree reads it:
     /// its virtual paths made real, and each store path of a placed reference replaced

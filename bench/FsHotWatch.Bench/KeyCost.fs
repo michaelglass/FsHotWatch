@@ -199,7 +199,17 @@ let measure (repo: string) (project: string) (edits: Edit list) : string list =
                       "analyzer-config", configHash file
                       "file", CachePathIdentity.keyOf (Some repo) file
                       "source", source
-                      "fcs-signature", CheckCache.fcsCheckSignature state ]
+                      "fcs-signature",
+                      CheckCache.fcsCheckSignature
+                          { File = AbsFilePath.create file
+                            Source = source
+                            CheckResults = state
+                            ProjectOptions = options
+                            Version = 0L
+                            ModelGeneration = None
+                            Frame = None
+                            Placed = Map.empty
+                            Upstream = None } ]
 
                 let without = TaskCache.merkleCacheKey slots
                 let slotStarted = Stopwatch.GetTimestamp()

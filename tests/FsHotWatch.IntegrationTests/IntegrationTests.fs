@@ -2383,7 +2383,7 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "first CheckFile returned None")
 
-        let sig1 = FsHotWatch.CheckCache.fcsCheckSignature result1.CheckResults
+        let sig1 = FsHotWatch.CheckCache.fcsCheckSignature result1
 
         // Break Foo: remove `add` so Bar.fs's `Foo.add` becomes "value not found".
         File.WriteAllText(fooPath, "module Foo\nlet unrelated () = 0\n")
@@ -2393,7 +2393,7 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "second CheckFile returned None")
 
-        let sig2 = FsHotWatch.CheckCache.fcsCheckSignature result2.CheckResults
+        let sig2 = FsHotWatch.CheckCache.fcsCheckSignature result2
 
         // Bar.fs's own bytes are identical — only Foo changed.
         test <@ sig1 <> sig2 @>)

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a `check` record no longer files a diagnostic the checked file's own `#nowarn` silences (AUTOMATION-1664). A
+  long-lived TransparentCompiler checker that has seen a referenced assembly's stamp move reports, from then on, a
+  warning the file `#nowarn`s, and `--warnaserror` makes it an error; a fresh checker of the same inputs reports
+  nothing. The record filed it raw, so one warm re-check put a FAIL under a key whose clean recompute passes (seen as
+  FS3536 and FS1182 in ten records). `CheckOutputs.ofResult` now files `FileCheckResult.ownDiagnostics`: the raw set
+  less what the file's `#nowarn` silences under its own flags (`FcsSuppression`, without the host's configured codes,
+  which the key does not name). The outcome, `CheckCache.fcsCheckSignature` and the API signature's error gate
+  (`ApiSignature.ofResult`, which replaces `ofCheck`) are computed from that set too, so a live check and its replay
+  agree. Both signature functions now take the `FileCheckResult`.
+
 - feat: `RecordAudit`, the clean-recompute audit (ADR-059 §35 Change 1a, AUTOMATION-1633): for every key a clean
   store and an audited store both hold, every stored record must equal the clean one (check records field by field:
   outcome, diagnostics as a multiset, FCS, used and API signatures; any other kind by outcome and outputs digest).

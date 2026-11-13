@@ -431,7 +431,7 @@ let private replayedAt (root: string) (rel: string) (source: string) : FileCheck
         CheckResults =
             Replayed
                 { Diagnostics = []
-                  FcsSignature = CheckCache.fcsCheckSignature full
+                  FcsSignature = CheckCache.fcsCheckSignature (checkResultOf source full)
                   UsedSignatures = CacheInputs.usedSignaturesHash (Some root) options full
                   ApiSignature = None } }
 

@@ -56,7 +56,7 @@ let private signatureOf (root: string) (source: string) =
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
 
     test <@ Array.isEmpty errors @>
-    FsHotWatch.ApiSignature.ofCheck source (FullCheck(fixtureParse (), check))
+    FsHotWatch.ApiSignature.ofResult (checkResultOf source (FullCheck(fixtureParse (), check)))
 
 /// `api` with `before` replaced by `after`; the fragment must occur exactly once.
 let private edit (source: string) (before: string, after: string) =
@@ -141,8 +141,8 @@ let ``a file with errors, or without typed results, has no signature`` () =
     withTempDir "api-signature-errors" (fun root ->
         let broken = "module Api\nlet broken : int = \"text\"\n"
         let check = checkAlone root "Api.fs" broken
-        test <@ FsHotWatch.ApiSignature.ofCheck broken (FullCheck(fixtureParse (), check)) = None @>
-        test <@ FsHotWatch.ApiSignature.ofCheck broken (fixtureParseOnly ()) = None @>
+        test <@ FsHotWatch.ApiSignature.ofResult (checkResultOf broken (FullCheck(fixtureParse (), check))) = None @>
+        test <@ FsHotWatch.ApiSignature.ofResult (checkResultOf broken (fixtureParseOnly ())) = None @>
 
         // An FSharpCheckFileResults with no state throws from every query, as FCS can from
         // a symbol property on partially-checked code.
@@ -152,7 +152,10 @@ let ``a file with errors, or without typed results, has no signature`` () =
             )
             :?> FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
 
-        test <@ FsHotWatch.ApiSignature.ofCheck "module Api\n" (FullCheck(fixtureParse (), stateless)) = None @>)
+        test
+            <@
+                FsHotWatch.ApiSignature.ofResult (checkResultOf "module Api\n" (FullCheck(fixtureParse (), stateless))) = None
+            @>)
 
 [<Fact(Timeout = 4 * RealCheckWaitMs)>]
 let ``a namespace file has a signature, moved by its types`` () =
@@ -229,9 +232,11 @@ let ``a later file's result standing across an upstream line shift analyses as a
         // The edit is one the cut applies to.
         test
             <@
-                FsHotWatch.ApiSignature.ofCheck shifted (FullCheck(fixtureParse (), checkAlone root "Api.fs" shifted)) = FsHotWatch.ApiSignature.ofCheck
-                    api
-                    (FullCheck(fixtureParse (), checkAlone root "Api.fs" api))
+                FsHotWatch.ApiSignature.ofResult (
+                    checkResultOf shifted (FullCheck(fixtureParse (), checkAlone root "Api.fs" shifted))
+                ) = FsHotWatch.ApiSignature.ofResult (
+                    checkResultOf api (FullCheck(fixtureParse (), checkAlone root "Api.fs" api))
+                )
             @>
 
         test <@ not standing.Dependencies.IsEmpty @>
@@ -261,7 +266,7 @@ let ``an entity's members are named in ordinal order, never in the order FCS enu
         let check = checkAlone root "Ordered.fs" source
 
         let text =
-            (FsHotWatch.ApiSignature.signatureText source (FullCheck(fixtureParse (), check))).Value
+            (FsHotWatch.ApiSignature.signatureText (checkResultOf source (FullCheck(fixtureParse (), check)))).Value
 
         // Each entity block: its header line, then its body lines indented by two spaces.
         let blocks =

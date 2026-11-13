@@ -226,7 +226,7 @@ let create
                       "used-signatures", usedSignatures
                       // The file's own diagnostics: a check that newly fails or
                       // recovers changes what the typed tree holds.
-                      "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults ])
+                      "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature r ])
         | _ -> None
 
 

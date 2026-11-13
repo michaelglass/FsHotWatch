@@ -549,7 +549,7 @@ type CheckPipeline
                 contentHash,
                 apiUpstream,
                 contentUpstream,
-                ApiSignature.ofCheck result.Source result.CheckResults
+                ApiSignature.ofResult result
             )
 
     /// A project output as an entry records it: repository-relative, so a sibling
@@ -1671,7 +1671,7 @@ type CheckPipeline
     /// The lookup tries the content key first and the API-signature key second (through
     /// `apiIndex`): the API key is the one that survives a comment or body edit upstream.
     /// Every result, served or checked, records the API signature it declares
-    /// (`ApiSignature.ofCheck`), so the files after it can be keyed by it, with or without
+    /// (`ApiSignature.ofResult`), so the files after it can be keyed by it, with or without
     /// a cache.
     /// `CheckFileCachedCore`, and once it returns, however it ends, whatever waits for this
     /// file's check (`ExpectChecks`) looks again.

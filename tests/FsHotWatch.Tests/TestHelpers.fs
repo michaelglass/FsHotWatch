@@ -177,6 +177,12 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       Placed = Map.empty
       Upstream = None }
 
+/// `fakeFileCheckResult` carrying `source` and `state`: what a signature of a check reads.
+let checkResultOf (source: string) (state: FileCheckState) : FileCheckResult =
+    { fakeFileCheckResult "/tmp/fshw-fixture/Fixture.fs" with
+        Source = source
+        CheckResults = state }
+
 /// Build a `BatchChecked` payload covering `files`, with deterministic timestamps and
 /// Generation = 1.
 let fakeBatchChecked (files: string list) : BatchChecked =
@@ -951,7 +957,7 @@ let withTempDirOutsideRepositorySdk (prefix: string) (body: string -> 'a) =
 let daemonChecker = lazy (FsHotWatch.Daemon.Daemon.createChecker ())
 
 /// SDK references for a project-shaped check, resolved once from a throwaway script.
-let private sdkProjectOptions =
+let sdkProjectOptions =
     lazy
         (withTempDir "sdk-options" (fun dir ->
             let script = Path.Combine(dir, "Base.fsx")

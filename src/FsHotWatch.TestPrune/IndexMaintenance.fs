@@ -499,7 +499,7 @@ let internal cacheKeyFor
         // Note what this arm does NOT read: not the changed symbols, not the pending
         // queue, not the dependsOn globs. It is a pure function of THIS file — which is
         // why all three are thunks.
-        let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+        let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r
 
         // A per-file cache hit derives a terminal summary from the plugin's whole live
         // ledger and labels it `(cached)`. While a fresh test failure is outstanding,

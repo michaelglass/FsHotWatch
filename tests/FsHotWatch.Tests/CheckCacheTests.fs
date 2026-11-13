@@ -401,8 +401,8 @@ let ``InMemoryCheckCache clear removes all entries`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
-    let sig1 = fcsCheckSignature (fixtureParseOnly ())
-    let sig2 = fcsCheckSignature (fixtureParseOnly ())
+    let sig1 = fcsCheckSignature (checkResultOf "" (fixtureParseOnly ()))
+    let sig2 = fcsCheckSignature (checkResultOf "" (fixtureParseOnly ()))
     Assert.Equal("parse-only", sig1)
     Assert.Equal(sig1, sig2)
 
@@ -410,14 +410,14 @@ let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
 let ``fcsCheckSignature differs between ParseOnly and FullCheck`` () =
     // Plugin caches must invalidate when FCS moves between parse-only and
     // full-check: the lint result depends on whether type info was available.
-    let parseOnly = fcsCheckSignature (fixtureParseOnly ())
-    let fullCheck = fcsCheckSignature (fixtureFullCheck ())
+    let parseOnly = fcsCheckSignature (checkResultOf "" (fixtureParseOnly ()))
+    let fullCheck = fcsCheckSignature (checkResultOf "" (fixtureFullCheck ()))
     Assert.NotEqual<string>(parseOnly, fullCheck)
 
 [<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature is stable across calls with the same FullCheck`` () =
-    let s1 = fcsCheckSignature (fixtureFullCheck ())
-    let s2 = fcsCheckSignature (fixtureFullCheck ())
+    let s1 = fcsCheckSignature (checkResultOf "" (fixtureFullCheck ()))
+    let s2 = fcsCheckSignature (checkResultOf "" (fixtureFullCheck ()))
     Assert.Equal(s1, s2)
 
 // --- hashDiagnosticSignatures (extracted for testability without FCS) ---
