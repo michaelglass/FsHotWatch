@@ -7,6 +7,15 @@
   `InBatch` and so cannot compare an id when there is no batch. `DispatchBatchId` is made only by the framework.
   **Breaking** for a plugin that read `Current` as a number.
 
+- fix: a live check that reports a code its own file `#nowarn`s is re-checked on a fresh checker (AUTOMATION-1664).
+  Such an answer comes from a warm TransparentCompiler that misread the file after a referenced assembly's stamp
+  moved, and nothing else it said about the file is trusted either. `CheckPipeline` now detects it
+  (`FcsDiagnosticFilter.nowarnFaultCodes`: a warning, or one the flags promote, whose code the file's own `#nowarn`
+  names), logs `FCS FAULT in <project>: the check of <file> reported FS<code>…` at warn level, and checks the file again
+  on a checker built for that one answer (`CheckPipeline(freshChecker = …)`); a fresh answer that still names such a
+  code is logged too and kept. A cold check of a healthy tree never trips it: 0 of 3511 check records in a clean store
+  of a large repository name a code their file `#nowarn`s.
+
 - fix: a `check` record no longer files a diagnostic the checked file's own `#nowarn` silences (AUTOMATION-1664). A
   long-lived TransparentCompiler checker that has seen a referenced assembly's stamp move reports, from then on, a
   warning the file `#nowarn`s, and `--warnaserror` makes it an error; a fresh checker of the same inputs reports

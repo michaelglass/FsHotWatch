@@ -5575,6 +5575,18 @@ module Daemon =
         )
         :> IWorkspaceLoader
 
+    /// A checker for one answer the warm checker faulted on: a code its file's own `#nowarn`
+    /// silences (AUTOMATION-1664, `CheckPipeline`'s `freshChecker`). Built per such answer
+    /// and dropped after it, so nothing the warm checker learned reaches it; with the
+    /// daemon's own settings that change what a check reports.
+    let internal freshCheckerForFault () =
+        FSharpChecker.Create(
+            keepAssemblyContents = true,
+            keepAllBackgroundResolutions = false,
+            parallelReferenceResolution = true,
+            useTransparentCompiler = true
+        )
+
     let private constructDaemon
         (processRegistry: ProcessRegistry.Registry)
         (checker: FSharpChecker)
@@ -5679,6 +5691,7 @@ module Daemon =
                         frames = seams.Frames,
                         imports = seams.Imports,
                         admission = checks,
+                        freshChecker = freshCheckerForFault,
                         ?checkRecords = checkRecordStore
                     )
                 | Some b, None ->
@@ -5690,6 +5703,7 @@ module Daemon =
                         frames = seams.Frames,
                         imports = seams.Imports,
                         admission = checks,
+                        freshChecker = freshCheckerForFault,
                         ?checkRecords = checkRecordStore
                     )
                 | _ ->
@@ -5700,6 +5714,7 @@ module Daemon =
                         frames = seams.Frames,
                         imports = seams.Imports,
                         admission = checks,
+                        freshChecker = freshCheckerForFault,
                         ?checkRecords = checkRecordStore
                     )
 

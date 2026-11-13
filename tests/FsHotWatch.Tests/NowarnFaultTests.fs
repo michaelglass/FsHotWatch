@@ -58,6 +58,23 @@ let private pipelineOn (project: Project) (checker: FSharpChecker) =
     pipeline.RegisterProject(project.Options.ProjectFileName, project.Options)
     pipeline
 
+/// A pipeline whose "fresh" checker is the warm one: the faulted answer is delivered as
+/// the warm checker gave it, so what the record makes of it can be seen.
+/// A pipeline that checks a faulted answer again on a fresh checker, as the daemon's does.
+let private recheckingOn (project: Project) (checker: FSharpChecker) =
+    let pipeline =
+        CheckPipeline(checker, repoRoot = project.Root, freshChecker = FsHotWatch.Daemon.Daemon.freshCheckerForFault)
+
+    pipeline.RegisterProject(project.Options.ProjectFileName, project.Options)
+    pipeline
+
+let private keepingFaultOn (project: Project) (checker: FSharpChecker) =
+    let pipeline =
+        CheckPipeline(checker, repoRoot = project.Root, freshChecker = (fun () -> checker))
+
+    pipeline.RegisterProject(project.Options.ProjectFileName, project.Options)
+    pipeline
+
 let private check (project: Project) (pipeline: CheckPipeline) =
     match pipeline.CheckFile(AbsFilePath.create project.Using) |> Async.RunSynchronously with
     | Some result -> result
@@ -80,11 +97,12 @@ let private moveExtra (project: Project) =
 let ``a re-check in a warm checker after a reference's stamp moved files the record a fresh checker files`` () =
     withTempDir "nowarn-fault-record" (fun root ->
         let project = projectIn root
-        let warm = pipelineOn project (FsHotWatch.Daemon.Daemon.createChecker ())
+        let warmChecker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let warm = keepingFaultOn project warmChecker
 
         let cold = check project warm
         let coldOutputs = (CheckRecords.CheckOutputs.ofResult (Some root) cold).Value
-        test <@ rawCodes cold = [] @>
+        test <@ List.isEmpty (rawCodes cold) @>
         test <@ not (CheckRecords.CheckOutputs.hasErrors coldOutputs) @>
 
         moveExtra project
@@ -100,8 +118,94 @@ let ``a re-check in a warm checker after a reference's stamp moved files the rec
 
         // The control: this FCS reproduces the fault, so the comparison below is not vacuous.
         test <@ rawCodes rechecked = [ FSharpDiagnosticSeverity.Error, 3536 ] @>
-        test <@ rawCodes fresh = [] @>
+        test <@ List.isEmpty (rawCodes fresh) @>
 
         test <@ not (CheckRecords.CheckOutputs.hasErrors recheckedOutputs) @>
         test <@ recheckedOutputs = freshOutputs @>
-        test <@ recheckedOutputs = coldOutputs @>)
+        test <@ recheckedOutputs = coldOutputs @>
+
+        // A pipeline with no fresh checker keeps the warm answer, and files it the same.
+        let kept = check project (pipelineOn project warmChecker)
+        test <@ rawCodes kept = [ FSharpDiagnosticSeverity.Error, 3536 ] @>
+        test <@ (CheckRecords.CheckOutputs.ofResult (Some root) kept).Value = freshOutputs @>)
+
+// Three real checks: cold, the faulted answer, and its re-check on a fresh checker.
+[<Fact(Timeout = 4 * RealCheckWaitMs)>]
+let ``a live check reporting a code its own file nowarns is re-checked on a fresh checker, and says so`` () =
+    withTempDir "nowarn-fault-recheck" (fun root ->
+        let project = projectIn root
+        let warm = recheckingOn project (FsHotWatch.Daemon.Daemon.createChecker ())
+        let lines = Collections.Concurrent.ConcurrentQueue<string>()
+
+        use _ =
+            Logging.installSink
+                { Write = lines.Enqueue
+                  Level = Logging.LogLevel.Debug
+                  File = None }
+
+        test <@ List.isEmpty (rawCodes (check project warm)) @>
+        test <@ lines |> Seq.forall (fun line -> not (line.Contains "#nowarn")) @>
+
+        moveExtra project
+        let rechecked = check project warm
+
+        // The warm checker's answer named FS3536 (the control in the test above); the one
+        // delivered is the fresh checker's.
+        test <@ List.isEmpty (rawCodes rechecked) @>
+
+        let named =
+            lines
+            |> Seq.filter (fun line -> line.Contains "FS3536" && line.Contains "B.fs" && line.Contains "fresh checker")
+            |> List.ofSeq
+
+        test <@ named.Length = 1 @>)
+
+[<Fact>]
+let ``a fault is a code the real compiler would have silenced, and only that`` () =
+    let own (flags: string list) (source: string) =
+        FcsSuppression.Suppression.forFile Set.empty flags source
+
+    let faults flags source diagnostics =
+        FcsDiagnosticFilter.nowarnFaultCodes (own flags source) diagnostics
+
+    let nowarned = "module B\n#nowarn \"3536\" \"1182\"\n"
+
+    // A #nowarned warning, and one --warnaserror promoted: both faults, each named once.
+    test <@ faults [] nowarned [ 3536, false; 3536, false ] = [ 3536 ] @>
+    test <@ faults [ "--warnaserror+" ] nowarned [ 1182, true; 3536, true ] = [ 1182; 3536 ] @>
+    test <@ faults [ "--warnaserror:3536" ] nowarned [ 3536, true ] = [ 3536 ] @>
+
+    // An error in its own right is the compiler's to report, #nowarn or not; a code the
+    // file does not name, and an answer with nothing to silence, are no fault.
+    test <@ List.isEmpty (faults [] nowarned [ 3536, true ]) @>
+    test <@ List.isEmpty (faults [ "--warnaserror+" ] nowarned [ 1, true; 64, false ]) @>
+    test <@ List.isEmpty (faults [ "--warnaserror+" ] "module B\n" [ 3536, true ]) @>
+
+    // The host's configured codes are not the file's: they never make a fault.
+    let configured =
+        FcsSuppression.Suppression.forFile (Set.ofList [ 3536 ]) [ "--warnaserror+" ] "module B\n"
+
+    test <@ List.isEmpty (FcsDiagnosticFilter.nowarnFaultCodes configured [ 3536, true ]) @>
+
+[<Fact>]
+let ``the fault's log lines name the file and every code`` () =
+    let line =
+        FcsDiagnosticFilter.nowarnFaultLogLine "App.fsproj" "/w/src/Program.fs" [ 1182; 3536 ]
+
+    test <@ line.Contains "/w/src/Program.fs" && line.Contains "FS1182, FS3536" @>
+    test <@ line.Contains "fresh checker" && line.Contains "App.fsproj" @>
+
+    let survived =
+        FcsDiagnosticFilter.nowarnSurvivedLogLine "App.fsproj" "/w/src/Program.fs" [ 3536 ]
+
+    test <@ survived.Contains "/w/src/Program.fs" && survived.Contains "FS3536" @>
+
+    let kept =
+        FcsDiagnosticFilter.nowarnKeptLogLine "App.fsproj" "/w/src/Program.fs" [ 3536 ]
+
+    test
+        <@
+            kept.Contains "/w/src/Program.fs"
+            && kept.Contains "FS3536"
+            && kept.Contains "kept"
+        @>
