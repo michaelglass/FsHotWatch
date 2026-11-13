@@ -68,10 +68,10 @@ module RecordMode =
         | Shadow -> "shadow"
         | On -> "on"
 
-    /// SHADOW: the shadow period's evidence is gathered only where records are filed and
-    /// compared, and a shadow never changes an answer. Its cost is one analysis of each
-    /// file a workspace's task cache answered before the store held its record.
-    let Default = Shadow
+    /// ON (ADR-059 §39): the shadow period agreed completely (the nightly analyze audits
+    /// 778/778 and 784/784, and 0 shadow/on disagreements on a real tree), and reverting is
+    /// one config value: `"analyzerRecords": "shadow"` or `"off"`, or `FSHW_ANALYZER_RECORDS`.
+    let Default = On
 
 /// Where and how analyses are filed.
 [<NoComparison; NoEquality>]

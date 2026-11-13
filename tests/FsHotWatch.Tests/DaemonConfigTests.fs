@@ -643,14 +643,14 @@ let ``FSHW_OPTIONS_RECORDS overrides the configured optionsRecords either way, a
     test <@ not (resolveOptionsRecords false (env "FSHW_CHECK_RECORDS" "1")) @>
     test <@ resolveOptionsRecords true (env "FSHW_OPTIONS_RECORDS" "maybe") @>
 
-/// AUTOMATION-1585: `analyzerRecords` is off, shadow or on, and shadow when absent.
+/// AUTOMATION-1585: `analyzerRecords` is off, shadow or on, and on when absent.
 [<Fact(Timeout = 15000)>]
-let ``parseConfig analyzerRecords is shadow unless set, and refuses anything but off, shadow or on`` () =
+let ``parseConfig analyzerRecords is on unless set, and refuses anything but off, shadow or on`` () =
     let modeOf json =
         (parseConfig json defaults).AnalyzerRecords
 
-    test <@ modeOf "{}" = FsHotWatch.Analyzers.AnalyzeRecords.Shadow @>
-    test <@ modeOf """{"analyzerRecords": null}""" = FsHotWatch.Analyzers.AnalyzeRecords.Shadow @>
+    test <@ modeOf "{}" = FsHotWatch.Analyzers.AnalyzeRecords.On @>
+    test <@ modeOf """{"analyzerRecords": null}""" = FsHotWatch.Analyzers.AnalyzeRecords.On @>
     test <@ modeOf """{"analyzerRecords": "off"}""" = FsHotWatch.Analyzers.AnalyzeRecords.Off @>
     test <@ modeOf """{"analyzerRecords": "shadow"}""" = FsHotWatch.Analyzers.AnalyzeRecords.Shadow @>
     test <@ modeOf """{"analyzerRecords": "on"}""" = FsHotWatch.Analyzers.AnalyzeRecords.On @>

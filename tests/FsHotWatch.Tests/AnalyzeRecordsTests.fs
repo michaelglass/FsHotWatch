@@ -312,7 +312,7 @@ let ``the mode parses off, shadow and on, and nothing else`` () =
     test <@ AnalyzeRecords.RecordMode.tryParse "shadow" = Some AnalyzeRecords.Shadow @>
     test <@ AnalyzeRecords.RecordMode.tryParse "on" = Some AnalyzeRecords.On @>
     test <@ AnalyzeRecords.RecordMode.tryParse "yes" = None @>
-    test <@ AnalyzeRecords.RecordMode.Default = AnalyzeRecords.Shadow @>
+    test <@ AnalyzeRecords.RecordMode.Default = AnalyzeRecords.On @>
 
 [<Fact>]
 let ``the analyzer SDK is named by release, never by build`` () =

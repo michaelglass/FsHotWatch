@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `"analyzerRecords"` defaults to `"on"`, no longer `"shadow"` (AUTOMATION-1585, ADR-059 §39). An `analyze`
+  record now answers its key in place of a live analysis, a replayed check included, so a daemon starting at a tree
+  any checkout already analysed demands no live check. The shadow agreed completely: the nightly replay audits agreed
+  on analyze 778/778 and 784/784, and on intelligence tree 0d6bd981 (fresh workspaces, main-built fshw) `on` ran 0
+  live analyzer checks against `shadow`'s 2,786, with an idle live heap of 0.36 GB after GC against 7.72 GB (footprint
+  1.9–3.3 GB against 9.7 GB), a green gate and 0 shadow/on disagreements. **Fallback:** `"analyzerRecords": "shadow"`
+  in `.fshw.json`, or `FSHW_ANALYZER_RECORDS=shadow`, restores the previous default; `"off"` / `off` turns records
+  off entirely. Both values stay supported.
+
 - feat: `fshw stop`, a restart and a one-shot verb's release tell the daemon who is stopping it: the command line, pid
   and cwd, which the daemon logs as its stop cause ahead of "Daemon stopped." (AUTOMATION-1675). A signal and a
   `.fshw.json` change are logged as causes too. `installDaemonSignalHandlers` and `onDaemonSignal` hand the stop the
@@ -34,9 +43,10 @@
 
 - feat: `"analyzerRecords"` in `.fshw.json` (`"off"`, `"shadow"`, `"on"`; `FSHW_ANALYZER_RECORDS` overrides it) files
   each analysis box-wide as an `analyze` record, so daemons at different trees stop evicting each other's analyses
-  (AUTOMATION-1585, ADR-059 §37). **Default `shadow`:** records are filed and each live analysis of a filed key is
-  compared with its record (a disagreement is logged at warning, naming the field), but a record never answers; `on`
-  lets records answer, so a start at a tree any checkout already analysed analyses nothing. One-time effect of
+  (AUTOMATION-1585, ADR-059 §37). `shadow`: records are filed and each live analysis of a filed key is compared
+  with its record (a disagreement is logged at warning, naming the field), but a record never answers; `on` (the
+  default since ADR-059 §39, see above) lets records answer, so a start at a tree any checkout already analysed
+  analyses nothing. One-time effect of
   upgrading: the first start of each workspace re-analyses, once, the files its task cache answered before their
   records were filed. With `includeOutsideRepo` there is no repository root to name paths under, and records are off.
 

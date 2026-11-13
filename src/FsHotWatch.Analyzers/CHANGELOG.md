@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `AnalyzeRecords.RecordMode.Default` is `On`, no longer `Shadow` (AUTOMATION-1585, ADR-059 §39): a filed
+  `analyze` record answers its key in place of a live analysis, a replayed check included. `Shadow` and `Off` are
+  unchanged and still selectable; see the FsHotWatch.Cli changelog for the evidence and the config fallback.
+
 - refactor: `AnalyzeNeeds.Comparison` has no `FirstSeen` case (AUTOMATION-1635). A comparison needs two analyses,
   so `compare` could never return it, yet `render` and `describe` had to answer it. `Shadow.Observe` now returns
   `Observed` (`FirstSeen | Compared of Comparison`). The log lines are unchanged.

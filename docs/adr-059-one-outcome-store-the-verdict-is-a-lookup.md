@@ -1867,7 +1867,8 @@ of a live analysis, a replayed check included (`IReplayedCheckReader`), so no li
 demanded. Shadow is the default because the shadow period's evidence exists only where records
 are filed and compared, and a shadow never changes an answer. Its cost: the first start of each
 workspace re-analyses, once, every file its task cache answered before the store held the
-record. Switch to `on` once the shadow has run on real trees without a disagreement.
+record. Switch to `on` once the shadow has run on real trees without a disagreement. (The
+default became `on` in §39.)
 
 **Acceptance (E3, `AnalyzeRecordsTests`).** Daemons start alternately at T1 and T2 (differing in
 two files, one finding fixed) over one box: with records `on`, after each tree has run once, a
@@ -1944,3 +1945,26 @@ and later).
 **Packaging.** `FsHotWatch.Core` is not a package of its own (AUTOMATION-1668: one library,
 with a CLI). `FsHotWatch.Analyzers` references it with `PrivateAssets="all"` and carries
 `FsHotWatch.Core.dll` in its own nupkg's `lib/`, so the nupkg depends on no `FsHotWatch.Core` package.
+
+## 39. Amendment (AUTOMATION-1585): `analyzerRecords` defaults to `on`
+
+§37 shipped `analyzerRecords` with the default `shadow` and said to switch to `on` once the
+shadow had run on real trees without a disagreement. It has, so the default is now `on`
+(`AnalyzeRecords.RecordMode.Default`). `shadow` and `off` are unchanged and still selectable,
+through `.fshw.json` and through `FSHW_ANALYZER_RECORDS`.
+
+**Flip criterion.** §37 wrote none beyond "without a disagreement", so it is recorded here: the
+shadow agrees completely on every measurement taken, and reverting is cheap (one config value,
+no data migration, no key change). Both hold:
+
+- **Agreement.** The nightly replay audits agreed on `analyze` 778/778 and 784/784.
+- **A real tree.** Intelligence tree 0d6bd981, fresh workspaces, fshw built from `main`:
+
+  - B2, default `shadow`: 2,786 live analyzer checks; idle live heap 7.72 GB, footprint 9.7 GB.
+  - B3, `"analyzerRecords": "on"`: 0 live analyzer checks, 0 demanded; idle live heap
+    0.36 GB after GC, footprint 1.9–3.3 GB; gate green; 0 shadow/on disagreements.
+- **Revert.** `"analyzerRecords": "shadow"` in `.fshw.json`, or `FSHW_ANALYZER_RECORDS=shadow`,
+  puts any consumer back on the old behaviour without a release.
+
+**After the flip.** The nightly `analyze` audit keeps running. Any mismatch reverts the default to
+`shadow` and reopens AUTOMATION-1585.

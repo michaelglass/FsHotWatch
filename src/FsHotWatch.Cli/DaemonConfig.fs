@@ -490,7 +490,7 @@ type DaemonConfiguration =
         /// Off when absent.
         OptionsRecords: bool
         /// `"analyzerRecords"`: `"off"`, `"shadow"` or `"on"` (AUTOMATION-1585). Files each analysis
-        /// as an `analyze` record box-wide; `on` also answers from them. Shadow when absent.
+        /// as an `analyze` record box-wide; `on` also answers from them. On when absent.
         AnalyzerRecords: FsHotWatch.Analyzers.AnalyzeRecords.RecordMode
         /// `"optionsRecordsPortable": "shadow"` also files each evaluation through the checkout-root
         /// token and logs what such a record would have replayed in another checkout, serving none
