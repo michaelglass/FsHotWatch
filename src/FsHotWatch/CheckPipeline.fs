@@ -327,8 +327,16 @@ type CheckPipeline
         ?maxConcurrentChecks: int,
         ?admission: WorkScheduler.Lane,
         ?checkRecords: OutcomeStore.Store,
-        ?checkToolchain: string
+        ?checkToolchain: string,
+        ?freshChecker: unit -> FSharpChecker
     ) =
+    /// Builds the checker a file is checked again on when the warm one reported a code the
+    /// file's own `#nowarn` silences (AUTOMATION-1664, `FcsDiagnosticFilter.nowarnFaultCodes`):
+    /// one per such answer, dropped after it. The daemon passes its own
+    /// (`Daemon.freshCheckerForFault`, the one place checkers are built); without one the
+    /// fault is logged and the warm answer kept, which its record files without the code.
+    let freshChecker: (unit -> FSharpChecker) option = freshChecker
+
     /// The checker build `check` records are keyed by: this process's, unless a test
     /// stands in another.
     let checkToolchain = defaultArg checkToolchain toolchainIdentity
@@ -1360,16 +1368,18 @@ type CheckPipeline
                 // worked: a survivor is reported as our fault, not swallowed.
                 let answeredFrom = ref startOrigin
 
-                let recheck () =
+                let recheckOn (on: FSharpChecker) () =
                     async {
                         let framed, origin = framedNow ()
                         answeredFrom.Value <- origin
                         inFlight[slot] <- (project, origin)
                         started.Value <- Some(project, origin)
-                        return! ProjectSnapshots.parseAndCheck fcs checkedPath framed.Snapshot
+                        return! ProjectSnapshots.parseAndCheck on checkedPath framed.Snapshot
                     }
 
-                let! (parseResults, checkAnswer), _ =
+                let recheck = recheckOn fcs
+
+                let! (warmParse, warmAnswer), _ =
                     FcsDiagnosticFilter.recheckWithBudget
                         recheckBudget
                         project
@@ -1382,6 +1392,43 @@ type CheckPipeline
                         (fun () -> ProjectSnapshots.invalidateShared checker options)
                         recheck
                         (firstParse, firstAnswer)
+
+                // An answer naming a code the file's own `#nowarn` silences comes from a
+                // checker that misread the file (AUTOMATION-1664): a warm TransparentCompiler
+                // does after a referenced assembly's stamp moved, and a fresh one does not.
+                // Nothing else that checker said about the file is trusted either, so it is
+                // checked again on a fresh checker, and the fault is logged with every code.
+                let own = FcsSuppression.Suppression.forFile Set.empty options.OtherOptions source
+
+                let faultIn (answer: FSharpCheckFileAnswer) =
+                    match answer with
+                    | FSharpCheckFileAnswer.Succeeded results ->
+                        results.Diagnostics
+                        |> Seq.map (fun d ->
+                            d.ErrorNumber, d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                        |> FcsDiagnosticFilter.nowarnFaultCodes own
+                    | FSharpCheckFileAnswer.Aborted -> []
+
+                let! parseResults, checkAnswer =
+                    match faultIn warmAnswer, freshChecker with
+                    | [], _ -> async.Return(warmParse, warmAnswer)
+                    | codes, None ->
+                        Logging.warn "check" (FcsDiagnosticFilter.nowarnKeptLogLine projectName absPath codes)
+                        async.Return(warmParse, warmAnswer)
+                    | codes, Some fresh ->
+                        async {
+                            Logging.warn "check" (FcsDiagnosticFilter.nowarnFaultLogLine projectName absPath codes)
+                            let! freshParse, freshAnswer = recheckOn (fresh ()) ()
+
+                            match faultIn freshAnswer with
+                            | [] -> ()
+                            | survived ->
+                                Logging.warn
+                                    "check"
+                                    (FcsDiagnosticFilter.nowarnSurvivedLogLine projectName absPath survived)
+
+                            return freshParse, freshAnswer
+                        }
 
                 sw.Stop()
                 started.Value |> Option.iter forget

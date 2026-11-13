@@ -519,6 +519,15 @@ let ``a #nowarn file a change batch re-checks leaves no refusal in the analysis 
     // reports the experimental use at Error severity anyway (dotnet/fsharp#9796). What
     // reaches the receipt must be filtered exactly as what reaches the ledger is,
     // whichever cohort delivered the result.
+    // Installed before the daemon exists, so its workers log here too.
+    let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    use _ =
+        Logging.installSink
+            { Write = lines.Enqueue
+              Level = Logging.LogLevel.Debug
+              File = None }
+
     withFixtureOf (inMemoryCache ()) [ "--warnaserror+" ] "batch-nowarn-receipt" (fun fixture ->
         File.WriteAllText(fixture.Late, "module Late\n[<Experimental(\"try\")>]\nlet tripled = Middle.doubled * 3\n")
 
@@ -568,10 +577,18 @@ let ``a #nowarn file a change batch re-checks leaves no refusal in the analysis 
                 fixture.Late
                 "module Late\n[<Experimental(\"try\")>]\nlet tripled = Middle.doubled * 3\nlet extra = 0\n"
 
-        // Positive control: the batch delivered Use, and FCS really did report the
-        // suppressed code at Error severity in it.
+        // Positive control: the batch delivered Use, and the warm checker really did report
+        // the suppressed code in it: the pipeline named the fault (AUTOMATION-1664) and
+        // delivered a fresh checker's answer instead, which reports nothing.
         Assert.True(batch.ContainsKey "Use.fs", $"the batch must re-check Use: %A{batch}")
-        Assert.True(batch["Use.fs"] > 0, $"Use must carry the #nowarn-suppressed error: %A{batch}")
+
+        Assert.True(
+            lines
+            |> Seq.exists (fun line -> line.Contains "FCS FAULT" && line.Contains "Use.fs" && line.Contains "FS0057"),
+            $"the warm checker's answer must name the #nowarn-suppressed code: %A{List.ofSeq lines}"
+        )
+
+        Assert.Equal(0, batch["Use.fs"])
 
         Assert.Empty(refusalsFor fixture.Use)
         Assert.Empty(ledgerFor fixture.Use))

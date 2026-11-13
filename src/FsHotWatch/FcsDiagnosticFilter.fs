@@ -533,3 +533,44 @@ let internal recheckWithBudget
 
         return! recheckIfSelfIncompatible messagesOf isSelfIncompatibleTypeMessage decide recheck first
     }
+
+// ---------------------------------------------------------------------------
+// A code the file's own `#nowarn` silences (AUTOMATION-1664)
+// ---------------------------------------------------------------------------
+//
+// A long-lived TransparentCompiler checker that has seen a referenced assembly's stamp
+// move reports, from then on, a warning the checked file `#nowarn`s (FS3536, FS1182 seen);
+// `--warnaserror` makes it an error. A fresh checker of the same inputs reports nothing
+// (FCS 43.12.402 and 43.13.101 alike). The record and every signature already leave such
+// a diagnostic out (`FileCheckResult.ownDiagnostics`); this is the standing defence for
+// the rest of the answer: a checker that misread one directive of the file is not trusted
+// for anything else it said about it, so the file is checked again on a fresh checker.
+
+/// The codes among `diagnostics` (each its code and whether it is an Error) that the
+/// file's own `#nowarn` silences under `own` (`FileCheckResult.ownSuppression`), distinct
+/// and in order. Empty for every answer the real compiler would give.
+let nowarnFaultCodes (own: FcsSuppression.Suppression) (diagnostics: (int * bool) seq) : int list =
+    diagnostics
+    |> Seq.filter (fun (code, isError) ->
+        own.Nowarn.Contains code && FcsSuppression.Suppression.silences own isError code)
+    |> Seq.map fst
+    |> Seq.distinct
+    |> Seq.sort
+    |> List.ofSeq
+
+let private codesText (codes: int list) =
+    codes |> List.map (sprintf "FS%04d") |> String.concat ", "
+
+/// The warn line a faulted answer is logged under: the file and every code.
+let internal nowarnFaultLogLine (project: string) (file: string) (codes: int list) : string =
+    $"FCS FAULT in %s{project}: the check of %s{file} reported %s{codesText codes}, which the file's own #nowarn silences — the warm checker misread the file, so it is re-checked on a fresh checker (AUTOMATION-1664)"
+
+/// The warn line for a fresh checker that reported such a code too: its answer is kept,
+/// and the record still leaves the code out.
+let internal nowarnSurvivedLogLine (project: string) (file: string) (codes: int list) : string =
+    $"FCS FAULT in %s{project}: a fresh checker also reported %s{codesText codes} in %s{file}, which the file's own #nowarn silences; its answer is kept (AUTOMATION-1664)"
+
+/// The warn line for a faulted answer a pipeline with no fresh checker keeps: the record
+/// still leaves the code out.
+let internal nowarnKeptLogLine (project: string) (file: string) (codes: int list) : string =
+    $"FCS FAULT in %s{project}: the check of %s{file} reported %s{codesText codes}, which the file's own #nowarn silences; no fresh checker is configured, so the warm answer is kept (AUTOMATION-1664)"
