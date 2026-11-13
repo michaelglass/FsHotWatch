@@ -1787,3 +1787,94 @@ all five, so intelligence audits every shared key. Other kinds through the gener
 the producing checkout's absolute paths (a comparison to write, or a defect, before it joins);
 `options-inputs` 1 of 1 differs in its directory listing. None of these kinds is in the nightly
 yet.
+
+## 37. Amendment (AUTOMATION-1634): the read-set audit fails an action that reads what its key does not name
+
+§35 Change 1b, first slice: the mechanism, its controls, and the CI job.
+
+**Why a second audit.** The clean-recompute audit (§36) finds a key that missed an input only on
+a night that input differed between the stored run and the clean one, and never when both runs
+read the same undeclared input. The read-set audit finds it structurally: trace every file an
+action actually read and fail when one is outside what its key names, whatever that file holds.
+Rattle's hazard check, used as a test and not as the cache.
+
+- **`ReadSetAudit`** (core) is the comparison: per action, its distinct reads against its
+  `Declared` (files, and directories named whole), less named `Exemption`s. Exit 0 clean,
+  1 undeclared, 3 vacuous: an action whose tracer saw no read is no answer, never clean. A PROBE
+  (existence, stamp, listing) counts as a read: whether a file exists is an input. Every
+  exempted read is counted in the report under its exemption's name.
+- **Tracers.** `ReadTrace` installs a recording `IFileSystem` as FCS's file-system shim for the
+  duration of one trace, and `ProjectSnapshots` reports the source reads fshw makes on FCS's
+  behalf (it reads a source file when FCS asks for its text) through `ReadTrace.opened`. A trace
+  is process-wide (the shim is one global and FCS reads on its own threads), so one runs at a
+  time and its tests run alone (`ReadTrace` collection). `Strace` traces a child process and
+  every process it starts (`strace -f -y -e trace=%file`) and parses the output: a read-only or
+  read-write open is a read, a failed open, a stat, an access or an opened directory a probe, an
+  exec reads its program, a write-only open is not a read; `chdir` and directory fds resolve
+  relative paths.
+- **What a check declares** (`CheckDeclared.ofCheck`) is the walk its key folds
+  (`CheckCache.upstreamFingerprintsWith`, `project-outputs`): the file and those before it in
+  compile order, every `-r:` (referenced outputs among them), every source and `-r:` of every F#
+  project it references transitively, every non-F# reference's output. It is written BESIDE the
+  key's walk, not derived from it, so the two can drift; §35's S1 (the key is the trace) removes
+  the second copy.
+- **Where it runs.** The FCS half runs on every platform, so its controls run in the suite
+  locally and in CI's `build` job. The strace half needs Linux: macOS has no unprivileged
+  syscall tracer (`fs_usage` and `dtruss` refuse to run without root, and dtrace is fenced by
+  SIP), so there its controls skip. CI's `read-set-audit` job installs strace and sets
+  `FSHW_READ_SET_STRACE=required`, under which a missing strace FAILS those controls instead of
+  skipping them; ci-linux's image carries strace for the same job. §35 Change 2's "read-set audit
+  green on FsHotWatch's own CI" is that job.
+- **The controls.** For each layer, an action that reads an undeclared file fails naming exactly
+  that file, and one whose reads are all declared passes. The comparison over given reads; the
+  strace parser over strace's output; a real FCS check (B2 of a two-project fixture) clean against
+  its real declaration, and failing on exactly `B1.fs` against a planted declaration that leaves
+  `B1.fs` out (what a key that ignored it would declare); a real `sh -c 'cat a; cat b'` under
+  strace, clean when both are declared and failing on exactly `b` when only `a` is. A check of B1
+  does not read B2: a file after the checked one is neither declared nor read.
+
+**First real trace** (the fixture's check of B2, macOS, FCS 43.12.402, script-derived options):
+377 distinct reads. Exempted by argument, with their reasons in the report:
+`reference-directory-probes` (about 180: FCS probes for `<reference>.xml` documentation and
+`Facades` beside each declared reference; no check output carries a reference's documentation,
+and an OPEN there still fails) and `checker-host-probes` (about 26: FCS probes for .NET Framework
+`v4.x` folders beside its own assembly; the key names the checker build, not that directory's
+listing). Two **open findings**, exempted only so the controls can run and counted on every
+audit until a key names them:
+
+- `runtime-directory-probes`: FCS probes the .NET runtime's directory (`System.ValueTuple.dll`).
+  The checker build in a check key names FCS, FSharp.Core and fshw, not the runtime hosting them.
+- `project-directory-probes`: FCS probes the project's directory for assemblies by simple name
+  (`mscorlib`, `FSharp.Core`, `System.Windows.Forms.dll`, ...). Their absence is an input no key
+  names. Seen with script-derived options; not yet measured with MSBuild-derived ones.
+
+**What a clean audit proves, and what it cannot.** It proves that every file the traced run
+read, through what the tracer sees, is named by the action's key. It cannot see:
+
+- **State that is not a read.** FCS checker history (AUTOMATION-1664's first undeclared
+  influence on check records) is in-process state left by earlier checks; no file is read when
+  it influences a result, so no trace shows it. Worse for attribution, a read FCS answers from a
+  process-wide cache (its assembly-reader cache) appears only in the first trace of a process
+  that needs it. A fresh process per audited action, and the clean-recompute audit, are what see
+  this class.
+- **A value derived from a read's NAME rather than its bytes.** AUTOMATION-1664's second
+  influence: xUnit's `[<CallerFilePath>]` renders the absolute checkout path into a check's
+  attribute output. The audit sees `<checkout>/tests/X.fs` read, and the key names `tests/X.fs`
+  and its bytes, so the read is declared and the audit is clean, while the output depends on
+  where the checkout lives. A read-set audit is blind to that by construction. The checkout-pair
+  comparison (two checkouts of one tree file equal records, as `CheckRecordsTests` asserts) and
+  the clean recompute in another directory are what catch it; T2 (no absolute path is a key
+  input type) is what forbids writing such a key.
+- **Inputs that are not files**: environment variables, the clock, the network, arguments.
+- **Reads outside the traced processes**: a build server or daemon the command hands work to
+  (MSBuild node reuse, the compiler server, a running fshw daemon) reads in a process strace did
+  not start. Tracing a build needs node reuse and shared compilation off.
+- **Digest fidelity**: a declared file whose digest the key computed wrongly (a normalized form,
+  a stamp instead of bytes for an outside reference) passes; the audit checks names, not digests.
+
+**Not yet.** Nothing here has run on Linux at the time this lands; the `read-set-audit` job runs
+on the next push to `main`. This slice audits fixture checks, not FsHotWatch's own: the next
+slice traces every check of this repository's tree (a fresh checker per file, MSBuild-derived
+options), which is also where the project-directory finding is measured for real options. Other
+record kinds (analyzers, format, test-prune analysis, test runs by strace) follow as their
+declarations are written.

@@ -2389,7 +2389,31 @@
       "line": 100,
       "branch": 95,
       "reason": "new file (AUTOMATION-1633, ADR-059 §36: the clean-recompute audit). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by the audit tests (RecordAuditTests, CliTests, CheckRecordsTests) with coverage: line 100%, branch 95.9% (71/74). Uncovered: one compiler-generated edge on each of the three for-loops inside the list expression of render (kinds, mismatches, unmatched), whose bodies and empty cases both run. Pure comparison and file IO, platform-neutral."
-    }
+    },
+    "ReadSetAudit.fs": {
+      "line": 100,
+      "branch": 82,
+      "reason": "new file (AUTOMATION-1634, ADR-059 §37: the read-set audit). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by ReadSetAuditTests with coverage: line 100% (204/204), branch 82.9% (68/82). The uncovered branches are compiler-generated edges of list expressions and pattern guards whose cases all run. Pure comparison, no platform branch."
+    },
+    "ReadTrace.fs": {
+      "line": 100,
+      "branch": 80,
+      "reason": "new file (AUTOMATION-1634: the in-process read tracer over FCS's file-system shim). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value. Measured 2026-11-13 on macOS by ReadSetAuditTests with coverage: line 100% (40/40), branch 80% (8/10); the two uncovered edges are the compiler-generated exits of the try/finally and the lock in trace. No platform branch."
+    },
+    "Strace.fs": [
+      {
+        "line": 79,
+        "branch": 79,
+        "reason": "new file (AUTOMATION-1634: strace output parser and runner). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-13 on macOS by ReadSetAuditTests with coverage: line 79.0% (121/153), branch 79.5% (62/78). Uncovered: trace (runs strace, Linux only) and the PATH scan in available, which macOS short-circuits; the parser is fully exercised.",
+        "platform": "macos"
+      },
+      {
+        "line": 79,
+        "branch": 79,
+        "reason": "new file (AUTOMATION-1634). Not yet measured on Linux: set equal to the macOS floor, a lower bound there since Linux additionally runs trace when strace is on PATH; re-baseline from CI (`mise run loosen-from-ci`) once the read-set-audit job has run.",
+        "platform": "linux"
+      }
+    ]
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [

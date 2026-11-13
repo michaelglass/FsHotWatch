@@ -163,3 +163,19 @@ let ``mise run ci-linux runs the script, and its output directory is ignored`` (
             File.ReadAllLines(Path.Combine(root, ".gitignore"))
             |> Array.exists (fun l -> l.Trim() = ".ci-linux/")
         @>
+
+[<Fact>]
+let ``the read-set-audit job installs strace, then runs the audit's tests with strace required`` () =
+    // AUTOMATION-1634: the audit's strace half runs only on Linux. On this job a missing
+    // strace must fail the tests rather than skip them, or a skip would read as green.
+    let job =
+        repoPlan ()
+        |> List.filter (fun (name, _) -> name.StartsWith("read-set-audit / ", StringComparison.Ordinal))
+        |> List.map snd
+
+    test <@ job |> List.exists (fun c -> c.Contains "apt-get install -y strace") @>
+
+    let audit = List.last job
+    test <@ audit.StartsWith($"%s{FsHotWatch.Strace.RequiredVariable}=required ", StringComparison.Ordinal) @>
+    test <@ audit.Contains "--filter-class 'FsHotWatch.Tests.ReadSetAuditTests'" @>
+    test <@ audit.Contains "--filter-class 'FsHotWatch.Tests.ReadSetAuditTests+FcsShimTests'" @>

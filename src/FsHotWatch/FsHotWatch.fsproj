@@ -143,6 +143,9 @@
     <Compile Include="OutputCopyFreshness.fs" />
     <Compile Include="RefAssemblyFreshness.fs" />
     <Compile Include="DepsFreshness.fs" />
+    <Compile Include="ReadTrace.fs" />
+    <Compile Include="Strace.fs" />
+    <Compile Include="ReadSetAudit.fs" />
     <Compile Include="ProjectSnapshots.fs" />
     <Compile Include="FrameExclusions.fs" />
     <Compile Include="ImportStore.fs" />

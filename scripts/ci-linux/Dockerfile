@@ -12,7 +12,7 @@ FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git jq procps psmisc tar unzip xz-utils zstd tzdata \
+      bash ca-certificates curl git jq procps psmisc strace tar unzip xz-utils zstd tzdata \
       libicu74 libssl3t64 zlib1g libgssapi-krb5-2 libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 

@@ -147,6 +147,29 @@ jobs:
       - run: dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build
       - run: dotnet test --project tests/TestPrune.Tests/TestPrune.Tests.fsproj --no-build
 
+  # The read-set audit (ADR-059 §35 Change 1b, §37; AUTOMATION-1634): an action that reads a file
+  # its key does not declare fails. The FCS half (a real check under FCS's file-system shim) runs
+  # on every platform and in the build job's suite too; the child-process half traces with strace,
+  # which only Linux has, so this job installs it and sets FSHW_READ_SET_STRACE=required: a missing
+  # strace FAILS the strace controls here instead of skipping them. §35 Change 2's switch requires
+  # this job green. The `command -v` guard keeps the step a no-op where strace is already present
+  # (ci-linux's image carries it and has no sudo).
+  read-set-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          # Same band as global.json and the build job above.
+          dotnet-version: '10.0.4xx'
+      - run: command -v strace || (sudo apt-get update && sudo apt-get install -y strace)
+      - run: dotnet tool restore
+      - run: dotnet restore
+      - run: dotnet build --no-restore
+      - name: Read-set audit
+        run: FSHW_READ_SET_STRACE=required dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj --no-build --filter-class 'FsHotWatch.Tests.ReadSetAuditTests' --filter-class 'FsHotWatch.Tests.ReadSetAuditTests+FcsShimTests'
+
   # This is a public repository. Refuse commit messages that carry private references
   # (agent-session links, private hostnames, tracker URLs) in the commits this push or
   # pull request adds. jj runs no hooks, so this and the `check-commit-messages` task

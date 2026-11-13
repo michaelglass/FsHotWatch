@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: the read-set audit (ADR-059 §35 Change 1b, §37, AUTOMATION-1634): `ReadSetAudit` fails an action that read a file
+  its key does not name (probes count; exempted reads are counted by named exemption; exit 0 clean / 1 undeclared / 3
+  vacuous). Tracers: `ReadTrace` (FCS's file-system shim plus the source reads `ProjectSnapshots` makes for FCS) and
+  `Strace` (a child process and its descendants under `strace -f`, Linux only). `CheckDeclared.ofCheck` is what a check
+  record's key declares. CI's new `read-set-audit` job runs the controls with strace required.
+
 - feat: `RecordAudit`, the clean-recompute audit (ADR-059 §35 Change 1a, AUTOMATION-1633): for every key a clean
   store and an audited store both hold, every stored record must equal the clean one (check records field by field:
   outcome, diagnostics as a multiset, FCS, used and API signatures; any other kind by outcome and outputs digest).

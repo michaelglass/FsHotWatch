@@ -52,6 +52,7 @@ let readOpenFile (hashFile: string -> string) (path: string) : OpenFile =
 
     let text =
         try
+            ReadTrace.opened path
             File.ReadAllText path
         with
         | :? FileNotFoundException
@@ -77,6 +78,7 @@ let private diskFile (hashFile: string -> string) (version: string) (name: strin
         name,
         version,
         fun () ->
+            ReadTrace.opened path
             let text = File.ReadAllText path
 
             if hashFile path <> version then
