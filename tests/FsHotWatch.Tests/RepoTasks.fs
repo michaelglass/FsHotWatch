@@ -59,6 +59,8 @@ let dependsOf (mise: string) taskName =
     | m when m.Success ->
         m.Groups[1].Value.Split(',', StringSplitOptions.RemoveEmptyEntries)
         |> Array.map (fun s -> s.Trim().Trim('"'))
+        // A multi-line array may end with a trailing comma; its remainder is whitespace only.
+        |> Array.filter (fun s -> s <> "")
         |> Array.toList
     | _ -> []
 

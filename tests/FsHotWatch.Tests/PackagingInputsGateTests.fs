@@ -117,9 +117,43 @@ let ``land-check runs the input-keyed package-floor step after compile`` () =
     let mise = miseToml (repoRoot ())
     test <@ dependsOf mise "land-check" |> List.contains "package-floors-if-changed" @>
     test <@ dependsOf mise "package-floors-if-changed" |> List.contains "compile" @>
+    // SampleSolution's tests reference src/TestPrune.Attributes, so `tp-example-build` drives MSBuild
+    // over outputs the pack reads; two MSBuilds over one output race (see `test-direct`).
+    test <@ dependsOf mise "package-floors-if-changed" |> List.contains "tp-example-build" @>
 
     test
         <@
             (commandLines mise "package-floors-if-changed").Contains
                 "dotnet fsi scripts/packaging-inputs-changed.fsx -- gate"
         @>
+
+/// The steps `ci` runs that cost seconds, not minutes. Until AUTOMATION-1654 land-check ran none
+/// of them, so a red from any one appeared only in the post-land spot check. Each is the same
+/// task `ci` runs (or, for check-msbuild-deps, the same command `ci`'s `run` starts with).
+let private cheapCiSteps =
+    [ "check-commit-messages"
+      "sync-docs-check"
+      "tp-example-build"
+      "check-msbuild-deps" ]
+
+[<Fact>]
+let ``land-check runs ci's cheap steps, the same commands ci runs`` () =
+    let mise = miseToml (repoRoot ())
+    let landing = dependsOf mise "land-check"
+
+    let missing =
+        cheapCiSteps |> List.filter (fun step -> not (List.contains step landing))
+
+    test <@ List.isEmpty missing @>
+
+    let ci = dependencyClosure mise "ci"
+    let ciRun = commandLines mise "ci"
+
+    for step in cheapCiSteps do
+        let runLine =
+            (commandLines mise step).Split('\n')
+            |> Array.tryFind (fun line -> line.StartsWith("run =", StringComparison.Ordinal))
+            |> Option.map (fun line -> line.Substring(line.IndexOf('"')).Trim('"'))
+
+        test <@ runLine.IsSome @>
+        test <@ Set.contains step ci || ciRun.Contains runLine.Value @>
