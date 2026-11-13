@@ -12,19 +12,32 @@ open FsHotWatch.Events
 let sharedChecker =
     lazy FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
+/// The project options FCS gives the script at `path` holding `source`, on .NET Core
+/// references. Left to its default, `GetProjectOptionsFromScript` assumes the .NET
+/// Framework, and a check under those options reports an error on even a one-line module
+/// (System.Net.WebClient unavailable) that only some full-suite orderings hide. Every
+/// test fixture builds script options here, so none depends on which tests ran first.
+let coreScriptOptions (checker: FSharpChecker) (path: string) (source: string) : FSharpProjectOptions =
+    checker.GetProjectOptionsFromScript(
+        path,
+        FSharp.Compiler.Text.SourceText.ofString source,
+        assumeDotNetFramework = false
+    )
+    |> Async.RunSynchronously
+    |> fst
+
 let private fixtureFile =
     Path.Combine(Path.GetTempPath(), "fshw-fixture", "Fixture.fsx")
 
+let private fixtureSourceText = "module Fixture\nlet value = 1\n"
+
 let private fixtureSource =
-    FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value = 1\n"
+    FSharp.Compiler.Text.SourceText.ofString fixtureSourceText
 
 /// The project options of a one-line script, made once and shared: what a fixture result
 /// was checked under when the plugin under test only needs options to exist.
 let private fixtureScriptOptions =
-    lazy
-        (sharedChecker.Value.GetProjectOptionsFromScript(fixtureFile, fixtureSource, assumeDotNetFramework = false)
-         |> Async.RunSynchronously
-         |> fst)
+    lazy (coreScriptOptions sharedChecker.Value fixtureFile fixtureSourceText)
 
 /// A real parse and type check of that script, made once and shared: the FCS objects a
 /// fixture result carries when the plugin under test only needs a live check to exist.

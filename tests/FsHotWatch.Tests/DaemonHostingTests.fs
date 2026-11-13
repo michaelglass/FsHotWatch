@@ -343,9 +343,7 @@ let private scriptProject (checker: FSharp.Compiler.CodeAnalysis.FSharpChecker) 
     let source = $"module %s{name}\nlet value = 42\n"
     File.WriteAllText(path, source)
 
-    let options, _ =
-        checker.GetProjectOptionsFromScript(path, FSharp.Compiler.Text.SourceText.ofString source)
-        |> Async.RunSynchronously
+    let options = coreScriptOptions checker path source
 
     path, options
 

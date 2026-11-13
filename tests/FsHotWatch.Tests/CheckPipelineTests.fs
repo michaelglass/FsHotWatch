@@ -190,12 +190,7 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
 
         let absSource = Path.GetFullPath(sourceFile)
 
-        let options, _diagnostics =
-            checker.GetProjectOptionsFromScript(
-                absSource,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
-            )
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker absSource (File.ReadAllText absSource)
 
         pipeline.RegisterProject("/tmp/Test.fsproj", options)
 
@@ -247,12 +242,7 @@ let ``CheckProject returns results for all registered source files`` () =
 
         let absSource = Path.GetFullPath(sourceFile)
 
-        let options, _diagnostics =
-            checker.GetProjectOptionsFromScript(
-                absSource,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
-            )
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker absSource (File.ReadAllText absSource)
 
         let projectPath = "/tmp/CheckProject.fsproj"
         pipeline.RegisterProject(projectPath, options)
@@ -390,9 +380,7 @@ let ``CheckFile assigns increasing version numbers`` () =
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
         let absSource = Path.GetFullPath(sourceFile)
 
-        let options, _ =
-            checker.GetProjectOptionsFromScript(absSource, SourceText.ofString (File.ReadAllText absSource))
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker absSource (File.ReadAllText absSource)
 
         pipeline.RegisterProject("/tmp/Version.fsproj", options)
 
@@ -533,9 +521,7 @@ let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
         File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
         let absSource = Path.GetFullPath(sourceFile)
 
-        let options, _ =
-            checker.GetProjectOptionsFromScript(absSource, SourceText.ofString (File.ReadAllText absSource))
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker absSource (File.ReadAllText absSource)
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
 

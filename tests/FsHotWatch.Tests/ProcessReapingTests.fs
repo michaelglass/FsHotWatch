@@ -79,12 +79,7 @@ let private withSpawningDaemon (preprocessor: ChildSpawningPreprocessor) (body: 
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
         let absSource = Path.GetFullPath sourceFile
 
-        let options, _ =
-            checker.GetProjectOptionsFromScript(
-                absSource,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
-            )
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker absSource (File.ReadAllText absSource)
 
         let options =
             { options with

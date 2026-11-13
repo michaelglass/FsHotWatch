@@ -113,9 +113,7 @@ let private scriptPipeline (tmpDir: string) (activity: PluginActivity.IActivityS
     let sourceFile = Path.GetFullPath(Path.Combine(tmpDir, "Mod.fs"))
     File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
 
-    let options, _ =
-        checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
-        |> Async.RunSynchronously
+    let options = coreScriptOptions checker sourceFile (File.ReadAllText sourceFile)
 
     pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
     pipeline, cache, AbsFilePath.create sourceFile
@@ -252,9 +250,7 @@ let ``a second check of the same unchanged file joins the first instead of cance
         let sourceFile = Path.GetFullPath(Path.Combine(tmpDir, "Mod.fs"))
         File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
 
-        let options, _ =
-            checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker sourceFile (File.ReadAllText sourceFile)
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
         let file = AbsFilePath.create sourceFile
@@ -307,12 +303,8 @@ let ``a newer check of a changed file still supersedes the running one`` () =
         sourceFile.Value <- Path.GetFullPath(Path.Combine(tmpDir, "Mod.fs"))
         File.WriteAllLines(sourceFile.Value, [| "module Mod"; "let x = 1" |])
 
-        let options, _ =
-            checker.GetProjectOptionsFromScript(
-                sourceFile.Value,
-                SourceText.ofString (File.ReadAllText sourceFile.Value)
-            )
-            |> Async.RunSynchronously
+        let options =
+            coreScriptOptions checker sourceFile.Value (File.ReadAllText sourceFile.Value)
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
         let file = AbsFilePath.create sourceFile.Value
@@ -527,9 +519,7 @@ let private checkUnderTwoProjects (tmpDir: string) =
     let sourceFile = Path.GetFullPath(Path.Combine(tmpDir, "Shared.fs"))
     File.WriteAllLines(sourceFile, [| "module Shared"; "let x = 1" |])
 
-    let options, _ =
-        checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
-        |> Async.RunSynchronously
+    let options = coreScriptOptions checker sourceFile (File.ReadAllText sourceFile)
 
     let first =
         { options with

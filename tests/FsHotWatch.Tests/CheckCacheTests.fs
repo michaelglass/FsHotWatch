@@ -254,9 +254,7 @@ let ``makeCacheKey returns None when file is unreadable`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let opts, _ =
-        checker.GetProjectOptionsFromScript(Path.GetTempFileName(), FSharp.Compiler.Text.SourceText.ofString "module A")
-        |> Async.RunSynchronously
+    let opts = coreScriptOptions checker (Path.GetTempFileName()) "module A"
 
     let key = makeCacheKey provider "/nonexistent/missing-makeCacheKey.fs" opts
     Assert.True(key.IsNone, $"expected None CacheKey for unreadable file, got %A{key}")
@@ -271,9 +269,7 @@ let ``makeCacheKey produces different keys for different files`` () =
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let opts1, _ =
-        checker.GetProjectOptionsFromScript(tempFile1, FSharp.Compiler.Text.SourceText.ofString "module A")
-        |> Async.RunSynchronously
+    let opts1 = coreScriptOptions checker tempFile1 "module A"
 
     let key1 = makeCacheKey provider tempFile1 opts1
     let key2 = makeCacheKey provider tempFile2 opts1

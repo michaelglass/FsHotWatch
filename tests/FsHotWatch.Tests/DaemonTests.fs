@@ -1099,12 +1099,7 @@ let ``an edit no watcher reported reaches the build subscribers before check set
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let options = coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { options with
                 ProjectFileName = projectPath
@@ -1185,12 +1180,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 
         let absSource = Path.GetFullPath(sourceFile)
 
-        let options, _ =
-            checker.GetProjectOptionsFromScript(
-                absSource,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
-            )
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker absSource (File.ReadAllText absSource)
 
         // Force-include absSource — GetProjectOptionsFromScript's SourceFiles
         // array varies across platforms for .fs (non-script) files.
@@ -1502,12 +1492,7 @@ let ``the scan after an interrupted shutdown re-stamps its sources and clears th
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let options = coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { options with
                 ProjectFileName = projectPath
@@ -1783,12 +1768,7 @@ let ``a scan's checks take their slots as bulk work`` () =
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let options = coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { options with
                 ProjectFileName = projectPath
@@ -1838,12 +1818,8 @@ let ``a scan publishes no more results than its bound while a plugin has not com
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sources.Head,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sources.Head))
-                )
-                |> Async.RunSynchronously
+            let options =
+                coreScriptOptions checker sources.Head (File.ReadAllText(sources.Head))
 
             { options with
                 ProjectFileName = projectPath
@@ -1933,12 +1909,8 @@ let ``a scan that answers from check records publishes every replay while a plug
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sources.Head,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sources.Head))
-                )
-                |> Async.RunSynchronously
+            let options =
+                coreScriptOptions checker sources.Head (File.ReadAllText(sources.Head))
 
             { options with
                 ProjectFileName = projectPath
@@ -2058,12 +2030,7 @@ let ``scan waits for discovery and re-scans when its captured model is invalidat
 
         let fcsOptions =
             if hasSource then
-                let options, _ =
-                    checker.GetProjectOptionsFromScript(
-                        sourcePath,
-                        FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                    )
-                    |> Async.RunSynchronously
+                let options = coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
                 { options with
                     ProjectFileName = projectPath
@@ -2314,12 +2281,7 @@ let ``a scan re-evaluates a project whose restore changed its package graph afte
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let options = coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { options with
                 ProjectFileName = projectPath
@@ -2480,12 +2442,7 @@ let ``a scan converges on a project outside the discovery roots whose restore ne
         let checker = sharedChecker.Value
 
         let optionsFor (project: string) (source: string) =
-            let options, _ =
-                checker.GetProjectOptionsFromScript(
-                    source,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(source))
-                )
-                |> Async.RunSynchronously
+            let options = coreScriptOptions checker source (File.ReadAllText(source))
 
             { options with
                 ProjectFileName = project
@@ -2554,12 +2511,7 @@ let private outsideRootsWorkspace (tmpDir: string) (onLoad: string -> int -> uni
     let checker = sharedChecker.Value
 
     let optionsFor (project: string) (source: string) =
-        let options, _ =
-            checker.GetProjectOptionsFromScript(
-                source,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(source))
-            )
-            |> Async.RunSynchronously
+        let options = coreScriptOptions checker source (File.ReadAllText(source))
 
         { options with
             ProjectFileName = project
@@ -2930,12 +2882,8 @@ let ``a cold daemon does not re-discover on a watcher echo of an unchanged proje
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let scriptOptions, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let scriptOptions =
+                coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { scriptOptions with
                 ProjectFileName = projectPath
@@ -3063,12 +3011,8 @@ let ``a daemon under a symlinked root does not re-discover on a real-path echo o
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let scriptOptions, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let scriptOptions =
+                coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { scriptOptions with
                 ProjectFileName = projectPath
@@ -3185,9 +3129,7 @@ let private sealOfModelReplacingBatch (name: string) (sources: string list) : Ba
         let fcsOptions =
             let scriptPath = Path.Combine(srcDir, "Probe.fsx")
 
-            let scriptOptions, _ =
-                checker.GetProjectOptionsFromScript(scriptPath, FSharp.Compiler.Text.SourceText.ofString "")
-                |> Async.RunSynchronously
+            let scriptOptions = coreScriptOptions checker scriptPath ""
 
             { scriptOptions with
                 ProjectFileName = projectPath
@@ -3306,12 +3248,7 @@ let ``a run-once scan reports its progress while it runs, as a daemon-backed che
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let scriptOptions, _ =
-                checker.GetProjectOptionsFromScript(
-                    Path.Combine(srcDir, "Probe.fsx"),
-                    FSharp.Compiler.Text.SourceText.ofString ""
-                )
-                |> Async.RunSynchronously
+            let scriptOptions = coreScriptOptions checker (Path.Combine(srcDir, "Probe.fsx")) ""
 
             { scriptOptions with
                 ProjectFileName = projectPath
@@ -3671,12 +3608,8 @@ let ``a scan whose model changes on every attempt fails by name instead of loopi
         let checker = sharedChecker.Value
 
         let fcsOptions =
-            let scriptOptions, _ =
-                checker.GetProjectOptionsFromScript(
-                    sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
-                )
-                |> Async.RunSynchronously
+            let scriptOptions =
+                coreScriptOptions checker sourcePath (File.ReadAllText(sourcePath))
 
             { scriptOptions with
                 ProjectFileName = projectPath
@@ -6737,12 +6670,7 @@ let private withHeldFirstScan
         File.WriteAllText(assets, "{}")
         let checker = sharedChecker.Value
 
-        let scriptOptions, _ =
-            checker.GetProjectOptionsFromScript(
-                source,
-                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText source)
-            )
-            |> Async.RunSynchronously
+        let scriptOptions = coreScriptOptions checker source (File.ReadAllText source)
 
         use daemon =
             Daemon.createWithWorkspaceLoader checker tmpDir oneShotDaemonOptions loader (fun projects ->
