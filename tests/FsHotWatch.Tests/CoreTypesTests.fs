@@ -179,6 +179,25 @@ let ``two digests for one subject are refused, not merged`` () =
     test <@ twoTrees = Error(KeyError.DuplicateSubject "tree") @>
 
 [<Fact>]
+let ``a key cannot say one file is both there and not there`` () =
+    // AUTOMATION-1635: `content:P` and `absent:P` are different subjects in the canonical text,
+    // so the duplicate check alone let a key claim both.
+    let both: Result<ActionKey<CheckKind>, KeyError> =
+        ActionKey.create [ content "src/A.fs"; KeyInput.Absent(path "src/A.fs") ]
+
+    test <@ both = Error(KeyError.PresentAndAbsent(path "src/A.fs")) @>
+    test <@ (KeyError.PresentAndAbsent(path "src/A.fs")).ToString() = "'src/A.fs' is both present and absent" @>
+
+    // A signature or an output of the same path is not a claim about its presence.
+    let signature =
+        KeyInput.Signature(path "src/A.fs", SignatureDigest.parse hexA |> ok)
+
+    let fine: Result<ActionKey<CheckKind>, KeyError> =
+        ActionKey.create [ signature; KeyInput.Absent(path "src/A.fs") ]
+
+    test <@ Result.isOk fine @>
+
+[<Fact>]
 let ``the same inputs under two kinds give two different keys`` () =
     // COMPILE-TIME PROPERTY: `checkKey = analyzerKey` does not compile (FS0001, the types
     // ActionKey<CheckKind> and ActionKey<AnalyzerKind> differ), so the only comparison

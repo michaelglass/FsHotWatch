@@ -9,6 +9,11 @@
 - refactor: the analyzer set's once-per-batch read and the shadow's once-per-batch oracles match
   `DispatchBatchScope` instead of comparing a batch id with 0 (AUTOMATION-1635). Behaviour unchanged.
 
+- fix: `ActionKey.create` refuses a key that names one file both by `Content` and by `Absent`
+  (`KeyError.PresentAndAbsent`, in the bundled `FsHotWatch.Core`; AUTOMATION-1635). The two are different subjects in
+  the canonical text, so the duplicate check let a key claim a file is there and is not. No producer builds one (a
+  Need trace holds one answer per file); the canonical text of every accepted key is unchanged.
+
 - feat: the analyzer action as a Need trace, in shadow (AUTOMATION-1636, the S1/S2 pilot of ADR-059 §35). New:
   `AnalyzeNeeds`. On every analysis the plugin computes today's task key and also the trace of the action written
   with `action { Need.* }`. The action needs its file, the upstream outputs (check signatures, project options,

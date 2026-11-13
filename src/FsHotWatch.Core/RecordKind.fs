@@ -55,11 +55,15 @@ type KeyError =
     /// The kind's `Name` is empty or contains a control character, so it cannot be a
     /// line of the canonical text.
     | InvalidKindName of name: string
+    /// One file is named both by a `Content` input and an `Absent` one: the key would claim
+    /// it is there and is not (AUTOMATION-1635).
+    | PresentAndAbsent of path: RepoRelativePath
 
     override this.ToString() =
         match this with
         | DuplicateSubject subject -> $"two inputs name '{subject}'"
         | InvalidKindName name -> $"'{name}' cannot name a record kind"
+        | PresentAndAbsent path -> $"'{path.Text}' is both present and absent"
 
 /// A key with its kind ERASED: what a store files and what a `Missing` verdict lists, so
 /// keys of different kinds can sit in one list. Only `ActionKey.ref` makes one from a key;
@@ -114,6 +118,18 @@ module ActionKey =
         | KeyInput.Upstream(label, digest) -> "upstream:" + label.Text, digest.Hex
         | KeyInput.Oracle(question, answer) -> "oracle:" + question.Subject, answer.Hex
 
+    /// The file whose presence `input` states, for `Content` and `Absent` only.
+    let private presenceOf (input: KeyInput) : RepoRelativePath option =
+        match input with
+        | KeyInput.Content(path, _)
+        | KeyInput.Absent path -> Some path
+        | KeyInput.Signature _
+        | KeyInput.Output _
+        | KeyInput.Tree _
+        | KeyInput.Toolchain _
+        | KeyInput.Upstream _
+        | KeyInput.Oracle _ -> None
+
     /// The kind's name.
     let kindName (_: ActionKey<'Kind>) : string = 'Kind.Name
 
@@ -130,20 +146,31 @@ module ActionKey =
             |> List.pairwise
             |> List.tryFind (fun ((a, _), (b, _)) -> String.Equals(a, b, StringComparison.Ordinal))
 
+        // `content:P` and `absent:P` are distinct subjects, so a file both present and absent
+        // passes the duplicate check; this catches it.
+        let presentAndAbsent =
+            inputs
+            |> List.choose presenceOf
+            |> List.countBy id
+            |> List.tryPick (fun (path, count) -> if count > 1 then Some path else None)
+
         if String.IsNullOrEmpty name || Seq.exists Char.IsControl name then
             Error(KeyError.InvalidKindName name)
         else
             match duplicate with
             | Some((subject, _), _) -> Error(KeyError.DuplicateSubject subject)
             | None ->
-                let text = StringBuilder()
-                text.Append(Recipe).Append('\n').Append(name).Append('\n') |> ignore
-                text.Append('Kind.SchemaVersion) |> ignore
+                match presentAndAbsent with
+                | Some path -> Error(KeyError.PresentAndAbsent path)
+                | None ->
+                    let text = StringBuilder()
+                    text.Append(Recipe).Append('\n').Append(name).Append('\n') |> ignore
+                    text.Append('Kind.SchemaVersion) |> ignore
 
-                for subject, hex in pairs do
-                    text.Append('\n').Append(subject).Append('\t').Append(hex) |> ignore
+                    for subject, hex in pairs do
+                        text.Append('\n').Append(subject).Append('\t').Append(hex) |> ignore
 
-                Ok { Canonical = text.ToString() }
+                    Ok { Canonical = text.ToString() }
 
     /// The key with its kind erased, for filing and for `Missing` lists.
     let ref (key: ActionKey<'Kind>) : KeyRef =
