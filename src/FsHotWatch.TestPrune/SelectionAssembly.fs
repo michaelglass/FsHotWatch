@@ -240,6 +240,10 @@ type SelectionSources =
         SymbolFreeEdit: Set<string>
         /// The projects whose declared always-classes the launch carried.
         AlwaysClasses: Set<string>
+        /// For each cause that selects named classes rather than whole projects, the
+        /// classes it named in each project. A project a cause put in the run that has no
+        /// entry here was selected whole by that cause.
+        NamedClasses: Map<SelectionCause, Map<string, string list>>
     }
 
 module SelectionSources =
@@ -254,7 +258,8 @@ module SelectionSources =
           CompositionRootRestored = Set.empty
           ChangedSymbols = Set.empty
           SymbolFreeEdit = Set.empty
-          AlwaysClasses = Set.empty }
+          AlwaysClasses = Set.empty
+          NamedClasses = Map.empty }
 
 module SelectionAttribution =
     /// Every project of `selection` with each source that selected it, widest first.
@@ -288,12 +293,32 @@ module SelectionAttribution =
                 |> List.filter (fun (_, projects) -> Set.contains project projects)
                 |> List.map fst
 
+        let namedIn project causes =
+            causes
+            |> List.choose (fun cause ->
+                sources.NamedClasses
+                |> Map.tryFind cause
+                |> Option.bind (Map.tryFind project)
+                |> Option.filter (List.isEmpty >> not)
+                |> Option.map (fun classes -> cause, classes))
+            |> Map.ofList
+
         selection
-        |> Map.keys
-        |> Seq.map (fun project ->
+        |> Map.toSeq
+        |> Seq.map (fun (project, chosen) ->
+            let causes = causesOf project
+
             { Project = project
-              Causes = causesOf project
-              SkippedClasses = [] })
+              Causes = causes
+              SkippedClasses = []
+              NamedClasses = namedIn project causes
+              Ran =
+                Some(
+                    match chosen with
+                    | ProjectClasses _ -> ProjectRun.Filtered
+                    | ProjectInFull
+                    | ProjectExcept _ -> ProjectRun.InFull
+                ) })
         |> List.ofSeq
 
 /// What `check` would have launched over this tree — the run's own

@@ -288,6 +288,7 @@ let verdictIn
         Verdict.CheckComparison.notRecorded
         causes
         model
+        (fun _ -> Map.empty)
 
 /// A `check` verdict against an available project model.
 let verdictOf = verdictIn ProjectModelFixtures.available
@@ -610,6 +611,7 @@ let private seedReusableGreen (root: string) : Verdict.Verdict =
             Verdict.CheckComparison.notRecorded
             []
             ProjectModelFixtures.available
+            (fun _ -> Map.empty)
 
     Verdict.write root verdict
 

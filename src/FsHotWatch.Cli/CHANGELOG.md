@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: `scope.testsByCause` no longer books each project under its first-listed cause only (AUTOMATION-1611). A
+  project several causes selected is counted under each of them, so symbol hits in a project runtime coverage ran in
+  full now appear under `changed-symbols` instead of vanishing into `runtime-coverage`. Each entry gains `only` and
+  `byProject` (`{project, tests, only, selected, classes, alsoSelectedBy, ran}`): what the cause selected in each
+  project, the other causes that overlap it, the tests no other cause selected, and the project's run mode. The counts
+  therefore overlap and no longer sum to the tests the run executed. The counts are made when the verdict is built
+  (`Verdict.create` takes the class-count reader, `Verdict.classTestsOf`) and read back as written. A verdict
+  written before this change has its counts recomputed on read with every cause counted whole. Same keys and types
+  for the existing fields, no consumer in this repository reads them, so the verdict schema stays
+  `fshw-verdict-v2`. `scope.selectedBy` entries carry the new `namedClasses` and `ran` (see the
+  FsHotWatch.TestPrune changelog).
+
 ## 0.14.0-alpha.146 - 2026-11-13
 
 - feat: `.fshw.json` `coverage` may be an array of floor sets, and a set may name `projects`

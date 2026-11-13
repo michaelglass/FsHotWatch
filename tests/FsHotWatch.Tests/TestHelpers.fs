@@ -1534,6 +1534,7 @@ module VerdictFixtures =
             FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
             []
             ProjectModelFixtures.available
+            (fun _ -> Map.empty)
 
     /// The `scope` object `.fshw/verdict.json` records for a check graded from `report`.
     let scopeOnTheWire (report: FsHotWatch.Cli.IpcParsing.TestRunReport) : System.Text.Json.Nodes.JsonNode =

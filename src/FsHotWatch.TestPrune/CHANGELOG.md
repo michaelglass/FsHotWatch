@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: each `selectedBy` attribution carries `namedClasses`, the classes every class-naming cause
+  (`changed-symbols`, `composition-root-restored`, `outstanding-failure`, `symbol-free-edit`, `always-classes`) named
+  in the project, and `ran` (`in-full` | `filtered`), the project's run mode (AUTOMATION-1611). A cause absent from
+  `namedClasses` selected the project whole. Both are written only when present, so older readings read as before.
+  The `test-scope` reply and the verdict file carry them; the verdict counts each cause's tests from them.
+
 ## 0.13.0-alpha.113 - 2026-11-13
 
 - feat: `tests.projects[].runtimeSelection: "decide" | "shadow"` (AUTOMATION-1645). `"decide"`, the default, is

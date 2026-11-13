@@ -797,7 +797,31 @@ let internal assembleLaunch
                 match symbolFreeEdit with
                 | Some(SymbolFreeEdit.Covering(_, _, classes, _)) -> classes |> Map.keys |> Set.ofSeq
                 | _ -> Set.empty
-              AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq }
+              AlwaysClasses = AlwaysClasses.only configs |> Map.keys |> Set.ofSeq
+              // The classes each class-naming cause named, kept apart from the union so
+              // the verdict can count what each cause selected in a project several
+              // causes selected. A project-level red (`[]`) is the whole project.
+              NamedClasses =
+                Map.ofList
+                    [ SelectionCause.ChangedSymbols, symbolAffectedByProject
+                      // The fail-safe restores the barrier's covering classes, which
+                      // the symbol selection carries.
+                      SelectionCause.CompositionRootRestored, symbolAffectedByProject
+                      SelectionCause.OutstandingFailure,
+                      quarantinedAffectedByProject
+                      |> Map.map (fun project classes ->
+                          let bySymbol =
+                              Map.tryFind project symbolAffectedByProject
+                              |> Option.defaultValue []
+                              |> Set.ofList
+
+                          classes |> List.filter (fun c -> not (Set.contains c bySymbol)))
+                      |> Map.filter (fun _ classes -> not (List.isEmpty classes))
+                      SelectionCause.SymbolFreeEdit,
+                      (match symbolFreeEdit with
+                       | Some(SymbolFreeEdit.Covering(_, _, classes, _)) -> classes
+                       | _ -> Map.empty)
+                      SelectionCause.AlwaysClasses, AlwaysClasses.only configs ] }
 
         SelectionAttribution.attribute sources affectedByProject selection
         |> CheckSkipLaunch.attribute excludedByProject
