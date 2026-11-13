@@ -153,10 +153,12 @@ let ``the log line has a stable prefix, the file, which key moved and what diffe
                 "need-shadow disagree file=src/A.fs today=moved need=held inputs=plugin-version"
         @>
 
+    // AUTOMATION-1635: a first sighting is not a comparison, so `compare`, `render` and
+    // `describe` cannot be handed one. This no longer typechecks (FS0039, no case FirstSeen):
+    //   AnalyzeNeeds.render inputs.File AnalyzeNeeds.Comparison.FirstSeen
+    // Only `Shadow.Observe` answers `Observed.FirstSeen`.
     test <@ AnalyzeNeeds.render inputs.File AnalyzeNeeds.Comparison.Agree = None @>
-    test <@ AnalyzeNeeds.render inputs.File AnalyzeNeeds.Comparison.FirstSeen = None @>
     test <@ AnalyzeNeeds.describe AnalyzeNeeds.Comparison.Agree = "agree" @>
-    test <@ AnalyzeNeeds.describe AnalyzeNeeds.Comparison.FirstSeen = "first-seen" @>
 
 [<Fact>]
 let ``the shadow remembers each file's last observation and logs only disagreements`` () =
@@ -164,8 +166,8 @@ let ``the shadow remembers each file's last observation and logs only disagreeme
     let shadow = AnalyzeNeeds.Shadow(lines.Add)
     let one = observe todayTerms inputs
 
-    test <@ shadow.Observe(inputs.File, one) = AnalyzeNeeds.Comparison.FirstSeen @>
-    test <@ shadow.Observe(inputs.File, one) = AnalyzeNeeds.Comparison.Agree @>
+    test <@ shadow.Observe(inputs.File, one) = AnalyzeNeeds.Observed.FirstSeen @>
+    test <@ shadow.Observe(inputs.File, one) = AnalyzeNeeds.Observed.Compared AnalyzeNeeds.Comparison.Agree @>
     test <@ lines.Count = 0 @>
 
     let moved =
@@ -174,7 +176,11 @@ let ``the shadow remembers each file's last observation and logs only disagreeme
             { inputs with
                 Options = "options --define:X" }
 
-    test <@ shadow.Observe(inputs.File, moved) <> AnalyzeNeeds.Comparison.Agree @>
+    test
+        <@
+            shadow.Observe(inputs.File, moved)
+            <> AnalyzeNeeds.Observed.Compared AnalyzeNeeds.Comparison.Agree
+        @>
 
     test
         <@
@@ -182,7 +188,7 @@ let ``the shadow remembers each file's last observation and logs only disagreeme
         @>
 
     // Another file is its own history.
-    test <@ shadow.Observe(path "src/B.fs", one) = AnalyzeNeeds.Comparison.FirstSeen @>
+    test <@ shadow.Observe(path "src/B.fs", one) = AnalyzeNeeds.Observed.FirstSeen @>
 
 [<Fact>]
 let ``an action that cannot run says why, under the same prefix`` () =

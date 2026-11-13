@@ -154,17 +154,26 @@ let observe
         { TodayTerms = Map.ofList todayTerms
           Needs = needs })
 
-/// How a file's analysis compares with its previous one.
+/// How a file's analysis compares with its previous one. There is no "first seen" case:
+/// a comparison needs two analyses, so a first sighting is `Observed.FirstSeen`, and
+/// `compare`, `render` and `describe` cannot be handed one (AUTOMATION-1635).
 [<RequireQualifiedAccess>]
 type Comparison =
-    /// No previous analysis of the file in this process.
-    | FirstSeen
     /// Both keys held, or both moved.
     | Agree
     /// Today's key held while the Need key moved: today's key may have missed these inputs.
     | NeedKeyMoved of changes: NonEmpty<NeedChange>
     /// Today's key moved while the Need key held: the action does not declare these terms.
     | TodayKeyMoved of terms: NonEmpty<string>
+
+/// What the shadow made of an analysis: the file's first in this process, or compared with
+/// the previous one.
+[<RequireQualifiedAccess>]
+type Observed =
+    /// No previous analysis of the file in this process: nothing to compare.
+    | FirstSeen
+    /// Compared with the file's previous analysis.
+    | Compared of Comparison
 
 /// The labels whose values differ between two term maps (present in one only included).
 let private changedTerms (before: Map<string, string>) (after: Map<string, string>) : string list =
@@ -186,7 +195,6 @@ let compare (before: Observation) (after: Observation) : Comparison =
 /// The comparison in one word or line, for test failures.
 let describe (comparison: Comparison) : string =
     match comparison with
-    | Comparison.FirstSeen -> "first-seen"
     | Comparison.Agree -> "agree"
     | Comparison.NeedKeyMoved changes ->
         "need moved: " + String.Join(",", NonEmpty.toList changes |> List.map _.Subject)
@@ -201,7 +209,6 @@ let render (file: RepoRelativePath) (comparison: Comparison) : string option =
             $"%s{LogPrefix} disagree file=%s{file.Text} today=%s{today} need=%s{need} inputs=%s{String.Join(',', inputs)}"
 
     match comparison with
-    | Comparison.FirstSeen
     | Comparison.Agree -> None
     | Comparison.NeedKeyMoved changes -> line "held" "moved" (NonEmpty.toList changes |> List.map _.Subject)
     | Comparison.TodayKeyMoved terms -> line "moved" "held" (NonEmpty.toList terms)
@@ -216,15 +223,19 @@ type Shadow(log: string -> unit) =
     let seen = ConcurrentDictionary<RepoRelativePath, Observation>()
 
     /// Compares `observation` with `file`'s previous one, logs a disagreement, and keeps it.
-    member _.Observe(file: RepoRelativePath, observation: Observation) : Comparison =
-        let comparison =
+    member _.Observe(file: RepoRelativePath, observation: Observation) : Observed =
+        let observed =
             match seen.TryGetValue file with
-            | true, previous -> compare previous observation
-            | false, _ -> Comparison.FirstSeen
+            | true, previous -> Observed.Compared(compare previous observation)
+            | false, _ -> Observed.FirstSeen
 
         seen[file] <- observation
-        render file comparison |> Option.iter log
-        comparison
+
+        match observed with
+        | Observed.Compared comparison -> render file comparison |> Option.iter log
+        | Observed.FirstSeen -> ()
+
+        observed
 
     /// Logs that `file`'s action produced no trace.
     member _.Fail(file: RepoRelativePath, error: NeedError) : unit = log (renderError file error)

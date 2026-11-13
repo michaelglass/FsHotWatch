@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: `AnalyzeNeeds.Comparison` has no `FirstSeen` case (AUTOMATION-1635). A comparison needs two analyses,
+  so `compare` could never return it, yet `render` and `describe` had to answer it. `Shadow.Observe` now returns
+  `Observed` (`FirstSeen | Compared of Comparison`). The log lines are unchanged.
+
 - feat: the analyzer action as a Need trace, in shadow (AUTOMATION-1636, the S1/S2 pilot of ADR-059 §35). New:
   `AnalyzeNeeds`. On every analysis the plugin computes today's task key and also the trace of the action written
   with `action { Need.* }`. The action needs its file, the upstream outputs (check signatures, project options,
