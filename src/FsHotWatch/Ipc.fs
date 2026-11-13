@@ -296,9 +296,12 @@ let private releaseSettle = System.TimeSpan.FromSeconds 1.0
 type DaemonRpcConfig =
     {
         Host: PluginHost
+        /// Stop the daemon for an in-process caller holding this configuration, which names
+        /// no client: logged as `DaemonStop.InProcessCaller`. The stop RPCs use `RequestStop`.
+        RequestShutdown: unit -> unit
         /// Stop the daemon for a client's stop RPC; the request names which RPC and who sent
         /// it, and is what the daemon logs as its stop cause (`DaemonStop`).
-        RequestShutdown: DaemonStop.RpcStopRequest -> unit
+        RequestStop: DaemonStop.RpcStopRequest -> unit
         /// Who else holds this repository's run claims, described for a person. Read inside
         /// `ReleaseIfSole`, so a claim taken between a client asking and the daemon answering
         /// is still seen.
@@ -578,7 +581,7 @@ type DaemonRpcTarget
 
     /// Gracefully shut down the daemon for `caller`.
     member private _.ShutdownFor(caller: DaemonStop.StopCaller) : string =
-        config.RequestShutdown
+        config.RequestStop
             { Rpc = DaemonStop.Shutdown
               Caller = caller }
 
@@ -612,7 +615,7 @@ type DaemonRpcTarget
 
             match current with
             | 0, [] ->
-                config.RequestShutdown
+                config.RequestStop
                     { Rpc = DaemonStop.ReleaseIfSole
                       Caller = caller }
 
@@ -1340,12 +1343,20 @@ module IpcClient =
                 return! invokeWith [||]
         }
 
+    /// Shut down the daemon gracefully, naming no client: the daemon logs the stop as from
+    /// a client that did not describe itself. `shutdownAs` names one.
+    let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]
+
     /// Shut down the daemon gracefully, on behalf of `client`.
-    let shutdown (pipeName: string) (client: DaemonStop.StopClient) : Async<string> =
+    let shutdownAs (pipeName: string) (client: DaemonStop.StopClient) : Async<string> =
         invokeDescribed (invoke pipeName "Shutdown") client
 
-    /// Stop the daemon only if `client` is its sole user (`DaemonRpcTarget.ReleaseIfSole`).
-    let releaseIfSole (pipeName: string) (client: DaemonStop.StopClient) : Async<string> =
+    /// Stop the daemon only if this client is its sole user (`DaemonRpcTarget.ReleaseIfSole`),
+    /// naming no client. `releaseIfSoleAs` names one.
+    let releaseIfSole (pipeName: string) : Async<string> = invoke pipeName "ReleaseIfSole" [||]
+
+    /// `releaseIfSole` on behalf of `client`.
+    let releaseIfSoleAs (pipeName: string) (client: DaemonStop.StopClient) : Async<string> =
         invokeDescribed (invoke pipeName "ReleaseIfSole") client
 
     /// Trigger a full scan of all registered files.

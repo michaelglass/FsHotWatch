@@ -18,6 +18,7 @@ let private nullChecker =
 let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
+      RequestStop = ignore
       LiveRunClaims = fun () -> []
       RequestScan = ignore
       InvocationReleased = fun _ -> System.Threading.CancellationToken.None

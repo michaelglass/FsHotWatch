@@ -30,6 +30,7 @@ let private waitForServer (pipeName: string) =
 let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
+      RequestStop = ignore
       LiveRunClaims = fun () -> []
       RequestScan = ignore
       InvocationReleased = fun _ -> System.Threading.CancellationToken.None
@@ -1056,13 +1057,13 @@ let ``WaitForComplete resolves when all plugins terminal`` () =
 // --- DaemonRpcTarget unit tests (no IPC pipe) ---
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
+let ``DaemonRpcTarget.Shutdown calls RequestStop and returns message`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable called = false
 
     let config =
         { defaultRpcConfig host with
-            RequestShutdown = fun _ -> called <- true }
+            RequestStop = fun _ -> called <- true }
 
     let target = DaemonRpcTarget(config)
     let result = target.Shutdown()
@@ -1508,7 +1509,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
 
     let config =
         { defaultRpcConfig host with
-            RequestShutdown = fun _ -> cts.Cancel()
+            RequestStop = fun _ -> cts.Cancel()
             LiveRunClaims = fun () -> []
             WaitForAllTerminal =
                 fun timeout ->

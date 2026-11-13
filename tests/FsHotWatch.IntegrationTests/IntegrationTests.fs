@@ -2558,6 +2558,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
         { Host = host
           RequestShutdown = ignore
+          RequestStop = ignore
           LiveRunClaims = fun () -> []
           RequestScan = ignore
           InvocationReleased = fun _ -> System.Threading.CancellationToken.None

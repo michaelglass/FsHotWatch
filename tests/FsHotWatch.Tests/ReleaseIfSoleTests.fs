@@ -100,19 +100,13 @@ let ``a daemon releases only once a run claim it did not see at the start is gon
             // The claim the CLI would have read before asking, seen by the daemon instead.
             let claim = RunClaim.acquire repoRoot "check" "other-invocation"
 
-            let reply =
-                IpcClient.releaseIfSole pipeName (FsHotWatch.DaemonStop.StopClient.current ())
-                |> Async.RunSynchronously
-
+            let reply = IpcClient.releaseIfSole pipeName |> Async.RunSynchronously
             test <@ ReleaseReply.keptFor reply <> None @>
             test <@ IpcClient.isRunning pipeName @>
 
             RunClaim.release repoRoot claim
 
-            let afterClaim =
-                IpcClient.releaseIfSole pipeName (FsHotWatch.DaemonStop.StopClient.current ())
-                |> Async.RunSynchronously
-
+            let afterClaim = IpcClient.releaseIfSole pipeName |> Async.RunSynchronously
             test <@ afterClaim = ReleaseReply.Released @>
         finally
             cts.Cancel()

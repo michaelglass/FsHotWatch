@@ -73,6 +73,9 @@ type StopCause =
     | RootVanished
     /// A plugin stopped making progress past its bound.
     | Wedged
+    /// A caller in this process stopped the daemon through `DaemonRpcConfig.RequestShutdown`,
+    /// which names no client.
+    | InProcessCaller
     /// The run was cancelled by something that named no cause: a repository host ending
     /// a session, or a test.
     | Cancelled
@@ -89,12 +92,13 @@ let line (cause: StopCause) : string =
         | RpcStop { Rpc = rpc; Caller = Described client } ->
             $"%s{rpcName rpc} RPC from pid=%d{client.Pid} cwd=%s{client.Cwd} command=%s{client.Command}"
         | RpcStop { Rpc = rpc; Caller = UnknownClient } ->
-            $"%s{rpcName rpc} RPC from a client that did not describe itself (an fshw CLI older than this daemon)"
+            $"%s{rpcName rpc} RPC from a client that did not describe itself (an fshw CLI older than this daemon, or IpcClient.shutdown / releaseIfSole)"
         | Signal signal -> $"signal %s{DaemonSignal.name signal}"
         | ConfigChanged -> ".fshw.json changed"
         | IdleExit -> "idle exit"
         | RootVanished -> "the repository root vanished"
         | Wedged -> "a plugin wedged"
+        | InProcessCaller -> "an in-process caller (DaemonRpcConfig.RequestShutdown)"
         | Cancelled -> "run cancelled without a recorded cause"
 
     $"stop cause: %s{what}"

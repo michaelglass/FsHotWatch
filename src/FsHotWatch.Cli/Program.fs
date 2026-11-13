@@ -875,8 +875,8 @@ type IpcOps =
 
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
-    { Shutdown = fun pipe -> IpcClient.shutdown pipe (FsHotWatch.DaemonStop.StopClient.current ())
-      ReleaseIfSole = fun pipe -> IpcClient.releaseIfSole pipe (FsHotWatch.DaemonStop.StopClient.current ())
+    { Shutdown = fun pipe -> IpcClient.shutdownAs pipe (FsHotWatch.DaemonStop.StopClient.current ())
+      ReleaseIfSole = fun pipe -> IpcClient.releaseIfSoleAs pipe (FsHotWatch.DaemonStop.StopClient.current ())
       Scan =
         fun pipeName invocation ->
             match invocation with

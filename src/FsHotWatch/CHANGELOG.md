@@ -4,14 +4,15 @@
 
 - feat: a stopping daemon logs one line naming what stopped it, ahead of "Daemon stopped." (AUTOMATION-1675). The
   log used to read the same for every stop, so nobody could tell who stopped a measurement daemon three times in one
-  afternoon. `DaemonStop.StopCause` names each way a daemon ends: a stop RPC (`Shutdown` or `ReleaseIfSole`, with the
-  calling CLI's command line, pid and cwd), a signal, a `.fshw.json` change, idle exit, a vanished root, a wedge, or a
-  run cancelled with no recorded cause. The first cause asked for is kept (`Daemon.Stop`, `Daemon.StopCause`) and
-  logged as `stop cause: …`. `DaemonRpcConfig.RequestShutdown` now takes the `RpcStopRequest`, and
-  `IpcClient.shutdown` / `releaseIfSole` take the `StopClient` they describe; a daemon from before this release has no
-  overload taking one, and the client asks it again without. An older CLI's bare `Shutdown` still stops the daemon,
-  logged as a client that did not describe itself. **Breaking** for a caller of `RequestShutdown`, `IpcClient.shutdown`
-  or `IpcClient.releaseIfSole`.
+  afternoon. New module `DaemonStop`: `StopCause` names each way a daemon ends: a stop RPC (`Shutdown` or
+  `ReleaseIfSole`, with the calling CLI's command line, pid and cwd), a signal, a `.fshw.json` change, idle exit, a
+  vanished root, a wedge, an in-process `RequestShutdown`, or a run cancelled with no recorded cause. The first cause
+  asked for is kept (`Daemon.Stop`, `Daemon.StopCause`) and logged as `stop cause: …`. New `IpcClient.shutdownAs` and
+  `releaseIfSoleAs` send the caller's `StopClient`; a daemon from before this release has no overload taking one, and
+  the client asks it again without. `IpcClient.shutdown` and `releaseIfSole` are unchanged, and an older CLI's bare
+  call still stops the daemon, logged as a client that did not describe itself. `DaemonRpcConfig` gains
+  `RequestStop`, which the stop RPCs call with the `RpcStopRequest`; `RequestShutdown` is unchanged. Code that
+  constructs a `DaemonRpcConfig` must set the new field.
 
 - fix: a native FSEvents stream keeps draining fseventsd while the daemon is busy (AUTOMATION-1543). The stream's
   callback used to run the change handler on the CFRunLoop thread: read and hash the file, then wait up to the

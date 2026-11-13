@@ -1252,6 +1252,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
             Ipc.DaemonRpcTarget(
                 { Host = daemon.Host
                   RequestShutdown = ignore
+                  RequestStop = ignore
                   LiveRunClaims = fun () -> []
                   RequestScan = ignore
                   InvocationReleased = fun _ -> System.Threading.CancellationToken.None

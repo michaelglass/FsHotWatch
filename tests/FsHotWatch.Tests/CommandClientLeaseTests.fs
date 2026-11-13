@@ -85,6 +85,7 @@ let private asker (probe: Probe) : PluginHandler<unit, AskMsg> =
 let private config (host: PluginHost) (invocationReleased: string -> CancellationToken) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
+      RequestStop = ignore
       LiveRunClaims = fun () -> []
       RequestScan = ignore
       InvocationReleased = invocationReleased

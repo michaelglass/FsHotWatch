@@ -4190,7 +4190,8 @@ type Daemon
 
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
-                      RequestShutdown = fun request -> this.Stop(DaemonStop.RpcStop request, cts)
+                      RequestShutdown = fun () -> this.Stop(DaemonStop.InProcessCaller, cts)
+                      RequestStop = fun request -> this.Stop(DaemonStop.RpcStop request, cts)
                       LiveRunClaims = fun () -> RunClaim.live repoRoot |> List.map RunClaim.describe
                       RequestScan = onScan
                       InvocationReleased = RunClaim.releasedFor repoRoot

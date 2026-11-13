@@ -62,7 +62,7 @@ let ``a daemon stopped over the Shutdown RPC logs the client's command, pid and 
 
         let logged =
             stoppedDaemonLog tmpDir (fun _ pipeName _ ->
-                Ipc.IpcClient.shutdown pipeName client |> Async.RunSynchronously |> ignore)
+                Ipc.IpcClient.shutdownAs pipeName client |> Async.RunSynchronously |> ignore)
 
         let expected =
             $"stop cause: Shutdown RPC from pid=%d{Environment.ProcessId} cwd=%s{tmpDir} command=fshw stop"
@@ -97,7 +97,7 @@ let ``an older CLI's bare Shutdown still stops the daemon, logged as a client th
                 causeLines logged
                 |> List.map (fun line ->
                     line.EndsWith
-                        "stop cause: Shutdown RPC from a client that did not describe itself (an fshw CLI older than this daemon)") = [ true ]
+                        "stop cause: Shutdown RPC from a client that did not describe itself (an fshw CLI older than this daemon, or IpcClient.shutdown / releaseIfSole)") = [ true ]
             @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -147,6 +147,7 @@ let ``every stop cause has its own line`` () =
           DaemonStop.IdleExit
           DaemonStop.RootVanished
           DaemonStop.Wedged
+          DaemonStop.InProcessCaller
           DaemonStop.Cancelled ]
         |> List.map DaemonStop.line
 
@@ -177,43 +178,46 @@ type OldDaemonTarget(accepted: ConcurrentQueue<string>) =
 
 /// A new CLI against a daemon from before AUTOMATION-1675: that daemon has no overload
 /// taking a description and answers that the method is missing, so the stop is asked
-/// again bare rather than failing.
+/// again bare rather than failing. One JSON-RPC connection in process, over two
+/// anonymous pipes: the refusal is the real `RemoteMethodNotFoundException`, with no
+/// pipe name or reconnect for a loaded box to race.
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a described stop falls back to the bare call when the daemon lacks the overload`` () =
-    let pipeName = $"fshw-{Guid.NewGuid():N}"
     let accepted = ConcurrentQueue<string>()
+    use toDaemon = new Pipes.AnonymousPipeServerStream(Pipes.PipeDirection.Out)
+    use fromDaemon = new Pipes.AnonymousPipeServerStream(Pipes.PipeDirection.In)
 
-    // Two connections: the described call the old daemon refuses, then the bare one.
-    let serve =
-        Tasks.Task.Run(fun () ->
-            task {
-                for _ in 1..2 do
-                    use server =
-                        new Pipes.NamedPipeServerStream(
-                            pipeName,
-                            Pipes.PipeDirection.InOut,
-                            1,
-                            Pipes.PipeTransmissionMode.Byte,
-                            Pipes.PipeOptions.Asynchronous
-                        )
+    use daemonIn =
+        new Pipes.AnonymousPipeClientStream(Pipes.PipeDirection.In, toDaemon.ClientSafePipeHandle)
 
-                    do! server.WaitForConnectionAsync()
+    use daemonOut =
+        new Pipes.AnonymousPipeClientStream(Pipes.PipeDirection.Out, fromDaemon.ClientSafePipeHandle)
 
-                    use rpc =
-                        new StreamJsonRpc.JsonRpc(
-                            new StreamJsonRpc.HeaderDelimitedMessageHandler(server),
-                            OldDaemonTarget accepted
-                        )
+    use daemon =
+        new StreamJsonRpc.JsonRpc(
+            new StreamJsonRpc.HeaderDelimitedMessageHandler(daemonOut, daemonIn),
+            OldDaemonTarget accepted
+        )
 
-                    rpc.StartListening()
-                    do! rpc.Completion
-            }
-            :> Tasks.Task)
+    use cli =
+        new StreamJsonRpc.JsonRpc(new StreamJsonRpc.HeaderDelimitedMessageHandler(toDaemon, fromDaemon))
+
+    daemon.StartListening()
+    cli.StartListening()
+
+    let sent = ConcurrentQueue<int>()
+
+    let invokeShutdown (args: obj array) =
+        sent.Enqueue args.Length
+        cli.InvokeAsync<string>("Shutdown", args) |> Async.AwaitTask
 
     let client = DaemonStop.StopClient.current ()
-    let reply = Ipc.IpcClient.shutdown pipeName client |> Async.RunSynchronously
+
+    let reply =
+        Ipc.IpcClient.invokeDescribed invokeShutdown client |> Async.RunSynchronously
+
     test <@ reply = "shutting down" @>
-    test <@ serve.Wait(HangWait) @>
+    test <@ List.ofSeq sent = [ 3; 0 ] @>
     test <@ List.ofSeq accepted = [ "Shutdown" ] @>
     // The cwd is not compared: these tests run beside ones that move the process.
     test <@ client.Pid = Environment.ProcessId @>
