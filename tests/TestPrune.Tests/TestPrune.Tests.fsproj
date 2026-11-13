@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <!-- NU1608: references TestPrune.Analyzers, which pulls FSharp.Analyzers.SDK 0.37.2
          (pinned to FCS 43.12.201 / FSharp.Core 10.1.201) while this repo resolves

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net11.0</TargetFramework>
         <!-- NU1608: FSharp.Analyzers.SDK 0.39.2 declares a pin on FCS 43.12.400, but this
              analyzer must compile against the EXACT FCS the pinned fshw host ships
              (Directory.Packages.props), because the host supplies FCS at

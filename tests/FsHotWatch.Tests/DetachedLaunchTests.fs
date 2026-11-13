@@ -43,8 +43,8 @@ let ``detached helper runs exactly its command and exits nonzero with the reason
         DetachedLaunch.tryRunWith run messages.Add [| DetachedLaunch.HelperFlag; "exit 0" |]
 
     Assert.Equal(Some 1, result)
-    Assert.Equal<string>([ "exit 0" ], List.ofSeq commands)
-    Assert.Equal<string>([ "Detached daemon launch: execv failed (errno 8)" ], List.ofSeq messages)
+    Assert.Equal<string list>([ "exit 0" ], List.ofSeq commands)
+    Assert.Equal<string list>([ "Detached daemon launch: execv failed (errno 8)" ], List.ofSeq messages)
 
 [<Fact>]
 let ``detached session failure never attempts exec and retains native errno`` () =

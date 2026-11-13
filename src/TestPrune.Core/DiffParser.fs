@@ -166,7 +166,7 @@ let private tryParseDiffHeader (line: string) =
                 Some(oldPath.Substring(2), newPath.Substring(2))
             | _ -> None
 
-let private tryParseMetadataPath marker pathPrefix (line: string) =
+let private tryParseMetadataPath (marker: string) pathPrefix (line: string) =
     if line.StartsWith(marker, StringComparison.Ordinal) then
         let encodedPath = line.Substring(marker.Length)
 

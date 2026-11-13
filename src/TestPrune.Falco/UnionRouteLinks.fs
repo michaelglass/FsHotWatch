@@ -26,6 +26,9 @@ open TestPrune
 /// a regression.
 module UnionRouteLinks =
 
+    /// FCS 43.13 replaced SynComponentInfo.longId with synType; LongIdent is the stable accessor.
+    let private (|ComponentLongId|) (info: SynComponentInfo) = info.LongIdent
+
     // Field marker types that carry NO URL segment (auth / query / body / response markers).
     // Mirrors Falco.UnionRoutes' isPrecondition/isQueryParam/... classification.
     let private markerTypeNames =
@@ -165,7 +168,7 @@ module UnionRouteLinks =
             for decl in decls do
                 match decl with
                 | SynModuleDecl.Types(typeDefns, _) ->
-                    for SynTypeDefn(typeInfo = SynComponentInfo(longId = ci); typeRepr = repr) in typeDefns do
+                    for SynTypeDefn(typeInfo = ComponentLongId ci; typeRepr = repr) in typeDefns do
                         match repr with
                         | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(_, cases, _), _) ->
                             match lastIdent ci with

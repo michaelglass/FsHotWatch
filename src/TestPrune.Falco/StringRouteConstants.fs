@@ -23,6 +23,9 @@ open FSharp.Compiler.Text
 /// back to plain literal-URL matching.
 module StringRouteConstants =
 
+    /// FCS 43.13 replaced SynComponentInfo.longId with synType; LongIdent is the stable accessor.
+    let private (|ComponentLongId|) (info: SynComponentInfo) = info.LongIdent
+
     let private checker = lazy (FSharpChecker.Create())
 
     let private lastIdent (lid: LongIdent) : string option =
@@ -71,7 +74,7 @@ module StringRouteConstants =
             for decl in decls do
                 match decl with
                 | SynModuleDecl.Let(bindings = bindings) -> handleBindings moduleName bindings
-                | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = lid); decls = nested) ->
+                | SynModuleDecl.NestedModule(moduleInfo = ComponentLongId lid; decls = nested) ->
                     walkDecls (lastIdent lid |> Option.defaultValue moduleName) nested
                 | _ -> ()
 

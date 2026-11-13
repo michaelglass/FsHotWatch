@@ -140,16 +140,24 @@ let collectSharedLiterals (tree: ParsedInput) : (string * range) list =
         | SynExpr.AnonRecd(copyInfo = copyInfo; recordFields = fields) ->
             copyInfo |> Option.iter (fst >> walkSupplementaryExpression)
 
-            for _, _, fieldExpression in fields do
-                walkSupplementaryExpression fieldExpression
+            // FCS 43.13 (F# 11 record spreads): a field is a Field or a `...spread`.
+            for field in fields do
+                match field with
+                | SynExprAnonRecordFieldOrSpread.Field(SynExprAnonRecordField(expr = fieldExpression), _)
+                | SynExprAnonRecordFieldOrSpread.Spread(SynExprSpread(expr = fieldExpression), _) ->
+                    walkSupplementaryExpression fieldExpression
         | SynExpr.Record(baseInfo = baseInfo; copyInfo = copyInfo; recordFields = fields) ->
             baseInfo
             |> Option.iter (fun (_, expression, _, _, _) -> walkSupplementaryExpression expression)
 
             copyInfo |> Option.iter (fst >> walkSupplementaryExpression)
 
-            for SynExprRecordField(expr = fieldExpression) in fields do
-                Option.iter walkSupplementaryExpression fieldExpression
+            for field in fields do
+                match field with
+                | SynExprRecordFieldOrSpread.Field(SynExprRecordField(expr = fieldExpression), _) ->
+                    Option.iter walkSupplementaryExpression fieldExpression
+                | SynExprRecordFieldOrSpread.Spread(SynExprSpread(expr = spreadExpression), _) ->
+                    walkSupplementaryExpression spreadExpression
         | SynExpr.ObjExpr(argOptions = baseCall; bindings = bindings; members = members; extraImpls = interfaces) ->
             baseCall |> Option.iter (fst >> walkSupplementaryExpression)
             List.iter walkSupplementaryBinding bindings
@@ -218,9 +226,11 @@ let collectSharedLiterals (tree: ParsedInput) : (string * range) list =
             List.iter walkSupplementaryMember representationMembers
         | SynTypeDefnRepr.Simple(simpleRepr = simpleRepresentation) ->
             match simpleRepresentation with
-            | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
-                for SynField(attributes = fieldAttributes) in fields do
-                    walkAttributeLists fieldAttributes
+            | SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = fields) ->
+                for field in fields do
+                    match field with
+                    | SynFieldOrSpread.Field(SynField(attributes = fieldAttributes)) -> walkAttributeLists fieldAttributes
+                    | SynFieldOrSpread.Spread _ -> ()
             | SynTypeDefnSimpleRepr.Union(unionCases = cases) -> List.iter walkUnionCaseAttributes cases
             | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
                 for SynEnumCase(attributes = caseAttributes; valueExpr = valueExpression) in cases do
@@ -283,9 +293,11 @@ let collectSharedLiterals (tree: ParsedInput) : (string * range) list =
                 walkExceptionDefinition exceptionDefinition
             | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = SynTypeDefnRepr.Simple(simpleRepr = simpleRepr))) ->
                 match simpleRepr with
-                | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
-                    for SynField(attributes = fieldAttributes) in fields do
-                        walkAttributeLists fieldAttributes
+                | SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = fields) ->
+                    for field in fields do
+                        match field with
+                        | SynFieldOrSpread.Field(SynField(attributes = fieldAttributes)) -> walkAttributeLists fieldAttributes
+                        | SynFieldOrSpread.Spread _ -> ()
                 | SynTypeDefnSimpleRepr.Union(unionCases = cases) -> List.iter walkUnionCaseAttributes cases
                 | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
                     for SynEnumCase(attributes = caseAttributes) in cases do

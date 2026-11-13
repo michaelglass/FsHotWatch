@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+        <TargetFrameworks>netstandard2.0;net11.0</TargetFrameworks>
         <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
         <PackageId>TestPrune.Attributes</PackageId>
         <Authors>Michael Glass</Authors>
@@ -28,7 +28,7 @@
              Floors are LOW on purpose — a PackageReference version is a minimum, and a marker
              package must never raise its consumer's FSharp.Core. -->
         <PackageReference Include="FSharp.Core" VersionOverride="6.0.7" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
-        <PackageReference Include="FSharp.Core" VersionOverride="10.1.201" Condition="'$(TargetFramework)' == 'net10.0'" />
+        <PackageReference Include="FSharp.Core" VersionOverride="11.0.101" Condition="'$(TargetFramework)' == 'net11.0'" />
         <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     </ItemGroup>
 

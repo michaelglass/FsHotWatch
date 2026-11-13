@@ -2,7 +2,7 @@
   <!-- Unit tests for the benchmark harness's pure parts. Not part of the coverage
        ratchet: the harness is measurement tooling, not shipped code. -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
