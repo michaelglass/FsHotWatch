@@ -153,3 +153,26 @@ let ``the nightly replay installs jj with the same script`` () =
         File.ReadAllText(Path.Combine(root, ".github", "workflows", "nightly-replay.yml"))
 
     test <@ nightly.Contains "run: bash scripts/install-jj.sh" @>
+
+// AUTOMATION-1680. CI's build job runs `dotnet fantomas <fantomas-paths> --check`, and main went
+// red on it three times (c12ac32f, d6457cae, 05d7e16c) over trees both local gates had passed:
+// the daemon's `format: true` pass REWRITES an unformatted file during the check rather than
+// failing it, so the check certified the rewritten working copy while the commit kept the old
+// bytes. The local gates now run CI's own command, read from the workflow, so they cannot drift.
+
+/// The single-quoted `fantomas-paths:` the build job hands the reusable workflow.
+let private fantomasPaths (yml: string) =
+    let m = Regex.Match(yml, @"^\s*fantomas-paths:\s*'([^']*)'", RegexOptions.Multiline)
+    test <@ m.Success @>
+    m.Groups[1].Value
+
+[<Fact>]
+let ``land-check and ci run CI's exact format check`` () =
+    let root = repoRoot ()
+    let mise = miseToml root
+    // The reusable workflow's "Format check" step, as scripts/ci-linux/steps.sh transcribes it.
+    let ciCommand = $"dotnet fantomas %s{fantomasPaths (ciYml root)} --check"
+
+    test <@ runOf mise "fantomas-check" = ciCommand @>
+    test <@ dependsOf mise "land-check" |> List.contains "fantomas-check" @>
+    test <@ dependsOf mise "ci" |> List.contains "fantomas-check" @>

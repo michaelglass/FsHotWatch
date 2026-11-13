@@ -134,7 +134,8 @@ let private cheapCiSteps =
     [ "check-commit-messages"
       "sync-docs-check"
       "tp-example-build"
-      "check-msbuild-deps" ]
+      "check-msbuild-deps"
+      "fantomas-check" ]
 
 [<Fact>]
 let ``land-check runs ci's cheap steps, the same commands ci runs`` () =
