@@ -14,6 +14,11 @@
         "platform": "linux"
       }
     ],
+    "DaemonStop.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1675: the StopCause a stopping daemon logs, the signals a daemon handles, and the first-cause StopRecord). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-13 on macOS by DaemonStopCauseTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.DaemonStopCauseTests): line 100%, branch 100%. No platform branch (StopClient.current reads the process's argv, pid and cwd the same way on both), so platform-neutral."
+    },
     "Digests.fs": {
       "line": 100,
       "branch": 100,

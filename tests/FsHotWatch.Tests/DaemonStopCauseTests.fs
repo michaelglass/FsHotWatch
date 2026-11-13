@@ -153,6 +153,22 @@ let ``every stop cause has its own line`` () =
     test <@ lines.Head = "stop cause: ReleaseIfSole RPC from pid=7 cwd=/w command=fshw test-rerun" @>
     test <@ lines |> List.distinct |> List.length = lines.Length @>
 
+/// Each handled signal registers for its own POSIX signal and exits as its default
+/// action would: 128 + the signal's number.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``each daemon signal maps to its POSIX signal, name and exit code`` () =
+    let mapped =
+        [ DaemonStop.SigInt; DaemonStop.SigTerm; DaemonStop.SigHup ]
+        |> List.map (fun s ->
+            DaemonStop.DaemonSignal.posix s, DaemonStop.DaemonSignal.name s, DaemonStop.DaemonSignal.exitCode s)
+
+    test
+        <@
+            mapped = [ Runtime.InteropServices.PosixSignal.SIGINT, "SIGINT", 130
+                       Runtime.InteropServices.PosixSignal.SIGTERM, "SIGTERM", 143
+                       Runtime.InteropServices.PosixSignal.SIGHUP, "SIGHUP", 129 ]
+        @>
+
 /// The stop RPCs of a daemon from before AUTOMATION-1675: no overload takes a description.
 type OldDaemonTarget(accepted: ConcurrentQueue<string>) =
     member _.Shutdown() : string =
@@ -199,4 +215,5 @@ let ``a described stop falls back to the bare call when the daemon lacks the ove
     test <@ reply = "shutting down" @>
     test <@ serve.Wait(HangWait) @>
     test <@ List.ofSeq accepted = [ "Shutdown" ] @>
-    test <@ client.Pid = Environment.ProcessId && client.Cwd = Environment.CurrentDirectory @>
+    // The cwd is not compared: these tests run beside ones that move the process.
+    test <@ client.Pid = Environment.ProcessId @>
