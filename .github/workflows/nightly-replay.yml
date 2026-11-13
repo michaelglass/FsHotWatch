@@ -92,7 +92,7 @@ jobs:
         run: |
           dotnet bench/FsHotWatch.Bench/bin/Debug/net10.0/fshw-bench.dll audit \
             --target "$GITHUB_WORKSPACE" --clean-home "$RUNNER_TEMP/clean-home" \
-            --kind check --kind analyze \
+            --kind all \
             --sample 0 --seed "$GITHUB_SHA" --out "$RUNNER_TEMP/$OUT_NAME/audit.json"
       - name: Upload the replay
         if: always()
