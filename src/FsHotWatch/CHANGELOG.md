@@ -32,6 +32,12 @@
   `fshw-check-semantics-v3` (AUTOMATION-1656 took v2) and `OutputIdentity.Schema` `pe-v3`, so the first check under this release replays nothing,
   and every test-evidence K_P (which folds the checker build) moves with it.
 
+- perf: `OutcomeStore.Store.GcIfDue(now, keep, interval)` runs `Gc` only when none completed within the interval
+  (AUTOMATION-1665). A GC reads every record in the box-wide store, so it costs O(store), not O(run): 110 s of a 125 s
+  post-run tail on a laptop store. The time a GC completed is written to `gc-stamp` in the store root; a missing or
+  unreadable stamp means none has. It returns `GcRun.Ran evicted` or `GcRun.NotDue lastRanAt`. `defaultGcInterval` is
+  6 h, against a 14-day TTL, so eviction can be up to 6 h later than before. `Gc` itself is unchanged.
+
 - fix: a project's `--reflectionfree` no longer leaks into the checks of other projects (AUTOMATION-1656). FCS builds
   `TcGlobals` once per framework-imports key (framework references, language version, nullness) from the options of
   whichever project it bootstrapped first, and shares it with every other project on those references. A test project

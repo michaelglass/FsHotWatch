@@ -589,7 +589,10 @@ let observeWith
         |> Set.ofList
         |> Set.union (named |> List.map (fun (r, _) -> r.Key.Value) |> Set.ofList)
 
-    store.Gc(o.RecordedAt, keep) |> ignore
+    match store.GcIfDue(o.RecordedAt, keep, OutcomeStore.defaultGcInterval) with
+    | OutcomeStore.GcRun.Ran _
+    | OutcomeStore.GcRun.NotDue _ -> ()
+
     answer
 
 /// The shadow of a `fshw verdict` READ: look the CURRENT tree up and log the comparison with

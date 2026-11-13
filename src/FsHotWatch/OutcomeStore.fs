@@ -377,6 +377,23 @@ let keepsOf (outputs: string option) : ActionKey.KeyValue list =
             []
     | _ -> []
 
+/// The file in a store's root that records when its last GC completed (AUTOMATION-1665).
+[<Literal>]
+let GcStampFile = "gc-stamp"
+
+/// How often a test run asks for a GC (AUTOMATION-1665). A GC reads every record in the store,
+/// so it costs O(store), not O(run): 110 s of a 125 s post-run tail on a laptop store. The TTL is
+/// 14 days and the byte budget generous, so eviction is never urgent at run granularity, and
+/// evicting up to this much later changes nothing a run can observe except its wall time.
+let defaultGcInterval = TimeSpan.FromHours 6.0
+
+/// What `Store.GcIfDue` did: ran (the keys it evicted, oldest first), or did not, because a GC
+/// completed within the interval (when it did).
+[<RequireQualifiedAccess>]
+type GcRun =
+    | Ran of evicted: ActionKey.KeyValue list
+    | NotDue of lastRanAt: DateTimeOffset
+
 type Store(settings: Settings) =
     let root = settings.Root
     let recordsDir = Path.Combine(root, "records")
@@ -736,6 +753,42 @@ type Store(settings: Settings) =
             )
 
         evicted |> List.map (fun (e, _) -> e.Key)
+
+    /// `Gc`, unless one completed within `interval` of `now` (AUTOMATION-1665). When a GC
+    /// last completed is the time written to `GcStampFile` after it; a missing or unreadable
+    /// stamp means none has. Two daemons racing on the stamp may both run once, which is
+    /// harmless: a GC can only turn a hit into a miss, and it spares what `keep` names.
+    member this.GcIfDue(now: DateTimeOffset, keep: Set<ActionKey.KeyValue>, interval: TimeSpan) : GcRun =
+        let stamp = Path.Combine(root, GcStampFile)
+
+        let lastRanAt =
+            if File.Exists stamp then
+                match
+                    DateTimeOffset.TryParse(
+                        File.ReadAllText stamp,
+                        Globalization.CultureInfo.InvariantCulture,
+                        Globalization.DateTimeStyles.RoundtripKind
+                    )
+                with
+                | true, at -> Some at
+                | false, _ -> None
+            else
+                None
+
+        match lastRanAt with
+        | Some at when now - at < interval -> GcRun.NotDue at
+        | _ ->
+            let evicted = this.Gc(now, keep)
+
+            try
+                Directory.CreateDirectory root |> ignore
+                File.WriteAllText(stamp, now.ToString("o", Globalization.CultureInfo.InvariantCulture))
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException as ex ->
+                settings.Log $"outcome store: could not record the gc time in %s{stamp}: %s{ex.Message}"
+
+            GcRun.Ran evicted
 
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =

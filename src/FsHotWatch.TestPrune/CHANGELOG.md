@@ -7,6 +7,10 @@
   is never carried as covered; `TestEvidenceRun.currentOutcomeKeys` logs each project whose K_P key failed, with the
   error, where it used to leave it out without a word.
 
+- perf: a test run asks the outcome store for a GC only when none completed in the last 6 h (AUTOMATION-1665), and logs
+  `outcome store gc: not due, the last completed at <time>` when it skips. On a laptop store the GC was 110 s of a
+  125 s post-run tail, paid by every run.
+
 - feat: every step a run takes after its last test host exits logs its start and its end (AUTOMATION-1660). A measured
   edit check spent 48.5 s between the last host exit and `Tests complete`, 35.6 s of it with no log line at all. Each
   step now logs `post-run <runId> <step>: start` and `post-run <runId> <step>: end after <n>ms` (or `failed after

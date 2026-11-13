@@ -596,3 +596,52 @@ let ``gc keeps every key the newest record of a live key names in its keeps, and
         test <@ evicted = [ dropped.Value ] @>
         test <@ store.Lookup named <> None @>
         test <@ store.Lookup index <> None @>)
+
+/// AUTOMATION-1665: a GC reads every record in the box-wide store, so it costs O(store) and
+/// took 110 s of a 125 s post-run tail. A run asks for a GC only when none has completed
+/// within the interval; eviction is never urgent at run granularity (a 14-day TTL).
+[<Fact>]
+let ``gc if due runs the first time and records when it ran`` () =
+    withStore 1_000_000L (fun _ _ store ->
+        let old = keyFor "sha256:old"
+        store.Record(recordOf old Outcome.Pass t0) |> ignore
+
+        match store.GcIfDue(t0.AddDays 15.0, Set.empty, TimeSpan.FromHours 6.0) with
+        | GcRun.Ran evicted -> test <@ evicted = [ old.Value ] @>
+        | GcRun.NotDue lastRanAt -> failwith $"expected a GC, got not due (last ran %O{lastRanAt})")
+
+[<Fact>]
+let ``gc if due within the interval does not run and evicts nothing`` () =
+    withStore 1_000_000L (fun _ _ store ->
+        let now = t0.AddDays 15.0
+        store.GcIfDue(now, Set.empty, TimeSpan.FromHours 6.0) |> ignore
+        let old = keyFor "sha256:old"
+        store.Record(recordOf old Outcome.Pass t0) |> ignore
+
+        match store.GcIfDue(now.AddHours 5.0, Set.empty, TimeSpan.FromHours 6.0) with
+        | GcRun.NotDue lastRanAt -> test <@ lastRanAt = now @>
+        | GcRun.Ran evicted -> failwith $"expected not due, but a GC ran and evicted %d{evicted.Length}"
+
+        test <@ store.Lookup old <> None @>)
+
+[<Fact>]
+let ``gc if due runs again once the interval has passed`` () =
+    withStore 1_000_000L (fun _ _ store ->
+        let now = t0.AddDays 15.0
+        store.GcIfDue(now, Set.empty, TimeSpan.FromHours 6.0) |> ignore
+        let old = keyFor "sha256:old"
+        store.Record(recordOf old Outcome.Pass t0) |> ignore
+
+        match store.GcIfDue(now.AddHours 6.0, Set.empty, TimeSpan.FromHours 6.0) with
+        | GcRun.Ran evicted -> test <@ evicted = [ old.Value ] @>
+        | GcRun.NotDue lastRanAt -> failwith $"expected a GC, got not due (last ran %O{lastRanAt})")
+
+[<Fact>]
+let ``an unreadable gc stamp counts as never having run`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        Directory.CreateDirectory dir |> ignore
+        File.WriteAllText(Path.Combine(dir, GcStampFile), "not a time")
+
+        match store.GcIfDue(t0, Set.empty, TimeSpan.FromHours 6.0) with
+        | GcRun.Ran _ -> ()
+        | GcRun.NotDue lastRanAt -> failwith $"expected a GC, got not due (last ran %O{lastRanAt})")

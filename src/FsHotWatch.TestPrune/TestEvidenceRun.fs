@@ -697,9 +697,16 @@ let publish
                 | _ -> [])
 
         // The box-wide store is bounded by TTL and bytes (ADR-059 §2). GC can only turn a hit
-        // into a miss, and it spares what this run just filed.
-        PostRunStep.timed producer.RunId "outcome store gc" (fun () -> outcomes.Gc(producer.EarnedAt, Set.ofList filed))
-        |> ignore
+        // into a miss, and it spares what this run just filed. It reads every record in the
+        // store, so a run asks for one only when none completed within the interval
+        // (AUTOMATION-1665: 110 s of a 125 s post-run tail).
+        match
+            PostRunStep.timed producer.RunId "outcome store gc" (fun () ->
+                outcomes.GcIfDue(producer.EarnedAt, Set.ofList filed, OutcomeStore.defaultGcInterval))
+        with
+        | OutcomeStore.GcRun.Ran _ -> ()
+        | OutcomeStore.GcRun.NotDue lastRanAt ->
+            Logging.info "test-prune" $"outcome store gc: not due, the last completed at %O{lastRanAt}"
     | None -> ()
 
     let outcomes =

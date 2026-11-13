@@ -11,6 +11,9 @@
   Exit 0 agree, 1 mismatch, 3 nothing compared, 2 usage. Reads both stores; quarantines nothing; never contacts the
   daemon.
 
+- perf: a shadowed verdict evicts from the outcome store through `GcIfDue` (AUTOMATION-1665), so it reads the whole store
+  at most once per 6 h instead of on every recorded verdict.
+
 - fix: `check --run-once` and `confirm --run-once` refuse to run beside a live daemon on the same workspace
   (AUTOMATION-1657). A daemon left by an earlier `fshw check` builds and tests the same tree over the same
   `.fshw/` state while the gate's in-process host does, so the gate's verdict depended on it: `mise run ci`
@@ -30,6 +33,11 @@
   `fshw-verdict-v2`. `scope.selectedBy` entries carry the new `namedClasses` and `ran` (see the
   FsHotWatch.TestPrune changelog).
 
+- fix: the analyzers task cache no longer replays an entry across a compiler-service, FSharp.Core or analyzer SDK change,
+  and its host code is covered by a named, golden-tested schema constant (AUTOMATION-1629; see the FsHotWatch.Analyzers
+  changelog). **One-time effect of upgrading:** every analyzers cache entry is re-keyed once, so the first check runs the
+  analyzers on every file; check, options and analysis records are unaffected.
+
 ## 0.14.0-alpha.146 - 2026-11-13
 
 - feat: `.fshw.json` `coverage` may be an array of floor sets, and a set may name `projects`
@@ -42,11 +50,6 @@
   `"shadow"` keeps collecting runtime coverage and logs what it would add to each impact launch without running it;
   see the FsHotWatch.TestPrune changelog. Any other value, or `"shadow"` on a project that collects no coverage for
   impact, is refused at load.
-
-- fix: the analyzers task cache no longer replays an entry across a compiler-service, FSharp.Core or analyzer SDK change,
-  and its host code is covered by a named, golden-tested schema constant (AUTOMATION-1629; see the FsHotWatch.Analyzers
-  changelog). **One-time effect of upgrading:** every analyzers cache entry is re-keyed once, so the first check runs the
-  analyzers on every file; check, options and analysis records are unaffected.
 
 ## 0.14.0-alpha.145 - 2026-11-12
 
