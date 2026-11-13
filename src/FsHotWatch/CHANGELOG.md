@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a native FSEvents stream keeps draining fseventsd while the daemon is busy (AUTOMATION-1543). The stream's
+  callback used to run the change handler on the CFRunLoop thread: read and hash the file, then wait up to the
+  store's 5 s admission bound for the daemon to accept the change, slowest exactly while a build or FCS is busy.
+  fseventsd holds every event queued for a client until its callback returns, so its memory grew with the gate's
+  events for as long as the daemon was slow. The callback now only posts to an `EventDrain`, a deduplicated
+  in-process queue with its own handler thread: the backlog waits in-process, bounded by distinct paths rather than
+  by events, and a path that changes again while the handler reads it is delivered again. `FsEventStream.DrainStats`
+  reports what the callback took and what the handler ran.
+
 - refactor: `DispatchBatch.Current` is a `DispatchBatchScope` (`Outside | InBatch of DispatchBatchId`), not an
   `int64` with 0 for "outside a batch" (AUTOMATION-1635). A key function that shares a batch's work matches
   `InBatch` and so cannot compare an id when there is no batch. `DispatchBatchId` is made only by the framework.

@@ -232,6 +232,123 @@ let private createCFStringArray (paths: string list) =
 
     arr, cfStrings
 
+// ─── Event drain ────────────────────────────────────────────────────
+
+/// One unit of work a stream's drain hands its handler.
+[<RequireQualifiedAccess>]
+type DrainItem =
+    /// A file-level event for this path.
+    | File of path: string
+    /// A must-scan (coalesced) event: the subtree under this directory must be rescanned.
+    | Rescan of directory: string
+
+/// What a drain has taken and handed on since it started.
+type DrainStats =
+    {
+        /// Items posted (each one an event the native callback took off fseventsd).
+        Received: int64
+        /// Posts folded into an identical item that was still waiting.
+        Coalesced: int64
+        /// Handler invocations that returned or threw.
+        Delivered: int64
+        /// Items waiting for the handler.
+        Pending: int
+    }
+
+/// Takes events off a stream's native callback and runs the handler on a thread of its
+/// own (AUTOMATION-1543).
+///
+/// fseventsd keeps every event it has queued for a client until that client's callback
+/// returns, and its memory grows with events times slow clients. The handler behind a
+/// daemon's stream reads and hashes the file and then waits, up to the store's admission
+/// bound, for the daemon to accept the change — slowest exactly while a build or FCS is
+/// busy. Run on the callback, that wait stopped the stream from draining. Here `Post` is
+/// a constant-time enqueue, so the callback returns at once and the backlog waits
+/// in-process instead.
+///
+/// The backlog is deduplicated: an item already waiting is not queued twice, so it is
+/// bounded by the number of distinct paths, not by the number of events. An item is
+/// removed from the waiting set when the handler takes it, so a change that lands while
+/// the handler is reading a file is delivered again. Items are handed on in the order
+/// first posted. A handler that throws is logged and the next item is delivered.
+type EventDrain(handler: DrainItem -> unit, threadName: string) =
+    let gate = obj ()
+    let queue = System.Collections.Generic.Queue<DrainItem>()
+    let waiting = System.Collections.Generic.HashSet<DrainItem>()
+    let mutable closing = false
+    let mutable received = 0L
+    let mutable coalesced = 0L
+    let mutable delivered = 0L
+
+    let next () =
+        lock gate (fun () ->
+            while queue.Count = 0 && not closing do
+                Monitor.Wait gate |> ignore
+
+            if closing then
+                None
+            else
+                let item = queue.Dequeue()
+                waiting.Remove item |> ignore
+                Some item)
+
+    let run () =
+        let mutable item = next ()
+
+        while item.IsSome do
+            try
+                handler item.Value
+            with ex ->
+                debug "fsevents" $"event handler exception: %s{ex.Message}"
+
+            lock gate (fun () -> delivered <- delivered + 1L)
+            item <- next ()
+
+    let thread = Thread(run, IsBackground = true, Name = threadName)
+    do thread.Start()
+
+    /// Queue `item` for the handler. Never waits on the handler; ignored once disposed.
+    member _.Post(item: DrainItem) =
+        lock gate (fun () ->
+            if not closing then
+                received <- received + 1L
+
+                if waiting.Add item then
+                    queue.Enqueue item
+                    Monitor.Pulse gate
+                else
+                    coalesced <- coalesced + 1L)
+
+    /// Counts since the drain started.
+    member _.Stats() : DrainStats =
+        lock gate (fun () ->
+            { Received = received
+              Coalesced = coalesced
+              Delivered = delivered
+              Pending = queue.Count })
+
+    /// True once disposal has begun.
+    member _.Closing = lock gate (fun () -> closing)
+
+    /// Drop what is waiting, let the item under way finish, and stop the thread. From
+    /// the handler itself it returns at once; the thread exits after that item.
+    interface IDisposable with
+        member _.Dispose() =
+            let first =
+                lock gate (fun () ->
+                    if closing then
+                        false
+                    else
+                        closing <- true
+                        queue.Clear()
+                        waiting.Clear()
+                        Monitor.PulseAll gate
+                        true)
+
+            if first && not (obj.ReferenceEquals(thread, Thread.CurrentThread)) then
+                if not (thread.Join 5000) then
+                    warn "fsevents" $"%s{threadName}: the event handler did not return within 5s of dispose"
+
 // ─── FsEventStream ──────────────────────────────────────────────────
 
 /// macOS refused one of the native stream's setup calls. Refusals are the transient
@@ -309,7 +426,7 @@ type internal NativeCleanupCoordinator
 
 /// Managed wrapper around a native FSEventStream.
 /// Watches the given directories for file-level events and invokes the callback
-/// with each changed file path.
+/// with each changed file path, on its own drain thread (`EventDrain`).
 ///
 /// Uses FSEventStreamScheduleWithRunLoop on a dedicated background thread that
 /// runs CFRunLoopRun(). This is required for event delivery in .NET CLI processes,
@@ -336,6 +453,18 @@ type FsEventStream
     let mutable exclusionStringRefs: nativeint array = [||]
     let mutable exclusionArrayRef = nativeint 0
 
+    // The handlers run here, never on the run loop: the native callback only posts, so
+    // it returns as soon as it has copied the batch's paths and fseventsd can release
+    // them however long a handler takes.
+    let drain =
+        new EventDrain(
+            (fun item ->
+                match item with
+                | DrainItem.File path -> onFileEvent path
+                | DrainItem.Rescan dir -> onCoalescedEvent |> Option.iter (fun handler -> handler dir)),
+            "com.fshotwatch.fsevents.drain"
+        )
+
     let callback =
         FSEventStreamCallback(fun _streamRef _clientInfo numEvents eventPaths eventFlags _eventIds ->
             if Volatile.Read(&disposed) = 0 then
@@ -351,22 +480,14 @@ type FsEventStream
                         let path = Marshal.PtrToStringUTF8(pathPtr)
 
                         if not (isNull path) then
-                            try
-                                onFileEvent path
-                            with ex ->
-                                debug "fsevents" $"callback exception: %s{ex.Message}"
+                            drain.Post(DrainItem.File path)
                     | EventClassification.CoalescedScan ->
                         let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
                         let path = Marshal.PtrToStringUTF8(pathPtr)
                         info "fsevents" $"MustScanSubDirs event for %s{path}: flags %s{describeFlags flags}"
 
-                        match onCoalescedEvent with
-                        | Some handler ->
-                            try
-                                handler path
-                            with ex ->
-                                debug "fsevents" $"coalesced event handler exception: %s{ex.Message}"
-                        | None -> ()
+                        if onCoalescedEvent.IsSome && not (isNull path) then
+                            drain.Post(DrainItem.Rescan path)
                     | EventClassification.Ignored -> debug "fsevents" $"filtered event: flags=0x%08X{flags}")
 
     let releaseResources () =
@@ -421,10 +542,14 @@ type FsEventStream
             releaseResources
         )
 
-    let cleanup () = cleanupCoordinator.Cleanup()
+    // The native stream first, so nothing posts into a drain that is shutting down.
+    let cleanup () =
+        cleanupCoordinator.Cleanup()
+        (drain :> IDisposable).Dispose()
 
     do
         if directories.IsEmpty then
+            (drain :> IDisposable).Dispose()
             invalidArg "directories" "At least one directory is required"
 
         try
@@ -515,6 +640,9 @@ type FsEventStream
             cleanup ()
             raise ex
 
+    /// What the native callback has taken off fseventsd, and what the handlers have run.
+    member _.DrainStats() : DrainStats = drain.Stats()
+
     /// Returns true if the stream was successfully created and started.
     member _.IsRunning =
         Volatile.Read(&streamRef) <> nativeint 0 && Volatile.Read(&disposed) = 0
@@ -525,7 +653,9 @@ type FsEventStream
                 cleanup ()
 
 /// Create an FsEventStream watching the given directories.
-/// The callback is invoked on the dedicated CFRunLoop thread with each changed file path.
+/// The callback is invoked on the stream's drain thread (`EventDrain`) with each changed
+/// file path, never on the CFRunLoop thread, so a slow callback does not stop the stream
+/// from draining fseventsd.
 /// `latencySeconds` is the FSEvents coalescing window passed to `FSEventStreamCreate`.
 let create (directories: string list) (onFileEvent: string -> unit) (latencySeconds: float) =
     new FsEventStream(directories, onFileEvent, None, latencySeconds)

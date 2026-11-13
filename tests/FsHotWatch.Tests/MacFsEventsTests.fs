@@ -471,3 +471,223 @@ type MacFsEventsTests() =
                 test <@ paths |> List.exists (fun p -> p.EndsWith("B.fs")) @>
             finally
                 Directory.Delete(tmpRoot, true)
+
+// ─── Event drain (AUTOMATION-1543) ──────────────────────────────────
+//
+// fseventsd keeps every event it has queued for a stream until that stream's callback
+// returns. The callback used to run the daemon's handler itself: hash the file, then
+// wait up to five seconds for the daemon's store to admit the change, which is exactly
+// when FCS is busy. The drain takes events off the callback in O(1) and runs the handler
+// on its own thread, so a busy daemon holds its backlog in-process, deduplicated by
+// path, instead of in fseventsd.
+
+module ``event drain tests`` =
+    let private file (path: string) = DrainItem.File path
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``posting returns while the handler is blocked`` () =
+        use gate = new ManualResetEventSlim(false)
+        let handled = System.Collections.Concurrent.ConcurrentQueue<DrainItem>()
+
+        use drain =
+            new EventDrain(
+                (fun item ->
+                    gate.Wait()
+                    handled.Enqueue item),
+                "test-drain"
+            )
+
+        // Every post completes with the handler stuck on the first item.
+        for i in 0..9_999 do
+            drain.Post(file $"/r/f%d{i}.fs")
+
+        test <@ (drain.Stats()).Received = 10_000L @>
+        test <@ handled.IsEmpty @>
+
+        gate.Set()
+        waitUntilOr "all 10,000 items delivered" (fun () -> (drain.Stats()).Delivered = 10_000L) 30_000
+        test <@ handled.Count = 10_000 @>
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``a path posted again while it is still pending is delivered once`` () =
+        use gate = new ManualResetEventSlim(false)
+        let handled = System.Collections.Concurrent.ConcurrentQueue<DrainItem>()
+
+        use drain =
+            new EventDrain(
+                (fun item ->
+                    gate.Wait()
+                    handled.Enqueue item),
+                "test-drain"
+            )
+
+        // The first post is taken by the dispatch thread and blocks there; wait for that
+        // so the rest are all pending together.
+        drain.Post(file "/r/first.fs")
+        waitUntilOr "the first item is being handled" (fun () -> (drain.Stats()).Pending = 0) 10_000
+
+        for _ in 1..100 do
+            drain.Post(file "/r/A.fs")
+            drain.Post(file "/r/B.fs")
+
+        test <@ (drain.Stats()).Pending = 2 @>
+        test <@ (drain.Stats()).Coalesced = 198L @>
+
+        gate.Set()
+        waitUntilOr "three deliveries" (fun () -> handled.Count = 3) 10_000
+
+        test <@ List.ofSeq handled = [ file "/r/first.fs"; file "/r/A.fs"; file "/r/B.fs" ] @>
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``a path posted again after it was taken is delivered again`` () =
+        // The handler reads the file when it runs, so a change after it started must
+        // reach it a second time, not be folded into the delivery already under way.
+        use started = new ManualResetEventSlim(false)
+        use gate = new ManualResetEventSlim(false)
+        let handled = System.Collections.Concurrent.ConcurrentQueue<DrainItem>()
+
+        use drain =
+            new EventDrain(
+                (fun item ->
+                    started.Set()
+                    gate.Wait()
+                    handled.Enqueue item),
+                "test-drain"
+            )
+
+        drain.Post(file "/r/A.fs")
+        test <@ started.Wait(10_000) @>
+        drain.Post(file "/r/A.fs")
+        gate.Set()
+
+        waitUntilOr "two deliveries" (fun () -> handled.Count = 2) 10_000
+        test <@ List.ofSeq handled = [ file "/r/A.fs"; file "/r/A.fs" ] @>
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``a rescan and a file of the same path are distinct items`` () =
+        use gate = new ManualResetEventSlim(false)
+        let handled = System.Collections.Concurrent.ConcurrentQueue<DrainItem>()
+
+        use drain =
+            new EventDrain(
+                (fun item ->
+                    gate.Wait()
+                    handled.Enqueue item),
+                "test-drain"
+            )
+
+        drain.Post(file "/r/first.fs")
+        waitUntilOr "the first item is being handled" (fun () -> (drain.Stats()).Pending = 0) 10_000
+        drain.Post(DrainItem.Rescan "/r/src")
+        drain.Post(file "/r/src")
+        gate.Set()
+
+        waitUntilOr "three deliveries" (fun () -> handled.Count = 3) 10_000
+        test <@ List.ofSeq handled = [ file "/r/first.fs"; DrainItem.Rescan "/r/src"; file "/r/src" ] @>
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``a handler that throws does not stop delivery`` () =
+        let handled = System.Collections.Concurrent.ConcurrentQueue<DrainItem>()
+
+        use drain =
+            new EventDrain(
+                (fun item ->
+                    if item = file "/r/bad.fs" then
+                        invalidOp "handler failed"
+
+                    handled.Enqueue item),
+                "test-drain"
+            )
+
+        drain.Post(file "/r/bad.fs")
+        drain.Post(file "/r/good.fs")
+
+        waitUntilOr "the item after the failure" (fun () -> handled.Count = 1) 10_000
+        test <@ List.ofSeq handled = [ file "/r/good.fs" ] @>
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``nothing is delivered after dispose`` () =
+        use gate = new ManualResetEventSlim(false)
+        let handled = System.Collections.Concurrent.ConcurrentQueue<DrainItem>()
+
+        let drain =
+            new EventDrain(
+                (fun item ->
+                    gate.Wait()
+                    handled.Enqueue item),
+                "test-drain"
+            )
+
+        drain.Post(file "/r/first.fs")
+        waitUntilOr "the first item is being handled" (fun () -> (drain.Stats()).Pending = 0) 10_000
+        drain.Post(file "/r/pending.fs")
+
+        // Dispose waits for the item under way, so release it from another thread.
+        let release =
+            System.Threading.Tasks.Task.Run(fun () ->
+                waitUntilOr "dispose to begin" (fun () -> drain.Closing) 10_000
+                gate.Set())
+
+        (drain :> IDisposable).Dispose()
+        release.Wait()
+        drain.Post(file "/r/late.fs")
+
+        test <@ List.ofSeq handled = [ file "/r/first.fs" ] @>
+
+    [<Fact(Timeout = SyncHangBackstopMs)>]
+    let ``disposing from inside the handler does not deadlock`` () =
+        let mutable drainRef: EventDrain option = None
+        use disposed = new ManualResetEventSlim(false)
+
+        let drain =
+            new EventDrain(
+                (fun _ ->
+                    drainRef |> Option.iter (fun d -> (d :> IDisposable).Dispose())
+                    disposed.Set()),
+                "test-drain"
+            )
+
+        drainRef <- Some drain
+        drain.Post(file "/r/A.fs")
+        test <@ disposed.Wait(10_000) @>
+
+/// The drain on a real stream: with the handler blocked, the native callback still takes
+/// every event fseventsd delivers, so its queue for this client stays drained.
+[<Collection("MacFsEvents")>]
+type MacFsEventsDrainTests() =
+    [<Fact(Timeout = 150000)>]
+    member _.``a native stream keeps taking events while its handler is blocked``() =
+        if not (RuntimeInformation.IsOSPlatform OSPlatform.OSX) then
+            Assert.Skip("macOS only")
+        else
+            withTempDir "fsevents-drain" (fun tmpDir ->
+                use gate = new ManualResetEventSlim(false)
+                let handled = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+                let onFile path =
+                    gate.Wait()
+                    handled.Enqueue path
+
+                use stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
+
+                // Writes 200 new files per probe; the stream must take all of one probe's
+                // files from fseventsd while the handler is still stuck on its first.
+                let mutable written = 0
+
+                probeLoop
+                    (fun n ->
+                        for i in 0..199 do
+                            File.WriteAllText(Path.Combine(tmpDir, $"p%d{n}-%d{i}.fs"), "x")
+
+                        written <- written + 200)
+                    (fun () -> (stream.DrainStats()).Received >= 200L)
+                    60000
+
+                let taken = (stream.DrainStats()).Received
+                test <@ taken >= 200L @>
+                // Nothing reached the handler past the one it is blocked on.
+                test <@ handled.IsEmpty @>
+
+                gate.Set()
+                waitUntilOr "the handler catches up" (fun () -> handled.Count >= 200) 60000
+                test <@ handled.Count >= 200 @>)
