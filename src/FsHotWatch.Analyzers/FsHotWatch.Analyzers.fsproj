@@ -29,6 +29,7 @@
     <Compile Include="AnalyzerFindings.fs" />
     <Compile Include="AnalyzerReplies.fs" />
     <Compile Include="AnalyzeRecords.fs" />
+    <Compile Include="AnalyzeNeeds.fs" />
     <Compile Include="AnalyzersPlugin.fs" />
   </ItemGroup>
 
@@ -40,7 +41,23 @@
 
   <ItemGroup>
     <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+    <!-- FsHotWatch.Core is not a package (AUTOMATION-1668). PrivateAssets keeps it out of
+         this nupkg's dependencies; `PackFsHotWatchCore` below carries its assembly in lib/. -->
+    <ProjectReference Include="../FsHotWatch.Core/FsHotWatch.Core.fsproj" PrivateAssets="all" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);PackFsHotWatchCore</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <!-- Packs FsHotWatch.Core's built assembly beside this one, in lib/. -->
+  <Target Name="PackFsHotWatchCore" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <BuildOutputInPackage
+        Include="@(ReferenceCopyLocalPaths)"
+        Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' And '%(ReferenceCopyLocalPaths.Filename)' == 'FsHotWatch.Core' And ('%(ReferenceCopyLocalPaths.Extension)' == '.dll' Or '%(ReferenceCopyLocalPaths.Extension)' == '.xml')" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />

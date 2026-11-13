@@ -8,8 +8,11 @@
 ///
 /// Each ROLE is its own type, so a file's content digest cannot be passed where a tree
 /// digest is expected. Every constructor is private: a value of one of these types exists
-/// only because `parse` accepted its text, and there is no conversion from string.
+/// only because `parse` accepted its text or `ofBytes` hashed bytes into it (the SHA-256 as
+/// lowercase hex, which is that text by construction); there is no conversion from string.
 namespace FsHotWatch.Core
+
+open System
 
 /// Why text is not a digest.
 [<RequireQualifiedAccess>]
@@ -47,6 +50,10 @@ module internal DigestText =
             | Some index -> Error(DigestError.NotLowercaseHex index)
             | None -> Ok text
 
+    /// The SHA-256 of `bytes` as lowercase hex: a valid digest text by construction.
+    let sha256 (bytes: byte array) : string =
+        Convert.ToHexStringLower(Security.Cryptography.SHA256.HashData bytes)
+
 /// The digest of one file's bytes.
 [<Struct>]
 type ContentDigest =
@@ -66,6 +73,9 @@ module ContentDigest =
     /// `text` as a content digest, when it is 64 lowercase hex digits.
     let parse (text: string) : Result<ContentDigest, DigestError> =
         DigestText.validate text |> Result.map ContentDigest
+
+    /// The digest of `bytes`.
+    let ofBytes (bytes: byte array) : ContentDigest = ContentDigest(DigestText.sha256 bytes)
 
 /// The digest of a file's public signature: what a dependent's compile can observe, so an
 /// edit that leaves it unchanged need not rebuild dependents.
@@ -147,3 +157,30 @@ module OutputDigest =
     /// `text` as an output digest, when it is 64 lowercase hex digits.
     let parse (text: string) : Result<OutputDigest, DigestError> =
         DigestText.validate text |> Result.map OutputDigest
+
+    /// The digest of `bytes`.
+    let ofBytes (bytes: byte array) : OutputDigest = OutputDigest(DigestText.sha256 bytes)
+
+/// The digest of an oracle's answer: what the environment said when an action asked it a
+/// question (AUTOMATION-1636). Its own role, so an answer cannot stand in for a file's bytes.
+[<Struct>]
+type AnswerDigest =
+    private
+    | AnswerDigest of string
+
+    /// The 64 lowercase hex digits.
+    member this.Hex =
+        let (AnswerDigest hex) = this
+        hex
+
+    override this.ToString() = this.Hex
+
+/// Parses and makes answer digests.
+[<RequireQualifiedAccess>]
+module AnswerDigest =
+    /// `text` as an answer digest, when it is 64 lowercase hex digits.
+    let parse (text: string) : Result<AnswerDigest, DigestError> =
+        DigestText.validate text |> Result.map AnswerDigest
+
+    /// The digest of an answer's canonical `bytes`.
+    let ofBytes (bytes: byte array) : AnswerDigest = AnswerDigest(DigestText.sha256 bytes)

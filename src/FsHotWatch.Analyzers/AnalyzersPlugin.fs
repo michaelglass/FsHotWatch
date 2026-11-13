@@ -742,8 +742,11 @@ let taskKeyWith (host: AnalyzerHost) (terms: (string * string) list) : ContentHa
 /// (the box-wide analyze records, AUTOMATION-1585; `None` files none), with two
 /// test seams: `slowHook` is invoked inside the timeout-guarded region before the analyzers
 /// run, and `runAnalyzersOver` stands in for the SDK's run so a test can supply analyzers
-/// without loading an assembly.
-let internal createHostedWithSeams
+/// without loading an assembly. Every keyed analysis is also observed by `shadow` as a Need
+/// trace under `oracles` (AUTOMATION-1636); the shadow decides nothing.
+let internal createShadowedWithSeams
+    (shadow: AnalyzeNeeds.Shadow)
+    (oracles: FsHotWatch.Core.Oracles)
     (host: AnalyzerHost)
     (records: FsHotWatch.Analyzers.AnalyzeRecords.Wiring option)
     (repoRoot: string option)
@@ -1474,8 +1477,7 @@ let internal createHostedWithSeams
                                 recordBook.Put(result, Some recordKey)
                             | _ -> ()
 
-                            taskKeyWith
-                                host
+                            let terms =
                                 [ "analyzer-paths", analyzerPathsHash
                                   "analyzer-inputs", analyzerInputs
                                   // Entries are stored AFTER promotion, so the same finding is
@@ -1489,7 +1491,44 @@ let internal createHostedWithSeams
                                   // changes shape and the file still compiles.
                                   "used-signatures", usedSignatures
                                   // Typed analyzers can read the file's own diagnostics.
-                                  "fcs-signature", fcsSignature ])
+                                  "fcs-signature", fcsSignature ]
+
+                            // AUTOMATION-1636: the same analysis as a Need trace, compared
+                            // with today's key in shadow. It never changes the key below.
+                            let repoFile =
+                                repoRoot
+                                |> Option.bind (fun root ->
+                                    match FsHotWatch.CachePathIdentity.ofPath root file with
+                                    | FsHotWatch.CachePathIdentity.RepoRelative relative ->
+                                        FsHotWatch.Core.RepoRelativePath.parse relative
+                                        |> Result.toOption
+                                        |> Option.map (fun parsed -> root, parsed)
+                                    | FsHotWatch.CachePathIdentity.ExternalAbsolute _ -> None)
+
+                            match repoFile with
+                            | Some(root, file) ->
+                                // Guarded: whatever the shadow throws is logged, never raised.
+                                shadow.Guard(
+                                    file,
+                                    fun () ->
+                                        let inputs: AnalyzeNeeds.AnalysisInputs =
+                                            { File = file
+                                              Source = result.Source
+                                              FcsSignature = fcsSignature
+                                              UsedSignatures = usedSignatures
+                                              Options = AnalyzeRecords.optionsHashOf root result.ProjectOptions
+                                              AnalyzerPaths = analyzerPathsHash
+                                              AnalyzerInputs = analyzerInputs
+                                              AnalyzerConfig = configDigest
+                                              FailOnSeverity = threshold
+                                              Checker = host.Checker
+                                              AnalyzerSdk = host.AnalyzerSdk }
+
+                                        AnalyzeNeeds.observe oracles inputs (AnalyzerHost.keyTerms host @ terms)
+                                )
+                            | None -> ()
+
+                            taskKeyWith host terms)
 
                 // No task key, no record key: nothing is read or filed for this result.
                 if key.IsNone then
@@ -1510,6 +1549,34 @@ let internal createHostedWithSeams
             // Unloading is cooperative too: a still-running analyzer keeps its context
             // alive until it returns.
             Volatile.Read(&loaded) |> List.iter AnalyzerLoad.unload) }
+
+/// `createShadowedWithSeams` with this process's shadow: disagreements logged at warning
+/// under the `analyzers` tag, the oracles answered live for the repository.
+let internal createHostedWithSeams
+    (host: AnalyzerHost)
+    (records: FsHotWatch.Analyzers.AnalyzeRecords.Wiring option)
+    (repoRoot: string option)
+    (analyzerPaths: string list)
+    (scopes: Map<string, AnalyzerScope>)
+    (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
+    (slowHook: (unit -> unit) option)
+    (runAnalyzersOver: AnalyzerRunner)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    let root = repoRoot |> Option.defaultWith Directory.GetCurrentDirectory
+
+    createShadowedWithSeams
+        (AnalyzeNeeds.Shadow(warn "analyzers"))
+        (AnalyzeNeeds.liveOracles (fun () -> FsHotWatch.DotnetToolchain.identity root) root)
+        host
+        records
+        repoRoot
+        analyzerPaths
+        scopes
+        timeoutSec
+        failOnSeverity
+        slowHook
+        runAnalyzersOver
 
 /// `createHostedWithSeams` under this process's host (`AnalyzerHost.current`), filing each
 /// analysis as `records` says (AUTOMATION-1585).

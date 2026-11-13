@@ -39,6 +39,12 @@ type KeyInput =
     | Tree of digest: TreeDigest
     /// The toolchain.
     | Toolchain of digest: ToolchainDigest
+    /// A file that was needed and is not there: its absence is an input too (AUTOMATION-1636).
+    | Absent of path: RepoRelativePath
+    /// An output another action produced, named by its label (AUTOMATION-1636).
+    | Upstream of label: OutputLabel * digest: OutputDigest
+    /// An oracle's answer to a question about the environment (AUTOMATION-1636).
+    | Oracle of question: OracleQuestion * answer: AnswerDigest
 
 /// Why a set of inputs is not a key.
 [<RequireQualifiedAccess>]
@@ -73,7 +79,8 @@ type KeyRef =
 /// Canonical text, one field per line (LF):
 ///   "fshw-core-key-v1", the kind's name, its schema version, then one line per input,
 ///   "subject TAB hex", ordered by subject (ordinal). Subjects are "content:PATH",
-///   "signature:PATH", "output:PATH", "tree" and "toolchain".
+///   "signature:PATH", "output:PATH", "tree", "toolchain", "absent:PATH" (whose line holds
+///   "-" for the digest), "upstream:LABEL" and "oracle:QUESTION".
 /// Unambiguous because neither a path nor a kind name may contain a control character,
 /// and a digest is hex; order-independent because the inputs are sorted.
 type ActionKey<'Kind when 'Kind :> IRecordKind> =
@@ -91,6 +98,11 @@ module ActionKey =
     [<Literal>]
     let Recipe = "fshw-core-key-v1"
 
+    /// What an `Absent` input's line holds where another holds a digest: not hex, so it
+    /// cannot be mistaken for one.
+    [<Literal>]
+    let AbsentMark = "-"
+
     let private subjectOf (input: KeyInput) : string * string =
         match input with
         | KeyInput.Content(path, digest) -> "content:" + path.Text, digest.Hex
@@ -98,6 +110,9 @@ module ActionKey =
         | KeyInput.Output(path, digest) -> "output:" + path.Text, digest.Hex
         | KeyInput.Tree digest -> "tree", digest.Hex
         | KeyInput.Toolchain digest -> "toolchain", digest.Hex
+        | KeyInput.Absent path -> "absent:" + path.Text, AbsentMark
+        | KeyInput.Upstream(label, digest) -> "upstream:" + label.Text, digest.Hex
+        | KeyInput.Oracle(question, answer) -> "oracle:" + question.Subject, answer.Hex
 
     /// The kind's name.
     let kindName (_: ActionKey<'Kind>) : string = 'Kind.Name

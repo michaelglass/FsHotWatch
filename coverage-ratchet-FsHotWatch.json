@@ -39,6 +39,30 @@
       "branch": 100,
       "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: typed Outcome, its erased record and the typed miss on recall). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (14/14), branch 100% (6/6). Pure, no I/O or platform branch, so platform-neutral."
     },
+    "Questions.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1636 FsHotWatch.Core: EnvVarName, OutputLabel and the closed OracleQuestion, each parsed once). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-13 on macOS by NeedActionTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.NeedActionTests, CoreTypesTests, AnalyzeNeedsTests): line 100% (31/31), branch 100% (25/25). Pure, no I/O or platform branch, so platform-neutral."
+    },
+    "Need.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1636 FsHotWatch.Core: the action { Need.* } builder, Oracle<'Answer>, NeedTrace and its key and diff). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-13 on macOS by NeedActionTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.NeedActionTests, CoreTypesTests, AnalyzeNeedsTests): line 100% (85/85), branch 100% (30/30). Pure, no I/O or platform branch, so platform-neutral."
+    },
+    "AnalyzeNeeds.fs": [
+      {
+        "line": 99,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1636: the analyzer action as a Need trace, compared with today's task key in shadow). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-13 on macOS by AnalyzeNeedsTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.AnalyzeNeedsTests): line 99.1% (110/111), branch 100% (32/32). The one uncovered line is AnalyzeNeedsKind's private constructor: the kind is a type argument and is never instantiated.",
+        "platform": "macos"
+      },
+      {
+        "line": 99,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1636). Not yet measured on Linux CI: set equal to the macOS measurement because the module's only I/O (reading .config/dotnet-tools.json, the environment, the runtime identifier) takes the same branches on Linux; re-baseline from CI (`mise run loosen-from-ci`) if the Linux report differs.",
+        "platform": "linux"
+      }
+    ],
     "InProcessProcessTable.fs": [
       {
         "line": 82,

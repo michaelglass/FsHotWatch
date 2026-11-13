@@ -17,18 +17,20 @@
     <IsTrimmable>true</IsTrimmable>
     <IsAotCompatible>true</IsAotCompatible>
     <OtherFlags>$(OtherFlags) --reflectionfree</OtherFlags>
-    <!-- Not published yet: nothing consumes it. Registering it with semantic-tagger.json,
-         the release workflow and the docs belongs to the first change that migrates a
-         package onto it. -->
+    <!-- Never its own package (AUTOMATION-1668: one library, with a CLI). A packed project
+         that uses it carries FsHotWatch.Core.dll inside its own nupkg, as
+         FsHotWatch.Analyzers does since AUTOMATION-1636. -->
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="Digests.fs" />
     <Compile Include="RepoRelativePath.fs" />
+    <Compile Include="Questions.fs" />
     <Compile Include="RecordKind.fs" />
     <Compile Include="VerdictAndPurity.fs" />
     <Compile Include="KindedOutcome.fs" />
+    <Compile Include="Need.fs" />
   </ItemGroup>
 
   <ItemGroup>

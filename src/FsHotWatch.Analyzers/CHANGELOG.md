@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- feat: the analyzer action as a Need trace, in shadow (AUTOMATION-1636, the S1/S2 pilot of ADR-059 §35). New:
+  `AnalyzeNeeds`. On every analysis the plugin computes today's task key and also the trace of the action written
+  with `action { Need.* }`. The action needs its file, the upstream outputs (check signatures, project options,
+  analyzer set and config, threshold, host build) and the oracles (SDK, `DOTNET_ROOT`, `NUGET_PACKAGES`, tool manifest,
+  platform). Each trace is compared with the same file's previous analysis in this process. When one key moved while
+  the other held, the plugin logs at warning under `analyzers`:
+  `need-shadow disagree file=<path> today=held|moved need=moved|held inputs=<what differs>`. An action that produced
+  no trace logs `need-shadow error file=<path> reason=…`. The Need key decides nothing, and no existing key or record
+  schema changes. The SDK and tool-manifest oracles are asked once per dispatch batch. The package
+  carries `FsHotWatch.Core.dll` in `lib/` (Core is not a package of its own, AUTOMATION-1668); it gains no new
+  package dependency.
+
 - fix: an analyzers task-cache key names the host it was computed under (AUTOMATION-1629). An entry is stored after the
   host has filtered and promoted the findings, and the analyzers read the typed tree the compiler service built, yet the
   key named neither the checker build nor the analyzer SDK, and the host's own code only through an unnamed

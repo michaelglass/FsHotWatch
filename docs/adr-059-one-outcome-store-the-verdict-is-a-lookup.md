@@ -1847,3 +1847,69 @@ both differing files on every start (the control).
 **Not changed.** The task cache is still written and read (under the guard above); retiring the
 analyzers' task-cache entries, and doing the same for `lint`, is follow-up work once the shadow
 has run.
+
+## 37. Amendment (AUTOMATION-1636): the key is the trace — the `Need` pilot, in shadow
+
+§35's S1 and S2, piloted on one action kind: the analyzer action. Shadow only; the Need key decides
+nothing.
+
+**S1, in `FsHotWatch.Core` (`Need.fs`).** An action is an `action { … }` computation, an
+`Action<'T>` whose constructor is private. It reads its inputs only through `Need.*`:
+
+- `Need.file : RepoRelativePath -> Action<byte[] option>` records the content digest. An absent
+  file is recorded as absent, and absence is an input too.
+- `Need.upstream : OutputLabel -> Action<OutputDigest>` reads an output another action produced.
+  An output nobody produced stops the action (`NeedError.NotProduced`).
+- `Need.oracle : Oracle<'Answer> -> Action<'Answer>` and `Need.env : EnvVarName -> Action<string option>`.
+
+The world (`World`: files, upstream outputs, oracles) goes to `Action.run`, never to the action,
+so an action has no API to read an undeclared input. Each `Need` returns the value and records
+one `Needed` per subject. A subject answered twice with different digests is refused
+(`NeedError.Inconsistent`), because no single key could describe that read. `NeedTrace.key<'Kind>`
+makes the trace an `ActionKey<'Kind>`. `KeyInput` gains `Absent`, `Upstream` and `Oracle`, whose
+subjects are `absent:`, `upstream:` and `oracle:`. Every existing subject is unchanged, so no key
+moves. `NeedTrace.diff` names each need added, removed or changed.
+
+**S2, oracles.** A closed `OracleQuestion` with one typed `Oracle<'Answer>` per case:
+`dotnetSdk : Oracle<string>` (the SDK a `dotnet` resolves here, `DotnetToolchain.identity`),
+`variable name : Oracle<string option>` (unset differs from empty), `toolManifest :
+Oracle<byte[] option>` (`.config/dotnet-tools.json`) and `platform : Oracle<string>` (the .NET
+runtime identifier). They are asked again on every run, and only the answer's digest
+(`AnswerDigest`) enters a key. In the plugin, the SDK and the manifest are asked once per
+dispatch batch, because they read files; the variables and the platform are asked at every
+analysis.
+
+**The pilot (`FsHotWatch.Analyzers.AnalyzeNeeds`).** The analyzer action needs:
+
+- its file (the source text the check analysed);
+- the upstream outputs `check/fcs-signature`, `check/used-signatures`, `project/options`,
+  `analyzers/paths`, `analyzers/inputs`, `analyzers/config`, `analyzers/fail-on-severity`,
+  `host/checker` and `host/analyzer-sdk`;
+- the oracles: the SDK, `DOTNET_ROOT`, `NUGET_PACKAGES`, the tool manifest and the platform.
+
+For every keyed analysis, the plugin computes today's task key and this trace. It compares both
+with the same file's previous analysis in this process. Two correct keys move together, so a
+disagreement is one key moving while the other held. It is logged at warning, tag `analyzers`,
+with a fixed and greppable form:
+
+    need-shadow disagree file=<repo-relative path> today=held need=moved inputs=<subject>,…
+    need-shadow disagree file=<repo-relative path> today=moved need=held inputs=<term>,…
+    need-shadow error file=<repo-relative path> reason=<why the action produced no trace>
+
+`today=held need=moved` means today's key missed the named inputs, which makes it a false-replay
+candidate. `today=moved need=held` means the action does not declare the named terms of today's
+key. Agreements are not logged. The key the plugin answers with is today's, whatever the shadow
+says.
+
+**What it already shows.** Today's task key omits the project options. `AnalyzeRecords` names them,
+but the task key does not. It also omits every oracle except what the checker build implies. So an
+options-only edit, for example a define, holds today's key and moves the Need key:
+`… today=held need=moved inputs=upstream:project/options`. That is the positive control in
+`AnalyzeNeedsTests`. A tool-manifest edit is the same case: `inputs=oracle:tool-manifest`.
+Variables and the platform are fixed for a process's life, so within one daemon they cannot
+disagree. The comparison is per process, and a cross-process comparison needs the trace filed (S3
+and later).
+
+**Packaging.** `FsHotWatch.Core` is not a package of its own (AUTOMATION-1668: one library,
+with a CLI). `FsHotWatch.Analyzers` references it with `PrivateAssets="all"` and carries
+`FsHotWatch.Core.dll` in its own nupkg's `lib/`, so the nupkg depends on no `FsHotWatch.Core` package.
