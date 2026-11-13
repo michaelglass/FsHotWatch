@@ -136,9 +136,8 @@ let internal commandForceRunWith
           SelectedBy =
             configs
             |> List.map (fun c ->
-                { Project = c.Project
-                  Causes = [ SelectionCause.ForceRun ]
-                  SkippedClasses = [] }) }
+                { ProjectAttribution.ofCauses c.Project [ SelectionCause.ForceRun ] with
+                    Ran = Some ProjectRun.InFull }) }
 
     async {
         do! awaitDiscoveryBeforeLaunch ctx

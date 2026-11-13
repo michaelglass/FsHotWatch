@@ -445,12 +445,48 @@ let tryReadSelectedBy (field: JsonElement option) : Result<ProjectAttribution li
                     None
             | true, _ -> None
 
+        // `namedClasses` is absent on a reading that does not say which classes each cause
+        // named; present, it maps known cause tokens to class names.
+        let namedOf (entry: JsonElement) =
+            match entry.TryGetProperty "namedClasses" with
+            | false, _ -> Some Map.empty
+            | true, named when named.ValueKind = JsonValueKind.Object ->
+                let read =
+                    named.EnumerateObject()
+                    |> Seq.map (fun prop ->
+                        match SelectionCause.tryOfToken prop.Name, prop.Value.ValueKind with
+                        | Some cause, JsonValueKind.Array ->
+                            let names = prop.Value.EnumerateArray() |> List.ofSeq
+
+                            if names |> List.forall (fun name -> name.ValueKind = JsonValueKind.String) then
+                                Some(cause, names |> List.map _.GetString())
+                            else
+                                None
+                        | _ -> None)
+                    |> List.ofSeq
+
+                if List.forall Option.isSome read then
+                    Some(read |> List.choose id |> Map.ofList)
+                else
+                    None
+            | true, _ -> None
+
+        // `ran` is absent on a reading that does not say how the project ran.
+        let ranOf (entry: JsonElement) =
+            match entry.TryGetProperty "ran" with
+            | false, _ -> Some None
+            | true, ran when ran.ValueKind = JsonValueKind.String ->
+                ProjectRun.tryOfToken (ran.GetString()) |> Option.map Some
+            | true, _ -> None
+
         let read (entry: JsonElement) =
-            match Json.tryString entry "project", causesOf entry, skippedOf entry with
-            | Some project, Some causes, Some skipped ->
+            match Json.tryString entry "project", causesOf entry, skippedOf entry, namedOf entry, ranOf entry with
+            | Some project, Some causes, Some skipped, Some named, Some ran ->
                 Some
                     { ProjectAttribution.ofCauses project causes with
-                        SkippedClasses = skipped }
+                        SkippedClasses = skipped
+                        NamedClasses = named
+                        Ran = ran }
             | _ -> None
 
         let entries = value.EnumerateArray() |> List.ofSeq

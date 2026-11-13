@@ -560,6 +560,308 @@ module RunSuites =
     /// them — the shape an older verdict rehydrates into.
     let unattributed (suites: SuiteVerdict list) : RunSuites = { RunId = None; Suites = suites }
 
+/// How many tests each class of a CTRF report holds: a row's class is the `extra.type`
+/// the runner wrote, or else its name up to the method (`Profile.classOfTestName`). An
+/// unreadable report holds none, so it counts no tests for any cause that named classes.
+let classTestsOfReport (path: string) : Map<string, int> =
+    // A member of an object, or `null` for anything that is not one.
+    let field (name: string) (node: JsonNode) : JsonNode =
+        match node with
+        | :? JsonObject as o -> o[name]
+        | _ -> null
+
+    let text (node: JsonNode) : string option =
+        match node with
+        | :? JsonValue as v ->
+            match v.TryGetValue<string>() with
+            | true, s when s <> "" -> Some s
+            | _ -> None
+        | _ -> None
+
+    try
+        match JsonNode.Parse(File.ReadAllText path) |> field "results" |> field "tests" with
+        | :? JsonArray as rows ->
+            rows
+            |> Seq.choose (fun row ->
+                row
+                |> field "extra"
+                |> field "type"
+                |> text
+                |> Option.orElse (
+                    row
+                    |> field "name"
+                    |> text
+                    |> Option.map FsHotWatch.TestPrune.Profile.classOfTestName
+                ))
+            |> Seq.countBy id
+            |> Map.ofSeq
+        | _ -> Map.empty
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException
+    | :? JsonException -> Map.empty
+
+/// How many tests each class of a suite's report held, its `Ctrf` path read under
+/// `repoRoot` — the reader `create` counts `scope.testsByCause` with.
+let classTestsOf (repoRoot: string) (suite: SuiteVerdict) : Map<string, int> =
+    if String.IsNullOrEmpty suite.Ctrf then
+        Map.empty
+    else
+        classTestsOfReport (Path.Combine(repoRoot, suite.Ctrf))
+
+/// How many of a run's tests each cause selected, project by project.
+///
+/// `selectedBy` attributes PROJECTS; this counts their tests. A project several causes
+/// selected is counted under EACH of them, never only under its widest: a symbol edit
+/// that named 10 classes of a project that runtime coverage then ran in full still
+/// selected those 10 classes' tests, and booking them all under runtime coverage erased
+/// exactly the split a reader measures the safety net by. So the counts OVERLAP, and the
+/// overlap is stated rather than hidden: each project entry names the other causes that
+/// also selected it (`AlsoSelectedBy`) and how many of its tests no other cause selected
+/// (`Only`).
+///
+/// A cause that named classes counts the tests of those classes the run executed; a cause
+/// that selected the project whole counts every test the run executed in it. A suite filed
+/// from another run's evidence (`ReusedFrom`) cost this run nothing and counts 0; its
+/// project is still named, so the cause that selected it is not lost. An attribution that
+/// does not say which classes a cause named (a reading from before `namedClasses`) counts
+/// that cause as selecting the whole project.
+module SelectionTests =
+    /// What one cause selected in one project.
+    [<RequireQualifiedAccess>]
+    type Selected =
+        /// The whole project.
+        | InFull
+        /// Only named classes, this many of them.
+        | Classes of count: int
+
+    /// One project, as one cause selected it.
+    type ProjectTests =
+        {
+            Project: string
+            /// The executed tests this cause selected in the project.
+            Tests: int
+            /// Of `Tests`, those no other cause of the project selected.
+            Only: int
+            Selected: Selected
+            /// The project's other causes, widest first: the causes `Tests` overlaps.
+            AlsoSelectedBy: SelectionCause list
+            /// How the project ran; `None` where the attribution did not say.
+            Ran: ProjectRun option
+        }
+
+    /// One cause, the tests it selected, and the projects it selected them in.
+    type CauseTests =
+        {
+            Cause: SelectionCause
+            /// The sum of `ByProject`'s `Tests`.
+            Tests: int
+            /// The sum of `ByProject`'s `Only`.
+            Only: int
+            Projects: string list
+            ByProject: ProjectTests list
+        }
+
+    /// The counts, widest cause first, over the graded run's own reports.
+    let byCause
+        (classTests: SuiteVerdict -> Map<string, int>)
+        (attribution: ProjectAttribution list)
+        (graded: SuiteVerdict list)
+        : CauseTests list =
+        let executed =
+            graded
+            |> List.filter (fun s -> Option.isNone s.ReusedFrom)
+            |> List.groupBy _.Project
+            |> Map.ofList
+
+        let projectEntry (entry: ProjectAttribution) (cause: SelectionCause) : ProjectTests =
+            let suites = Map.tryFind entry.Project executed |> Option.defaultValue []
+            let total = suites |> List.sumBy _.Total
+
+            let testsByClass =
+                suites
+                |> List.collect (classTests >> Map.toList)
+                |> List.groupBy fst
+                |> List.map (fun (cls, counts) -> cls, counts |> List.sumBy snd)
+                |> Map.ofList
+
+            let testsIn (classes: Set<string>) =
+                classes
+                |> Seq.sumBy (fun cls -> Map.tryFind cls testsByClass |> Option.defaultValue 0)
+
+            // `None` is the whole project; `Some` the classes the cause named.
+            let named (c: SelectionCause) =
+                Map.tryFind c entry.NamedClasses |> Option.map Set.ofList
+
+            let others = entry.Causes |> List.filter ((<>) cause)
+            let otherNamed = others |> List.map named
+
+            let tests, only =
+                match named cause with
+                | None ->
+                    let only =
+                        if otherNamed |> List.exists Option.isNone then
+                            0
+                        else
+                            max 0 (total - testsIn (otherNamed |> List.choose id |> Set.unionMany))
+
+                    total, only
+                | Some classes ->
+                    let only =
+                        if otherNamed |> List.exists Option.isNone then
+                            0
+                        else
+                            testsIn (Set.difference classes (otherNamed |> List.choose id |> Set.unionMany))
+
+                    testsIn classes, only
+
+            { Project = entry.Project
+              Tests = tests
+              Only = only
+              Selected =
+                match named cause with
+                | None -> Selected.InFull
+                | Some classes -> Selected.Classes(Set.count classes)
+              AlsoSelectedBy = others
+              Ran = entry.Ran }
+
+        SelectionCause.all
+        |> List.choose (fun cause ->
+            match attribution |> List.filter (fun entry -> List.contains cause entry.Causes) with
+            | [] -> None
+            | entries ->
+                let byProject = entries |> List.map (fun entry -> projectEntry entry cause)
+
+                Some
+                    { Cause = cause
+                      Tests = byProject |> List.sumBy _.Tests
+                      Only = byProject |> List.sumBy _.Only
+                      Projects = byProject |> List.map _.Project
+                      ByProject = byProject })
+
+    /// The counts a verdict records: `None` where the reading did not say why projects
+    /// ran, or the verdict names no graded run to count.
+    let ofGraded
+        (classTests: SuiteVerdict -> Map<string, int>)
+        (selectedBy: ProjectAttribution list option)
+        (runId: Guid option)
+        (runs: RunSuites list)
+        : CauseTests list option =
+        let graded =
+            runId
+            |> Option.bind (fun id -> runs |> List.tryFind (fun r -> r.RunId = Some id))
+
+        match selectedBy, graded with
+        | Some attribution, Some run -> Some(byCause classTests attribution run.Suites)
+        | _ -> None
+
+    let private selectedToken (selected: Selected) =
+        match selected with
+        | Selected.InFull -> "in-full"
+        | Selected.Classes _ -> "classes"
+
+    /// The entry on the wire.
+    let wire (entry: CauseTests) : obj =
+        {| cause = SelectionCause.token entry.Cause
+           tests = entry.Tests
+           only = entry.Only
+           projects = Array.ofList entry.Projects
+           byProject =
+            entry.ByProject
+            |> List.map (fun p ->
+                {| project = p.Project
+                   tests = p.Tests
+                   only = p.Only
+                   selected = selectedToken p.Selected
+                   classes =
+                    (match p.Selected with
+                     | Selected.Classes n -> box n
+                     | Selected.InFull -> null)
+                   alsoSelectedBy = p.AlsoSelectedBy |> List.map SelectionCause.token |> Array.ofList
+                   ran = p.Ran |> Option.map ProjectRun.token |> Option.toObj |})
+            |> Array.ofList |}
+        :> obj
+
+    /// An entry read back from a verdict file; `None` for one this build cannot read,
+    /// including every entry written before `byProject`.
+    let tryRead (el: JsonElement) : CauseTests option =
+        let causes (arr: JsonElement) =
+            if arr.ValueKind <> JsonValueKind.Array then
+                None
+            else
+                let read =
+                    arr.EnumerateArray()
+                    |> Seq.map (fun c ->
+                        if c.ValueKind = JsonValueKind.String then
+                            SelectionCause.tryOfToken (c.GetString())
+                        else
+                            None)
+                    |> List.ofSeq
+
+                if List.forall Option.isSome read then
+                    Some(List.choose id read)
+                else
+                    None
+
+        let project (p: JsonElement) =
+            let selected =
+                match Json.tryString p "selected", Json.tryInt p "classes" with
+                | Some "in-full", _ -> Some Selected.InFull
+                | Some "classes", Some n -> Some(Selected.Classes n)
+                | _ -> None
+
+            let ran =
+                match Json.tryProp p "ran" with
+                | None -> Some None
+                | Some r when r.ValueKind = JsonValueKind.Null -> Some None
+                | Some r when r.ValueKind = JsonValueKind.String ->
+                    ProjectRun.tryOfToken (r.GetString()) |> Option.map Some
+                | Some _ -> None
+
+            match
+                Json.tryString p "project",
+                Json.tryInt p "tests",
+                Json.tryInt p "only",
+                selected,
+                Json.tryProp p "alsoSelectedBy" |> Option.bind causes,
+                ran
+            with
+            | Some name, Some tests, Some only, Some selected, Some also, Some ran ->
+                Some
+                    { Project = name
+                      Tests = tests
+                      Only = only
+                      Selected = selected
+                      AlsoSelectedBy = also
+                      Ran = ran }
+            | _ -> None
+
+        let byProject =
+            match Json.tryProp el "byProject" with
+            | Some arr when arr.ValueKind = JsonValueKind.Array ->
+                let read = arr.EnumerateArray() |> Seq.map project |> List.ofSeq
+
+                if List.forall Option.isSome read then
+                    Some(List.choose id read)
+                else
+                    None
+            | _ -> None
+
+        match
+            Json.tryString el "cause" |> Option.bind SelectionCause.tryOfToken,
+            Json.tryInt el "tests",
+            Json.tryInt el "only",
+            byProject
+        with
+        | Some cause, Some tests, Some only, Some byProject ->
+            Some
+                { Cause = cause
+                  Tests = tests
+                  Only = only
+                  Projects = byProject |> List.map _.Project
+                  ByProject = byProject }
+        | _ -> None
+
 /// One diagnostic that CONTRIBUTED to a red, as the verdict records it.
 ///
 /// Case 3 of the stale-verdict report. A `confirm` returned exit 1 with all four plugins `ok` and
@@ -1495,6 +1797,11 @@ type Verdict =
             /// Which cause selected each project of the run — the reading's
             /// `TestRunReport.SelectedBy`. `None` is "this verdict does not say".
             selectedBy: ProjectAttribution list option
+            /// How many of the graded run's tests each cause selected, per project, with
+            /// the overlaps named (`SelectionTests`). Counted when the verdict is built, from
+            /// the reports on disk, and read back as written. `None` is "this verdict does
+            /// not say".
+            testsByCause: SelectionTests.CauseTests list option
             /// The seeds that alone selected the most tests — the reading's
             /// `TestRunReport.SeedFanout`. `None` is "this verdict does not say".
             seedFanout: SeedFanoutReading option
@@ -1589,6 +1896,9 @@ type Verdict =
 
     /// Which cause selected each project — see the `selectedBy` field.
     member this.SelectedBy = this.selectedBy
+
+    /// How many tests each cause selected — see the `testsByCause` field.
+    member this.TestsByCause = this.testsByCause
 
     /// The seeds that alone selected the most tests — see the `seedFanout` field.
     member this.SeedFanout = this.seedFanout
@@ -1862,6 +2172,10 @@ let create
     // reading. Required: a caller that could omit it could write a green nobody can tell
     // from the one an empty model produced.
     (projectModel: IpcParsing.ProjectModelReading)
+    // How many tests each class of a suite's report held (`classTestsOf` over the repo
+    // the reports live in). Required: the per-cause counts are made of it, and a caller
+    // that could omit it would count every named class as holding no tests.
+    (classTests: SuiteVerdict -> Map<string, int>)
     : Verdict =
     let candidate =
         { producedAt = DateTime.UtcNow
@@ -1877,6 +2191,7 @@ let create
           excluded = excluded
           notSelected = runReport.NotSelected
           selectedBy = runReport.SelectedBy
+          testsByCause = SelectionTests.ofGraded classTests runReport.SelectedBy runReport.RunId runs
           seedFanout = runReport.SeedFanout
           price = runReport.Price
           outcome = outcome
@@ -1964,53 +2279,6 @@ let private excludedJson (excluded: SolutionScope.Exclusion list option) : obj =
         |> Array.ofList
         :> obj
 
-/// How many of a run's tests each cause selected.
-///
-/// `selectedBy` attributes PROJECTS; this counts their tests. Each project is counted
-/// once, under its WIDEST cause — the first it names, the one that decided how much of
-/// it ran — so the counts partition the run: they sum to the tests it executed in every
-/// attributed project. A suite filed from another run's evidence (`ReusedFrom`) cost
-/// this run nothing and counts 0; its project is still named, so the cause that
-/// selected it is not lost.
-module SelectionTests =
-    /// One cause, the tests it selected, and the projects it selected them in.
-    type CauseTests =
-        { Cause: SelectionCause
-          Tests: int
-          Projects: string list }
-
-    /// The counts, widest cause first, over the graded run's own reports.
-    let byCause (attribution: ProjectAttribution list) (graded: SuiteVerdict list) : CauseTests list =
-        let executed =
-            graded
-            |> List.filter (fun s -> Option.isNone s.ReusedFrom)
-            |> List.groupBy _.Project
-            |> List.map (fun (project, suites) -> project, suites |> List.sumBy _.Total)
-            |> Map.ofList
-
-        let widest =
-            attribution
-            |> List.choose (fun entry -> entry.Causes |> List.tryHead |> Option.map (fun c -> c, entry.Project))
-
-        SelectionCause.all
-        |> List.choose (fun cause ->
-            match widest |> List.filter (fun (c, _) -> c = cause) |> List.map snd with
-            | [] -> None
-            | projects ->
-                Some
-                    { Cause = cause
-                      Tests =
-                        projects
-                        |> List.sumBy (fun p -> Map.tryFind p executed |> Option.defaultValue 0)
-                      Projects = projects })
-
-    /// The entry on the wire.
-    let wire (entry: CauseTests) : obj =
-        {| cause = SelectionCause.token entry.Cause
-           tests = entry.Tests
-           projects = Array.ofList entry.Projects |}
-        :> obj
-
 /// Scope on the wire. UNIFORMLY TAGGED (`kind` always present) rather than
 /// "sometimes a string, sometimes an object", so a consumer never has to
 /// discriminate a JSON string from a JSON object before it can read a field.
@@ -2020,7 +2288,7 @@ let private scopeJson
     (selectedBy: ProjectAttribution list option)
     (seedFanout: SeedFanoutReading option)
     (price: SelectionPrice.Reading option)
-    (graded: SuiteVerdict list option)
+    (testsByCause: SelectionTests.CauseTests list option)
     (scope: TestScope)
     : obj =
     let gaps = excludedJson excluded
@@ -2043,13 +2311,9 @@ let private scopeJson
     // How many tests each cause selected, beside `selectedBy`. `null` where the reading
     // did not say why projects ran, or the verdict names no graded run to count.
     let testsByCause =
-        match selectedBy, graded with
-        | Some attribution, Some suites ->
-            SelectionTests.byCause attribution suites
-            |> List.map SelectionTests.wire
-            |> Array.ofList
-            |> box
-        | _ -> null
+        testsByCause
+        |> Option.map (List.map SelectionTests.wire >> Array.ofList >> box)
+        |> Option.toObj
 
     // On every kind, beside `excluded`: which changed files selected no tests is a fact
     // about the selection whatever ran. `null` where the reading did not say.
@@ -2324,17 +2588,7 @@ let serialize (v: Verdict) : string =
            treeFileCount = v.TreeFileCount
            treeDeclaredCount = v.TreeDeclaredCount
            treeAbsentDeclarationCount = v.TreeAbsentDeclarationCount
-           scope =
-            scopeJson
-                v.Excluded
-                v.NotSelected
-                v.SelectedBy
-                v.SeedFanout
-                v.Price
-                (v.RunId
-                 |> Option.bind (fun id -> v.Runs |> List.tryFind (fun r -> r.RunId = Some id))
-                 |> Option.map _.Suites)
-                v.Scope
+           scope = scopeJson v.Excluded v.NotSelected v.SelectedBy v.SeedFanout v.Price v.TestsByCause v.Scope
            outcome = outcomeJson v.Outcome
            projectModel = projectModelJson v.ProjectModel
            checkComparison = checkComparisonJson v.Excluded v.Comparison
@@ -2656,6 +2910,8 @@ let private terminalVerdict
         CheckComparison.notRecorded
         []
         (IpcParsing.ProjectModelReading.NotReported "the invocation ended before the project model could be read")
+        // It records no runs, so there are no reports to count.
+        (fun _ -> Map.empty)
 
 /// The exit code of a verdict that records an invocation which did not finish.
 let incompleteExitCode =
@@ -3436,6 +3692,20 @@ let read (repoRoot: string) : Reading =
                           excluded = excluded
                           notSelected = notSelected
                           selectedBy = selectedBy
+                          // As written. A file whose counts this build cannot read (one written
+                          // before `byProject`) is counted again from what it recorded, which
+                          // holds the class counts only while the reports are still on disk.
+                          testsByCause =
+                            (match scopeEl |> Option.bind (fun el -> tryProp el "testsByCause") with
+                             | Some el when el.ValueKind = JsonValueKind.Null -> None
+                             | Some el when el.ValueKind = JsonValueKind.Array ->
+                                 let read = el.EnumerateArray() |> Seq.map SelectionTests.tryRead |> List.ofSeq
+
+                                 if List.forall Option.isSome read then
+                                     Some(List.choose id read)
+                                 else
+                                     SelectionTests.ofGraded (classTestsOf repoRoot) selectedBy gradedRunId runs
+                             | _ -> SelectionTests.ofGraded (classTestsOf repoRoot) selectedBy gradedRunId runs)
                           seedFanout = seedFanout
                           price = price
                           outcome = outcome

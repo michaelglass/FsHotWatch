@@ -50,12 +50,8 @@ let ``every selection cause has a distinct token that reads back as itself`` () 
 [<Fact(Timeout = 10000)>]
 let ``an attribution describes each project and its causes in one log clause`` () =
     let attribution =
-        [ { Project = "ProjA"
-            Causes = [ SelectionCause.DependencyFanout; SelectionCause.ChangedSymbols ]
-            SkippedClasses = [] }
-          { Project = "ProjB"
-            Causes = [ SelectionCause.AlwaysClasses ]
-            SkippedClasses = [] } ]
+        [ ProjectAttribution.ofCauses "ProjA" [ SelectionCause.DependencyFanout; SelectionCause.ChangedSymbols ]
+          ProjectAttribution.ofCauses "ProjB" [ SelectionCause.AlwaysClasses ] ]
 
     test
         <@
@@ -65,6 +61,27 @@ let ``an attribution describes each project and its causes in one log clause`` (
     let wire = JsonSerializer.Serialize(ProjectAttribution.wire attribution.Head)
     test <@ wire = """{"causes":["dependency-fanout","changed-symbols"],"project":"ProjA"}""" @>
 
+[<Fact(Timeout = 10000)>]
+let ``an attribution writes the classes each cause named and how the project ran`` () =
+    let entry =
+        { ProjectAttribution.ofCauses
+              "ProjA"
+              [ SelectionCause.RuntimeCoverage
+                SelectionCause.ChangedSymbols
+                SelectionCause.AlwaysClasses ] with
+            NamedClasses =
+                Map.ofList
+                    [ SelectionCause.AlwaysClasses, [ "ProjA.TreeTests" ]
+                      SelectionCause.ChangedSymbols, [ "ProjA.LibTests"; "ProjA.AppTests" ] ]
+            Ran = Some ProjectRun.InFull }
+
+    let wire = JsonSerializer.Serialize(ProjectAttribution.wire entry)
+
+    test
+        <@
+            wire = """{"causes":["runtime-coverage","changed-symbols","always-classes"],"namedClasses":{"changed-symbols":["ProjA.LibTests","ProjA.AppTests"],"always-classes":["ProjA.TreeTests"]},"project":"ProjA","ran":"in-full"}"""
+        @>
+
 // --- the pure attribution --------------------------------------------------------
 
 let private sources: SelectionSources =
@@ -72,7 +89,13 @@ let private sources: SelectionSources =
         DependencyFanout = Set.ofList [ "ProjA" ]
         ChangedSymbols = Set.ofList [ "ProjA"; "ProjB" ]
         AlwaysClasses = Set.ofList [ "ProjB"; "ProjC" ]
-        OutstandingFailure = Set.ofList [ "ProjD" ] }
+        OutstandingFailure = Set.ofList [ "ProjD" ]
+        NamedClasses =
+            Map.ofList
+                [ SelectionCause.ChangedSymbols,
+                  Map.ofList [ "ProjA", [ "ProjA.LibTests" ]; "ProjB", [ "ProjB.SomeTests" ] ]
+                  SelectionCause.AlwaysClasses,
+                  Map.ofList [ "ProjB", [ "ProjB.TreeTests" ]; "ProjC", [ "ProjC.TreeTests" ] ] ] }
 
 [<Fact(Timeout = 10000)>]
 let ``each selected project names every source that selected it, widest first`` () =
@@ -87,19 +110,53 @@ let ``each selected project names every source that selected it, widest first`` 
 
     test
         <@
-            SelectionAttribution.attribute sources byProject selection = [ { Project = "ProjA"
-                                                                             Causes =
-                                                                               [ SelectionCause.DependencyFanout
-                                                                                 SelectionCause.ChangedSymbols ]
-                                                                             SkippedClasses = [] }
-                                                                           { Project = "ProjB"
-                                                                             Causes =
-                                                                               [ SelectionCause.ChangedSymbols
-                                                                                 SelectionCause.AlwaysClasses ]
-                                                                             SkippedClasses = [] }
-                                                                           { Project = "ProjC"
-                                                                             Causes = [ SelectionCause.AlwaysClasses ]
-                                                                             SkippedClasses = [] } ]
+            SelectionAttribution.attribute sources byProject selection
+            |> List.map (fun a -> a.Project, a.Causes) = [ "ProjA",
+                                                           [ SelectionCause.DependencyFanout
+                                                             SelectionCause.ChangedSymbols ]
+                                                           "ProjB",
+                                                           [ SelectionCause.ChangedSymbols
+                                                             SelectionCause.AlwaysClasses ]
+                                                           "ProjC", [ SelectionCause.AlwaysClasses ] ]
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``each cause keeps the classes it named, so a project run in full for one cause still shows what another named``
+    ()
+    =
+    let byProject =
+        Map.ofList [ "ProjA", []; "ProjB", [ "ProjB.SomeTests" ]; "ProjC", [ "ProjC.TreeTests" ] ]
+
+    let selection =
+        Map.ofList
+            [ "ProjA", ProjectInFull
+              "ProjB", ProjectClasses(Set.ofList [ "ProjB.SomeTests"; "ProjB.TreeTests" ])
+              "ProjC", ProjectClasses(Set.ofList [ "ProjC.TreeTests" ]) ]
+
+    let attributed =
+        SelectionAttribution.attribute sources byProject selection
+        |> List.map (fun a -> a.Project, (a.NamedClasses, a.Ran))
+        |> Map.ofList
+
+    // ProjA: dependency fanout took it whole, and the symbol edit still named its class.
+    test
+        <@
+            attributed["ProjA"] = (Map.ofList [ SelectionCause.ChangedSymbols, [ "ProjA.LibTests" ] ],
+                                   Some ProjectRun.InFull)
+        @>
+
+    test
+        <@
+            attributed["ProjB"] = (Map.ofList
+                                       [ SelectionCause.ChangedSymbols, [ "ProjB.SomeTests" ]
+                                         SelectionCause.AlwaysClasses, [ "ProjB.TreeTests" ] ],
+                                   Some ProjectRun.Filtered)
+        @>
+
+    test
+        <@
+            attributed["ProjC"] = (Map.ofList [ SelectionCause.AlwaysClasses, [ "ProjC.TreeTests" ] ],
+                                   Some ProjectRun.Filtered)
         @>
 
 [<Fact(Timeout = 10000)>]
@@ -118,12 +175,14 @@ let ``an empty selection that still launched names the empty selection, not a so
 
     test
         <@
-            SelectionAttribution.attribute sources Map.empty selection = [ { Project = "ProjA"
-                                                                             Causes = [ SelectionCause.EmptySelection ]
-                                                                             SkippedClasses = [] }
-                                                                           { Project = "ProjB"
-                                                                             Causes = [ SelectionCause.EmptySelection ]
-                                                                             SkippedClasses = [] } ]
+            SelectionAttribution.attribute sources Map.empty selection = [ { ProjectAttribution.ofCauses
+                                                                                 "ProjA"
+                                                                                 [ SelectionCause.EmptySelection ] with
+                                                                               Ran = Some ProjectRun.InFull }
+                                                                           { ProjectAttribution.ofCauses
+                                                                                 "ProjB"
+                                                                                 [ SelectionCause.EmptySelection ] with
+                                                                               Ran = Some ProjectRun.InFull } ]
         @>
 
 [<Fact(Timeout = 10000)>]
@@ -140,7 +199,8 @@ let ``every source maps to its own cause`` () =
           ChangedSymbols = all
           SymbolFreeEdit = all
           AlwaysClasses = all
-          CompositionRootRestored = all }
+          CompositionRootRestored = all
+          NamedClasses = Map.empty }
 
     let causes =
         SelectionAttribution.attribute every (Map.ofList [ "P", [] ]) (Map.ofList [ "P", ProjectInFull ])
@@ -337,14 +397,16 @@ let ``a filtered launch attributes the covering project to the change and the de
 
     let _, launch = buildAndLaunch f (owing "Lib.f" state)
 
+    // Each cause names the classes it selected, so the verdict can count them apart.
     test
         <@
-            launch.SelectedBy = [ { Project = "ProjA"
-                                    Causes = [ SelectionCause.ChangedSymbols ]
-                                    SkippedClasses = [] }
-                                  { Project = "ProjB"
-                                    Causes = [ SelectionCause.AlwaysClasses ]
-                                    SkippedClasses = [] } ]
+            launch.SelectedBy = [ { ProjectAttribution.ofCauses "ProjA" [ SelectionCause.ChangedSymbols ] with
+                                      NamedClasses =
+                                          Map.ofList [ SelectionCause.ChangedSymbols, [ "ProjA.FreshTests" ] ]
+                                      Ran = Some ProjectRun.Filtered }
+                                  { ProjectAttribution.ofCauses "ProjB" [ SelectionCause.AlwaysClasses ] with
+                                      NamedClasses = Map.ofList [ SelectionCause.AlwaysClasses, [ "ProjB.GuardTests" ] ]
+                                      Ran = Some ProjectRun.Filtered } ]
         @>
 
 [<Fact(Timeout = 30000)>]
@@ -686,15 +748,24 @@ let ``a project the barrier emptied is attributed to the fail-safe in the verdic
 
     test
         <@
-            launch.SelectedBy = [ { Project = "ProjA"
-                                    Causes = [ SelectionCause.ChangedSymbols ]
-                                    SkippedClasses = [] }
-                                  { Project = "ProjB"
-                                    Causes = [ SelectionCause.AlwaysClasses ]
-                                    SkippedClasses = [] }
-                                  { Project = "ProjC"
-                                    Causes = [ SelectionCause.CompositionRootRestored; SelectionCause.ChangedSymbols ]
-                                    SkippedClasses = [] } ]
+            launch.SelectedBy |> List.map (fun a -> a.Project, a.Causes, a.NamedClasses) = [ "ProjA",
+                                                                                             [ SelectionCause.ChangedSymbols ],
+                                                                                             Map.ofList
+                                                                                                 [ SelectionCause.ChangedSymbols,
+                                                                                                   [ "ProjA.Direct" ] ]
+                                                                                             "ProjB",
+                                                                                             [ SelectionCause.AlwaysClasses ],
+                                                                                             Map.ofList
+                                                                                                 [ SelectionCause.AlwaysClasses,
+                                                                                                   [ "ProjB.GuardTests" ] ]
+                                                                                             "ProjC",
+                                                                                             [ SelectionCause.CompositionRootRestored
+                                                                                               SelectionCause.ChangedSymbols ],
+                                                                                             Map.ofList
+                                                                                                 [ SelectionCause.CompositionRootRestored,
+                                                                                                   [ "ProjC.Booted" ]
+                                                                                                   SelectionCause.ChangedSymbols,
+                                                                                                   [ "ProjC.Booted" ] ] ]
         @>
 
     // The barrier really narrowed ProjA: what it cut is out of the run.

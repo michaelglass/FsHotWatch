@@ -203,6 +203,7 @@ let ``a read over an unreadable configuration logs a not-compared verdict line``
                 Verdict.CheckComparison.notRecorded
                 []
                 ProjectModelFixtures.available
+                (fun _ -> Map.empty)
 
         observeRead repo (Verdict.Report.Stale(published, "moved")) (Some tree)
 

@@ -113,6 +113,7 @@ let private publishCleanInvocation (invocationId: string) (root: string) =
         FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
         []
         ProjectModelFixtures.available
+        (fun _ -> Map.empty)
     |> FsHotWatch.Cli.Verdict.withAttribution
         { Hooks =
             [ { Scope = "tests.beforeRun"
@@ -1113,6 +1114,7 @@ let private seedStillApplyingGreen (root: string) =
             FsHotWatch.Cli.Verdict.CheckComparison.notRecorded
             []
             ProjectModelFixtures.available
+            (fun _ -> Map.empty)
 
     FsHotWatch.Cli.Verdict.write root verdict
 

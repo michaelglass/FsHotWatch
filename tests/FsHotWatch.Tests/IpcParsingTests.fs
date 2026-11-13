@@ -845,11 +845,10 @@ let ``the selection attribution reaches the verdict scope from the test-scope re
     test
         <@
             report.SelectedBy = Some
-                [ { FsHotWatch.TestPrune.ProjectAttribution.Project = "ProjA"
-                    Causes =
+                [ FsHotWatch.TestPrune.ProjectAttribution.ofCauses
+                      "ProjA"
                       [ FsHotWatch.TestPrune.SelectionCause.DependencyFanout
-                        FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ]
-                    SkippedClasses = [] } ]
+                        FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] ]
         @>
 
     let scope = VerdictFixtures.scopeOnTheWire report
@@ -867,9 +866,10 @@ let ``classes a check skipped reach the verdict scope, and the check output name
     test
         <@
             report.SelectedBy = Some
-                [ { FsHotWatch.TestPrune.ProjectAttribution.Project = "ProjA"
-                    Causes = [ FsHotWatch.TestPrune.SelectionCause.RuntimeCoverage ]
-                    SkippedClasses = [ "ProjA.LandTests"; "ProjA.GateTests" ] } ]
+                [ { FsHotWatch.TestPrune.ProjectAttribution.ofCauses
+                        "ProjA"
+                        [ FsHotWatch.TestPrune.SelectionCause.RuntimeCoverage ] with
+                      SkippedClasses = [ "ProjA.LandTests"; "ProjA.GateTests" ] } ]
         @>
 
     let scope = VerdictFixtures.scopeOnTheWire report
@@ -898,6 +898,44 @@ let ``skipped classes this build cannot read fail closed to an unreadable scope`
     let report =
         parseTestRunReport (
             fullReply $""","selectedBy":[{{"project":"ProjA","causes":["runtime-coverage"],%s{field}}}]"""
+        )
+
+    test <@ TestScope.isUnreadable report.Scope @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the classes each cause named and how the project ran reach the verdict scope`` () =
+    let report =
+        parseTestRunReport (
+            fullReply
+                ""","selectedBy":[{"project":"ProjA","causes":["runtime-coverage","changed-symbols"],"namedClasses":{"changed-symbols":["ProjA.LibTests"]},"ran":"in-full"}]"""
+        )
+
+    test
+        <@
+            report.SelectedBy = Some
+                [ { FsHotWatch.TestPrune.ProjectAttribution.ofCauses
+                        "ProjA"
+                        [ FsHotWatch.TestPrune.SelectionCause.RuntimeCoverage
+                          FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] with
+                      NamedClasses =
+                          Map.ofList [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols, [ "ProjA.LibTests" ] ]
+                      Ran = Some FsHotWatch.TestPrune.ProjectRun.InFull } ]
+        @>
+
+    let scope = VerdictFixtures.scopeOnTheWire report
+    test <@ scope.["selectedBy"].[0].["namedClasses"].["changed-symbols"].[0].GetValue<string>() = "ProjA.LibTests" @>
+    test <@ scope.["selectedBy"].[0].["ran"].GetValue<string>() = "in-full" @>
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData(""""namedClasses":{"a-cause-from-another-version":["ProjA.LibTests"]}""")>]
+[<InlineData(""""namedClasses":{"changed-symbols":"ProjA.LibTests"}""")>]
+[<InlineData(""""namedClasses":["ProjA.LibTests"]""")>]
+[<InlineData(""""ran":"sideways" """)>]
+[<InlineData(""""ran":true""")>]
+let ``named classes or a run mode this build cannot read fail closed to an unreadable scope`` (field: string) =
+    let report =
+        parseTestRunReport (
+            fullReply $""","selectedBy":[{{"project":"ProjA","causes":["changed-symbols"],%s{field}}}]"""
         )
 
     test <@ TestScope.isUnreadable report.Scope @>

@@ -1803,6 +1803,7 @@ let private publishVerdictWithReason
                 // evidence, not a finding either run made.
                 (redCauses @ downgradeCauses)
                 projectModel
+                (Verdict.classTestsOf repoRoot)
             |> Verdict.withAttribution attribution
             // Each timeout red points at its project's insights (AUTOMATION-1300).
             |> Verdict.withTimedOut (Verdict.timedOutInsights repoRoot runs)

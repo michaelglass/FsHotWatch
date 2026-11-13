@@ -114,6 +114,8 @@ type private Spec =
         NotSelected: FsHotWatch.TestPrune.NotSelectedFile list option
         /// Which cause selected each project. `None` (the verdict does not say) by default.
         SelectedBy: FsHotWatch.TestPrune.ProjectAttribution list option
+        /// How many tests each class of each project's report held. Empty by default.
+        ClassTests: Map<string, Map<string, int>>
         Tree: TreeHash.Tree
         /// What the daemon said its greens are relative to. Defaults to
         /// the shared fixture, which is the baseline `greenVerdict`'s outcome names.
@@ -151,6 +153,7 @@ let private build (s: Spec) : Verdict.Verdict =
         s.Comparison
         s.RedCauses
         s.ProjectModel
+        (fun suite -> Map.tryFind suite.Project s.ClassTests |> Option.defaultValue Map.empty)
 
 let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
     { Command = Verdict.Confirm
@@ -174,6 +177,7 @@ let private greenVerdict (treeHash: string) (fileCount: int) : Spec =
       Excluded = Some []
       NotSelected = Some []
       SelectedBy = None
+      ClassTests = Map.empty
       Tree =
         { Hash = treeHash
           FileCount = fileCount
@@ -6681,6 +6685,7 @@ let ``create refuses a no-test-suite green beside a scope that says tests ran`` 
             spec.Comparison
             []
             spec.ProjectModel
+            (fun _ -> Map.empty)
         |> ignore
 
     let ex = Assert.Throws<ArgumentException>(fun () -> attempt ())
@@ -7227,7 +7232,8 @@ let ``a verdict file whose price this build cannot read reads as an unreadable s
 
         test <@ TestScope.isUnreadable v.Scope @>)
 // ---------------------------------------------------------------------------
-// Per-cause test counts: how many of the run's tests each widest cause selected.
+// Per-cause test counts: how many of the run's tests each cause selected, project by
+// project, with the overlaps named.
 // ---------------------------------------------------------------------------
 
 let private executedSuite (project: string) (total: int) : Verdict.SuiteVerdict =
@@ -7239,6 +7245,15 @@ let private executedSuite (project: string) (total: int) : Verdict.SuiteVerdict 
       Skipped = 0
       ReusedFrom = None
       StarvedRerun = None }
+
+/// Suites whose reports held these classes, with this many tests each, and the class
+/// counts a spec hands `create`.
+let private executedClasses (reports: (string * (string * int) list) list) =
+    reports
+    |> List.map (fun (project, classes) -> executedSuite project (classes |> List.sumBy snd)),
+    reports
+    |> List.map (fun (project, classes) -> project, Map.ofList classes)
+    |> Map.ofList
 
 let private attributed (project: string) (causes: FsHotWatch.TestPrune.SelectionCause list) =
     FsHotWatch.TestPrune.ProjectAttribution.ofCauses project causes
@@ -7259,8 +7274,157 @@ let private testsByCauseOf (v: Verdict.Verdict) =
         |> List.ofSeq
         |> Some
 
+/// One cause's projects as `(project, tests, only, selected, alsoSelectedBy, ran)`.
+let private byProjectOf (v: Verdict.Verdict) (cause: string) =
+    let scope = (Nodes.JsonNode.Parse(Verdict.serialize v)).["scope"]
+
+    scope.["testsByCause"].AsArray()
+    |> Seq.find (fun e -> e.["cause"].GetValue<string>() = cause)
+    |> fun e -> e.["byProject"].AsArray()
+    |> Seq.map (fun p ->
+        let selected =
+            match p.["classes"] with
+            | null -> p.["selected"].GetValue<string>()
+            | n -> $"""%s{p.["selected"].GetValue<string>()} %d{n.GetValue<int>()}"""
+
+        p.["project"].GetValue<string>(),
+        p.["tests"].GetValue<int>(),
+        p.["only"].GetValue<int>(),
+        selected,
+        p.["alsoSelectedBy"].AsArray()
+        |> Seq.map (fun c -> c.GetValue<string>())
+        |> List.ofSeq,
+        (match p.["ran"] with
+         | null -> "unstated"
+         | r -> r.GetValue<string>()))
+    |> List.ofSeq
+
+/// The shape of a body edit in a warm daemon (AUTOMATION-1611): runtime coverage took
+/// Database and Unit in full, the static symbol walk named classes in them AND in
+/// Build.Dev, and always-classes rode along. Every cause must keep its own tests.
+let private bodyEditVerdict () =
+    let cause = FsHotWatch.TestPrune.SelectionCause.RuntimeCoverage
+    let symbols = FsHotWatch.TestPrune.SelectionCause.ChangedSymbols
+    let always = FsHotWatch.TestPrune.SelectionCause.AlwaysClasses
+
+    let entry project causes named ran =
+        { attributed project causes with
+            NamedClasses = Map.ofList named
+            Ran = Some ran }
+
+    let suites, classTests =
+        executedClasses
+            [ "Analyzers.Tests", [ "An.TreeTests", 40 ]
+              "Build.Dev.Tests", [ "Dev.RunnerTests", 7; "Dev.AdrTests", 85; "Dev.CliTests", 200 ]
+              "Tests.Database", [ "Db.BudgetTests", 100; "Db.ComposeTests", 31; "Db.Other", 2869 ]
+              "Tests.Unit", [ "Unit.BudgetTests", 55; "Unit.TreeTests", 5; "Unit.Rest", 940 ] ]
+
+    build
+        { greenVerdict "abc" 1 with
+            Command = Verdict.Check
+            RunId = Some(Guid.NewGuid())
+            Scope = ImpactFiltered(4, 5)
+            SelectedBy =
+                Some
+                    [ entry
+                          "Analyzers.Tests"
+                          [ always ]
+                          [ always, [ "An.TreeTests" ] ]
+                          FsHotWatch.TestPrune.ProjectRun.Filtered
+                      entry
+                          "Build.Dev.Tests"
+                          [ symbols; always ]
+                          [ symbols, [ "Dev.RunnerTests" ]; always, [ "Dev.AdrTests"; "Dev.CliTests" ] ]
+                          FsHotWatch.TestPrune.ProjectRun.Filtered
+                      entry
+                          "Tests.Database"
+                          [ cause; symbols ]
+                          [ symbols, [ "Db.BudgetTests"; "Db.ComposeTests" ] ]
+                          FsHotWatch.TestPrune.ProjectRun.InFull
+                      entry
+                          "Tests.Unit"
+                          [ cause; symbols; always ]
+                          [ symbols, [ "Unit.BudgetTests" ]; always, [ "Unit.TreeTests" ] ]
+                          FsHotWatch.TestPrune.ProjectRun.InFull ]
+            Suites = suites
+            ClassTests = classTests }
+
 [<Fact>]
-let ``a project the fail-safe restored counts under its own cause, above changed-symbols`` () =
+let ``symbol hits in a project runtime coverage ran in full stay under changed-symbols, with the overlap named`` () =
+    let v = bodyEditVerdict ()
+
+    // Every cause names every project it selected, so the counts overlap rather than
+    // partition the run.
+    test
+        <@
+            testsByCauseOf v = Some
+                [ "runtime-coverage", 4000, [ "Tests.Database"; "Tests.Unit" ]
+                  "changed-symbols", 193, [ "Build.Dev.Tests"; "Tests.Database"; "Tests.Unit" ]
+                  "always-classes", 330, [ "Analyzers.Tests"; "Build.Dev.Tests"; "Tests.Unit" ] ]
+        @>
+
+    test
+        <@
+            byProjectOf v "changed-symbols" = [ "Build.Dev.Tests", 7, 7, "classes 1", [ "always-classes" ], "filtered"
+                                                "Tests.Database", 131, 0, "classes 2", [ "runtime-coverage" ], "in-full"
+                                                "Tests.Unit",
+                                                55,
+                                                0,
+                                                "classes 1",
+                                                [ "runtime-coverage"; "always-classes" ],
+                                                "in-full" ]
+        @>
+
+    // What runtime coverage caught beyond every other cause: the tests of the projects
+    // it took whole that no named class accounts for.
+    test
+        <@
+            byProjectOf v "runtime-coverage" = [ "Tests.Database",
+                                                 3000,
+                                                 2869,
+                                                 "in-full",
+                                                 [ "changed-symbols" ],
+                                                 "in-full"
+                                                 "Tests.Unit",
+                                                 1000,
+                                                 940,
+                                                 "in-full",
+                                                 [ "changed-symbols"; "always-classes" ],
+                                                 "in-full" ]
+        @>
+
+    test
+        <@
+            byProjectOf v "always-classes" = [ "Analyzers.Tests", 40, 40, "classes 1", [], "filtered"
+                                               "Build.Dev.Tests",
+                                               285,
+                                               285,
+                                               "classes 2",
+                                               [ "changed-symbols" ],
+                                               "filtered"
+                                               "Tests.Unit",
+                                               5,
+                                               0,
+                                               "classes 1",
+                                               [ "runtime-coverage"; "changed-symbols" ],
+                                               "in-full" ]
+        @>
+
+[<Fact>]
+let ``the per-cause counts read back from the verdict file exactly as they were written`` () =
+    withTempDir "verdict-tests-by-cause" (fun root ->
+        let v = bodyEditVerdict ()
+        Verdict.write root v
+
+        match Verdict.read root with
+        | Verdict.Reading.Found readBack ->
+            // The reports' class counts are not in the file; the counts are.
+            test <@ readBack.TestsByCause = v.TestsByCause @>
+            test <@ testsByCauseOf readBack = testsByCauseOf v @>
+        | other -> failwith $"expected the verdict to read back, got %A{other}")
+
+[<Fact>]
+let ``an attribution that does not say which classes a cause named counts that cause whole, and names the overlap`` () =
     let v =
         build
             { greenVerdict "abc" 1 with
@@ -7280,47 +7444,14 @@ let ``a project the fail-safe restored counts under its own cause, above changed
         <@
             testsByCauseOf v = Some
                 [ "composition-root-restored", 40, [ "ProjR" ]
-                  "changed-symbols", 3, [ "ProjA" ] ]
+                  "changed-symbols", 43, [ "ProjR"; "ProjA" ] ]
         @>
 
-[<Fact>]
-let ``the verdict counts the tests each project's widest cause selected, and the counts sum to the tests the run executed``
-    ()
-    =
-    let runId = Guid.NewGuid()
-
-    let v =
-        build
-            { greenVerdict "abc" 1 with
-                Command = Verdict.Check
-                RunId = Some runId
-                Scope = ImpactFiltered(3, 4)
-                SelectedBy =
-                    Some
-                        [ attributed
-                              "ProjA"
-                              [ FsHotWatch.TestPrune.SelectionCause.DependencyFanout
-                                FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ]
-                          attributed
-                              "ProjB"
-                              [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols
-                                FsHotWatch.TestPrune.SelectionCause.AlwaysClasses ]
-                          attributed "ProjC" [ FsHotWatch.TestPrune.SelectionCause.ChangedSymbols ] ]
-                Suites = [ executedSuite "ProjA" 40; executedSuite "ProjB" 3; executedSuite "ProjC" 2 ] }
-
-    let counts = testsByCauseOf v
-
-    // Widest cause first, the order `selectedBy` names causes in; each project counted
-    // once, under the cause that decided how much of it ran.
     test
         <@
-            counts = Some
-                [ "dependency-fanout", 40, [ "ProjA" ]
-                  "changed-symbols", 5, [ "ProjB"; "ProjC" ] ]
+            byProjectOf v "changed-symbols" = [ "ProjR", 40, 0, "in-full", [ "composition-root-restored" ], "unstated"
+                                                "ProjA", 3, 3, "in-full", [], "unstated" ]
         @>
-
-    let executed = v.Suites |> List.sumBy _.Total
-    test <@ counts |> Option.map (List.sumBy (fun (_, tests, _) -> tests)) = Some executed @>
 
 [<Fact>]
 let ``a suite reused from another run's evidence costs this run no tests, so its cause counts none of them`` () =
@@ -7369,6 +7500,148 @@ let ``a verdict that does not say why projects ran, or names no graded run, coun
 
     test <@ testsByCauseOf silent = None @>
     test <@ testsByCauseOf ungraded = None @>
+
+[<Fact>]
+let ``a report's tests are counted per class, by the runner's type or else the test's name`` () =
+    withTempDir "verdict-class-tests" (fun root ->
+        let path = Path.Combine(root, "P.ctrf.json")
+
+        File.WriteAllText(
+            path,
+            """{"results":{"tests":[
+                {"name":"P.ApiTests+Cloudflare API.reads a zone","extra":{"type":"P.ApiTests+Cloudflare API"}},
+                {"name":"P.ApiTests+Cloudflare API.writes a zone","extra":{"type":"P.ApiTests+Cloudflare API"}},
+                {"name":"P.BudgetTests.utf8 bytes of a.b","extra":{}},
+                {"name":"P.BudgetTests.trims"}]}}"""
+        )
+
+        test <@ Verdict.classTestsOfReport path = Map.ofList [ "P.ApiTests+Cloudflare API", 2; "P.BudgetTests", 2 ] @>
+
+        test <@ Verdict.classTestsOfReport (Path.Combine(root, "absent.ctrf.json")) = Map.empty @>)
+
+[<Fact>]
+let ``a report this build cannot read, or a row naming no class, counts no tests`` () =
+    withTempDir "verdict-class-tests-unreadable" (fun root ->
+        let countOf (json: string) =
+            let path = Path.Combine(root, "R.ctrf.json")
+            File.WriteAllText(path, json)
+            Verdict.classTestsOfReport path
+
+        test <@ countOf "not json" = Map.empty @>
+        test <@ countOf "[1, 2]" = Map.empty @>
+        test <@ countOf """{"results":[1]}""" = Map.empty @>
+        test <@ countOf """{"results":{"tests":{}}}""" = Map.empty @>
+
+        test
+            <@
+                countOf
+                    """{"results":{"tests":[null, 3, {"extra":{"type":""}}, {"name":7}, {"name":"P.T.m","extra":{"type":""}}]}}""" = Map.ofList
+                    [ "P.T", 1 ]
+            @>
+
+        // A suite read under its repository, and one that names no report.
+        File.WriteAllText(Path.Combine(root, "S.ctrf.json"), """{"results":{"tests":[{"name":"P.T.m"}]}}""")
+
+        test
+            <@
+                Verdict.classTestsOf
+                    root
+                    { executedSuite "P" 1 with
+                        Ctrf = "S.ctrf.json" } = Map.ofList [ "P.T", 1 ]
+            @>
+
+        test <@ Verdict.classTestsOf root { executedSuite "P" 1 with Ctrf = "" } = Map.empty @>)
+
+let private validCause =
+    """{"cause":"changed-symbols","tests":1,"only":1,"projects":["P"],"byProject":[{"project":"P","tests":1,"only":1,"selected":"classes","classes":1,"alsoSelectedBy":["always-classes"],"ran":"filtered"}]}"""
+
+[<Fact>]
+let ``a per-cause entry reads back as written, and its run mode may be unstated`` () =
+    let read (json: string) =
+        use doc = JsonDocument.Parse json
+        Verdict.SelectionTests.tryRead doc.RootElement
+
+    let entry = read validCause
+    test <@ entry |> Option.map _.Cause = Some FsHotWatch.TestPrune.SelectionCause.ChangedSymbols @>
+
+    test
+        <@
+            entry |> Option.map (_.ByProject >> List.map _.AlsoSelectedBy) = Some
+                [ [ FsHotWatch.TestPrune.SelectionCause.AlwaysClasses ] ]
+        @>
+
+    let unstated = read (validCause.Replace("\"ran\":\"filtered\"", "\"ran\":null"))
+
+    test <@ unstated |> Option.map (_.ByProject >> List.map _.Ran) = Some [ None ] @>
+
+    let whole =
+        read (validCause.Replace("\"selected\":\"classes\",\"classes\":1", "\"selected\":\"in-full\""))
+
+    test
+        <@ whole |> Option.map (_.ByProject >> List.map _.Selected) = Some [ Verdict.SelectionTests.Selected.InFull ] @>
+
+[<Theory>]
+[<InlineData("\"cause\":\"changed-symbols\"", "\"cause\":\"a-cause-from-another-version\"")>]
+[<InlineData("\"only\":1,\"projects\"", "\"projects\"")>]
+[<InlineData("\"byProject\":[", "\"byProject\":3,\"other\":[")>]
+[<InlineData("\"selected\":\"classes\",\"classes\":1", "\"selected\":\"classes\"")>]
+[<InlineData("\"selected\":\"classes\"", "\"selected\":\"sideways\"")>]
+[<InlineData("[\"always-classes\"]", "[\"a-cause-from-another-version\"]")>]
+[<InlineData("[\"always-classes\"]", "[3]")>]
+[<InlineData("[\"always-classes\"]", "\"always-classes\"")>]
+[<InlineData("\"ran\":\"filtered\"", "\"ran\":\"sideways\"")>]
+[<InlineData("\"ran\":\"filtered\"", "\"ran\":3")>]
+[<InlineData("\"project\":\"P\",", "")>]
+let ``a per-cause entry this build cannot read is not read`` (from: string) (into: string) =
+    let json = validCause.Replace(from, into)
+    test <@ json <> validCause @>
+
+    let read =
+        try
+            use doc = JsonDocument.Parse json
+            Verdict.SelectionTests.tryRead doc.RootElement
+        with :? JsonException ->
+            None
+
+    test <@ read = None @>
+
+[<Fact>]
+let ``per-cause counts a verdict file does not hold readably are counted again from what it recorded`` () =
+    withTempDir "verdict-tests-by-cause-legacy" (fun root ->
+        let v = bodyEditVerdict ()
+
+        let rewrite (edit: Nodes.JsonObject -> unit) =
+            Verdict.write root v
+            let node = Nodes.JsonNode.Parse(File.ReadAllText(Verdict.path root)).AsObject()
+            edit (node["scope"].AsObject())
+            File.WriteAllText(Verdict.path root, node.ToJsonString())
+
+            match Verdict.read root with
+            | Verdict.Reading.Found readBack -> readBack
+            | other -> failwith $"expected the verdict to read back, got %A{other}"
+
+        // Written before `byProject`: counted again from `selectedBy` and the reports. This
+        // fixture's reports are not on disk, so the classes a cause named count none.
+        let old =
+            rewrite (fun scope ->
+                scope["testsByCause"] <-
+                    Nodes.JsonNode.Parse
+                        """[{"cause":"runtime-coverage","tests":14234,"projects":["Tests.Database"]}]""")
+
+        test <@ old.TestsByCause.IsSome @>
+
+        test
+            <@
+                old.TestsByCause
+                |> Option.map (List.map (fun c -> FsHotWatch.TestPrune.SelectionCause.token c.Cause, c.Tests)) = Some
+                    [ "runtime-coverage", 4000; "changed-symbols", 0; "always-classes", 0 ]
+            @>
+
+        let absent = rewrite (fun scope -> scope.Remove "testsByCause" |> ignore)
+        test <@ absent.TestsByCause = old.TestsByCause @>
+
+        let silent = rewrite (fun scope -> scope["testsByCause"] <- null)
+        test <@ silent.TestsByCause = None @>)
 
 // ---------------------------------------------------------------------------
 // Starvation: a suite re-run alone is recorded apart from a clean pass

@@ -127,6 +127,7 @@ let private redVerdict (root: string) (runId: Guid) : Verdict.Verdict =
         Verdict.CheckComparison.notRecorded
         []
         ProjectModelFixtures.available
+        (fun _ -> Map.empty)
     |> Verdict.withTimedOut (Verdict.timedOutInsights root runs)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]

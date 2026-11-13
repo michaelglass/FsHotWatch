@@ -329,6 +329,7 @@ let private publishedVerdictWith
         Verdict.CheckComparison.notRecorded
         []
         ProjectModelFixtures.available
+        (fun _ -> Map.empty)
 
 let private publishedVerdict = publishedVerdictWith Verdict.PluginOutcome.Ok
 
@@ -495,6 +496,7 @@ let ``a plugin still running in a read verdict records nothing and is required``
             Verdict.CheckComparison.notRecorded
             []
             ProjectModelFixtures.available
+            (fun _ -> Map.empty)
 
     let o =
         ofRead "/w" (Verdict.Report.Applies v) "sha256:now" "fshw 1" t0 |> Option.get

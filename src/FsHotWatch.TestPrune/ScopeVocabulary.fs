@@ -181,6 +181,27 @@ module SelectionCause =
     let tryOfToken (wire: string) : SelectionCause option =
         all |> List.tryFind (fun cause -> token cause = wire)
 
+/// How a selected test project ran: every class of it, or only named classes.
+[<RequireQualifiedAccess>]
+type ProjectRun =
+    /// With no class filter. A run that left `checkSkipClasses` out still ran in full;
+    /// its `SkippedClasses` say what it left out.
+    | InFull
+    /// Under a class filter: only the classes its causes named.
+    | Filtered
+
+module ProjectRun =
+    /// The wire token.
+    let token (run: ProjectRun) : string =
+        match run with
+        | ProjectRun.InFull -> "in-full"
+        | ProjectRun.Filtered -> "filtered"
+
+    /// The run a wire token names; `None` for a token this build does not know.
+    let tryOfToken (wire: string) : ProjectRun option =
+        [ ProjectRun.InFull; ProjectRun.Filtered ]
+        |> List.tryFind (fun run -> token run = wire)
+
 /// One selected test project and every cause that put it in the run, widest first.
 type ProjectAttribution =
     {
@@ -190,30 +211,56 @@ type ProjectAttribution =
         /// whole. Empty when it left out nothing: a run that skipped classes says so in
         /// its scope, so it is never mistaken for a whole-project run.
         SkippedClasses: string list
+        /// The classes each cause NAMED in this project, for every cause of `Causes` that
+        /// selected named classes rather than the whole project. A cause of `Causes`
+        /// absent here selected the project whole. Kept per cause because a project two
+        /// causes selected is not one cause's alone: a symbol edit that named 10 classes
+        /// of a project runtime coverage then ran in full still named those 10.
+        NamedClasses: Map<SelectionCause, string list>
+        /// Whether the project ran in full or under a class filter. `None` where the
+        /// reading did not say, which is every reading from before the field.
+        Ran: ProjectRun option
     }
 
 module ProjectAttribution =
-    /// An attribution that skipped nothing.
+    /// An attribution that skipped nothing and does not say which classes each cause named.
     let ofCauses (project: string) (causes: SelectionCause list) : ProjectAttribution =
         { Project = project
           Causes = causes
-          SkippedClasses = [] }
+          SkippedClasses = []
+          NamedClasses = Map.empty
+          Ran = None }
 
     /// The entry on the wire, as both the `test-scope` reply and the verdict file write it.
-    /// `skippedClasses` is written only when the run skipped some, so every other scope
-    /// reads exactly as before.
+    /// `skippedClasses`, `namedClasses` and `ran` are written only when the attribution
+    /// says something there, so a reading without them reads exactly as before. Keys are
+    /// written in ordinal order, as the record this replaced wrote them.
     let wire (entry: ProjectAttribution) : obj =
-        let causes = entry.Causes |> List.map SelectionCause.token |> Array.ofList
+        let fields =
+            System.Collections.Generic.SortedDictionary<string, obj>(System.StringComparer.Ordinal)
 
-        if List.isEmpty entry.SkippedClasses then
-            {| project = entry.Project
-               causes = causes |}
-            :> obj
-        else
-            {| project = entry.Project
-               causes = causes
-               skippedClasses = Array.ofList entry.SkippedClasses |}
-            :> obj
+        fields["project"] <- entry.Project
+        fields["causes"] <- entry.Causes |> List.map SelectionCause.token |> Array.ofList
+
+        if not (List.isEmpty entry.SkippedClasses) then
+            fields["skippedClasses"] <- Array.ofList entry.SkippedClasses
+
+        if not (Map.isEmpty entry.NamedClasses) then
+            // Widest cause first, as `causes` lists them.
+            let named = System.Collections.Generic.Dictionary<string, string array>()
+
+            for cause in SelectionCause.all do
+                match Map.tryFind cause entry.NamedClasses with
+                | Some classes -> named[SelectionCause.token cause] <- Array.ofList classes
+                | None -> ()
+
+            fields["namedClasses"] <- named
+
+        match entry.Ran with
+        | Some run -> fields["ran"] <- ProjectRun.token run
+        | None -> ()
+
+        fields :> obj
 
     /// One clause per project, for a log line: `ProjA <- changed-symbols, always-classes`,
     /// and `(check skipped: A, B)` after a project that ran without its skip classes.
