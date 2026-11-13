@@ -2384,7 +2384,12 @@
         "reason": "new file (AUTOMATION-1587 steps 4-5). No platform-specific path in the unit suite, so the macOS floor stands for Linux until a Linux CI coverage report refreshes it.",
         "platform": "linux"
       }
-    ]
+    ],
+    "RecordAudit.fs": {
+      "line": 100,
+      "branch": 95,
+      "reason": "new file (AUTOMATION-1633, ADR-059 §36: the clean-recompute audit). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by the audit tests (RecordAuditTests, CliTests, CheckRecordsTests) with coverage: line 100%, branch 95.9% (71/74). Uncovered: one compiler-generated edge on each of the three for-loops inside the list expression of render (kinds, mismatches, unmatched), whose bodies and empty cases both run. Pure comparison and file IO, platform-neutral."
+    }
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [

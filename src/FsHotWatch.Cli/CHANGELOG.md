@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `fshw audit`, the clean-recompute audit of ADR-059 §35 (AUTOMATION-1633): `nix build --check` for the
+  outcome store. It compares the records this repository's box-wide store holds with the records a from-scratch
+  recompute filed (a check run with an empty `FSHW_CACHE_HOME`, named by `--clean-home <dir>` or `--clean <store>`)
+  under the SAME keys. Equal keys with different outcomes are a key that missed an input. A seeded sample per kind
+  (`--sample`, default 200, `0` for every shared key; `--seed`), `--kind` (default `check`), `--key` to audit named
+  records, `--prefer-input <label>` to sample a key shape first, `--json` / `--out` for an `fshw-audit-v1` report.
+  Exit 0 agree, 1 mismatch, 3 nothing compared, 2 usage. Reads both stores; quarantines nothing; never contacts the
+  daemon.
+
 - fix: `check --run-once` and `confirm --run-once` refuse to run beside a live daemon on the same workspace
   (AUTOMATION-1657). A daemon left by an earlier `fshw check` builds and tests the same tree over the same
   `.fshw/` state while the gate's in-process host does, so the gate's verdict depended on it: `mise run ci`

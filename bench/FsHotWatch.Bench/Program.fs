@@ -30,6 +30,11 @@ let private usage =
                     [--before-check "<cmd>"] [--faults <json> --fault-every K [--fault-offset 0] [--all-kinds]]
                     [--timeout-min 120] [--diff-plugins fcs,lint,analyzers,findings] [--forced-every 1 | --no-forced]
                     [--daemon-log logs/daemon.log] [--max-steps N] [--workspace-path <dir>]
+                    [--forced-clean-home <dir>]   forced re-check = records on over an EMPTY cache home
+  fshw-bench audit --target <repo> (--clean-home <dir> | --clean <store dir>) [--store <dir>]
+                   [--kind check]... [--sample 200 (0 = all)] [--seed <text>] [--key ak1:...]...
+                   [--prefer-input <label>] [--json] [--out <file>]
+                                        exit 0 agree, 1 a stored record differs from its clean recompute, 3 nothing compared
   fshw-bench replay-summary <out dir>
   fshw-bench replay-gate <out dir>      exit 0 agree, 1 records-vs-forced disagreement, 3 nothing compared
 """
@@ -349,6 +354,7 @@ let main argv =
                     |> Option.defaultValue "fcs,lint,analyzers,findings"
                     |> fun s -> s.Split(',', StringSplitOptions.RemoveEmptyEntries) |> Set.ofArray
                   ForcedEvery = if flag opts "no-forced" then 0 else count "forced-every" 1
+                  ForcedCleanHome = one opts "forced-clean-home" |> Option.map Path.GetFullPath
                   DaemonLog = one opts "daemon-log" |> Option.defaultValue "logs/daemon.log"
                   MaxSteps = one opts "max-steps" |> Option.map int }
         | _ ->
@@ -362,6 +368,12 @@ let main argv =
         | _ ->
             eprintf "%s" usage
             2
+    | "audit" ->
+        match one opts "target" with
+        | None ->
+            eprintf "%s" usage
+            2
+        | Some target -> Audit.run (Path.GetFullPath target) opts
     | "replay-gate" ->
         match positional with
         | [ out ] -> ReplayRun.gate (Path.GetFullPath out)

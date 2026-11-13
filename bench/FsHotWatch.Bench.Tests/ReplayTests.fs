@@ -637,3 +637,68 @@ let ``a run's step directory keeps every CTRF receipt its verdict names, after t
             @>
     finally
         root.Delete true
+
+// --- the clean-recompute audit's half of the harness (AUTOMATION-1633) ---
+
+[<Fact>]
+let ``a forced re-check under a clean home keeps records on and points the cache home at it`` () =
+    let env mode home =
+        ReplayRun.checkEnv mode home |> Map.ofList
+
+    let records (e: Map<string, string>) =
+        e["FSHW_CHECK_RECORDS"], e["FSHW_OPTIONS_RECORDS"]
+
+    test <@ records (env "replay" None) = ("1", "1") @>
+    test <@ records (env "forced" None) = ("0", "0") @>
+    test <@ not ((env "forced" None).ContainsKey "FSHW_CACHE_HOME") @>
+    test <@ records (env "forced" (Some "/clean")) = ("1", "1") @>
+    test <@ (env "forced" (Some "/clean")).["FSHW_CACHE_HOME"] = "/clean" @>
+    // A replay always answers from the box-wide store, whatever the clean home.
+    test <@ not ((env "replay" (Some "/clean")).ContainsKey "FSHW_CACHE_HOME") @>
+
+[<Fact>]
+let ``a clean home is emptied before each forced run, and a foreign directory is never emptied`` () =
+    let dir =
+        Path.Combine(Path.GetTempPath(), "fshw-clean-home-" + Guid.NewGuid().ToString("N"))
+
+    try
+        let home = Path.Combine(dir, "home")
+        test <@ ReplayRun.prepareCleanHome home = Ok() @>
+        File.WriteAllText(Path.Combine(home, "left-over"), "x")
+        test <@ ReplayRun.prepareCleanHome home = Ok() @>
+        test <@ not (File.Exists(Path.Combine(home, "left-over"))) @>
+
+        let foreign = Path.Combine(dir, "foreign")
+        Directory.CreateDirectory foreign |> ignore
+        File.WriteAllText(Path.Combine(foreign, "precious"), "x")
+        test <@ ReplayRun.prepareCleanHome foreign |> Result.isError @>
+        test <@ File.Exists(Path.Combine(foreign, "precious")) @>
+    finally
+        if Directory.Exists dir then
+            Directory.Delete(dir, true)
+
+[<Fact>]
+let ``fshw-bench audit reads its request from the harness's arguments`` () =
+    let opts, _ =
+        Program.parseArgs
+            [ "--clean-home"
+              "/h"
+              "--kind"
+              "check"
+              "--kind"
+              "format"
+              "--sample"
+              "0"
+              "--seed"
+              "n1"
+              "--key"
+              "ak1:x"
+              "--json" ]
+
+    let request = Audit.request opts
+    test <@ request.CleanHome = Some "/h" && request.Clean = None @>
+    test <@ request.Kinds = [ "check"; "format" ] @>
+    test <@ request.Sample = Some 0 && request.Seed = Some "n1" @>
+    test <@ request.Keys = [ "ak1:x" ] @>
+    test <@ (Audit.request (fst (Program.parseArgs [ "--sample"; "many" ]))).Sample = Some -1 @>
+    test <@ Audit.run "/nowhere" (fst (Program.parseArgs [])) = 2 @>

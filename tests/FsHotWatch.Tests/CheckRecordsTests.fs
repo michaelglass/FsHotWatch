@@ -1164,3 +1164,28 @@ let ``a restart served from check records tallies replays, with no miss, through
         test <@ counter.Started = 0 @>
         test <@ tally.Replayed = int64 files.Length @>
         test <@ CheckCacheTally.CacheTally.misses tally = 0L @>)
+
+[<Fact(Timeout = 240000)>]
+let ``the clean-recompute audit agrees with real FCS records filed by two independent checkers`` () =
+    // AUTOMATION-1633's positive control on real checks: a second checker with nothing
+    // cached files the same tree into an empty store, and every record it shares with the
+    // first agrees, field by field. A comparison that reds here would red every night.
+    withTempDir "check-records-audit" (fun dir ->
+        let tree, store, files, _, filed = seeded dir
+        test <@ filed = 4 @>
+        let clean = storeIn (Path.Combine(dir, "clean"))
+        let pipeline, counter = restart tree (Some clean) toolchain tree.B
+        checkAll tree pipeline files |> ignore
+        test <@ pipeline.PersistCheckRecords() = 4 @>
+        test <@ counter.Started = 4 @>
+
+        let report =
+            RecordAudit.audit
+                store.Root
+                clean.Root
+                { RecordAudit.Options.defaults with
+                    Sample = None }
+
+        test <@ List.isEmpty report.Mismatches @>
+        test <@ report.Kinds |> List.map (fun k -> k.Shared, k.Audited) = [ 4, 4 ] @>
+        test <@ report.Verdict = RecordAudit.Verdict.Agree @>)

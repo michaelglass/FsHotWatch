@@ -1729,3 +1729,61 @@ E2 runs before E1: E1's memory win needs the whole-tree FCS instance gone, and o
 - **E7:** do signature files cut off checking within a project? On a consumer repository's
   655-file project, adopt if a body-edit recheck or cold peak improves ≥ 20% with no timing slower
   and identical diagnostics, weighed against maintaining `.fsi` files by hand.
+
+## 36. Amendment (AUTOMATION-1633): the clean-recompute audit compares stores by key
+
+§35 Change 1a, first slice: check records.
+
+**A record cannot be recomputed from its key alone.** A key is a digest; the tree it was
+filed for is gone. So the recompute is per TREE, not per record: a check runs from scratch
+under an empty cache home (`FSHW_CACHE_HOME`), so nothing replays and every check runs in FCS,
+and it FILES what it computed into that home's store, the clean store. The audit then takes
+every key both the clean store and the audited store (the box-wide one daemons serve from) hold,
+and requires each stored record under it to equal the clean one. Equal keys, different outcomes:
+a key that missed an input. That is `nix build --check` with the build replaced by a tree.
+
+- **`RecordAudit`** (core) is the comparison; **`fshw audit`** and **`fshw-bench audit`** are its
+  front ends. The bench carries it so a consumer pinning an older fshw runs it with the harness
+  built from main. Exit 0 agree, 1 mismatch, 3 nothing compared (vacuous is never agreement),
+  2 usage. Both stores are only READ (`OutcomeStore.readKeyAt`, `readAllWithOutputs`): the audit
+  quarantines nothing in the store it judges.
+- **What is compared** is per kind. A check record field by field: outcome, diagnostics as a
+  multiset, FCS signature, used signatures, API signature, so a mismatch names what moved. Any
+  other kind: outcome and the digest of its outputs (`AuditKind.generic`). The kind list is open
+  (`--kind`); `check` is the default until another kind's comparison is shown not to red on a
+  clean tree. A key's whole history is compared, not only its answer: a record a lookup once
+  served is evidence too.
+- **Sampling** is seeded (`sha256(seed LF key)` order), so the same seed over the same stores
+  audits the same keys and a red reproduces; the report lists the audited keys and `--key`
+  re-audits any one. `--prefer-input <label>` samples a key shape first: AUTOMATION-1613's
+  position-keyed records, when they land, are audited first by naming their new input.
+- **Where it runs.** `fshw-bench replay --forced-clean-home <dir>` makes the forced re-check the
+  clean recompute (records ON, empty home, emptied before each forced run, refusing a directory it
+  did not make). FsHotWatch's `nightly-replay.yml` audits every shared key with the commit as the
+  seed. intelligence's `nightly-records-replay` audits every shared check record a night (above §35
+  Change 2's floor of 200) beside its replay gate, under fingerprints of its own.
+- **The control.** `RecordAuditTests` plants a key that leaves a file's bytes out
+  (`CheckRecords.Walk` over a hash that ignores that file), files a tree, edits the file, and
+  recomputes into an empty store: the audit names exactly that file (outcome, diagnostics, FCS
+  signature). The same history under the real key agrees, and two independent real FCS checkers
+  filing one tree agree field by field (`CheckRecordsTests`), so the comparison does not red on
+  a clean tree.
+
+**What this slice does not see.** Only keys the night's tree reproduces are sampled: a record
+filed for a tree no recompute visits is never compared. A wrong key that also changes the clean
+run's key in step (both runs read the same undeclared input) agrees; that is the read-set
+audit's job (Change 1b, AUTOMATION-1634). Kinds other than `check` (options, analyzer, format,
+test-prune analysis, test evidence) are auditable with the generic comparison but are not yet in
+the nightly: test evidence is not deterministic, and each kind joins once a clean tree shows it 0
+mismatches.
+
+**First audit, intelligence, 2026-11-13** (main `4f7bf60a`, fshotwatch.cli 0.14.0-alpha.146, the
+box-wide store against one from-scratch check of that tree, about 20 min including the analyzer
+build): `check`: 2842 clean keys, 1252 shared, **5 mismatched**, in 7 s. One record served
+`Program.fs` two FS3536 errors under a key a clean check types green; four differ only in their
+API signature, which feeds the next file's key. A 200-key sample with the commit as seed missed
+all five, so intelligence audits every shared key. Other kinds through the generic comparison:
+`format` 2782 of 2782 agree; `testprune-analysis` 1451 of 2842 differ because its outputs carry
+the producing checkout's absolute paths (a comparison to write, or a defect, before it joins);
+`options-inputs` 1 of 1 differs in its directory listing. None of these kinds is in the nightly
+yet.

@@ -276,6 +276,28 @@ type AnalyticsFlag =
                 Name = "shadow-log",
                 Repeatable = true)>] ShadowLog of string
 
+/// Flags for `fshw audit`. See `RecordAudit`.
+[<RequireQualifiedAccess>]
+type AuditFlag =
+    | [<CmdFlag(Description = "The CLEAN store: the outcome-store directory a from-scratch recompute filed (a check run with an empty FSHW_CACHE_HOME)")>] Clean of
+        string
+    | [<CmdFlag(Description =
+                    "The cache home a from-scratch recompute ran under (its FSHW_CACHE_HOME); the clean store is this repository's store inside it",
+                Name = "clean-home")>] CleanHome of string
+    | [<CmdFlag(Description = "Audit this outcome store instead of this repository's box-wide one")>] Store of string
+    | [<CmdFlag(Description = "A record kind to sample (repeatable; default: check)", Repeatable = true)>] Kind of
+        string
+    | [<CmdFlag(Description = "Keys audited per kind (default 200; 0 audits every key both stores hold)")>] Sample of
+        int
+    | [<CmdFlag(Description = "Sampling seed: the same seed over the same stores audits the same records (default fshw-audit)")>] Seed of
+        string
+    | [<CmdFlag(Description = "Audit exactly this record key, whatever its kind (repeatable)", Repeatable = true)>] Key of
+        string
+    | [<CmdFlag(Description = "Sample keys that have an input of this label first", Name = "prefer-input")>] PreferInput of
+        string
+    | [<CmdFlag(Description = "Print the report as one fshw-audit-v1 JSON object")>] Json
+    | [<CmdFlag(Description = "Also write the fshw-audit-v1 JSON report to this file")>] Out of string
+
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
     | [<CmdFlag(Description = "Act on the repository host and every worktree it serves, not only this worktree")>] Repository
@@ -356,6 +378,11 @@ type Command =
     | [<CmdExample("", "--json", "--since 7");
         Cmd("Flaky, slow and trust analytics over the outcome store and the shadow ledger: input sets recorded both green and red, duration percentiles, reds later green on identical inputs, runs a lookup would have answered, shadow agreement by day (reads the store; never contacts the daemon)")>] Analytics of
         AnalyticsFlag list
+    | [<CmdExample("--clean-home /tmp/clean",
+                   "--clean-home /tmp/clean --sample 0 --json",
+                   "--clean /tmp/clean/store --key ak1:...");
+        Cmd("Clean-recompute audit (ADR-059 §35): compare the records this repository's outcome store holds with the records a from-scratch recompute filed under the SAME keys; a difference is a key that missed an input. Seeded sample per kind, exit 0 agree, 1 mismatch, 3 nothing compared, 2 usage (reads both stores; never contacts the daemon)")>] Audit of
+        AuditFlag list
     | [<Cmd("Report memory headroom and the fshw daemons recorded under this repository and its .workspaces. Report only: stops nothing, deletes nothing, never contacts a daemon")>] Headroom
     | [<Cmd("Install fish completions")>] Completions
     | [<CmdArg("worktree root");
@@ -411,6 +438,7 @@ let internal agentGateFor (command: Command) : AgentGate =
     | Command.Coverage _
     | Command.Insights _
     | Command.Headroom
+    | Command.Audit _
     | Command.Analytics _ -> AgentGate.OwnOutput
     | Command.Start
     | Command.Init
@@ -442,6 +470,7 @@ let internal commandToken (command: Command) : string =
     | Command.DeadCode _ -> "dead-code"
     | Command.Insights _ -> "insights"
     | Command.Analytics _ -> "analytics"
+    | Command.Audit _ -> "audit"
     | Command.Explain _ -> "explain"
     | Command.Headroom -> "headroom"
     | Command.Completions -> "completions"
@@ -529,6 +558,61 @@ let internal analyticsSetup (now: DateTimeOffset) (repoRoot: string) (flags: Ana
             | _ -> None)
         |> Option.defaultValue 10
       Json = List.contains AnalyticsFlag.Json flags }
+
+/// `fshw audit`'s flags as an audit request.
+let internal auditRequest (flags: AuditFlag list) : FsHotWatch.RecordAudit.Request =
+    let pick f = flags |> List.tryPick f
+    let all f = flags |> List.choose f
+
+    { Clean =
+        pick (function
+            | AuditFlag.Clean d -> Some d
+            | _ -> None)
+      CleanHome =
+        pick (function
+            | AuditFlag.CleanHome d -> Some d
+            | _ -> None)
+      Store =
+        pick (function
+            | AuditFlag.Store d -> Some d
+            | _ -> None)
+      Kinds =
+        all (function
+            | AuditFlag.Kind k -> Some k
+            | _ -> None)
+      Sample =
+        pick (function
+            | AuditFlag.Sample n -> Some n
+            | _ -> None)
+      Seed =
+        pick (function
+            | AuditFlag.Seed s -> Some s
+            | _ -> None)
+      Keys =
+        all (function
+            | AuditFlag.Key k -> Some k
+            | _ -> None)
+      PreferInput =
+        pick (function
+            | AuditFlag.PreferInput l -> Some l
+            | _ -> None) }
+
+/// `fshw audit`'s flags, resolved against `repoRoot`; Error names what is wrong with them.
+let internal auditSetup (repoRoot: string) (flags: AuditFlag list) =
+    FsHotWatch.RecordAudit.resolve repoRoot (auditRequest flags)
+
+/// `fshw audit`: the exit code of the audit `flags` describe (2 for flags that describe none).
+let internal runAudit (repoRoot: string) (flags: AuditFlag list) : int =
+    FsHotWatch.RecordAudit.runRequest
+        repoRoot
+        (auditRequest flags)
+        (List.contains AuditFlag.Json flags)
+        (flags
+         |> List.tryPick (function
+             | AuditFlag.Out p -> Some p
+             | _ -> None))
+        (printfn "%s")
+        (eprintfn "fshw %s")
 
 let private isRunOnce = List.contains RunOnce
 
@@ -3799,6 +3883,7 @@ let private executeCommandRendered
         | DeadCode _
         | Insights _
         | Analytics _
+        | Audit _
         | Explain _
         | Headroom
         | Completions
@@ -4647,6 +4732,9 @@ let private executeCommandRendered
                   Verbose = opts.Verbose }
 
             FsHotWatch.Cli.DeadCode.runDefault repoRoot opts
+        | Audit flags ->
+            // A pure read of two outcome stores: no daemon, no IPC, nothing quarantined.
+            runAudit repoRoot flags
         | Explain(file, flags) ->
             // Reads the impact index directly, like `dead-code`.
             FsHotWatch.Cli.Explain.runDefault

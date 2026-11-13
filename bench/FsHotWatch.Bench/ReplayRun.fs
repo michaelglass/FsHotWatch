@@ -41,6 +41,10 @@ type Options =
         /// Run the forced re-check (records off) at every seeded fault and at the clean step of
         /// every `ForcedEvery`-th commit (1 = every commit, 0 = faults only).
         ForcedEvery: int
+        /// When set, the forced re-check runs with check and options records ON under this
+        /// cache home (`FSHW_CACHE_HOME`), emptied first: nothing to replay, so every check
+        /// runs in FCS AND files a clean store for `fshw audit` (ADR-059 §35, AUTOMATION-1633).
+        ForcedCleanHome: string option
         /// The daemon's log, relative to the workspace.
         DaemonLog: string
         /// Stop after this many steps in this invocation (the rest resume later).
@@ -243,6 +247,39 @@ let private recordsEnv (on: bool) =
       "FSHW_OPTIONS_RECORDS", v
       "FSHW_OUTCOME_SHADOW", "1" ]
 
+/// The environment of one run: a replay answers from records; a forced re-check either
+/// turns records off, or (with a clean home) keeps them on over an empty cache home, which
+/// is a from-scratch recompute that files what it computed.
+let internal checkEnv (mode: string) (cleanHome: string option) : (string * string) list =
+    match mode, cleanHome with
+    | "forced", Some home -> recordsEnv true @ [ FsHotWatch.FsHwPaths.CacheHomeEnvVar, home ]
+    | "forced", None -> recordsEnv false
+    | _ -> recordsEnv true
+
+/// The marker a clean home carries, so emptying one never deletes a directory the harness
+/// did not make.
+[<Literal>]
+let CleanHomeMarker = ".fshw-clean-home"
+
+/// Empty `home` for a from-scratch run. Refuses a non-empty directory without the marker.
+let internal prepareCleanHome (home: string) : Result<unit, string> =
+    let marker = Path.Combine(home, CleanHomeMarker)
+
+    let foreign =
+        Directory.Exists home
+        && not (File.Exists marker)
+        && not (Seq.isEmpty (Directory.EnumerateFileSystemEntries home))
+
+    if foreign then
+        Error $"%s{home} is not empty and is not a clean home (no %s{CleanHomeMarker}): refusing to empty it"
+    else
+        if Directory.Exists home then
+            Directory.Delete(home, true)
+
+        Directory.CreateDirectory home |> ignore
+        File.WriteAllText(marker, "emptied before each forced re-check by fshw-bench replay --forced-clean-home\n")
+        Ok()
+
 /// One run of the consumer's check, and everything it left behind. The daemon is stopped
 /// before (so the record flags take effect) and after (so its tally is logged).
 let private runCheck (opts: Options) (stepDir: string) (mode: string) : RunResult * Diagnostic list =
@@ -261,13 +298,22 @@ let private runCheck (opts: Options) (stepDir: string) (mode: string) : RunResul
     let daemonLog = Path.Combine(opts.Workspace, opts.DaemonLog)
     let shadowBefore = lineCount shadowPath
     let logOffset = fileLength daemonLog
+
+    let cleanHome = if mode = "forced" then opts.ForcedCleanHome else None
+
+    cleanHome
+    |> Option.iter (fun home ->
+        match prepareCleanHome home with
+        | Ok() -> log $"  forced: from scratch under FSHW_CACHE_HOME=%s{home}"
+        | Error reason -> failwith reason)
+
     let start = DateTime.UtcNow
     log $"  %s{mode}: %s{opts.CheckCmd}"
 
     let exit, timedOut, elapsed =
         shell
             opts.Workspace
-            (recordsEnv (mode = "replay"))
+            (checkEnv mode cleanHome)
             opts.CheckCmd
             (Path.Combine(dir, "check.log"))
             (TimeSpan.FromMinutes(float opts.TimeoutMin))

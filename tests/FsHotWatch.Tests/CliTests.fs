@@ -4154,6 +4154,127 @@ let ``analytics reads this repository's box-wide store and discovers the shadow 
     test <@ chosen.Top = 3 && chosen.Json @>
 
 [<Fact(Timeout = 15000)>]
+let ``parse audit accepts its clean, store, kind, sample, seed, key, prefer-input, json and out flags`` () =
+    test
+        <@
+            CommandTree.parse
+                tree
+                [| "audit"
+                   "--clean-home"
+                   "/h"
+                   "--store"
+                   "/s"
+                   "--kind"
+                   "check"
+                   "--kind"
+                   "format"
+                   "--sample"
+                   "50"
+                   "--seed"
+                   "night"
+                   "--key"
+                   "ak1:a"
+                   "--prefer-input"
+                   "position"
+                   "--json"
+                   "--out"
+                   "/r.json" |] = Ok(
+                Audit
+                    [ AuditFlag.CleanHome "/h"
+                      AuditFlag.Store "/s"
+                      AuditFlag.Kind "check"
+                      AuditFlag.Kind "format"
+                      AuditFlag.Sample 50
+                      AuditFlag.Seed "night"
+                      AuditFlag.Key "ak1:a"
+                      AuditFlag.PreferInput "position"
+                      AuditFlag.Json
+                      AuditFlag.Out "/r.json" ]
+            )
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``audit is the verb's own output, spelled audit`` () =
+    test <@ agentGateFor (Audit []) = AgentGate.OwnOutput @>
+    test <@ commandToken (Audit []) = "audit" @>
+
+[<Fact(Timeout = 15000)>]
+let ``audit judges this repository's box-wide store against the store a clean home holds`` () =
+    let setup = auditSetup "/repo" [ AuditFlag.CleanHome "/clean" ]
+
+    let expected =
+        FsHotWatch.OutcomeStore.directoryFor "/repo",
+        FsHotWatch.RecordAudit.storeUnderCacheHome "/clean" "/repo",
+        [ "check" ],
+        Some FsHotWatch.RecordAudit.DefaultSample
+
+    test
+        <@
+            setup
+            |> Result.map (fun s -> s.AuditedStore, s.CleanStore, s.Options.Kinds, s.Options.Sample) = Ok expected
+        @>
+
+    let every = auditSetup "/repo" [ AuditFlag.Clean "/c"; AuditFlag.Sample 0 ]
+    test <@ every |> Result.map _.Options.Sample = Ok None @>
+
+[<Fact(Timeout = 15000)>]
+let ``audit refuses flags that name no clean store, two of them, a bad key or a negative sample`` () =
+    test <@ auditSetup "/repo" [] |> Result.isError @>
+
+    test
+        <@
+            auditSetup "/repo" [ AuditFlag.Clean "/c"; AuditFlag.CleanHome "/h" ]
+            |> Result.isError
+        @>
+
+    test
+        <@
+            auditSetup "/repo" [ AuditFlag.Clean "/c"; AuditFlag.Key "nope" ]
+            |> Result.isError
+        @>
+
+    test
+        <@
+            auditSetup "/repo" [ AuditFlag.Clean "/c"; AuditFlag.Sample -1 ]
+            |> Result.isError
+        @>
+
+    test <@ runAudit "/repo" [] = 2 @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``audit exits 1 on a stored record that differs from the clean one, and writes its report`` () =
+    withTempDir "cli-audit" (fun dir ->
+        let storeAt (root: string) =
+            FsHotWatch.OutcomeStore.Store(
+                { Root = root
+                  Ttl = FsHotWatch.OutcomeStore.defaultTtl
+                  MaxBytes = FsHotWatch.OutcomeStore.defaultMaxBytes
+                  Log = ignore }
+            )
+
+        let key = FsHotWatch.ActionKey.create "format" [ "file", "a" ]
+        let at = DateTimeOffset(2026, 11, 13, 0, 0, 0, TimeSpan.Zero)
+
+        let record outcome =
+            FsHotWatch.OutcomeStore.Record.ofAction key "a" outcome "b" "/w" at
+
+        let audited = storeAt (Path.Combine(dir, "audited"))
+        let clean = storeAt (Path.Combine(dir, "clean"))
+        audited.Record(record FsHotWatch.OutcomeStore.Outcome.Pass) |> ignore
+        clean.Record(record FsHotWatch.OutcomeStore.Outcome.Fail) |> ignore
+        let out = Path.Combine(dir, "report", "audit.json")
+
+        let flags =
+            [ AuditFlag.Store audited.Root
+              AuditFlag.Clean clean.Root
+              AuditFlag.Kind "format"
+              AuditFlag.Out out ]
+
+        test <@ runAudit dir flags = 1 @>
+        test <@ File.ReadAllText(out).Contains "\"verdict\": \"mismatch\"" @>
+        test <@ runAudit dir [ AuditFlag.Store clean.Root; AuditFlag.Clean clean.Root ] = 2 @>)
+
+[<Fact(Timeout = 15000)>]
 let ``every scan progress reads back from its own answer, with its wedge report`` () =
     let cases =
         [ FsHotWatch.ScanProgress.Progress.Idle

@@ -252,33 +252,64 @@ type Scan =
         Unreadable: int
     }
 
+/// Every record in a store directory with its outputs, read without changing it.
+type ScanWithOutputs =
+    {
+        /// Every readable record of every key with its outputs, oldest first.
+        Records: (Record * string option) list
+        /// Files that are not a record of the key they are filed under.
+        Unreadable: int
+    }
+
+/// The record files of one key's directory, decoded: each readable record of that key with
+/// its outputs, and `None` for each file that is not one.
+let private readKeyDirectory (keyValue: ActionKey.KeyValue option) (dir: string) =
+    [ for file in Directory.GetFiles(dir, "*.json") ->
+          try
+              match decode (File.ReadAllText file) with
+              | Ok(record, outputs) when Some record.Key.Value = keyValue -> Some(record, outputs)
+              | _ -> None
+          with :? IOException ->
+              None ]
+
+/// `readAll` with each record's outputs (AUTOMATION-1633): a pure read for a reader that
+/// compares what records produced, such as the clean-recompute audit.
+let readAllWithOutputs (root: string) : ScanWithOutputs =
+    let recordsDir = Path.Combine(root, "records")
+
+    let read =
+        if Directory.Exists recordsDir then
+            [ for shard in Directory.GetDirectories recordsDir do
+                  for dir in Directory.GetDirectories shard do
+                      yield!
+                          readKeyDirectory (ActionKey.KeyValue.tryParse (ActionKey.Prefix + Path.GetFileName dir)) dir ]
+        else
+            []
+
+    { Records = read |> List.choose id |> chronological
+      Unreadable = read |> List.filter Option.isNone |> List.length }
+
 /// Read every record under `root` for analysis (AUTOMATION-1368). A pure read: unlike a
 /// lookup, it quarantines nothing, so a report never changes the store it reports on. A
 /// file that a lookup would quarantine is counted in `Unreadable` and left where it is.
 let readAll (root: string) : Scan =
-    let recordsDir = Path.Combine(root, "records")
+    let scan = readAllWithOutputs root
 
-    let files =
-        if Directory.Exists recordsDir then
-            [ for shard in Directory.GetDirectories recordsDir do
-                  for dir in Directory.GetDirectories shard do
-                      for file in Directory.GetFiles(dir, "*.json") do
-                          yield ActionKey.KeyValue.tryParse (ActionKey.Prefix + Path.GetFileName dir), file ]
-        else
-            []
+    { Records = scan.Records |> List.map fst
+      Unreadable = scan.Unreadable }
 
-    let read =
-        files
-        |> List.map (fun (keyValue, file) ->
-            try
-                match decode (File.ReadAllText file) with
-                | Ok(record, outputs) when Some record.Key.Value = keyValue -> Some(record, outputs)
-                | _ -> None
-            with :? IOException ->
-                None)
+/// One key's records under `root` with their outputs, oldest first, read without changing
+/// the store (AUTOMATION-1633): where a lookup quarantines a file it cannot read, this
+/// leaves it and counts it. Empty when the store holds no directory for the key.
+let readKeyAt (root: string) (keyValue: ActionKey.KeyValue) : (Record * string option) list * int =
+    let hex = keyValue.Text.Substring ActionKey.Prefix.Length
+    let dir = Path.Combine(root, "records", hex.Substring(0, 2), hex)
 
-    { Records = read |> List.choose id |> chronological |> List.map fst
-      Unreadable = read |> List.filter Option.isNone |> List.length }
+    if Directory.Exists dir then
+        let read = readKeyDirectory (Some keyValue) dir
+        read |> List.choose id |> chronological, read |> List.filter Option.isNone |> List.length
+    else
+        [], 0
 
 /// A superseded record: one of a key's records that is not its answer. Deleting it never
 /// changes a lookup; it only shortens the key's history (AUTOMATION-1583).

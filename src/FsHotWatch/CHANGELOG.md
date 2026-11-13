@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `RecordAudit`, the clean-recompute audit (ADR-059 §35 Change 1a, AUTOMATION-1633): for every key a clean
+  store and an audited store both hold, every stored record must equal the clean one (check records field by field:
+  outcome, diagnostics as a multiset, FCS, used and API signatures; any other kind by outcome and outputs digest).
+  Seeded, deterministic sampling per kind; a kind list open to new kinds (`AuditKind.find`). `OutcomeStore` gains two
+  pure reads that quarantine nothing: `readAllWithOutputs` and `readKeyAt`.
+
 - fix: a project's `--reflectionfree` no longer leaks into the checks of other projects (AUTOMATION-1656). FCS builds
   `TcGlobals` once per framework-imports key (framework references, language version, nullness) from the options of
   whichever project it bootstrapped first, and shares it with every other project on those references. A test project
