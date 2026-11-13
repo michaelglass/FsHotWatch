@@ -556,7 +556,7 @@ module ``event drain tests`` =
             )
 
         drain.Post(file "/r/A.fs")
-        test <@ started.Wait(10_000) @>
+        test <@ started.Wait(HangWait) @>
         drain.Post(file "/r/A.fs")
         gate.Set()
 
@@ -649,7 +649,7 @@ module ``event drain tests`` =
 
         drainRef <- Some drain
         drain.Post(file "/r/A.fs")
-        test <@ disposed.Wait(10_000) @>
+        test <@ disposed.Wait(HangWait) @>
 
 /// The drain on a real stream: with the handler blocked, the native callback still takes
 /// every event fseventsd delivers, so its queue for this client stays drained.
