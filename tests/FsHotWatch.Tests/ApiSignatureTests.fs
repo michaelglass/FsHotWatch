@@ -336,9 +336,10 @@ let private checkedTestFileAt (root: string) (source: string) : FileCheckResult 
     | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted -> failwith "check aborted"
 
 /// An xUnit v3 test file: `FactAttribute`'s constructor takes `[<CallerFilePath>]` and
-/// `[<CallerLineNumber>]`, which FCS fills in with the absolute path and the line.
+/// `[<CallerLineNumber>]`, which FCS fills in with the absolute path and the line. Its
+/// literal names the checkout's directory too, the way a fixture path can.
 let private xunitTests =
-    "module M\n\nopen Xunit\n\n[<Fact(Timeout = 60_000)>]\n[<Trait(\"Guard\", \"X\")>]\nlet ``a test`` () = ()\n"
+    "module M\n\nopen Xunit\n\n[<Literal>]\nlet Here = __SOURCE_DIRECTORY__ + \"/fixtures\"\n\n[<Fact(Timeout = 60_000)>]\n[<Trait(\"Guard\", \"X\")>]\nlet ``a test`` () = ()\n"
 
 // Two real checks, each under its own `RealCheckWaitMs`.
 [<Fact(Timeout = 4 * RealCheckWaitMs)>]
@@ -359,11 +360,57 @@ let ``a test file at two checkout roots has one API signature, so later files sh
         test <@ (filed rootOne one).IsSome @>
         test <@ filed rootOne one = filed rootTwo two @>
 
-        // The control: the attribute does carry the checkout's path, and only the root's
-        // replacement makes the two agree.
+        // The control: the literal does carry the checkout's path, and only the root's
+        // replacement makes the two agree. The attribute's caller-filled arguments name
+        // neither path nor line (B2).
         let text root result =
             (FsHotWatch.ApiSignature.signatureText root result).Value
 
-        test <@ (text (Some rootOne) one).Contains "\"${repo}/Test.fs\"" @>
+        test <@ (text (Some rootOne) one).Contains "\"${repo}/fixtures\"" @>
         test <@ not ((text (Some rootOne) one).Contains rootOne) @>
-        test <@ text None one <> text None two @>)
+        test <@ text None one <> text None two @>
+        test <@ (text (Some rootOne) one).Contains "[<Xunit.FactAttribute (<caller>, <caller>, Timeout = 60000)>]" @>)
+
+// Two real checks, each under its own `RealCheckWaitMs`.
+[<Fact(Timeout = 4 * RealCheckWaitMs)>]
+let ``a test moved down a line keeps the file's API signature`` () =
+    // AUTOMATION-1664 (B2): FactAttribute's `[<CallerLineNumber>]` put the test's line in
+    // the signature, so a line added above a test re-keyed every later file of its project.
+    withTempDir "api-signature-caller-line" (fun dir ->
+        let root = System.IO.Path.Combine(dir, "checkout")
+
+        let signature (source: string) =
+            FsHotWatch.ApiSignature.ofResult (Some root) (checkedTestFileAt root source)
+
+        let shifted =
+            xunitTests.Replace("open Xunit\n", "open Xunit\n\n// a line added above the test\n")
+
+        test <@ shifted <> xunitTests @>
+        test <@ (signature xunitTests).IsSome @>
+        test <@ signature shifted = signature xunitTests @>)
+
+[<Fact(Timeout = 2 * RealCheckWaitMs)>]
+let ``an attribute declared in the checked project keeps its caller-filled argument, having no metadata to read`` () =
+    // FCS reports no caller-info attribute on a parameter, and a type the project declares
+    // has no assembly on disk to read one from: its attribute is rendered as FCS formats it.
+    withTempDir "api-signature-caller-source" (fun dir ->
+        let root = System.IO.Path.Combine(dir, "checkout")
+
+        let source =
+            String.concat
+                "\n"
+                [ "module M"
+                  "open System.Runtime.CompilerServices"
+                  "open System.Runtime.InteropServices"
+                  "type MarkAttribute([<CallerLineNumber; Optional; DefaultParameterValue(0)>] line: int) ="
+                  "    inherit System.Attribute()"
+                  "    member _.Line = line"
+                  ""
+                  "[<Mark>]"
+                  "let marked () = ()"
+                  "" ]
+
+        let text =
+            (FsHotWatch.ApiSignature.signatureText (Some root) (checkedTestFileAt root source)).Value
+
+        test <@ text.Contains "[<M.Mark (8)>]" @>)
