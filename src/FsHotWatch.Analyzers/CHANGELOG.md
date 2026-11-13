@@ -6,6 +6,10 @@
   so `compare` could never return it, yet `render` and `describe` had to answer it. `Shadow.Observe` now returns
   `Observed` (`FirstSeen | Compared of Comparison`). The log lines are unchanged.
 
+- refactor: `AnalyzeNeeds.render` takes a `Disagreement` and returns the line, not a `Comparison` and a `string option`
+  that was `None` exactly for `Agree` (AUTOMATION-1635). `Comparison` is now `Agree | Disagree of Disagreement`
+  (`NeedKeyMoved | TodayKeyMoved`); `Shadow.Observe` logs only a `Disagree`. The log lines are unchanged.
+
 - refactor: the analyzer set's once-per-batch read and the shadow's once-per-batch oracles match
   `DispatchBatchScope` instead of comparing a batch id with 0 (AUTOMATION-1635). Behaviour unchanged.
 

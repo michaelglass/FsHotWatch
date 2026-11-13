@@ -161,6 +161,12 @@ let observe
 type Comparison =
     /// Both keys held, or both moved.
     | Agree
+    /// One key moved while the other held.
+    | Disagree of Disagreement
+
+/// Which key moved while the other held: what the shadow logs. Its own union, so `render`
+/// takes only a disagreement and has no "nothing to say" answer (AUTOMATION-1635).
+and [<RequireQualifiedAccess>] Disagreement =
     /// Today's key held while the Need key moved: today's key may have missed these inputs.
     | NeedKeyMoved of changes: NonEmpty<NeedChange>
     /// Today's key moved while the Need key held: the action does not declare these terms.
@@ -189,29 +195,27 @@ let compare (before: Observation) (after: Observation) : Comparison =
     with
     | None, None
     | Some _, Some _ -> Comparison.Agree
-    | Some changes, None -> Comparison.NeedKeyMoved changes
-    | None, Some terms -> Comparison.TodayKeyMoved terms
+    | Some changes, None -> Comparison.Disagree(Disagreement.NeedKeyMoved changes)
+    | None, Some terms -> Comparison.Disagree(Disagreement.TodayKeyMoved terms)
 
 /// The comparison in one word or line, for test failures.
 let describe (comparison: Comparison) : string =
     match comparison with
     | Comparison.Agree -> "agree"
-    | Comparison.NeedKeyMoved changes ->
+    | Comparison.Disagree(Disagreement.NeedKeyMoved changes) ->
         "need moved: " + String.Join(",", NonEmpty.toList changes |> List.map _.Subject)
-    | Comparison.TodayKeyMoved terms -> "today moved: " + String.Join(",", NonEmpty.toList terms)
+    | Comparison.Disagree(Disagreement.TodayKeyMoved terms) -> "today moved: " + String.Join(",", NonEmpty.toList terms)
 
-/// The log line for a disagreement; `None` when there is nothing to say. Its form is fixed:
+/// The log line for a disagreement. Its form is fixed:
 ///   need-shadow disagree file=<path> today=held need=moved inputs=<subject>,…
 ///   need-shadow disagree file=<path> today=moved need=held inputs=<term>,…
-let render (file: RepoRelativePath) (comparison: Comparison) : string option =
+let render (file: RepoRelativePath) (disagreement: Disagreement) : string =
     let line today need (inputs: string list) =
-        Some
-            $"%s{LogPrefix} disagree file=%s{file.Text} today=%s{today} need=%s{need} inputs=%s{String.Join(',', inputs)}"
+        $"%s{LogPrefix} disagree file=%s{file.Text} today=%s{today} need=%s{need} inputs=%s{String.Join(',', inputs)}"
 
-    match comparison with
-    | Comparison.Agree -> None
-    | Comparison.NeedKeyMoved changes -> line "held" "moved" (NonEmpty.toList changes |> List.map _.Subject)
-    | Comparison.TodayKeyMoved terms -> line "moved" "held" (NonEmpty.toList terms)
+    match disagreement with
+    | Disagreement.NeedKeyMoved changes -> line "held" "moved" (NonEmpty.toList changes |> List.map _.Subject)
+    | Disagreement.TodayKeyMoved terms -> line "moved" "held" (NonEmpty.toList terms)
 
 /// The log line for an analysis whose action produced no trace.
 let renderError (file: RepoRelativePath) (error: NeedError) : string =
@@ -232,7 +236,8 @@ type Shadow(log: string -> unit) =
         seen[file] <- observation
 
         match observed with
-        | Observed.Compared comparison -> render file comparison |> Option.iter log
+        | Observed.Compared(Comparison.Disagree disagreement) -> log (render file disagreement)
+        | Observed.Compared Comparison.Agree
         | Observed.FirstSeen -> ()
 
         observed

@@ -53,6 +53,12 @@ let private observe (today: (string * string) list) (analysis: AnalyzeNeeds.Anal
 
 let private todayTerms = [ "source", "let x = 1\n"; "file", "src/A.fs" ]
 
+/// The disagreement two analyses show; a test that expected one fails when they agree.
+let private disagreement (comparison: AnalyzeNeeds.Comparison) : AnalyzeNeeds.Disagreement =
+    match comparison with
+    | AnalyzeNeeds.Comparison.Disagree disagreement -> disagreement
+    | AnalyzeNeeds.Comparison.Agree -> failwith "expected the keys to disagree, and they agreed"
+
 // ---------------------------------------------------------------------------------------
 // The action's needs
 
@@ -111,7 +117,7 @@ let ``the Need key moving under a held today key names the inputs today's key mi
                 Options = "options --define:X" }
 
     match AnalyzeNeeds.compare one other with
-    | AnalyzeNeeds.Comparison.NeedKeyMoved changes ->
+    | AnalyzeNeeds.Comparison.Disagree(AnalyzeNeeds.Disagreement.NeedKeyMoved changes) ->
         test <@ NonEmpty.toList changes |> List.map (fun change -> change.Subject) = [ "upstream:project/options" ] @>
     | other -> failwith $"expected NeedKeyMoved, got %s{AnalyzeNeeds.describe other}"
 
@@ -122,8 +128,8 @@ let ``today's key moving under a held Need key names the terms the Need key does
 
     test
         <@
-            AnalyzeNeeds.compare one other = AnalyzeNeeds.Comparison.TodayKeyMoved(
-                { Head = "plugin-version"; Tail = [] }
+            AnalyzeNeeds.compare one other = AnalyzeNeeds.Comparison.Disagree(
+                AnalyzeNeeds.Disagreement.TodayKeyMoved { Head = "plugin-version"; Tail = [] }
             )
         @>
 
@@ -143,21 +149,21 @@ let ``the log line has a stable prefix, the file, which key moved and what diffe
 
     test
         <@
-            AnalyzeNeeds.render inputs.File (AnalyzeNeeds.compare one options) = Some
-                "need-shadow disagree file=src/A.fs today=held need=moved inputs=upstream:project/options"
+            AnalyzeNeeds.render inputs.File (disagreement (AnalyzeNeeds.compare one options)) = "need-shadow disagree file=src/A.fs today=held need=moved inputs=upstream:project/options"
         @>
 
     test
         <@
-            AnalyzeNeeds.render inputs.File (AnalyzeNeeds.compare one schema) = Some
-                "need-shadow disagree file=src/A.fs today=moved need=held inputs=plugin-version"
+            AnalyzeNeeds.render inputs.File (disagreement (AnalyzeNeeds.compare one schema)) = "need-shadow disagree file=src/A.fs today=moved need=held inputs=plugin-version"
         @>
 
     // AUTOMATION-1635: a first sighting is not a comparison, so `compare`, `render` and
     // `describe` cannot be handed one. This no longer typechecks (FS0039, no case FirstSeen):
     //   AnalyzeNeeds.render inputs.File AnalyzeNeeds.Comparison.FirstSeen
     // Only `Shadow.Observe` answers `Observed.FirstSeen`.
-    test <@ AnalyzeNeeds.render inputs.File AnalyzeNeeds.Comparison.Agree = None @>
+    // `render` takes only a disagreement, so there is no "nothing to say" answer to check:
+    //   AnalyzeNeeds.render inputs.File AnalyzeNeeds.Comparison.Agree
+    // no longer typechecks (FS0001: expected Disagreement, got Comparison).
     test <@ AnalyzeNeeds.describe AnalyzeNeeds.Comparison.Agree = "agree" @>
 
 [<Fact>]
