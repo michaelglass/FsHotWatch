@@ -7320,7 +7320,8 @@ let private withScannedCleanProject (name: string) (body: Daemon -> string -> un
             let options, _ =
                 checker.GetProjectOptionsFromScript(
                     sourcePath,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath))
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText(sourcePath)),
+                    assumeDotNetFramework = false
                 )
                 |> Async.RunSynchronously
 
@@ -7339,6 +7340,13 @@ let private withScannedCleanProject (name: string) (body: Daemon -> string -> un
                 (fun _ _ _ _ _ -> failwith "this test drives every scan itself")
 
         daemon.ScanAll() |> Async.RunSynchronously
+
+        // The file is clean only under options this fixture makes itself. Script options
+        // assume the .NET Framework unless told otherwise, and a check under them reports
+        // an error on this one-liner. It showed only when these tests ran alone or in a
+        // filtered selection, never in the full suite, so the fixture states its
+        // precondition rather than inheriting it from whichever tests ran first.
+        test <@ daemon.Host.FailingReasons false |> Map.isEmpty @>
         body daemon sourcePath)
 
 /// The entry a check that declared a type incompatible with itself leaves behind.
