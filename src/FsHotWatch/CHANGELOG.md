@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a scan fails a preprocessor that has to rewrite a file, instead of grading the rewritten tree (AUTOMATION-1680).
+  `check` and `confirm` force a scan before they grade, and the scan ran the format-on-save formatter (`"format":
+  true`), which rewrote an unformatted file in place and reported "rewrote 1 of N" as a pass. The check then
+  certified the rewritten working copy while the commit kept the old bytes: CI's `dotnet fantomas --check` went red
+  on main three times over trees `check` had passed. A rewrite during a scan now fails that preprocessor's status,
+  naming the file, and the failure stands through later change batches (the rewrite's own watcher echo among them)
+  until a scan rewrites nothing. Applies to every preprocessor, configured generators included. A save's change batch
+  and `fshw format` still rewrite as asked. New `PluginHost.PreprocessPass` (`Apply` / `Judge`),
+  `PluginHost.RunPreprocessorsFor` and `PluginHost.JudgePreprocessors`; `RunPreprocessors` is unchanged (`Apply`).
+
 - feat: a stopping daemon logs one line naming what stopped it, ahead of "Daemon stopped." (AUTOMATION-1675). The
   log used to read the same for every stop, so nobody could tell who stopped a measurement daemon three times in one
   afternoon. New module `DaemonStop`: `StopCause` names each way a daemon ends: a stop RPC (`Shutdown` or
