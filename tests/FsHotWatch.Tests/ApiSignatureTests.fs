@@ -56,7 +56,7 @@ let private signatureOf (root: string) (source: string) =
         |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
 
     test <@ Array.isEmpty errors @>
-    FsHotWatch.ApiSignature.ofResult (checkResultOf source (FullCheck(fixtureParse (), check)))
+    FsHotWatch.ApiSignature.ofResult None (checkResultOf source (FullCheck(fixtureParse (), check)))
 
 /// `api` with `before` replaced by `after`; the fragment must occur exactly once.
 let private edit (source: string) (before: string, after: string) =
@@ -141,8 +141,11 @@ let ``a file with errors, or without typed results, has no signature`` () =
     withTempDir "api-signature-errors" (fun root ->
         let broken = "module Api\nlet broken : int = \"text\"\n"
         let check = checkAlone root "Api.fs" broken
-        test <@ FsHotWatch.ApiSignature.ofResult (checkResultOf broken (FullCheck(fixtureParse (), check))) = None @>
-        test <@ FsHotWatch.ApiSignature.ofResult (checkResultOf broken (fixtureParseOnly ())) = None @>
+
+        test
+            <@ FsHotWatch.ApiSignature.ofResult None (checkResultOf broken (FullCheck(fixtureParse (), check))) = None @>
+
+        test <@ FsHotWatch.ApiSignature.ofResult None (checkResultOf broken (fixtureParseOnly ())) = None @>
 
         // An FSharpCheckFileResults with no state throws from every query, as FCS can from
         // a symbol property on partially-checked code.
@@ -154,7 +157,9 @@ let ``a file with errors, or without typed results, has no signature`` () =
 
         test
             <@
-                FsHotWatch.ApiSignature.ofResult (checkResultOf "module Api\n" (FullCheck(fixtureParse (), stateless))) = None
+                FsHotWatch.ApiSignature.ofResult
+                    None
+                    (checkResultOf "module Api\n" (FullCheck(fixtureParse (), stateless))) = None
             @>)
 
 [<Fact(Timeout = 4 * RealCheckWaitMs)>]
@@ -232,11 +237,11 @@ let ``a later file's result standing across an upstream line shift analyses as a
         // The edit is one the cut applies to.
         test
             <@
-                FsHotWatch.ApiSignature.ofResult (
-                    checkResultOf shifted (FullCheck(fixtureParse (), checkAlone root "Api.fs" shifted))
-                ) = FsHotWatch.ApiSignature.ofResult (
-                    checkResultOf api (FullCheck(fixtureParse (), checkAlone root "Api.fs" api))
-                )
+                FsHotWatch.ApiSignature.ofResult
+                    None
+                    (checkResultOf shifted (FullCheck(fixtureParse (), checkAlone root "Api.fs" shifted))) = FsHotWatch.ApiSignature.ofResult
+                    None
+                    (checkResultOf api (FullCheck(fixtureParse (), checkAlone root "Api.fs" api)))
             @>
 
         test <@ not standing.Dependencies.IsEmpty @>
@@ -266,7 +271,8 @@ let ``an entity's members are named in ordinal order, never in the order FCS enu
         let check = checkAlone root "Ordered.fs" source
 
         let text =
-            (FsHotWatch.ApiSignature.signatureText (checkResultOf source (FullCheck(fixtureParse (), check)))).Value
+            (FsHotWatch.ApiSignature.signatureText None (checkResultOf source (FullCheck(fixtureParse (), check))))
+                .Value
 
         // Each entity block: its header line, then its body lines indented by two spaces.
         let blocks =
@@ -295,3 +301,69 @@ let ``an entity's members are named in ordinal order, never in the order FCS enu
         for block in blocks do
             let members = memberLines block
             test <@ members = List.sortWith (fun a b -> String.CompareOrdinal(a, b)) members @>)
+
+/// `source` as `root/Test.fs`, the only file of a test project referencing xUnit, checked
+/// through the daemon's checker: the result a `check` record is filed from.
+let private checkedTestFileAt (root: string) (source: string) : FileCheckResult =
+    System.IO.Directory.CreateDirectory root |> ignore
+    let file = System.IO.Path.Combine(root, "Test.fs")
+    System.IO.File.WriteAllText(file, source)
+    let baseOptions, sdk = sdkProjectOptions.Value
+
+    let options =
+        { baseOptions with
+            ProjectFileName = System.IO.Path.Combine(root, "Tests.fsproj")
+            SourceFiles = [| file |]
+            OtherOptions = Array.append sdk [| "-r:" + typeof<FactAttribute>.Assembly.Location |]
+            UseScriptResolutionRules = false
+            ProjectId = None
+            Stamp = None }
+
+    let parse, answer =
+        daemonChecker.Value.ParseAndCheckFileInProject(
+            file,
+            0,
+            FSharp.Compiler.Text.SourceText.ofString source,
+            options
+        )
+        |> Async.RunSynchronously
+
+    match answer with
+    | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded check ->
+        { checkResultOf source (FullCheck(parse, check)) with
+            File = AbsFilePath.create file
+            ProjectOptions = options }
+    | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted -> failwith "check aborted"
+
+/// An xUnit v3 test file: `FactAttribute`'s constructor takes `[<CallerFilePath>]` and
+/// `[<CallerLineNumber>]`, which FCS fills in with the absolute path and the line.
+let private xunitTests =
+    "module M\n\nopen Xunit\n\n[<Fact(Timeout = 60_000)>]\n[<Trait(\"Guard\", \"X\")>]\nlet ``a test`` () = ()\n"
+
+// Two real checks, each under its own `RealCheckWaitMs`.
+[<Fact(Timeout = 4 * RealCheckWaitMs)>]
+let ``a test file at two checkout roots has one API signature, so later files share their keys`` () =
+    // AUTOMATION-1664 (B): the attribute rendered the checkout's own path, so every file
+    // after a [<Fact>] file was keyed per checkout.
+    withTempDir "api-signature-caller-path" (fun dir ->
+        let at name =
+            let root = System.IO.Path.Combine(dir, name)
+            root, checkedTestFileAt root xunitTests
+
+        let rootOne, one = at "checkout-one"
+        let rootTwo, two = at "checkout-two-other-name"
+
+        let filed (root: string) (result: FileCheckResult) =
+            (FsHotWatch.CheckRecords.CheckOutputs.ofResult (Some root) result).Value.ApiSignature
+
+        test <@ (filed rootOne one).IsSome @>
+        test <@ filed rootOne one = filed rootTwo two @>
+
+        // The control: the attribute does carry the checkout's path, and only the root's
+        // replacement makes the two agree.
+        let text root result =
+            (FsHotWatch.ApiSignature.signatureText root result).Value
+
+        test <@ (text (Some rootOne) one).Contains "\"${repo}/Test.fs\"" @>
+        test <@ not ((text (Some rootOne) one).Contains rootOne) @>
+        test <@ text None one <> text None two @>)

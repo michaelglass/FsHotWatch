@@ -557,7 +557,7 @@ type CheckPipeline
                 contentHash,
                 apiUpstream,
                 contentUpstream,
-                ApiSignature.ofResult result
+                ApiSignature.ofResult repoRoot result
             )
 
     /// A project output as an entry records it: repository-relative, so a sibling
