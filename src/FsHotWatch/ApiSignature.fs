@@ -25,6 +25,9 @@ module internal FsHotWatch.ApiSignature
 
 open System
 open System.Collections.Generic
+open System.IO
+open System.Reflection.Metadata
+open System.Reflection.PortableExecutable
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Diagnostics
 open System.Text.RegularExpressions
@@ -38,11 +41,132 @@ let private accessText (access: FSharpAccessibility) =
 let private entityName (entity: FSharpEntity) =
     entity.TryFullName |> Option.defaultValue entity.DisplayName
 
+/// The parameter attributes by which the compiler fills an argument from the call site.
+let private callerInfo =
+    set
+        [ "System.Runtime.CompilerServices.CallerFilePathAttribute"
+          "System.Runtime.CompilerServices.CallerLineNumberAttribute"
+          "System.Runtime.CompilerServices.CallerMemberNameAttribute" ]
+
+/// The full name of the type a custom attribute constructs, when its constructor is a
+/// reference to a type in another assembly, as a caller-info attribute is everywhere but
+/// in the core library that declares it; `""` otherwise.
+let private referencedAttributeName (metadata: MetadataReader) (attribute: CustomAttributeHandle) =
+    let constructor = (metadata.GetCustomAttribute attribute).Constructor
+
+    let parent =
+        Some constructor
+        |> Option.filter (fun handle -> handle.Kind = HandleKind.MemberReference)
+        |> Option.map (fun handle -> metadata.GetMemberReference(MemberReferenceHandle.op_Explicit handle).Parent)
+        |> Option.filter (fun handle -> handle.Kind = HandleKind.TypeReference)
+        |> Option.map (fun handle -> metadata.GetTypeReference(TypeReferenceHandle.op_Explicit handle))
+
+    parent
+    |> Option.map (fun reference -> metadata.GetString reference.Namespace + "." + metadata.GetString reference.Name)
+    |> Option.defaultValue ""
+
+/// For each constructor of the top-level type `fullName` in the assembly at `path`, which of
+/// its parameters carry a caller-info attribute, read from the assembly's metadata.
+let private readConstructorShapes (path: string) (fullName: string) : bool list list =
+    // `using`, not `use`: the reader owns the stream it is given, and disposes it.
+    using (new PEReader(File.OpenRead path)) (fun pe ->
+        let metadata = pe.GetMetadataReader()
+
+        let named (definition: TypeDefinition) =
+            definition.GetDeclaringType().IsNil
+            && metadata.GetString definition.Namespace
+               + "."
+               + metadata.GetString definition.Name = fullName
+
+        let shapeOf (method: MethodDefinition) =
+            let mutable signature = metadata.GetBlobReader method.Signature
+            signature.ReadSignatureHeader() |> ignore
+            let count = signature.ReadCompressedInteger()
+
+            // A parameter row's sequence number is its 1-based position; 0 is the return value.
+            let callerFilled =
+                method.GetParameters()
+                |> Seq.map metadata.GetParameter
+                |> Seq.filter (fun parameter ->
+                    parameter.GetCustomAttributes()
+                    |> Seq.exists (fun a -> callerInfo.Contains(referencedAttributeName metadata a)))
+                |> Seq.map (fun parameter -> parameter.SequenceNumber)
+                |> Set.ofSeq
+
+            List.init count (fun i -> callerFilled.Contains(i + 1))
+
+        metadata.TypeDefinitions
+        |> Seq.map metadata.GetTypeDefinition
+        |> Seq.filter named
+        |> Seq.collect (fun definition -> definition.GetMethods() |> Seq.map metadata.GetMethodDefinition)
+        |> Seq.filter (fun method -> metadata.GetString method.Name = ".ctor")
+        |> Seq.map shapeOf
+        |> List.ofSeq)
+
+let private assemblyHasher = CheckCache.FileContentHasher()
+
+/// `readConstructorShapes`, once per assembly content and type.
+let private constructorShapesCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string * string * string, bool list list>()
+
+/// Which parameters of each constructor of `attributeType` carry a caller-info attribute,
+/// read from the metadata of the assembly on disk that declares it (cached by its bytes).
+///
+/// FCS reports no caller-info attribute on a constructor parameter, imported from IL or
+/// declared in F# alike (`FSharpParameter.Attributes` is empty for xUnit's `Fact`, and for
+/// an F# `[<CallerLineNumber>]` parameter), so only a type with metadata on disk can be
+/// read: one declared in the project being checked has none, and its attribute is rendered
+/// as FCS formats it. The bytes read are a referenced assembly's, which the key already
+/// names; and a later file cannot observe an attribute's constructor arguments anyway,
+/// except those FCS itself interprets (`Obsolete`, `Experimental`, `CompilerMessage`),
+/// none of which takes caller information.
+let private constructorShapes (attributeType: FSharpEntity) : bool list list =
+    // A nested type is named otherwise in metadata (`readConstructorShapes` reads top-level
+    // types only), so it finds no constructor and is rendered as FCS formats it.
+    match attributeType.Assembly.FileName, attributeType.TryFullName with
+    | Some path, Some fullName when File.Exists path ->
+        constructorShapesCache.GetOrAdd(
+            (path, assemblyHasher.Hash path, fullName),
+            fun _ -> readConstructorShapes path fullName
+        )
+    | _ -> []
+
+/// Which of `a`'s constructor arguments the compiler filled from the call site, by
+/// position; None when no constructor with that many parameters takes one, or when the
+/// constructors with that many disagree on which.
+let private callerFilled (a: FSharpAttribute) : bool list option =
+    let count = a.ConstructorArguments.Count
+
+    let shapes =
+        constructorShapes a.AttributeType
+        |> List.filter (fun parameters -> parameters.Length = count)
+        |> List.distinct
+
+    match shapes with
+    | [ filled ] when List.contains true filled -> Some filled
+    | _ -> None
+
+/// An attribute as a later file can observe it. An argument the compiler filled from the
+/// call site (`[<CallerFilePath>]`, `[<CallerLineNumber>]`, `[<CallerMemberName>]`, as
+/// xUnit v3's `Fact` and `Theory` take) names where the attribute is written, not anything
+/// a later file types against: it is rendered as `<caller>`, so a line added above a test
+/// does not re-key every later file of its project (AUTOMATION-1664).
+let private attributeText (a: FSharpAttribute) =
+    match callerFilled a with
+    | None -> a.Format FSharpDisplayContext.Empty
+    | Some filled ->
+        let positional =
+            Seq.zip filled a.ConstructorArguments
+            |> Seq.map (fun (isCaller, (_, value)) -> if isCaller then "<caller>" else sprintf "%A" value)
+
+        let named =
+            a.NamedArguments |> Seq.map (fun (_, name, _, value) -> $"%s{name} = %A{value}")
+
+        let arguments = String.concat ", " (Seq.append positional named)
+        $"[<%s{entityName a.AttributeType} (%s{arguments})>]"
+
 let private attributesText (attributes: IList<FSharpAttribute>) =
-    attributes
-    |> Seq.map (fun a -> a.Format FSharpDisplayContext.Empty)
-    |> Seq.sort
-    |> String.concat ", "
+    attributes |> Seq.map attributeText |> Seq.sort |> String.concat ", "
 
 let rec private typeText (t: FSharpType) : string =
     let args (separator: string) =

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a line added above a test no longer changes its file's API signature (AUTOMATION-1664). xUnit v3's `Fact` and
+  `Theory` also take `[<CallerLineNumber>]`, so the test's line was in the signature, and any edit that moved a test
+  re-keyed every later file of its project (in a large repository, 619 of 638 files of the biggest test project carry a
+  test, so an edit there re-keyed about half that project). The signature names positions nowhere else. An argument the
+  compiler fills from the call site (`[<CallerFilePath>]`, `[<CallerLineNumber>]`, `[<CallerMemberName>]`) is now
+  rendered as `<caller>`; which ones are is read from the declaring assembly's metadata, since FCS reports no
+  caller-info attribute on a constructor parameter (an attribute type declared in the checked project has no metadata
+  on disk and is rendered as before). **One-time re-key:** `CheckRecordSchema` is now `fshw-check-semantics-v7`.
+
 - fix: a file's API signature names a path inside the checkout relative to its root, so a test file has one signature
   in every checkout (AUTOMATION-1664). xUnit v3's `FactAttribute` and `TheoryAttribute` take `[<CallerFilePath>]`,
   which FCS fills in with the file's absolute path, and `FSharpAttribute.Format` rendered it into the signature: each
