@@ -6121,17 +6121,25 @@ module Daemon =
     ///
     /// Its project bootstraps are counted from the start (`FcsBootstraps`), so each
     /// scan's record says how many import graphs the checker has computed.
+    ///
+    /// Projects whose `TcGlobals` options differ from the first project's check through
+    /// siblings of the same configuration (`CheckerPartitions.adopt`, AUTOMATION-1656).
     let createCheckerWithCacheSizes (cacheSizes: TransparentCompiler.CacheSizes) =
-        let checker =
-            FSharpChecker.Create(
-                keepAssemblyContents = true,
-                keepAllBackgroundResolutions = false,
-                parallelReferenceResolution = true,
-                useTransparentCompiler = true,
-                transparentCompilerCacheSizes = cacheSizes
-            )
+        let create () =
+            let checker =
+                FSharpChecker.Create(
+                    keepAssemblyContents = true,
+                    keepAllBackgroundResolutions = false,
+                    parallelReferenceResolution = true,
+                    useTransparentCompiler = true,
+                    transparentCompilerCacheSizes = cacheSizes
+                )
 
-        FcsBootstraps.attach checker
+            FcsBootstraps.attach checker
+            checker
+
+        let checker = create ()
+        CheckerPartitions.adopt checker create
         checker
 
     /// The checker's cache sizes at `factor`: FCS's own, except that the per-file

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a project's `--reflectionfree` no longer leaks into the checks of other projects (AUTOMATION-1656). FCS builds
+  `TcGlobals` once per framework-imports key (framework references, language version, nullness) from the options of
+  whichever project it bootstrapped first, and shares it with every other project on those references. A test project
+  referencing a `--reflectionfree` library was then checked as if it set the flag, and `sprintf "%A"` was reported as an
+  error real fsc accepts; the reverse hid the error from the project that sets it. Projects whose `TcGlobals` options
+  (`--reflectionfree`, `--realsig`, `--quotations-debug`, `--pathmap`, `--nodebugdata`, `--compiling-fslib`;
+  `CheckerPartitions.globalsOptions`) differ from the first project's now check through a sibling checker of the same
+  configuration (`CheckerPartitions.adopt`/`forOptions`). A repository whose projects agree on them keeps one checker.
+  `CheckRecordSchema` is now `fshw-check-semantics-v2`, so check records filed with the leaked flag are not replayed.
+  Still open, upstream: inside one project's check FCS types the projects it references under that project's
+  `TcGlobals`, so a `--reflectionfree` project referencing one that uses `%A` sees that value typed `obj`.
+
 ## 0.10.0-alpha.113 - 2026-11-13
 
 - fix: a wait takes one reading of its clock per sample (AUTOMATION-1646). `waitForAllTerminal`'s loop read its clock

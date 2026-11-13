@@ -441,6 +441,16 @@ type CheckPipeline
     /// The project snapshots every check of this pipeline shares: each project's is
     /// built once per distinct inputs, not once per file checked.
     let snapshots = ProjectSnapshots.SnapshotMemo()
+
+    /// The checker a project is checked through: `checker`, or the sibling that checks
+    /// projects whose `TcGlobals` options differ from the first project's. FCS shares one
+    /// `TcGlobals` per framework references, built from whichever project it bootstrapped
+    /// first, so one checker reported one project's `--reflectionfree` against another
+    /// (AUTOMATION-1656; `CheckerPartitions.globalsOptions`). Only the FCS call goes to
+    /// it; generations and frames are kept under `checker` alone.
+    let checkerFor (options: FSharpProjectOptions) =
+        CheckerPartitions.forOptions checker options.OtherOptions
+
     let mutable nextVersion = 0L
     // ADR-047: the read sequence `CheckedAgainst.ReadAt` is drawn from.
     let mutable nextRead = 0L
@@ -985,7 +995,16 @@ type CheckPipeline
     member internal _.Admission: WorkScheduler.Lane = admission
 
     /// The project bootstraps this pipeline's checker has computed (`FcsBootstraps`).
-    member internal _.FcsBootstraps: FcsBootstraps.Counts = FcsBootstraps.countsOf checker
+    /// Summed over its checker and the siblings that check projects with other
+    /// `TcGlobals` options (`CheckerPartitions.forOptions`).
+    member internal _.FcsBootstraps: FcsBootstraps.Counts =
+        CheckerPartitions.membersOf checker
+        |> List.map FcsBootstraps.countsOf
+        |> List.fold
+            (fun (total: FcsBootstraps.Counts) counts ->
+                { Started = total.Started + counts.Started
+                  Projects = total.Projects + counts.Projects })
+            { Started = 0L; Projects = 0 }
 
     /// Where this pipeline's checks read an in-repository reference from.
     member internal _.Imports: ProjectSnapshots.ReferencePlacement = imports
@@ -1233,6 +1252,10 @@ type CheckPipeline
             cts: CancellationTokenSource
         ) : Async<(FileCheckResult * (string * string) list) option> =
         async {
+            // FCS checks through the checker of this project's `TcGlobals` options
+            // (AUTOMATION-1656). Generations and frames stay `checker`'s, the family's
+            // one bookkeeping: they name snapshot versions, not checker state.
+            let fcs = checkerFor options
             let absPath = openFile.Path
             let source = openFile.Text
             let version = this.NextVersion()
@@ -1274,7 +1297,7 @@ type CheckPipeline
                         PathFrame.toVirtual frame absPath
                     | None -> absPath
 
-                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
+                let! firstParse, firstAnswer = ProjectSnapshots.parseAndCheck fcs checkedPath framed.Snapshot
 
                 // A diagnostic that declares a type incompatible with ITSELF is not
                 // code feedback — the compiler renders two types so they can be told
@@ -1296,7 +1319,7 @@ type CheckPipeline
                         answeredFrom.Value <- origin
                         inFlight[slot] <- (project, origin)
                         started.Value <- Some(project, origin)
-                        return! ProjectSnapshots.parseAndCheck checker checkedPath framed.Snapshot
+                        return! ProjectSnapshots.parseAndCheck fcs checkedPath framed.Snapshot
                     }
 
                 let! (parseResults, checkAnswer), _ =
