@@ -41,7 +41,7 @@
   release; fshw's own build is still not a term. A golden key test says to bump the constant. **One-time re-key:** the
   schema moves to `analyzers-merkle-v8`, so the first check after upgrading re-runs the analyzers on every file once.
 
-- feat: each analysis is filed box-wide as an `analyze` record, many keys per file (AUTOMATION-1585, ADR-059 §36).
+- feat: each analysis is filed box-wide as an `analyze` record, many keys per file (AUTOMATION-1585, ADR-059 §37).
   The analyzers' shared task cache keeps one entry per file, so daemons at two trees evicted each other's analyses and
   every start at the other tree re-analysed (and demanded a live check of) each file the trees differ in. New:
   `AnalyzeRecords` (the key: the task key's terms plus the checker build, the project options, the analyzer SDK release,

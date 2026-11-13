@@ -1,5 +1,5 @@
 /// An analysis of one file, filed in the box-wide outcome store as an `analyze` record
-/// (AUTOMATION-1585, ADR-059 §36).
+/// (AUTOMATION-1585, ADR-059 §37).
 ///
 /// The analyzers' task-cache entries live in a box-wide directory shared by every
 /// checkout, but that cache keeps ONE entry per file: a write deletes the siblings it

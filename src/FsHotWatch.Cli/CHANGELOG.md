@@ -21,7 +21,7 @@
 
 - feat: `"analyzerRecords"` in `.fshw.json` (`"off"`, `"shadow"`, `"on"`; `FSHW_ANALYZER_RECORDS` overrides it) files
   each analysis box-wide as an `analyze` record, so daemons at different trees stop evicting each other's analyses
-  (AUTOMATION-1585, ADR-059 §36). **Default `shadow`:** records are filed and each live analysis of a filed key is
+  (AUTOMATION-1585, ADR-059 §37). **Default `shadow`:** records are filed and each live analysis of a filed key is
   compared with its record (a disagreement is logged at warning, naming the field), but a record never answers; `on`
   lets records answer, so a start at a tree any checkout already analysed analyses nothing. One-time effect of
   upgrading: the first start of each workspace re-analyses, once, the files its task cache answered before their

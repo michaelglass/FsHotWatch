@@ -1825,7 +1825,7 @@ paths, so only a recompute in the SAME checkout shares them (the nightly's does)
 `test-evidence` shared no key in either run, because no other checkout had earned evidence for
 those trees. They need a night whose warm pass files it before they can count.
 
-## 36. Amendment (AUTOMATION-1585): an analysis is an `analyze` record, many keys per file
+## 37. Amendment (AUTOMATION-1585): an analysis is an `analyze` record, many keys per file
 
 §16 put the analyzers' task-cache entries in the box-wide store every checkout shares, but a
 task cache keeps ONE entry per file: a write deletes every sibling the writer knows of (from
@@ -1879,7 +1879,7 @@ both differing files on every start (the control).
 analyzers' task-cache entries, and doing the same for `lint`, is follow-up work once the shadow
 has run.
 
-## 37. Amendment (AUTOMATION-1636): the key is the trace — the `Need` pilot, in shadow
+## 38. Amendment (AUTOMATION-1636): the key is the trace — the `Need` pilot, in shadow
 
 §35's S1 and S2, piloted on one action kind: the analyzer action. Shadow only; the Need key decides
 nothing.
