@@ -85,11 +85,7 @@ let private treeIn (checker: FSharpChecker) (root: string) =
     File.WriteAllLines(baseScript, [| "let placeholder = 0" |])
 
     let baseOptions, _ =
-        checker.GetProjectOptionsFromScript(
-            baseScript,
-            SourceText.ofString (File.ReadAllText baseScript),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, baseScript, SourceText.ofString (File.ReadAllText baseScript))
         |> Async.RunSynchronously
 
     let aDll = Path.Combine(root, "A", "bin", "A.dll")

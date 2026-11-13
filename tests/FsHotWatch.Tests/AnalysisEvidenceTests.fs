@@ -52,11 +52,7 @@ let private withCheckedText (source: string) action =
         let pipeline = CheckPipeline(checker)
 
         let options =
-            checker.GetProjectOptionsFromScript(
-                sourceFile,
-                FSharp.Compiler.Text.SourceText.ofString source,
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, sourceFile, FSharp.Compiler.Text.SourceText.ofString source)
             |> Async.RunSynchronously
             |> fst
 

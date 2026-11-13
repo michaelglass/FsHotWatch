@@ -59,8 +59,7 @@ let private typedCheck =
             let sourceText = FSharp.Compiler.Text.SourceText.ofString source
 
             let options, _ =
-                checker.GetProjectOptionsFromScript(file, sourceText, assumeDotNetFramework = false)
-                |> Async.RunSynchronously
+                scriptProjectOptions (checker, file, sourceText) |> Async.RunSynchronously
 
             match
                 checker.ParseAndCheckFileInProject(file, 0, sourceText, options)

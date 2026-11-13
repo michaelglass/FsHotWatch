@@ -222,6 +222,7 @@
     <Compile Include="HangCapFloorTests.fs" />
     <Compile Include="WaitFloorCapTests.fs" />
     <Compile Include="MonotonicDeadlineTests.fs" />
+    <Compile Include="ScriptOptionsGuardTests.fs" />
     <Compile Include="ProductDeadlineTests.fs" />
     <Compile Include="StatusAwakeAgeTests.fs" />
     <Compile Include="TracedLaunchTests.fs" />

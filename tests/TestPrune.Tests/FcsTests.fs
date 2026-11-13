@@ -35,7 +35,7 @@ let describeShape (shape: Shape) =
 
         // Get default script options, then we'll use them
         let projOptions, _diagnostics =
-            checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            TestHelpers.scriptProjectOptions (checker, sourceFileName, sourceText)
             |> Async.RunSynchronously
 
         sourceFileName, sourceText, projOptions
@@ -125,7 +125,7 @@ let describeShape (shape: Shape) =
         let sourceText = SourceText.ofString source
 
         let projOptions, _diagnostics =
-            localChecker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            TestHelpers.scriptProjectOptions (localChecker, sourceFileName, sourceText)
             |> Async.RunSynchronously
 
         let parseResults, checkAnswer =

@@ -136,11 +136,7 @@ let ``a file check logs its start before its timed result`` () =
         File.WriteAllLines(script, [| "let x : int = 42" |])
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(
-                script,
-                SourceText.ofString (File.ReadAllText script),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, script, SourceText.ofString (File.ReadAllText script))
             |> Async.RunSynchronously
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Lib.fsproj"), options)
@@ -191,7 +187,8 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
         let absSource = Path.GetFullPath(sourceFile)
 
         let options, _diagnostics =
-            checker.GetProjectOptionsFromScript(
+            scriptProjectOptions (
+                checker,
                 absSource,
                 FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
             )
@@ -248,7 +245,8 @@ let ``CheckProject returns results for all registered source files`` () =
         let absSource = Path.GetFullPath(sourceFile)
 
         let options, _diagnostics =
-            checker.GetProjectOptionsFromScript(
+            scriptProjectOptions (
+                checker,
                 absSource,
                 FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
             )
@@ -391,7 +389,7 @@ let ``CheckFile assigns increasing version numbers`` () =
         let absSource = Path.GetFullPath(sourceFile)
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(absSource, SourceText.ofString (File.ReadAllText absSource))
+            scriptProjectOptions (checker, absSource, SourceText.ofString (File.ReadAllText absSource))
             |> Async.RunSynchronously
 
         pipeline.RegisterProject("/tmp/Version.fsproj", options)
@@ -534,7 +532,7 @@ let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
         let absSource = Path.GetFullPath(sourceFile)
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(absSource, SourceText.ofString (File.ReadAllText absSource))
+            scriptProjectOptions (checker, absSource, SourceText.ofString (File.ReadAllText absSource))
             |> Async.RunSynchronously
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
@@ -566,8 +564,7 @@ let ``daemon checker retains assembly contents so analyzers get a typed tree`` (
         let sourceText = SourceText.ofString (File.ReadAllText absSource)
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(absSource, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
+            scriptProjectOptions (checker, absSource, sourceText) |> Async.RunSynchronously
 
         let _, checkAnswer =
             checker.ParseAndCheckFileInProject(absSource, 0, sourceText, options)
@@ -940,11 +937,7 @@ let ``a cached check is not served after a file it depends on changes`` () =
         File.WriteAllLines(b, [| "#load \"A.fs\""; "let y : int = A.x + 1" |])
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(
-                b,
-                SourceText.ofString (File.ReadAllText b),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, b, SourceText.ofString (File.ReadAllText b))
             |> Async.RunSynchronously
 
         let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
@@ -1038,11 +1031,7 @@ let ``a cached check is not served after a TRANSITIVE upstream project changes a
         let baseOptions, _ =
             let script = Path.Combine(tmpDir, "Base.fsx")
 
-            checker.GetProjectOptionsFromScript(
-                script,
-                SourceText.ofString (File.ReadAllText script),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, script, SourceText.ofString (File.ReadAllText script))
             |> Async.RunSynchronously
 
         let frameworkOptions =
@@ -1102,11 +1091,7 @@ let ``a cached check is not served after a file EARLIER in its project changes a
         File.WriteAllLines(d, [| "#load \"A.fs\" \"C.fs\"" |])
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(
-                d,
-                SourceText.ofString (File.ReadAllText d),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, d, SourceText.ofString (File.ReadAllText d))
             |> Async.RunSynchronously
 
         let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
@@ -1148,11 +1133,7 @@ let ``a check whose upstream moved during the generation is not stored`` () =
         File.WriteAllLines(d, [| "#load \"A.fs\" \"C.fs\""; "let z : int = A.x" |])
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(
-                d,
-                SourceText.ofString (File.ReadAllText d),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, d, SourceText.ofString (File.ReadAllText d))
             |> Async.RunSynchronously
 
         let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)

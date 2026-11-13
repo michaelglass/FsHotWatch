@@ -52,11 +52,7 @@ let private manyFiles (checker: FSharpChecker) (pipeline: CheckPipeline) (dir: s
               path ]
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(
-            List.head files,
-            SourceText.ofString (File.ReadAllText(List.head files)),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, List.head files, SourceText.ofString (File.ReadAllText(List.head files)))
         |> Async.RunSynchronously
 
     let options =
@@ -237,11 +233,7 @@ let private slowProject (checker: FSharpChecker) (root: string) =
     )
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(
-            file,
-            SourceText.ofString (File.ReadAllText file),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, file, SourceText.ofString (File.ReadAllText file))
         |> Async.RunSynchronously
 
     { options with

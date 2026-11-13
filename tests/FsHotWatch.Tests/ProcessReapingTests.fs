@@ -80,7 +80,8 @@ let private withSpawningDaemon (preprocessor: ChildSpawningPreprocessor) (body: 
         let absSource = Path.GetFullPath sourceFile
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(
+            scriptProjectOptions (
+                checker,
                 absSource,
                 FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
             )

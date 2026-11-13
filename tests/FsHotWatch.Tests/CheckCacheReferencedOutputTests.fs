@@ -70,11 +70,7 @@ let private treeIn (checker: FSharpChecker) (root: string) =
     File.WriteAllLines(bSource, [| "module B"; "let y : int = A.v" |])
 
     let baseOptions, _ =
-        checker.GetProjectOptionsFromScript(
-            baseScript,
-            SourceText.ofString (File.ReadAllText baseScript),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, baseScript, SourceText.ofString (File.ReadAllText baseScript))
         |> Async.RunSynchronously
 
     let frameworkOptions =

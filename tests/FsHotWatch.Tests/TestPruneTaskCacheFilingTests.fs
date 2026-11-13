@@ -87,11 +87,7 @@ let private recordingPipeline (root: string) (files: string list) =
     let first = List.head files
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(
-            first,
-            SourceText.ofString (File.ReadAllText first),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, first, SourceText.ofString (File.ReadAllText first))
         |> Async.RunSynchronously
 
     pipeline.RegisterProject(

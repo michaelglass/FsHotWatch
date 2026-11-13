@@ -70,11 +70,7 @@ let private makeTree (dir: string) =
     let baseOptions, _ =
         let script = Path.Combine(dir, "Base.fsx")
 
-        checker.GetProjectOptionsFromScript(
-            script,
-            SourceText.ofString (File.ReadAllText script),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, script, SourceText.ofString (File.ReadAllText script))
         |> Async.RunSynchronously
 
     let frameworkOptions =
@@ -310,11 +306,7 @@ let private checksAcrossInvalidation (invalidate: FSharpChecker -> FSharpProject
         let baseOptions, _ =
             let script = Path.Combine(dir, "Base.fsx")
 
-            checker.GetProjectOptionsFromScript(
-                script,
-                SourceText.ofString (File.ReadAllText script),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, script, SourceText.ofString (File.ReadAllText script))
             |> Async.RunSynchronously
 
         let options =
@@ -526,11 +518,7 @@ let private makeGeneratedTree (dir: string) =
     let baseOptions, _ =
         let script = Path.Combine(dir, "Base.fsx")
 
-        checker.GetProjectOptionsFromScript(
-            script,
-            SourceText.ofString (File.ReadAllText script),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, script, SourceText.ofString (File.ReadAllText script))
         |> Async.RunSynchronously
 
     let frameworkOptions =

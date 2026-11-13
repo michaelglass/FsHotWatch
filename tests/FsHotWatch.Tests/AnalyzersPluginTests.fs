@@ -1305,8 +1305,7 @@ let private checkResultsWith (keepAssemblyContents: bool) (prefix: string) (sour
         let sourceText = FSharp.Compiler.Text.SourceText.ofString source
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(file, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
+            scriptProjectOptions (checker, file, sourceText) |> Async.RunSynchronously
 
         let parseResults, answer =
             checker.ParseAndCheckFileInProject(file, 0, sourceText, options)

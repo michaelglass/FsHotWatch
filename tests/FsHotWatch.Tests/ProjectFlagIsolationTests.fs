@@ -49,11 +49,7 @@ let private treeIn (checker: FSharpChecker) (root: string) (aFlags: string list)
     File.WriteAllLines(bSource, source "B" [ "let fromA = A.s"; "let typed : int = A.n" ])
 
     let baseOptions, _ =
-        checker.GetProjectOptionsFromScript(
-            baseScript,
-            SourceText.ofString (File.ReadAllText baseScript),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, baseScript, SourceText.ofString (File.ReadAllText baseScript))
         |> Async.RunSynchronously
 
     let frameworkOptions =

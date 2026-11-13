@@ -37,7 +37,7 @@ let private scriptProject (dir: string) (checker: FSharpChecker) =
     File.WriteAllText(b, source)
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(b, SourceText.ofString source, assumeDotNetFramework = false)
+        scriptProjectOptions (checker, b, SourceText.ofString source)
         |> Async.RunSynchronously
 
     b, source, options

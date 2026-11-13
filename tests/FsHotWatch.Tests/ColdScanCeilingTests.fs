@@ -182,10 +182,10 @@ let private runGenerations (scenario: Scenario) : Outcome =
             let first = List.head sources
 
             let scriptOptions, _ =
-                checker.GetProjectOptionsFromScript(
+                scriptProjectOptions (
+                    checker,
                     first,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText first),
-                    assumeDotNetFramework = false
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText first)
                 )
                 |> Async.RunSynchronously
 

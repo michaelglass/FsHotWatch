@@ -344,7 +344,7 @@ let private scriptProject (checker: FSharp.Compiler.CodeAnalysis.FSharpChecker) 
     File.WriteAllText(path, source)
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(path, FSharp.Compiler.Text.SourceText.ofString source)
+        scriptProjectOptions (checker, path, FSharp.Compiler.Text.SourceText.ofString source)
         |> Async.RunSynchronously
 
     path, options

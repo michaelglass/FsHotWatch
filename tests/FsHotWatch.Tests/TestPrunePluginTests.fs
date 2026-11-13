@@ -1687,7 +1687,7 @@ let private seedImpactDbNoSidecar
     let libText = SourceText.ofString libSource
 
     let libOptions =
-        checker.GetProjectOptionsFromScript(libFile, libText, assumeDotNetFramework = false)
+        scriptProjectOptions (checker, libFile, libText)
         |> Async.RunSynchronously
         |> fst
 

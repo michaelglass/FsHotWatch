@@ -143,11 +143,7 @@ let private withFixtureBoundedOf
         let baseOptions, _ =
             let script = source root "Base.fsx" "let placeholder = 0\n"
 
-            checker.GetProjectOptionsFromScript(
-                script,
-                SourceText.ofString (File.ReadAllText script),
-                assumeDotNetFramework = false
-            )
+            scriptProjectOptions (checker, script, SourceText.ofString (File.ReadAllText script))
             |> Async.RunSynchronously
 
         let frameworkOptions =

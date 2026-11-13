@@ -747,7 +747,8 @@ let ``the installed muxer behind a symlinked PATH entry leaves in-process FCS it
             // FCS's own default, as a script check without explicit framework flags gets it:
             // it stays on .NET Framework references unless it finds an SDK.
             let options, _ =
-                checker.GetProjectOptionsFromScript(
+                scriptProjectOptions (
+                    checker,
                     script,
                     FSharp.Compiler.Text.SourceText.ofString (System.IO.File.ReadAllText script)
                 )

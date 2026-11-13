@@ -25,11 +25,7 @@ let private frameworkOptions (checker: FSharpChecker) (dir: string) =
     File.WriteAllText(script, "let placeholder = 0")
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(
-            script,
-            SourceText.ofString "let placeholder = 0",
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, script, SourceText.ofString "let placeholder = 0")
         |> Async.RunSynchronously
 
     options.OtherOptions |> Array.filter (fun o -> not (o.EndsWith ".fsx"))

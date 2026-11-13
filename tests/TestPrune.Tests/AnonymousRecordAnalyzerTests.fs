@@ -22,7 +22,7 @@ let private collectIn (fileName: string) (source: string) =
     let sourceText = FSharp.Compiler.Text.SourceText.ofString source
 
     let projOptions, _ =
-        checker.GetProjectOptionsFromScript(fileName, sourceText, assumeDotNetFramework = false)
+        TestHelpers.scriptProjectOptions (checker, fileName, sourceText)
         |> Async.RunSynchronously
 
     let parseResults =

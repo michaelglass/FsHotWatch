@@ -12,6 +12,15 @@ open FsHotWatch.Events
 let sharedChecker =
     lazy FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
+/// A script's project options as a .NET Core project sees them. Every scripted fixture in
+/// the suites builds its options here, because `GetProjectOptionsFromScript` defaults to
+/// `assumeDotNetFramework = true`: a fixture that left the argument out referenced the
+/// .NET Framework, and its scratch file got a real FCS error whenever the test ran alone
+/// (AUTOMATION-1653). `ScriptOptionsGuardTests` keeps every other direct call out of
+/// `tests/` (AUTOMATION-1654).
+let scriptProjectOptions (checker: FSharpChecker, script: string, source: FSharp.Compiler.Text.ISourceText) =
+    checker.GetProjectOptionsFromScript(script, source, assumeDotNetFramework = false)
+
 let private fixtureFile =
     Path.Combine(Path.GetTempPath(), "fshw-fixture", "Fixture.fsx")
 
@@ -22,7 +31,7 @@ let private fixtureSource =
 /// was checked under when the plugin under test only needs options to exist.
 let private fixtureScriptOptions =
     lazy
-        (sharedChecker.Value.GetProjectOptionsFromScript(fixtureFile, fixtureSource, assumeDotNetFramework = false)
+        (scriptProjectOptions (sharedChecker.Value, fixtureFile, fixtureSource)
          |> Async.RunSynchronously
          |> fst)
 
@@ -947,10 +956,10 @@ let private sdkProjectOptions =
             File.WriteAllText(script, "let placeholder = 0\n")
 
             let options, _ =
-                daemonChecker.Value.GetProjectOptionsFromScript(
+                scriptProjectOptions (
+                    daemonChecker.Value,
                     script,
-                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText script),
-                    assumeDotNetFramework = false
+                    FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText script)
                 )
                 |> Async.RunSynchronously
 
@@ -1137,7 +1146,7 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
         let sourceText = FSharp.Compiler.Text.SourceText.ofString source
 
         let projOptions =
-            checker.GetProjectOptionsFromScript(filePath, sourceText, assumeDotNetFramework = false)
+            scriptProjectOptions (checker, filePath, sourceText)
             |> Async.RunSynchronously
             |> fst
 

@@ -58,7 +58,7 @@ let private checkAcrossACollection (sizes: TransparentCompiler.CacheSizes) : str
         File.WriteAllText(script, "")
 
         let scriptOptions, _ =
-            checker.GetProjectOptionsFromScript(script, SourceText.ofString "", assumeDotNetFramework = false)
+            scriptProjectOptions (checker, script, SourceText.ofString "")
             |> Async.RunSynchronously
 
         let options =

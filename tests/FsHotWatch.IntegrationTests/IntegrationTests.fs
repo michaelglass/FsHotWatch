@@ -163,7 +163,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let sourceText = SourceText.ofString source
 
     let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+        scriptProjectOptions (checker, sourceFile, sourceText)
         |> Async.RunSynchronously
         |> fst
 
@@ -271,7 +271,7 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
     let sourceText = SourceText.ofString source
 
     let projOptions =
-        checker.GetProjectOptionsFromScript(filePath, sourceText, assumeDotNetFramework = false)
+        scriptProjectOptions (checker, filePath, sourceText)
         |> Async.RunSynchronously
         |> fst
 
@@ -294,11 +294,7 @@ type AllPluginsWarmup() =
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
 
     let projectOptions =
-        checker.GetProjectOptionsFromScript(
-            sourceFile,
-            SourceText.ofString (File.ReadAllText(sourceFile)),
-            assumeDotNetFramework = false
-        )
+        scriptProjectOptions (checker, sourceFile, SourceText.ofString (File.ReadAllText(sourceFile)))
         |> Async.RunSynchronously
         |> fst
 
@@ -695,7 +691,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
     let sourceText = SourceText.ofString source
 
     let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+        scriptProjectOptions (checker, sourceFile, sourceText)
         |> Async.RunSynchronously
         |> fst
 
@@ -893,7 +889,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         let sourceText = SourceText.ofString source
 
         let projOptions =
-            checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+            scriptProjectOptions (checker, sourceFile, sourceText)
             |> Async.RunSynchronously
             |> fst
 
@@ -938,7 +934,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         let sourceText = SourceText.ofString source
 
         let projOptions =
-            checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+            scriptProjectOptions (checker, sourceFile, sourceText)
             |> Async.RunSynchronously
             |> fst
 
@@ -2374,8 +2370,7 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
         let sourceText = SourceText.ofString fooSource
 
         let projOptions, _ =
-            checker.GetProjectOptionsFromScript(fooPath, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
+            scriptProjectOptions (checker, fooPath, sourceText) |> Async.RunSynchronously
 
         pipeline.RegisterProject(
             "test-project",

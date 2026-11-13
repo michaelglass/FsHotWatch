@@ -7,6 +7,15 @@ open TestPrune.Database
 open TestPrune.DeadCode
 open TestPrune.Domain
 
+/// A script's project options as a .NET Core project sees them: the one place this suite
+/// calls `GetProjectOptionsFromScript`, whose `assumeDotNetFramework` defaults to `true`
+/// (AUTOMATION-1653). FsHotWatch.Tests's `TestHelpers.scriptProjectOptions` is its twin, and
+/// `ScriptOptionsGuardTests` keeps every other direct call out of `tests/` (AUTOMATION-1654).
+let scriptProjectOptions
+    (checker: FSharp.Compiler.CodeAnalysis.FSharpChecker, script: string, source: FSharp.Compiler.Text.ISourceText)
+    =
+    checker.GetProjectOptionsFromScript(script, source, assumeDotNetFramework = false)
+
 let tempDbPath () =
     Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}.db")
 

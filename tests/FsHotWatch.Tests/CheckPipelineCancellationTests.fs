@@ -114,7 +114,7 @@ let private scriptPipeline (tmpDir: string) (activity: PluginActivity.IActivityS
     File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
+        scriptProjectOptions (checker, sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
         |> Async.RunSynchronously
 
     pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
@@ -253,7 +253,7 @@ let ``a second check of the same unchanged file joins the first instead of cance
         File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
+            scriptProjectOptions (checker, sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
             |> Async.RunSynchronously
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
@@ -308,10 +308,7 @@ let ``a newer check of a changed file still supersedes the running one`` () =
         File.WriteAllLines(sourceFile.Value, [| "module Mod"; "let x = 1" |])
 
         let options, _ =
-            checker.GetProjectOptionsFromScript(
-                sourceFile.Value,
-                SourceText.ofString (File.ReadAllText sourceFile.Value)
-            )
+            scriptProjectOptions (checker, sourceFile.Value, SourceText.ofString (File.ReadAllText sourceFile.Value))
             |> Async.RunSynchronously
 
         pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
@@ -528,7 +525,7 @@ let private checkUnderTwoProjects (tmpDir: string) =
     File.WriteAllLines(sourceFile, [| "module Shared"; "let x = 1" |])
 
     let options, _ =
-        checker.GetProjectOptionsFromScript(sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
+        scriptProjectOptions (checker, sourceFile, SourceText.ofString (File.ReadAllText sourceFile))
         |> Async.RunSynchronously
 
     let first =
