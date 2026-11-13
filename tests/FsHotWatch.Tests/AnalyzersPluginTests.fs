@@ -532,17 +532,25 @@ let ``the analyzer set is read once per dispatch batch, and again by the next on
         let handler = create None [ dir ] None DiagnosticSeverity.Hint
         let event = FileChecked(fakeResult $"{dir}/Subject.fs")
 
+        let batch7 =
+            FsHotWatch.PluginFramework.DispatchBatchScope.InBatch(FsHotWatch.PluginFramework.DispatchBatches.next ())
+
+        let batch8 =
+            FsHotWatch.PluginFramework.DispatchBatchScope.InBatch(FsHotWatch.PluginFramework.DispatchBatches.next ())
+
         let keyIn batch =
             FsHotWatch.PluginFramework.DispatchBatch.Within(
                 batch,
                 (fun () -> (handler.CacheKey.Value handler.Init) event)
             )
 
-        let first, firstReused = keyIn 7L
+        let first, firstReused = keyIn batch7
         System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "Batched.dll"), [| 9uy; 9uy; 9uy |])
-        let sameBatch, sameBatchReused = keyIn 7L
-        let nextBatch, nextBatchReused = keyIn 8L
-        let outside, outsideReused = keyIn 0L
+        let sameBatch, sameBatchReused = keyIn batch7
+        let nextBatch, nextBatchReused = keyIn batch8
+
+        let outside, outsideReused =
+            keyIn FsHotWatch.PluginFramework.DispatchBatchScope.Outside
 
         test <@ first.IsSome && not firstReused @>
         test <@ sameBatch = first && sameBatchReused @>

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- refactor: `DispatchBatch.Current` is a `DispatchBatchScope` (`Outside | InBatch of DispatchBatchId`), not an
+  `int64` with 0 for "outside a batch" (AUTOMATION-1635). A key function that shares a batch's work matches
+  `InBatch` and so cannot compare an id when there is no batch. `DispatchBatchId` is made only by the framework.
+  **Breaking** for a plugin that read `Current` as a number.
+
 - feat: `RecordAudit`, the clean-recompute audit (ADR-059 §35 Change 1a, AUTOMATION-1633): for every key a clean
   store and an audited store both hold, every stored record must equal the clean one (check records field by field:
   outcome, diagnostics as a multiset, FCS, used and API signatures; any other kind by outcome and outputs digest).

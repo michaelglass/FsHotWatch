@@ -926,7 +926,7 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
 let private batchRecordingHandler
     (name: string)
     (gate: System.Threading.Tasks.Task)
-    (batches: System.Collections.Concurrent.ConcurrentQueue<string * int64>)
+    (batches: System.Collections.Concurrent.ConcurrentQueue<string * DispatchBatchScope>)
     (reuse: bool)
     : PluginHandler<int, unit> =
     { Name = PluginName.create name
@@ -954,10 +954,13 @@ let private batchRecordingHandler
             | FileChanged(SourceChanged [ file ]) -> batches.Enqueue((file, batch))
             | _ -> ()
 
-            if reuse && batch <> 0L then
-                DispatchBatch.Reuse()
+            match batch with
+            | DispatchBatchScope.InBatch _ ->
+                if reuse then
+                    DispatchBatch.Reuse()
 
-            Some(ContentHash.create (if batch = 0L then "fresh" else "batch")))
+                Some(ContentHash.create "batch")
+            | DispatchBatchScope.Outside -> Some(ContentHash.create "fresh"))
       Teardown = None }
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -970,7 +973,9 @@ let ``events queued behind a fold share one dispatch batch, and an event admitte
             System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
         )
 
-    let batches = System.Collections.Concurrent.ConcurrentQueue<string * int64>()
+    let batches =
+        System.Collections.Concurrent.ConcurrentQueue<string * DispatchBatchScope>()
+
     let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
     let handler = batchRecordingHandler "dispatch-batch" gate.Task batches false
     let reg = registerHandler (servicesWithCache cache ignore) handler
@@ -991,7 +996,7 @@ let ``events queued behind a fold share one dispatch batch, and an event admitte
 
     let batchOf = batches |> Map.ofSeq
     test <@ batches.Count = 5 @>
-    test <@ batchOf |> Map.forall (fun _ batch -> batch <> 0L) @>
+    test <@ batchOf |> Map.forall (fun _ batch -> batch <> DispatchBatchScope.Outside) @>
     test <@ batchOf["B"] = batchOf["C"] && batchOf["C"] = batchOf["D"] @>
     test <@ batchOf["A"] <> batchOf["B"] @>
     test <@ batchOf["E"] <> batchOf["D"] @>
@@ -1007,7 +1012,10 @@ let ``a key that reused its batch's work and missed is keyed again outside the b
         )
 
     gate.SetResult()
-    let batches = System.Collections.Concurrent.ConcurrentQueue<string * int64>()
+
+    let batches =
+        System.Collections.Concurrent.ConcurrentQueue<string * DispatchBatchScope>()
+
     let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
     let name = "dispatch-batch-miss"
     let handler = batchRecordingHandler name gate.Task batches true
@@ -1016,7 +1024,7 @@ let ``a key that reused its batch's work and missed is keyed again outside the b
 
     let compKey: TaskCache.CompositeKey = { Plugin = name; File = None }
     // Keyed in its batch, then again outside it; stored under the second.
-    test <@ batches |> Seq.map (fun (_, b) -> b <> 0L) |> List.ofSeq = [ true; false ] @>
+    test <@ batches |> Seq.map (fun (_, b) -> b <> DispatchBatchScope.Outside) |> List.ofSeq = [ true; false ] @>
     waitUntil (fun () -> (cache.TryGet compKey (ContentHash.create "fresh")).IsSome) 5000
     test <@ (cache.TryGet compKey (ContentHash.create "batch")).IsNone @>
 
@@ -1028,7 +1036,10 @@ let ``a key that reused its batch's work and hit is replayed without being keyed
         )
 
     gate.SetResult()
-    let batches = System.Collections.Concurrent.ConcurrentQueue<string * int64>()
+
+    let batches =
+        System.Collections.Concurrent.ConcurrentQueue<string * DispatchBatchScope>()
+
     let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
     let name = "dispatch-batch-hit"
     let compKey: TaskCache.CompositeKey = { Plugin = name; File = None }
@@ -1045,7 +1056,7 @@ let ``a key that reused its batch's work and hit is replayed without being keyed
     let reg = registerHandler (servicesWithCache cache ignore) handler
     dispatchAndSettle reg (DispatchFileChanged(SourceChanged [ "A" ]))
 
-    test <@ batches |> Seq.map (fun (_, b) -> b <> 0L) |> List.ofSeq = [ true ] @>
+    test <@ batches |> Seq.map (fun (_, b) -> b <> DispatchBatchScope.Outside) |> List.ofSeq = [ true ] @>
     test <@ (cache.TryGet compKey (ContentHash.create "fresh")).IsNone @>
 
 // --- RunExclusive primitive: per-handler single-flight (always-Drop) ---

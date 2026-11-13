@@ -1407,7 +1407,7 @@ let internal createShadowedWithSeams
         // The dispatch batch the analyzer set was last read in (`DispatchBatch`). Reading it
         // hashes every analyzer DLL, which was most of a cache replay: a restart replaying
         // thousands of files read the same bytes once per file (AUTOMATION-1437).
-        let mutable setReadInBatch = 0L
+        let mutable setReadIn = FsHotWatch.PluginFramework.DispatchBatchScope.Outside
 
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             countPendingReplay (
@@ -1426,13 +1426,18 @@ let internal createShadowedWithSeams
                 // and, for a config edit, analyzers loaded since it. Within one dispatch
                 // batch the set is read once: the events after the first say they reused
                 // that read, and a miss among them is keyed afresh before it runs.
-                let batch = FsHotWatch.PluginFramework.DispatchBatch.Current
+                let scope = FsHotWatch.PluginFramework.DispatchBatch.Current
 
-                if batch <> 0L && batch = Volatile.Read(&setReadInBatch) then
+                let readInThisBatch =
+                    match scope with
+                    | FsHotWatch.PluginFramework.DispatchBatchScope.InBatch _ -> scope = Volatile.Read(&setReadIn)
+                    | FsHotWatch.PluginFramework.DispatchBatchScope.Outside -> false
+
+                if readInThisBatch then
                     FsHotWatch.PluginFramework.DispatchBatch.Reuse()
                 else
                     refreshAnalyzerSet ()
-                    Volatile.Write(&setReadInBatch, batch)
+                    Volatile.Write(&setReadIn, scope)
 
                 let chain = refreshConfigs file
 

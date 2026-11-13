@@ -637,6 +637,21 @@ type IReplayedCheckReader =
 /// (ADR-059 §17). Scoped by the host's repository root.
 type ISkipsOutOfRepoFiles = interface end
 
+/// One dispatch batch: an id no other batch of this process shares. Made only by
+/// `DispatchBatches.next` (AUTOMATION-1635).
+[<Struct>]
+type DispatchBatchId = private DispatchBatchId of int64
+
+/// Where a key function runs: inside a dispatch batch, or outside any (a key computed off the
+/// loop, or keyed afresh). A union rather than an id with 0 for "outside", so code that shares
+/// a batch's work cannot reach an id when there is no batch (AUTOMATION-1635).
+[<RequireQualifiedAccess>]
+type DispatchBatchScope =
+    /// Outside any batch: nothing may be shared with another event.
+    | Outside
+    /// Inside this batch.
+    | InBatch of DispatchBatchId
+
 /// The batch of queued events a plugin's loop is folding, as its `CacheKey` sees it
 /// (AUTOMATION-1437).
 ///
@@ -657,27 +672,38 @@ type ISkipsOutOfRepoFiles = interface end
 /// between `Within` setting the batch and restoring it.
 [<AbstractClass; Sealed>]
 type DispatchBatch =
+    // The storage is an int64 because a `ThreadStatic` field starts at its default on every
+    // thread: 0 is that default, so it stands for `Outside` HERE ONLY, and `Current` and
+    // `Within` translate at this boundary. Batch ids start at 1 (`DispatchBatches.next`).
     [<System.ThreadStatic; DefaultValue>]
     static val mutable private current: int64
 
     [<System.ThreadStatic; DefaultValue>]
     static val mutable private reused: bool
 
-    /// The batch the calling key function runs in: an id that no other batch of this
-    /// process shares, or 0 outside one (a key computed off the loop, or keyed afresh).
-    static member Current: int64 = DispatchBatch.current
+    /// The batch the calling key function runs in, or `Outside`.
+    static member Current: DispatchBatchScope =
+        match DispatchBatch.current with
+        | 0L -> DispatchBatchScope.Outside
+        | id -> DispatchBatchScope.InBatch(DispatchBatchId id)
 
     /// Say that the key just computed answers from work shared with an earlier event of its
     /// batch. Outside a batch it means nothing.
     static member Reuse() : unit =
-        if DispatchBatch.current <> 0L then
-            DispatchBatch.reused <- true
+        match DispatchBatch.Current with
+        | DispatchBatchScope.InBatch _ -> DispatchBatch.reused <- true
+        | DispatchBatchScope.Outside -> ()
 
-    /// `compute` inside `batch` (0: outside any), and whether it said `Reuse`.
-    static member internal Within(batch: int64, compute: unit -> 'T) : 'T * bool =
+    /// `compute` in `scope`, and whether it said `Reuse`.
+    static member internal Within(scope: DispatchBatchScope, compute: unit -> 'T) : 'T * bool =
         let priorBatch = DispatchBatch.current
         let priorReused = DispatchBatch.reused
-        DispatchBatch.current <- batch
+
+        DispatchBatch.current <-
+            match scope with
+            | DispatchBatchScope.Outside -> 0L
+            | DispatchBatchScope.InBatch(DispatchBatchId id) -> id
+
         DispatchBatch.reused <- false
 
         try
@@ -692,8 +718,9 @@ type DispatchBatch =
 module internal DispatchBatches =
     let mutable private last = 0L
 
-    let next () =
-        System.Threading.Interlocked.Increment(&last)
+    /// A new batch; the first is 1, so no batch is ever the storage's 0.
+    let next () : DispatchBatchId =
+        DispatchBatchId(System.Threading.Interlocked.Increment(&last))
 
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
@@ -2074,7 +2101,9 @@ let internal registerHandlerForOwner
 
                     // The dispatch batch the next event folds in, and how many of the messages
                     // waiting when it began are still to fold in it (`DispatchBatch`).
-                    let batch = ref 0L
+                    // Replaced before the first event is keyed (`batchLeft` starts at 0); taken
+                    // here only so the loop never holds a batch-shaped "none".
+                    let batch = ref (DispatchBatches.next ())
                     let batchLeft = ref 0
 
                     let isResultFirst identity =
@@ -2131,9 +2160,9 @@ let internal registerHandlerForOwner
                                         // Computed ONCE per dispatched event — see `tryReplayCache` —
                                         // inside its dispatch batch. A key that reused its batch's work
                                         // and missed is computed once more, outside the batch.
-                                        let keyIn (inBatch: int64) =
+                                        let keyIn (scope: DispatchBatchScope) =
                                             DispatchBatch.Within(
-                                                inBatch,
+                                                scope,
                                                 fun () ->
                                                     if cacheable event then
                                                         handler.CacheKey |> Option.bind (fun key -> key state event)
@@ -2141,7 +2170,7 @@ let internal registerHandlerForOwner
                                                         None
                                             )
 
-                                        let batchKey, reusedBatch = keyIn eventBatch
+                                        let batchKey, reusedBatch = keyIn (DispatchBatchScope.InBatch eventBatch)
 
                                         // A `Custom` message is a cache WRITER, never a cache READER.
                                         //
@@ -2175,7 +2204,7 @@ let internal registerHandlerForOwner
                                             match tryReplayCache event (replayKeyOf batchKey) with
                                             | Some replayed -> batchKey, Some replayed
                                             | None when reusedBatch ->
-                                                let freshKey, _ = keyIn 0L
+                                                let freshKey, _ = keyIn DispatchBatchScope.Outside
                                                 freshKey, tryReplayCache event (replayKeyOf freshKey)
                                             | None -> batchKey, None
 

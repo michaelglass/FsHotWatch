@@ -338,22 +338,31 @@ let ``the live SDK and manifest are asked once per dispatch batch, and again in 
                     $"sdk-%d{asked}")
                 root
 
-        let within batch (ask: unit -> 'T) =
-            FsHotWatch.PluginFramework.DispatchBatch.Within(batch, ask) |> fst
+        let within (batch: FsHotWatch.PluginFramework.DispatchBatchId) (ask: unit -> 'T) =
+            FsHotWatch.PluginFramework.DispatchBatch.Within(
+                FsHotWatch.PluginFramework.DispatchBatchScope.InBatch batch,
+                ask
+            )
+            |> fst
 
-        let first = within 9001L (fun () -> live.DotnetSdk(), live.DotnetSdk())
+        let batch () =
+            FsHotWatch.PluginFramework.DispatchBatches.next ()
+
+        let b1, b2, b3, b4 = batch (), batch (), batch (), batch ()
+
+        let first = within b1 (fun () -> live.DotnetSdk(), live.DotnetSdk())
         test <@ first = ("sdk-1", "sdk-1") @>
-        let next = within 9002L live.DotnetSdk
+        let next = within b2 live.DotnetSdk
         test <@ next = "sdk-2" @>
 
         let manifest = Path.Combine(root, ".config", "dotnet-tools.json")
         Directory.CreateDirectory(Path.GetDirectoryName manifest) |> ignore
         File.WriteAllText(manifest, "{}")
-        let before = within 9003L live.ToolManifest
+        let before = within b3 live.ToolManifest
         File.Delete manifest
         // The same batch keeps its answer; the next asks again.
-        let sameBatch = within 9003L live.ToolManifest
-        let nextBatch = within 9004L live.ToolManifest
+        let sameBatch = within b3 live.ToolManifest
+        let nextBatch = within b4 live.ToolManifest
         test <@ before = Some(System.Text.Encoding.UTF8.GetBytes "{}") @>
         test <@ sameBatch = before @>
         test <@ nextBatch = None @>)

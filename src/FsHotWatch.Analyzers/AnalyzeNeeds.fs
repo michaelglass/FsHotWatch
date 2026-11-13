@@ -261,19 +261,21 @@ type Shadow(log: string -> unit) =
         | Error error -> this.Fail(file, error)
 
 /// `ask`, answered once per dispatch batch (`DispatchBatch.Current`): a run asks again, the
-/// events of one batch share its answer. Outside a batch (0) every call asks.
+/// events of one batch share its answer. Outside a batch every call asks.
 let private oncePerBatch (ask: unit -> 'T) : unit -> 'T =
-    let mutable memo: (int64 * 'T) option = None
+    let mutable memo: (FsHotWatch.PluginFramework.DispatchBatchId * 'T) option = None
 
     fun () ->
-        let batch = FsHotWatch.PluginFramework.DispatchBatch.Current
-
-        match memo with
-        | Some(asked, answer) when batch <> 0L && asked = batch -> answer
-        | _ ->
-            let answer = ask ()
-            memo <- Some(batch, answer)
-            answer
+        match FsHotWatch.PluginFramework.DispatchBatch.Current with
+        | FsHotWatch.PluginFramework.DispatchBatchScope.Outside -> ask ()
+        | FsHotWatch.PluginFramework.DispatchBatchScope.InBatch batch ->
+            match memo with
+            | Some(asked, answer) when asked = batch -> answer
+            | Some _
+            | None ->
+                let answer = ask ()
+                memo <- Some(batch, answer)
+                answer
 
 /// The oracles as this process answers them, for the repository at `root`: the SDK as
 /// `dotnetSdk` resolves it, the variables from this process's environment, the tool manifest

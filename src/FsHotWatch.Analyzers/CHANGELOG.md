@@ -6,6 +6,9 @@
   so `compare` could never return it, yet `render` and `describe` had to answer it. `Shadow.Observe` now returns
   `Observed` (`FirstSeen | Compared of Comparison`). The log lines are unchanged.
 
+- refactor: the analyzer set's once-per-batch read and the shadow's once-per-batch oracles match
+  `DispatchBatchScope` instead of comparing a batch id with 0 (AUTOMATION-1635). Behaviour unchanged.
+
 - feat: the analyzer action as a Need trace, in shadow (AUTOMATION-1636, the S1/S2 pilot of ADR-059 §35). New:
   `AnalyzeNeeds`. On every analysis the plugin computes today's task key and also the trace of the action written
   with `action { Need.* }`. The action needs its file, the upstream outputs (check signatures, project options,
