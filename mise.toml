@@ -103,7 +103,7 @@ depends = ["build", "lint-project", "coverage-check"]
 # is the honest report and the one that gets the test moved.
 
 [tasks.land-check]
-description = "The fast LANDING gate: compile the solution, then fshw's impact-filtered check. No direct coverage run."
+description = "The fast LANDING gate: compile the solution, pack it if a packaging input changed, then fshw's impact-filtered check. No direct coverage run."
 # The landing gate under the 2026-11-12 fast-gate rule. Same command as `check`, without
 # `check`'s `coverage-check` → `test-direct`, which runs the whole FsHotWatch.Tests suite
 # under coverage (~420 s) before the daemon's own filtered run even starts.
@@ -121,10 +121,25 @@ description = "The fast LANDING gate: compile the solution, then fshw's impact-f
 # loading need. Listing `build` beside it would run two MSBuilds over the same outputs in
 # parallel (the race `test-direct`'s comment describes).
 #
+# `package-floors-if-changed` packs every released project and checks its floors (the step
+# `ci` runs unconditionally) when a packaging input changed since main@origin, and prints
+# why it skipped otherwise (AUTOMATION-1654: a change green here broke that pack).
+#
 # GatePurityTests pins this task's closure: no writing `coverageratchet` verb, and none of
 # `test-direct`, `coverage-check` or `tp-test`.
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
-depends = ["compile", "lint-project"]
+depends = ["compile", "lint-project", "package-floors-if-changed"]
+
+[tasks.package-floors-if-changed]
+description = "Pack every released project and check its floors, when a packaging input changed since main@origin"
+# The landing gate's packaging step (AUTOMATION-1654). `ci` runs
+# `check-package-floors.fsx -- pack` unconditionally; land-check runs it only when a file it
+# reads moved between main@origin and @ (project files, any .props/.targets,
+# semantic-tagger.json, the release workflow, the floor check, mise.toml), and otherwise
+# prints the one line saying why it skipped. An unresolvable main@origin runs it. The pack
+# is `--no-build`, hence `compile`. PackagingInputsGateTests pins the classification.
+run = "dotnet fsi scripts/packaging-inputs-changed.fsx -- gate"
+depends = ["compile"]
 
 [tasks.cache-clear]
 description = "Clear the check result cache (BOTH the workspace store and the box-wide shared one)"
