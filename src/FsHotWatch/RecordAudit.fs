@@ -64,14 +64,58 @@ let outputsDigest (outputs: string option) : string =
     | None -> "none"
 
 module AuditKind =
-    /// Any kind: the outcome, and the outputs byte for byte (a record's outputs are
-    /// serialized deterministically, so equal outputs file equal bytes).
+    /// `node` with `root` tokenized inside every string value, recursively. A string that holds
+    /// JSON (test-prune files its spans so) is filed with its quotes escaped as `\u0022`, which
+    /// hides the root's left boundary from a tokenizer run over the raw text; on the decoded
+    /// string the quote is a quote.
+    let rec private tokenizeStrings (root: string) (node: JsonNode) : JsonNode =
+        match node with
+        | :? JsonObject as o ->
+            let copy = JsonObject()
+
+            for p in o do
+                copy[p.Key] <-
+                    if isNull p.Value then
+                        null
+                    else
+                        tokenizeStrings root p.Value
+
+            copy
+        | :? JsonArray as a -> JsonArray([| for item in a -> if isNull item then null else tokenizeStrings root item |])
+        | _ ->
+            match node.GetValueKind() with
+            | JsonValueKind.String -> JsonValue.Create(PathToken.tokenize root (node.GetValue<string>()))
+            | _ -> node.DeepClone()
+
+    /// A record's outputs with its producer's checkout root as `PathToken.Token` in every
+    /// string, at a whole path prefix (`PathToken.tokenize`, AUTOMATION-1602 (b)): a record
+    /// filed in one checkout and recomputed in another names its files under two roots, and
+    /// that is not a difference in what the action computed. Re-serialized, so both sides
+    /// compare in one spelling; outputs that are not JSON are tokenized as text.
+    let normalizedOutputs (side: Side) : string option =
+        let root = side.Record.Producer.Worktree
+
+        side.Outputs
+        |> Option.map (fun text ->
+            try
+                match JsonNode.Parse text with
+                | null -> text
+                | node -> (tokenizeStrings root node).ToJsonString()
+            with :? JsonException ->
+                PathToken.tokenize root text)
+
+    /// Any kind: the outcome, and the outputs byte for byte once the producer's checkout
+    /// root is a token (a record's outputs are serialized deterministically, so equal
+    /// outputs file equal bytes).
     let generic (kind: string) : AuditKind =
         { Kind = kind
           Differences =
             fun stored clean ->
                 outcomeDiffers stored clean
-                @ (if outputsDigest stored.Outputs <> outputsDigest clean.Outputs then
+                @ (if
+                       outputsDigest (normalizedOutputs stored)
+                       <> outputsDigest (normalizedOutputs clean)
+                   then
                        [ "outputs" ]
                    else
                        []) }
@@ -116,8 +160,119 @@ module AuditKind =
                              "apiSignature" ]
                    | _ -> [ "outputs-unreadable" ]) }
 
+    /// The top-level fields of a JSON object, each as comparable text: an array as the
+    /// sorted multiset of its elements (`upper` folds case, for a set collected
+    /// case-insensitively), anything else as its raw text. None for text that is no object.
+    let private fieldsOf (upper: Set<string>) (text: string) : Map<string, string list> option =
+        try
+            use doc = JsonDocument.Parse text
+
+            if doc.RootElement.ValueKind <> JsonValueKind.Object then
+                None
+            else
+                Some(
+                    doc.RootElement.EnumerateObject()
+                    |> Seq.map (fun p ->
+                        let fold (s: string) =
+                            if upper.Contains p.Name then s.ToUpperInvariant() else s
+
+                        match p.Value.ValueKind with
+                        | JsonValueKind.Array ->
+                            p.Name,
+                            p.Value.EnumerateArray()
+                            |> Seq.map (fun e -> fold (e.GetRawText()))
+                            |> Seq.sort
+                            |> List.ofSeq
+                        | _ -> p.Name, [ p.Value.GetRawText() ])
+                    |> Map.ofSeq
+                )
+        with :? JsonException ->
+            None
+
+    /// The fields in which two field maps differ, by name.
+    let private fieldDifferences (stored: Map<string, string list>) (clean: Map<string, string list>) =
+        Set.union (Set.ofSeq stored.Keys) (Set.ofSeq clean.Keys)
+        |> Set.toList
+        |> List.filter (fun name -> Map.tryFind name stored <> Map.tryFind name clean)
+
+    /// The options evaluation's declared inputs (AUTOMATION-1633). `reads`, `probes`,
+    /// `listings` and `envNames` are SETS, collected concurrently and written in hash
+    /// order, so two evaluations of one project file them in different orders: each is
+    /// compared as a set (`envNames` case-insensitively, as it is collected), every other
+    /// field exactly, all with the producer's checkout root as a token.
+    let optionsInputs: AuditKind =
+        { Kind = OptionsRecords.InputsKind
+          Differences =
+            fun stored clean ->
+                let parse side =
+                    normalizedOutputs side |> Option.bind (fieldsOf (set [ "envNames" ]))
+
+                outcomeDiffers stored clean
+                @ (match parse stored, parse clean with
+                   | Some s, Some c -> fieldDifferences s c
+                   | _ -> [ "outputs-unreadable" ]) }
+
+    /// A test project's run (`test`): the outcome and the counts. Its duration is not an
+    /// outcome; it differs run to run.
+    let test: AuditKind =
+        { Kind = "test"
+          Differences =
+            fun stored clean ->
+                outcomeDiffers stored clean
+                @ (if stored.Record.Counts <> clean.Record.Counts then
+                       [ "counts" ]
+                   else
+                       []) }
+
+    /// The kind name of an entry of the test-evidence store (`TestEvidenceStore`), which
+    /// lives beside the outcome store rather than in it.
+    [<Literal>]
+    let TestEvidenceKind = "test-evidence"
+
+    /// The deterministic part of a CTRF report: each test's name and status, sorted. Its
+    /// report id, timestamps and durations are a run's, not the code's.
+    let internal ctrfResults (report: string) : string list option =
+        try
+            use doc = JsonDocument.Parse report
+
+            match
+                Json.tryProp doc.RootElement "results"
+                |> Option.bind (fun r -> Json.tryProp r "tests")
+            with
+            | Some tests when tests.ValueKind = JsonValueKind.Array ->
+                Some(
+                    tests.EnumerateArray()
+                    |> Seq.map (fun t ->
+                        let field name =
+                            Json.tryString t name |> Option.defaultValue ""
+
+                        $"""%s{field "name"}|%s{field "status"}""")
+                    |> Seq.sort
+                    |> List.ofSeq
+                )
+            | _ -> None
+        with :? JsonException ->
+            None
+
+    /// A test-evidence entry (`evidenceSide`): the project, the counts and each test's name
+    /// and status. NOT compared, because a rerun of the same inputs moves them: the producer
+    /// (checkout, run id, tree hash, time), the duration, the report's id and timestamps, and
+    /// the coverage report (its path names the run; its hit counts follow scheduling).
+    let testEvidence: AuditKind =
+        { Kind = TestEvidenceKind
+          Differences =
+            fun stored clean ->
+                [ if stored.Record.Subject <> clean.Record.Subject then
+                      "project"
+                  if stored.Record.Counts <> clean.Record.Counts then
+                      "counts"
+                  match stored.Outputs |> Option.bind ctrfResults, clean.Outputs |> Option.bind ctrfResults with
+                  | Some s, Some c when s <> c -> "tests"
+                  | Some _, Some _ -> ()
+                  | _ -> "report-unreadable" ] }
+
     /// The kinds with a comparison of their own. Every other kind is audited by `generic`.
-    let registered: AuditKind list = [ check ]
+    let registered: AuditKind list = [ check; optionsInputs; test; testEvidence ]
 
     /// How `kind` is audited.
     let find (kind: string) : AuditKind =
@@ -128,6 +283,17 @@ module AuditKind =
     /// The kinds audited when none is named. Kinds join as their comparison is shown not to
     /// red on a clean tree (AUTOMATION-1633 starts with check records).
     let defaults: string list = [ CheckRecords.CheckKind ]
+
+    /// Every kind a clean recompute files, for `--kind all`.
+    let all: string list =
+        [ CheckRecords.CheckKind
+          CheckRecords.OptionsKind
+          OptionsRecords.InputsKind
+          "format"
+          "testprune-analysis"
+          "analyze"
+          "test"
+          TestEvidenceKind ]
 
 /// What to audit.
 type Options =
@@ -273,8 +439,71 @@ let private compareKey (kind: AuditKind) (clean: Side) (stored: Side list) : Mis
                   Clean = RecordSummary.ofSide clean })
     |> List.choose id
 
+/// The stores one audit compares: the outcome stores, and the test-evidence stores beside
+/// them (None where there is none to read, e.g. a clean store named by directory).
+type Stores =
+    { Audited: string
+      Clean: string
+      AuditedEvidence: string option
+      CleanEvidence: string option }
+
+/// A test-evidence entry as the audit compares it: kind `test-evidence`, keyed by the
+/// entry's key, its project as the subject, its counts, and its CTRF report as outputs.
+let internal evidenceSide (entry: TestEvidenceStore.Entry) : Side option =
+    ActionKey.KeyValue.tryParse (ActionKey.Prefix + entry.Key)
+    |> Option.map (fun value ->
+        { Record =
+            { Key =
+                { Kind = AuditKind.TestEvidenceKind
+                  Value = value
+                  Inputs = entry.KeyInputs }
+              Subject = entry.Project
+              Outcome = OutcomeStore.Outcome.Pass
+              Counts =
+                Some
+                    { Total = entry.Summary.Tests
+                      Passed = entry.Summary.Passed
+                      Failed = entry.Summary.Failed
+                      Skipped = entry.Summary.Skipped }
+              DurationMs = Some entry.Summary.DurationMs
+              Producer =
+                { Binary = entry.Producer.ProducerHash
+                  Worktree = entry.Producer.Worktree
+                  RunId = Some entry.Producer.RunId }
+              RecordedAt = entry.Producer.EarnedAt }
+          Outputs = Some entry.Report })
+
+/// One evidence file, read without changing the store: its entry, or None for a file that
+/// is not one.
+let private readEvidenceFile (path: string) : Side option =
+    try
+        match TestEvidenceStore.decode (File.ReadAllText path) with
+        | TestEvidenceStore.Decoded.Entry entry -> evidenceSide entry
+        | _ -> None
+    with :? IOException ->
+        None
+
+/// Where an evidence store files the entry of key `hex` (`TestEvidenceStore`).
+let private evidencePath (root: string) (hex: string) =
+    Path.Combine(root, hex.Substring(0, 2), hex + ".json")
+
+/// Every entry of an evidence store, and the count of files that are not one. Only the
+/// two-hex shard directories hold entries; its project index and quarantine are skipped.
+let internal readEvidenceStore (root: string) : Side list * int =
+    if not (Directory.Exists root) then
+        [], 0
+    else
+        let read =
+            [ for shard in Directory.GetDirectories root do
+                  if (Path.GetFileName shard).Length = 2 then
+                      for file in Directory.GetFiles(shard, "*.json") -> readEvidenceFile file ]
+
+        List.choose id read, read |> List.filter Option.isNone |> List.length
+
 /// Audit the records `auditedRoot` holds against the clean recompute filed in `cleanRoot`.
-let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report =
+let auditStores (stores: Stores) (options: Options) : Report =
+    let auditedRoot = stores.Audited
+    let cleanRoot = stores.Clean
     let cleanScan = OutcomeStore.readAllWithOutputs cleanRoot
 
     // The clean store's answer for each key: its newest record (the scan is oldest first).
@@ -287,6 +516,7 @@ let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report 
         |> Map.ofList
 
     let mutable unreadableAudited = 0
+    let mutable unreadableClean = cleanScan.Unreadable
 
     let storedOf (key: ActionKey.KeyValue) =
         let records, unreadable = OutcomeStore.readKeyAt auditedRoot key
@@ -299,8 +529,15 @@ let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report 
         let hex = key.Text.Substring ActionKey.Prefix.Length
         Directory.Exists(Path.Combine(auditedRoot, "records", hex.Substring(0, 2), hex))
 
-    /// Audit `candidates` (clean answers of one kind) in sampling order, up to the sample.
-    let auditKind (kindName: string) (candidates: Side list) (limit: int option) =
+    /// Audit `candidates` (clean answers of one kind) in sampling order, up to the sample,
+    /// against the store `holds` and `storedOf` read.
+    let auditKind
+        (holds: ActionKey.KeyValue -> bool)
+        (storedOf: ActionKey.KeyValue -> Side list)
+        (kindName: string)
+        (candidates: Side list)
+        (limit: int option)
+        =
         let kind = AuditKind.find kindName
 
         let ordered =
@@ -349,13 +586,38 @@ let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report 
             options.Kinds
             |> List.distinct
             |> List.map (fun kind ->
-                let candidates =
-                    cleanAnswers
-                    |> Map.toList
-                    |> List.map snd
-                    |> List.filter (fun s -> s.Record.Key.Kind = kind)
+                if kind = AuditKind.TestEvidenceKind then
+                    // Test evidence lives in its own store beside the outcome store.
+                    match stores.CleanEvidence, stores.AuditedEvidence with
+                    | Some cleanEvidence, Some auditedEvidence ->
+                        let candidates, unreadable = readEvidenceStore cleanEvidence
+                        unreadableClean <- unreadableClean + unreadable
 
-                auditKind kind candidates options.Sample),
+                        let storedEvidence (key: ActionKey.KeyValue) =
+                            let path = evidencePath auditedEvidence (key.Text.Substring ActionKey.Prefix.Length)
+
+                            if File.Exists path then
+                                match readEvidenceFile path with
+                                | Some side -> [ side ]
+                                | None ->
+                                    unreadableAudited <- unreadableAudited + 1
+                                    []
+                            else
+                                []
+
+                        let holdsEvidence (key: ActionKey.KeyValue) =
+                            File.Exists(evidencePath auditedEvidence (key.Text.Substring ActionKey.Prefix.Length))
+
+                        auditKind holdsEvidence storedEvidence kind candidates options.Sample
+                    | _ -> auditKind (fun _ -> false) (fun _ -> []) kind [] options.Sample
+                else
+                    let candidates =
+                        cleanAnswers
+                        |> Map.toList
+                        |> List.map snd
+                        |> List.filter (fun s -> s.Record.Key.Kind = kind)
+
+                    auditKind holds storedOf kind candidates options.Sample),
             []
         | keys ->
             let found, missing =
@@ -366,7 +628,7 @@ let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report 
             found
             |> List.map (fun key -> cleanAnswers[key])
             |> List.groupBy _.Record.Key.Kind
-            |> List.map (fun (kind, candidates) -> auditKind kind candidates None),
+            |> List.map (fun (kind, candidates) -> auditKind holds storedOf kind candidates None),
             missing |> List.map _.Text
 
     { Seed = options.Seed
@@ -377,8 +639,18 @@ let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report 
       Mismatches = results |> List.collect (fun (_, mismatches, _) -> mismatches)
       AuditedKeys = results |> List.map (fun (_, _, keys) -> keys)
       Unmatched = unmatched
-      UnreadableClean = cleanScan.Unreadable
+      UnreadableClean = unreadableClean
       UnreadableAudited = unreadableAudited }
+
+/// Audit the records `auditedRoot` holds against the clean recompute filed in `cleanRoot`,
+/// outcome stores only.
+let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report =
+    auditStores
+        { Audited = auditedRoot
+          Clean = cleanRoot
+          AuditedEvidence = None
+          CleanEvidence = None }
+        options
 
 let private verdictToken (verdict: Verdict) =
     match verdict with
@@ -495,6 +767,10 @@ let render (report: Report) : string list =
 let storeUnderCacheHome (cacheHome: string) (repoRoot: string) : string =
     Path.Combine(cacheHome, "cache", "outcomes", RepoIdentity.namespaceOf repoRoot, "v1")
 
+/// The test-evidence store of `repoRoot`'s repository under the cache home `cacheHome`.
+let evidenceUnderCacheHome (cacheHome: string) (repoRoot: string) : string =
+    Path.Combine(cacheHome, "cache", "evidence", RepoIdentity.namespaceOf repoRoot, "v1")
+
 /// Refuse to audit a store against itself: every key would agree with its own record.
 let validateStores (auditedRoot: string) (cleanRoot: string) : Result<unit, string> =
     let full (p: string) =
@@ -538,9 +814,15 @@ module Request =
 
 /// An audit resolved against a repository: the two stores and what to compare.
 type Setup =
-    { AuditedStore: string
-      CleanStore: string
-      Options: Options }
+    {
+        AuditedStore: string
+        CleanStore: string
+        /// The test-evidence stores beside them: the clean home's and the box-wide one, when
+        /// the clean store is named by its home and the audited one is this repository's.
+        AuditedEvidence: string option
+        CleanEvidence: string option
+        Options: Options
+    }
 
 /// Resolve `request` against `repoRoot`; Error names what is wrong with it.
 let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
@@ -584,12 +866,19 @@ let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
                 |> Option.map Path.GetFullPath
                 |> Option.defaultWith (fun () -> OutcomeStore.directoryFor repoRoot)
               CleanStore = cleanStore
+              AuditedEvidence =
+                match request.Store with
+                | Some _ -> None
+                | None -> Some(TestEvidenceStore.directoryFor repoRoot)
+              CleanEvidence =
+                request.CleanHome
+                |> Option.map (fun home -> evidenceUnderCacheHome (Path.GetFullPath home) repoRoot)
               Options =
                 { Kinds =
-                    if request.Kinds.IsEmpty then
-                        AuditKind.defaults
-                    else
-                        request.Kinds
+                    match request.Kinds with
+                    | [] -> AuditKind.defaults
+                    | [ "all" ] -> AuditKind.all
+                    | kinds -> kinds
                   Sample = sample
                   Seed = request.Seed |> Option.defaultValue Options.defaults.Seed
                   Keys = keys |> List.choose Result.toOption
@@ -599,7 +888,13 @@ let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
 /// then compare. Error is a usage error (exit 2).
 let execute (setup: Setup) : Result<Report, string> =
     validateStores setup.AuditedStore setup.CleanStore
-    |> Result.map (fun () -> audit setup.AuditedStore setup.CleanStore setup.Options)
+    |> Result.map (fun () ->
+        auditStores
+            { Audited = setup.AuditedStore
+              Clean = setup.CleanStore
+              AuditedEvidence = setup.AuditedEvidence
+              CleanEvidence = setup.CleanEvidence }
+            setup.Options)
 
 /// A front end's whole run: resolve, execute, write `out` when given, print the report
 /// (`json` or human) through `print`, and return the exit code (2 for a usage error, which

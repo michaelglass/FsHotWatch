@@ -2400,9 +2400,9 @@
       }
     ],
     "RecordAudit.fs": {
-      "line": 100,
-      "branch": 95,
-      "reason": "new file (AUTOMATION-1633, ADR-059 §36: the clean-recompute audit). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by the audit tests (RecordAuditTests, CliTests, CheckRecordsTests) with coverage: line 100%, branch 95.9% (71/74). Uncovered: one compiler-generated edge on each of the three for-loops inside the list expression of render (kinds, mismatches, unmatched), whose bodies and empty cases both run. Pure comparison and file IO, platform-neutral."
+      "line": 98,
+      "branch": 88,
+      "reason": "AUTOMATION-1633 (ADR-059 §36, second slice: per-kind comparators, outputs tokenized string by string, and the test-evidence store). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down: the gate at 0dd28597 measured branch 88.2% (coverage-check, macOS); this revision adds tests for the JSON walk and removes its unreachable arm, so it measures at or above that. Uncovered: the JsonException arm of fieldsOf (an outcome store refuses to file outputs that are not JSON), the IOException arm of readEvidenceFile and the holds-then-vanished arm of the audited evidence read (a file deleted between a stat and a read), and compiler-generated edges of the for-loops in render list expressions. Pure comparison and file IO, platform-neutral."
     },
     "ConfiguredTestRoots.fs": [
       {
