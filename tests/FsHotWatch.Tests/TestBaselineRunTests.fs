@@ -1,7 +1,7 @@
 /// AUTOMATION-1587 step 2, end to end: a real test-prune daemon over a small repository,
 /// wired to a box-wide outcome store, files a shadow `test-baseline` record only when a
-/// completion earned the full-suite baseline, every runnable project filed this run's
-/// full-pass K_P record, and the index was sealed at the receipt tree. Every completion
+/// completion earned the full-suite baseline, every runnable project holds a full-pass K_P
+/// record (this run's, or one it replayed from another checkout, AUTOMATION-1682), and the index was sealed at the receipt tree. Every completion
 /// says, in one countable log line, whether it wrote one and if not why. Nothing reads the
 /// record: the last test runs the same checks with and without it and compares.
 module FsHotWatch.Tests.TestBaselineRunTests
@@ -360,20 +360,49 @@ let ``an index not sealed at the receipt tree files no baseline and logs both tr
         test <@ stores.Outcomes.Lookup(TestBaseline.keyOf receipt) = None @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]
-let ``a run that reused every project earns the ledger baseline but files no test-baseline of its own`` () =
+let ``a second checkout whose first full run replays a project files its own tree's test-baseline`` () =
+    // AUTOMATION-1682: the measured case. Checkout b is a second workspace whose tree differs
+    // from a's only beside library Y, so TX's K_P matches a's and b's first full run
+    // replays TX's pass from a while TY runs. It earned the ledger baseline but filed no
+    // test-baseline ("its full-scope pass is from run … in …/a, not this run"), so a restarted daemon in b
+    // after an edit had nothing to diff from and ran every project in full.
     withRepo (fun stores rootNamed ->
         let a = checkout stores (rootNamed "a")
         seal a
         let _, completedA = run a
         test <@ (baselineLine a completedA).Head.Contains "test-baseline: written" @>
 
-        let b = checkout stores (rootNamed "b")
+        let rootB = rootNamed "b"
+        write rootB "src/Y/notes.md" "a file only TY's closure holds\n"
+        test <@ (treeOf rootB).Identity <> (treeOf a.Root).Identity @>
+        let b = checkout stores rootB
         seal b
         let launchedB, completedB = run b
-        test <@ List.isEmpty launchedB @>
+        test <@ launchedB = [ "TY" ] @>
         let lines = baselineLine b completedB
-        test <@ lines.Length = 1 && lines.Head.Contains "reason=lacks-full-pass" @>
-        test <@ lines.Head.Contains "TX" && lines.Head.Contains "TY" @>)
+        test <@ lines.Length = 1 @>
+        test <@ lines.Head.Contains "test-baseline: written" && lines.Head.Contains "replayed=1" @>
+
+        let treeB = (treeOf rootB).Identity
+        let record = stores.Outcomes.Lookup(TestBaseline.keyOf treeB)
+        test <@ record |> Option.exists (fun r -> r.Producer.Worktree = Path.GetFullPath rootB) @>
+
+        // And so a restarted daemon in b, after an edit, has b's last full pass to diff from.
+        File.AppendAllText(Path.Combine(rootB, "src", "Y", "Lib.fs"), "let edited = 2\n")
+
+        let ledger =
+            match FullSuiteBaseline.load rootB with
+            | FullSuiteBaseline.LoadedBaseline.Loaded baseline -> baseline
+            | FullSuiteBaseline.LoadedBaseline.Unreadable why -> failwith why
+
+        let found =
+            PluginSteps.checkoutBaselineIn
+                (Some(wiringFor stores))
+                (Path.Combine(rootB, "test-prune.db"))
+                ledger
+                (treeOf rootB).Identity
+
+        test <@ found |> Result.map _.Tree = Ok treeB @>)
 
 /// What a check decided, as far as the daemon shows it: what it launched, how it verified,
 /// and what each project reported.
