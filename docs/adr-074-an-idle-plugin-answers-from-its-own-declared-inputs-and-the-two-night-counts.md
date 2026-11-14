@@ -65,6 +65,41 @@ lookup-agreement evidence the switch waits on could not accrue.
      that would fail turns that first check red where it stayed green before.
    - It is off with the shadow (`FSHW_OUTCOME_SHADOW=0`).
 
+## Why this is sound (rulings of 2026-11-14)
+
+- **Two states, no third.** `LookupEligibility` has exactly two cases, and each names a key:
+  `DeclaredInputs` is the `Matching` scope (the plugin's own inputs), and `NoDeclaredInputs` is the
+  `WholeTree` scope (the tree digest, with the reason). No state means "no key", so no requirement can
+  be met by absence: a key with no record is missing, never green.
+- **A pattern's key covers every file the pattern matches,** in its watcher's scope, whether or not
+  the file is a tree input. `verdictInputs.notInputs` means "does not invalidate the TREE", not "does
+  not invalidate the plugin that reads it". Otherwise a checkout whose `CHANGELOG.md` is broken would be
+  answered by an older pass carried forward: a false green that no run of the gate ever produced.
+- **The enumeration goes beyond the verdict walk, for the plugin key only.** `PluginInputs.matches`
+  walks the repository root with the watcher's own exclusions, so root files such as intelligence's
+  `xake-build.fsx` are in the `*.fsx` key. The tree-hash algorithm is unchanged, so there is no cold
+  cache. The enumeration costs a walk of the root per pattern on every lookup, and experiment E5 measures
+  it against the 150 ms budget.
+- **Every whole-tree plugin has a record on every concluded check.**
+
+  | Plugin | Runs on |
+  |---|---|
+  | `build` | any file change (`FileChanged`), and a check's first scan |
+  | `format` (preprocessor) and other preprocessors (`dbtypes-sync`) | every batch of files a check delivers |
+  | `format-check` | any file change |
+  | `lint`, `analyzers` | every file FCS checks (`FileChecked`); a first scan checks every file |
+  | `coverage` | every test run (`TestRunCompleted`) |
+  | `test-prune` | every check (`FileChecked`, `BatchChecked`, `BuildCompleted`) |
+  | an `afterTests` file command | every test run of the projects it names |
+
+  Within a daemon's life a plugin's last status carries into every publication, and a restarted
+  daemon's first scan delivers every file. So a concluded check reports every whole-tree plugin.
+  - Measured on thellma-and-louisa: across 253 daemon-green publications of alpha.140–149, the only
+    plugins ever missing were the two pattern commands (`file-cmd-*.fsx` 170 times, `changelog-gate`
+    20 times), never a whole-tree plugin.
+  - The carried status is a separate, pre-existing gap: the verdict does not say whether a plugin ran on
+    this tree (AUTOMATION-1702). It applies to the tree key exactly as before.
+
 ## The two night counts
 
 The switch (ADR-059 §8, §35 Change 2) waits on two independent properties. Each counts its own
@@ -108,9 +143,10 @@ criterion: (b) needs 100%.
 - A file command now runs once per checkout per input digest at daemon start, when nothing is on
   record: one `fsi --typecheck-only build.fsx` and one `changelog-gate` for intelligence's
   configuration.
-- Files a pattern watches but the tree hash does not (intelligence: root `xake-build.fsx`, any
-  `scripts/*.fsx`) are now in their plugin's key. The tree hash is unchanged. Whether the verdict
-  should cover them is a separate question.
+- Files a pattern watches but the tree hash does not are now in their plugin's key; the tree hash is
+  unchanged. For intelligence that is 91 `*.fsx` matches outside `src/`, `tests/` and `verdictInputs` (80
+  of them gitignored scratch under `.tmp/`); AUTOMATION-1710 asks intelligence to declare or state them,
+  and proposes the load-time warning and honouring `.gitignore` in a pattern's scope.
 - `afterTests` file commands and every whole-tree plugin keep today's key. Keying an `afterTests`
   command on its projects' K_P set (an upstream input, ADR-059 §38) is future work.
 - On FsHotWatch's `main`, this lands before the Phase 1 stack, which moves `LookupVerdict`,
