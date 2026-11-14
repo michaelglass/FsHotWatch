@@ -93,13 +93,14 @@ let clearanceOf
     | _ -> None
 
 /// The answer a CHECK reads for `key` in `store`: its newest record, except that a fail a
-/// clearance names reads as a pass.
-let lookupForCheck (store: OutcomeStore.Store) (key: ActionKey.KeyValue) : OutcomeStore.Outcome option =
-    match store.Lookup key with
+/// clearance names reads as a pass. Through any `IOutcomeStore` (AUTOMATION-1695): the disk store
+/// or the simulation's in-memory one.
+let lookupForCheckIn (store: OutcomeRecords.IOutcomeStore) (key: ActionKey.KeyValue) : OutcomeStore.Outcome option =
+    match OutcomeStore.Through.lookup store key with
     | Some fail when fail.Outcome = OutcomeStore.Outcome.Fail ->
         let cleared =
             fail.Producer.RunId
-            |> Option.bind (fun run -> store.Lookup(keyOf key run))
+            |> Option.bind (fun run -> OutcomeStore.Through.lookup store (keyOf key run).Value)
             |> Option.exists (fun c -> c.Outcome = OutcomeStore.Outcome.Pass && c.RecordedAt > fail.RecordedAt)
 
         Some(
@@ -109,3 +110,7 @@ let lookupForCheck (store: OutcomeStore.Store) (key: ActionKey.KeyValue) : Outco
                 OutcomeStore.Outcome.Fail
         )
     | other -> other |> Option.map _.Outcome
+
+/// `lookupForCheckIn` over the disk store.
+let lookupForCheck (store: OutcomeStore.Store) (key: ActionKey.KeyValue) : OutcomeStore.Outcome option =
+    lookupForCheckIn store key
