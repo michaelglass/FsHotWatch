@@ -55,12 +55,35 @@ open FsHotWatch.TestPrune.CheckHandlers
 
 /// What a completed run's terminal status is reported from (`reportRunOutcome`).
 type internal RunOutcomeFacts =
-    { Completed: TestRunCompleted
-      CarriedFailures: OutstandingFailure list
-      QueueAfterCommit: Set<string>
-      PendingDescription: unit -> string
-      ReceiptTransition: ReceiptTransition
-      EvidenceReceipt: TestEvidenceReceipt option }
+    {
+        Completed: TestRunCompleted
+        CarriedFailures: OutstandingFailure list
+        QueueAfterCommit: Set<string>
+        PendingDescription: unit -> string
+        ReceiptTransition: ReceiptTransition
+        EvidenceReceipt: TestEvidenceReceipt option
+        /// Each covering project the current tree no longer has, and the symbols it would
+        /// otherwise owe, since the last run reported (AUTOMATION-1717).
+        AbsentCoverers: Map<string, Set<string>>
+    }
+
+/// The note a run's summary carries when a covering project was judged absent from the
+/// tree, so a wrong judgement shows on a green run too; empty when none was.
+let internal absentCoverersNote (absent: Map<string, Set<string>>) : string =
+    if Map.isEmpty absent then
+        ""
+    else
+        let symbols = absent |> Map.values |> Set.unionMany |> Set.count
+        let projects = absent |> Map.keys |> List.ofSeq
+
+        let named =
+            match projects with
+            | [ project ] -> $"project %s{project} is"
+            | _ ->
+                let names = String.concat ", " projects
+                $"projects %s{names} are"
+
+        $" (%d{symbols} symbol(s) not owed: %s{named} no longer in this tree)"
 
 /// A run's per-project tally and the summary fragments its status line is built from.
 type internal RunTally =
@@ -254,11 +277,13 @@ let internal reportRanRun
         // the Failed below carries the summary (one channel).
         ctx.CompleteWithTimeout $"test project(s): {names}"
 
-        let headline = timeoutHeadline tally carriedNote
+        let headline =
+            timeoutHeadline tally (carriedNote + absentCoverersNote facts.AbsentCoverers)
+
         ctx.ReportStatus(PluginStatus.failedNow headline headline results.Elapsed)
     else
         let runSummary =
-            $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+            $"%d{passed} passed, %d{failed} failed%s{abortedSuffix}%s{deferredSuffix}%s{noMatchSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})%s{absentCoverersNote facts.AbsentCoverers}"
 
         // EVERY terminal below CARRIES the run's evidence —
         // `runSummary` + measured duration — on the status
@@ -301,10 +326,12 @@ let internal reportRanRun
                     let retainedRun = retained.RunId.ToString("N")
 
                     RunVerdict.create
-                        $"no test needed: nothing changed since run %s{retainedRun}, which verified this tree"
+                        $"no test needed: nothing changed since run %s{retainedRun}, which verified this tree%s{absentCoverersNote facts.AbsentCoverers}"
                         results.Elapsed
                 | _ when RunVerification.verifiedNothing (verificationOf results.Results) ->
-                    RunVerdict.verifiedNothing $"%d{total} test project(s) ran, no test executed" results.Elapsed
+                    RunVerdict.verifiedNothing
+                        $"%d{total} test project(s) ran, no test executed%s{absentCoverersNote facts.AbsentCoverers}"
+                        results.Elapsed
                 | _ -> RunVerdict.create runSummary results.Elapsed
 
             ctx.ReportStatus(Completed(DateTime.UtcNow, verdict))
@@ -456,6 +483,10 @@ let internal reportRunOutcome (ctx: PluginCtx<TestPruneMsg>) (facts: RunOutcomeF
         else
             $" (+%d{carriedCount} still red from an earlier run, not covered by this one: %s{OutstandingFailure.summarize carriedFailures})"
 
+    // The early terminals below carry the absence note too (AUTOMATION-1717); a run that ran
+    // gets it on its summary in `reportRanRun`.
+    let earlyNote = carriedNote + absentCoverersNote facts.AbsentCoverers
+
     // Consult `completed.Outcome` FIRST. An Aborted run (beforeRun
     // threw, runner crashed, run cancelled) must be non-green
     // regardless of result counts — empty results trivially satisfy
@@ -472,8 +503,8 @@ let internal reportRunOutcome (ctx: PluginCtx<TestPruneMsg>) (facts: RunOutcomeF
     | Some reason ->
         ctx.ReportStatus(
             PluginStatus.failedNow
-                $"test run aborted (tests did not run): %s{reason}%s{carriedNote}"
-                $"test run aborted: %s{reason}%s{carriedNote}"
+                $"test run aborted (tests did not run): %s{reason}%s{earlyNote}"
+                $"test run aborted: %s{reason}%s{earlyNote}"
                 results.Elapsed
         )
     | None when total = 0 && not (Set.isEmpty queueAfterCommit) ->
@@ -482,8 +513,8 @@ let internal reportRunOutcome (ctx: PluginCtx<TestPruneMsg>) (facts: RunOutcomeF
         // deferred (never-ran) project.
         ctx.ReportStatus(
             PluginStatus.failedNow
-                $"%s{pendingDescription ()}%s{carriedNote}"
-                $"0 projects ran; symbols still awaiting verification%s{carriedNote}"
+                $"%s{pendingDescription ()}%s{earlyNote}"
+                $"0 projects ran; symbols still awaiting verification%s{earlyNote}"
                 results.Elapsed
         )
     // Projects RAN and every one matched zero tests, so
@@ -503,8 +534,8 @@ let internal reportRunOutcome (ctx: PluginCtx<TestPruneMsg>) (facts: RunOutcomeF
     | None when allZeroMatchOf results.Results ->
         ctx.ReportStatus(
             PluginStatus.failedNow
-                $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{carriedNote}"
-                $"%d{total} project(s) discovered their tests; the active filter matched none of them, so no test executed%s{carriedNote}"
+                $"%d{total} project(s) ran and matched ZERO tests — nothing was verified (not a pass)%s{earlyNote}"
+                $"%d{total} project(s) discovered their tests; the active filter matched none of them, so no test executed%s{earlyNote}"
                 results.Elapsed
         )
     | None -> reportRanRun ctx facts results total carriedNote (tallyRun results total)

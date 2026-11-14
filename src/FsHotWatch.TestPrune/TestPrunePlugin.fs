@@ -271,11 +271,19 @@ let internal createWithEvidenceAndQueries
         debtScope (lazy (resolveExcludedProjects ())) covering
 
     // AUTOMATION-1717: a covering project the current tree no longer has is dropped from
-    // every obligation, and named once per daemon, so a leftover cannot pass unremarked.
+    // every obligation. It is named once per daemon in the log, and on the summary of the
+    // next run to complete (`DrainAbsentCoverers`), so a project wrongly judged absent shows
+    // even on a green run.
     let absentCoverersLogged =
         System.Collections.Concurrent.ConcurrentDictionary<string, unit>()
 
-    let logAbsentCoverers (projects: Set<string>) =
+    let absentSinceReport =
+        System.Collections.Concurrent.ConcurrentDictionary<string * string, unit>()
+
+    let noteAbsentCoverers (symbol: string) (projects: Set<string>) =
+        for project in projects do
+            absentSinceReport.TryAdd((project, symbol), ()) |> ignore
+
         let fresh =
             projects |> Set.filter (fun project -> absentCoverersLogged.TryAdd(project, ()))
 
@@ -286,8 +294,20 @@ let internal createWithEvidenceAndQueries
                 "test-prune"
                 $"the index holds tests of %s{names}, which this tree does not have (not configured, not in the discovered project inventory, and none of their test sources exist) — they cover nothing here, and nothing is owed to them"
 
+    /// Each absent project and the symbols it no longer covers, since the last run reported.
+    let drainAbsentCoverers () : Map<string, Set<string>> =
+        let pairs = absentSinceReport.Keys |> List.ofSeq
+
+        for pair in pairs do
+            absentSinceReport.TryRemove pair |> ignore
+
+        pairs
+        |> List.groupBy fst
+        |> List.map (fun (project, rows) -> project, rows |> List.map snd |> Set.ofList)
+        |> Map.ofList
+
     let coveringOf graph =
-        coveringOfIn queries (absentFromTreeIn repoRoot queries runnableProjects graph) logAbsentCoverers
+        coveringOfIn queries (absentFromTreeIn repoRoot queries runnableProjects graph) noteAbsentCoverers
 
     let owedElsewhere = owedElsewhereIn runnableProjects
 
@@ -534,6 +554,7 @@ let internal createWithEvidenceAndQueries
               OwedElsewhere = owedElsewhere
               RevisionOf = revisionOf }
           EndRun = endRun
+          DrainAbsentCoverers = drainAbsentCoverers
           ObserveModelGeneration = observeModelGeneration
           FileBaseline =
             fileBaselineIn evidence repoRoot (currentOutcomeKeyResultsIn evidence repoRoot testConfigs) db.GetFileKeys

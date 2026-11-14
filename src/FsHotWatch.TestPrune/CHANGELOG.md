@@ -10,6 +10,12 @@
   available model, or an index that cannot say, nothing is absent. `coveringOfIn` drops absent projects from every
   obligation and the plugin logs each one once (`the index holds tests of P, which this tree does not have …`).
   `ImpactQueries` gains `TestSourceFiles`; the `CoveringOf` env fields and `selectAffectedWith` take the project graph.
+- feat: the run's summary names the covering projects judged absent from the tree since the last run reported, e.g.
+  `1 passed, 0 failed in 1 projects (selected: no) (1 symbol(s) not owed: project Sim is no longer in this tree)`, so a
+  project wrongly judged absent shows on a green run in `fshw status`, `check` and `verdict.json` (AUTOMATION-1717).
+  Every terminal status of the run carries it. `RunOutcomeFacts` gains `AbsentCoverers`,
+  `RunOutcomeReport.absentCoverersNote` renders it, `RunFinishedEnv` gains `DrainAbsentCoverers`, and `coveringOfIn`
+  reports each symbol with its absent coverers (`noteAbsent`).
 
 - fix: a full-suite run that replays a project's pass at its current K_P files the `test-baseline` record, and a
   restart diffs from the tree the index is sealed at when this checkout's own full suite passed it (AUTOMATION-1682,

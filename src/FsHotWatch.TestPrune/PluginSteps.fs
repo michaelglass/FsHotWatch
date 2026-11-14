@@ -350,19 +350,20 @@ let internal absentFromTreeIn
 ///
 /// A project the current tree no longer has covers nothing (`absentOf`, AUTOMATION-1717):
 /// the index keeps the tests of a project an earlier checkout ran after a later checkout
-/// drops it, and such a project cannot owe anything here. Each one dropped is passed to
-/// `logAbsent`. Absence is decided once per project per pass.
+/// drops it, and such a project cannot owe anything here. Each symbol that had an absent
+/// coverer is passed to `noteAbsent` with those projects. Absence is decided once per
+/// project per pass.
 let internal coveringOfIn
     (queries: ImpactQueries)
     (absentOf: Set<string> -> Set<string>)
-    (logAbsent: Set<string> -> unit)
+    (noteAbsent: string -> Set<string> -> unit)
     (symbols: string seq)
     : string -> Set<string> =
     let known = symbols |> Seq.distinct |> List.ofSeq
     let grouped = lazy (queries.CoveringProjectsBySeed known)
     let decided = Collections.Generic.Dictionary<string, bool>()
 
-    let present (projects: Set<string>) =
+    let present (symbol: string) (projects: Set<string>) =
         let undecided = projects |> Set.filter (decided.ContainsKey >> not)
 
         if not (Set.isEmpty undecided) then
@@ -371,19 +372,21 @@ let internal coveringOfIn
             for project in undecided do
                 decided[project] <- Set.contains project absent
 
-            if not (Set.isEmpty absent) then
-                logAbsent absent
+        let absent, kept = projects |> Set.partition (fun project -> decided[project])
 
-        projects |> Set.filter (fun project -> not decided[project])
+        if not (Set.isEmpty absent) then
+            noteAbsent symbol absent
+
+        kept
 
     fun symbol ->
         match Map.tryFind symbol grouped.Value with
-        | Some projects -> present projects
+        | Some projects -> present symbol projects
         | None ->
             queries.CoveringProjectsBySeed [ symbol ]
             |> Map.tryFind symbol
             |> Option.defaultValue Set.empty
-            |> present
+            |> present symbol
 
 /// Whether a `FileChecked` cache hit may stand in for analysing `result`
 /// (`IndexedAnalysis`): the index holds exactly this analysis, and no other is pending
