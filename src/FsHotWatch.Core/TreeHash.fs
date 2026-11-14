@@ -305,6 +305,17 @@ let hashEntries (entries: (string * string) list) : string =
 
     "sha256:" + ContentHash.ofText (sb.ToString())
 
+/// How a tree hash reads each file's content hash. Both give the same hash for the same bytes;
+/// they differ in what they trust.
+[<RequireQualifiedAccess>]
+type Hashing =
+    /// Read every file. What the nightly audit and the verdict before a land or a release use.
+    | FullRehash
+    /// Read only the files whose identity moved since the cache file at `cacheFile` saw them
+    /// (`ContentHashCache`): equal to a full read under git's assumption that a file whose
+    /// size, mtime, ctime, inode and device are unchanged has its bytes unchanged.
+    | StatValidated of cacheFile: string
+
 /// The content address of the repo's current tree.
 ///
 /// A directory the walk could not see is an ENTRY, hashed to
@@ -314,10 +325,32 @@ let hashEntries (entries: (string * string) list) : string =
 /// FILE, applied one level up: a tree we could not fully see must not hash like
 /// the tree we could, or a verdict earned over the visible part silently covers
 /// the invisible part.
-let ofWalked (walked: Walked) : Tree =
+///
+/// Counts the cache's trusted and read answers into `timer` (`hash.trusted`, `hash.read`).
+let ofWalkedTimed (timer: Timing.PhaseTimer) (hashing: Hashing) (walked: Walked) : Tree =
     // `ContentHash` owns the sentinel policy for an unreadable file.
     let hashedFiles =
-        walked.Files |> List.map (fun (rel, abs) -> rel, ContentHash.ofFile abs)
+        match hashing with
+        | Hashing.FullRehash -> walked.Files |> List.map (fun (rel, abs) -> rel, ContentHash.ofFile abs)
+        | Hashing.StatValidated cacheFile ->
+            let loaded = ContentHashCache.load cacheFile
+            let cache = ContentHashCache.Cache(loaded, ContentHashCache.Sources.real)
+
+            let answered =
+                walked.Files
+                |> List.map (fun (rel, abs) ->
+                    let hash, answer = cache.Hash(rel, abs)
+                    (rel, hash), answer)
+
+            let trusted =
+                answered
+                |> List.filter (fun (_, answer) -> answer = ContentHashCache.Answer.Trusted)
+                |> List.length
+
+            timer.Count("hash.trusted", trusted)
+            timer.Count("hash.read", answered.Length - trusted)
+            timer.Time("hash.cache-save", fun () -> ContentHashCache.save cacheFile loaded cache.Entries)
+            answered |> List.map fst
 
     let hashedHoles =
         walked.Skipped |> List.map (fun rel -> rel + "/", ContentHash.UnhashableContent)
@@ -346,6 +379,13 @@ let ofWalked (walked: Walked) : Tree =
       SkippedCount = List.length hashedHoles
       DeclaredCount = walked.DeclaredCount
       AbsentDeclarationCount = List.length hashedAbsent }
+
+/// The tree hash of what `files` walked, each file's content read as `hashing` says.
+let ofWalkedWith (hashing: Hashing) (walked: Walked) : Tree =
+    ofWalkedTimed Timing.PhaseTimer.untimed hashing walked
+
+/// The tree hash of what `files` walked, every file read.
+let ofWalked (walked: Walked) : Tree = ofWalkedWith Hashing.FullRehash walked
 
 /// The content address of the repo's current tree: `files`, then `ofWalked`.
 let compute (repoRoot: string) (excludePatterns: string list) : Tree =

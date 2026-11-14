@@ -142,8 +142,14 @@ let private requiredOf (repoRoot: string) : Result<RequiredConfig.Required, stri
 /// the daemon refuses files nothing, so its keys are missing here.
 ///
 /// `timer` times each phase and counts what it covered (experiment E5); `PhaseTimer.untimed`
-/// does neither.
-let ofRepoWith (timer: PhaseTimer) (repoRoot: string) (command: Requirements.Command) (log: string -> unit) : Read =
+/// does neither. `hashing` says how the tree hash reads each file (`TreeHash.Hashing`).
+let ofRepoWith
+    (timer: PhaseTimer)
+    (hashing: TreeHash.Hashing)
+    (repoRoot: string)
+    (command: Requirements.Command)
+    (log: string -> unit)
+    : Read =
     match timer.Time("config", fun () -> requiredOf repoRoot) with
     | Error reason -> Read.Unconfigured reason
     | Ok required ->
@@ -152,7 +158,9 @@ let ofRepoWith (timer: PhaseTimer) (repoRoot: string) (command: Requirements.Com
             timer.Time("walk", fun () -> TreeHash.filesWith timer repoRoot required.Exclude)
 
         timer.Count("files", walked.Files.Length)
-        let tree = (timer.Time("hash", fun () -> TreeHash.ofWalked walked)).Hash
+
+        let tree =
+            (timer.Time("hash", fun () -> TreeHash.ofWalkedTimed timer hashing walked)).Hash
 
         match timer.Time("producer", fun () -> DaemonIdentity.readRecorded repoRoot) with
         | None -> Read.NoProducer tree
@@ -196,6 +204,6 @@ let ofRepoWith (timer: PhaseTimer) (repoRoot: string) (command: Requirements.Com
 
             Read.Answered(tree, producer, decided)
 
-/// `ofRepoWith`, untimed.
+/// `ofRepoWith`, untimed, every file read.
 let ofRepo (repoRoot: string) (command: Requirements.Command) (log: string -> unit) : Read =
-    ofRepoWith PhaseTimer.untimed repoRoot command log
+    ofRepoWith PhaseTimer.untimed TreeHash.Hashing.FullRehash repoRoot command log
