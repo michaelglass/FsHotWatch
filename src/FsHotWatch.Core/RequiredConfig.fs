@@ -27,6 +27,8 @@ type Required =
         Plugins: string list
         /// The configured test projects, by the name their reports carry.
         TestProjects: string list
+        /// The globs the tree hash leaves out (`exclude`): they decide which tree is being graded.
+        Exclude: string list
     }
 
 let private property (el: JsonElement) (name: string) : JsonElement option =
@@ -103,6 +105,12 @@ let private coveragePlugin (root: JsonElement) : string list =
     | Some _
     | None -> []
 
+/// The `exclude` globs, verbatim; none when absent or not an array.
+let private excludeOf (root: JsonElement) : string list =
+    match property root "exclude" with
+    | Some v -> [ for e in array v -> e.GetString() ]
+    | None -> []
+
 /// The configured test projects, by name.
 let private testProjectsOf (root: JsonElement) : string list =
     match property root "tests" |> Option.bind (fun t -> property t "projects") with
@@ -132,7 +140,8 @@ let ofJson (json: string) : Required =
         @ coveragePlugin root
         @ (if projects.IsEmpty then [] else [ TestPrunePluginName ])
         |> List.distinct
-      TestProjects = projects }
+      TestProjects = projects
+      Exclude = excludeOf root }
 
 /// What a repository without a `.fshw.json` requires: the defaults.
 let defaults: Required = ofJson "{}"

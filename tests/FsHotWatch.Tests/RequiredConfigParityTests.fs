@@ -54,6 +54,8 @@ let private holds (json: string) =
         | None -> []
 
     test <@ required.TestProjects = projects @>
+    // The tree a pure lookup hashes is the daemon's (`Lookup.ofRepo`).
+    test <@ required.Exclude = config.Exclude @>
 
 /// One configuration per branch of each rule `RequiredConfig.ofJson` reads.
 let private branches =
@@ -79,7 +81,9 @@ let private branches =
       """{ "coverage": [ { "configPath": "c.json", "searchDir": "." }, { "configPath": "d.json", "searchDir": "." } ] }"""
       """{ "preprocessors": [ { "name": "pre", "command": "true" }, { "name": "two", "command": "true" } ] }"""
       """{ "tests": { "projects": [ { "project": "P", "command": "true", "args": "" } ] } }"""
-      """{ "tests": { "projects": [] } }""" ]
+      """{ "tests": { "projects": [] } }"""
+      """{ "exclude": [ "docs/**", "*.md" ] }"""
+      """{ "exclude": [] }""" ]
 
 [<Fact>]
 let ``every branch of every rule: the required plugins are the configured ones`` () =
