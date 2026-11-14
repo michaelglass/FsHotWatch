@@ -13,7 +13,8 @@
 #      workspace;
 #   3. runs `teardown`, evicts the candidates again (they were never published, and the
 #      real release reuses their version), copies the verdict and every failing test
-#      project's CTRF receipt to <run>/evidence and prints the failing tests;
+#      project's CTRF receipt (of the runs the verdict counts) to <run>/evidence and
+#      prints the failing tests, and any attempt fshw discarded as starved as such;
 #   4. prints `remote-canary: exit=<gate exit>` as its LAST line and exits with it.
 #
 # Its standard input is the releaser's keepalive: EOF there means the releaser is gone
@@ -153,19 +154,42 @@ evict
 
 mkdir -p "$dir/evidence"
 cp "$dir/gate.log" "$dir/evidence/" 2>/dev/null
-if [ -f "$dir/gate.marker" ]; then
-  if [ -f "$ws/.fshw/verdict.json" ] && [ "$ws/.fshw/verdict.json" -nt "$dir/gate.marker" ]; then
-    cp "$ws/.fshw/verdict.json" "$dir/evidence/verdict.json"
-  fi
-  while IFS= read -r receipt; do
+# The failing tests of each receipt directly in $1, copied as evidence with prefix $2 and
+# printed under label $3.
+report_receipts() {
+  local receipt failed project
+  for receipt in "$1"/*.ctrf.json; do
+    [ -f "$receipt" ] || continue
     failed=$(jq -r '.results.summary.failed // 0' "$receipt" 2>/dev/null)
     [ "${failed:-0}" != 0 ] || continue
-    runid=$(basename "$(dirname "$receipt")")
-    cp "$receipt" "$dir/evidence/$runid-$(basename "$receipt")"
+    cp "$receipt" "$dir/evidence/$2$(basename "$receipt")"
     project=$(basename "$receipt" .ctrf.json)
-    jq -r --arg p "$project" '.results.tests[] | select(.status == "failed")
-      | "remote-canary: FAILED \($p): \(.name): \((.message // "") | split("\n")[0])"' "$receipt" 2>/dev/null | head -20
-  done < <(find "$ws/.fshw/test-runs" -name '*.ctrf.json' -newer "$dir/gate.marker" 2>/dev/null)
+    jq -r --arg p "$project" --arg l "$3" '.results.tests[] | select(.status == "failed")
+      | "remote-canary: \($l) \($p): \(.name): \((.message // "") | split("\n")[0])"' "$receipt" 2>/dev/null | head -20
+  done
+}
+# Evidence is the runs the verdict COUNTS, read at the top of each run directory. fshw keeps
+# an attempt it discarded as starved, and re-ran, under <run>/starved-attempt/: that is
+# reported as such, never as FAILED (alpha.149's first server canary printed FAILED over a
+# green verdict that way). Without a fresh verdict naming its runs (the gate died first),
+# the runs this gate wrote are read instead, and the output says so. "Fresh" is "not older
+# than the gate marker": bash 3.2 compares whole seconds, so a fast gate writes its verdict
+# within the marker's second.
+if [ -f "$dir/gate.marker" ]; then
+  runs=""
+  if [ -f "$ws/.fshw/verdict.json" ] && [ ! "$ws/.fshw/verdict.json" -ot "$dir/gate.marker" ]; then
+    cp "$ws/.fshw/verdict.json" "$dir/evidence/verdict.json"
+    runs=$(jq -r '.runs[]?.runId // empty' "$ws/.fshw/verdict.json" 2>/dev/null)
+  fi
+  if [ -z "$runs" ] && [ -d "$ws/.fshw/test-runs" ]; then
+    runs=$(find "$ws/.fshw/test-runs" -mindepth 1 -maxdepth 1 -type d -newer "$dir/gate.marker" -exec basename {} \;)
+    [ -z "$runs" ] || echo "remote-canary: no fresh verdict names its runs; reading every run this gate wrote"
+  fi
+  for runid in $runs; do
+    case "$runid" in */* | .*) continue ;; esac
+    report_receipts "$ws/.fshw/test-runs/$runid" "$runid-" "FAILED"
+    report_receipts "$ws/.fshw/test-runs/$runid/starved-attempt" "$runid-starved-attempt-" "starved attempt, re-run:"
+  done
 fi
 
 ended=$(date +%s)

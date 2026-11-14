@@ -373,11 +373,56 @@ let ``server half: a green gate reports exit 0 after seeding, and evicts the can
         // The candidate was never published: it must not stay in the server's cache.
         test <@ not (seeded home) @>)
 
+/// fshw's layout: .fshw/test-runs/<runId>/<project>.ctrf.json, and the attempt it discarded
+/// as starved and re-ran under .fshw/test-runs/<runId>/starved-attempt/.
+let private redReceipt =
+    """{"results":{"summary":{"failed":1},"tests":[{"name":"settings page is fast","status":"failed","message":"Timeout 45000ms exceeded"},{"name":"ok","status":"passed"}]}}"""
+
+let private greenReceipt =
+    """{"results":{"summary":{"failed":0},"tests":[{"name":"settings page is fast","status":"passed"},{"name":"ok","status":"passed"}]}}"""
+
+/// A shell step that writes `json` as Foo.Tests.Integration's receipt under test-runs/`relDir`.
+let private receipt (relDir: string) (json: string) =
+    $"mkdir -p .fshw/test-runs/{relDir} && printf '%%s' '{json}' > .fshw/test-runs/{relDir}/Foo.Tests.Integration.ctrf.json"
+
+/// A shell step that writes a verdict counting exactly `runIds`.
+let private verdictOf (runIds: string list) =
+    let runs =
+        runIds |> List.map (fun r -> $"{{\"runId\":\"{r}\"}}") |> String.concat ","
+
+    $"printf '%%s' '{{\"runs\":[{runs}]}}' > .fshw/verdict.json"
+
+[<Fact>]
+let ``server half: only the runs the verdict counts are evidence, and a starved attempt is not a failure`` () =
+    // alpha.149's first server canary: the gate was green, yet the log said FAILED for the
+    // attempt fshw had discarded as starved and re-run. A stale red run the verdict does not
+    // count is not evidence either.
+    withTempDir "remote-canary-server-starved" (fun home ->
+        let gate =
+            String.concat
+                " && "
+                [ receipt "r0" redReceipt
+                  receipt "r1/starved-attempt" redReceipt
+                  receipt "r1" greenReceipt
+                  verdictOf [ "r1" ] ]
+
+        let runDir, _ = serverMachine home gate ""
+        let code, output = runServer home runDir None
+        test <@ code = 0 @>
+        test <@ not (output.Contains "FAILED") @>
+
+        test
+            <@
+                output.Contains
+                    "remote-canary: starved attempt, re-run: Foo.Tests.Integration: settings page is fast: Timeout 45000ms exceeded"
+            @>
+
+        test <@ not (File.Exists(Path.Combine(runDir, "evidence", "r0-Foo.Tests.Integration.ctrf.json"))) @>)
+
 [<Fact>]
 let ``server half: a red gate reports its exit code and the failing tests' CTRF receipt`` () =
     withTempDir "remote-canary-server-red" (fun home ->
-        let gate =
-            "mkdir -p .fshw/test-runs/r1 && printf '%s' '{\"results\":{\"summary\":{\"failed\":1},\"tests\":[{\"name\":\"settings page is fast\",\"status\":\"failed\",\"message\":\"Timeout 45000ms exceeded\"},{\"name\":\"ok\",\"status\":\"passed\"}]}}' > .fshw/test-runs/r1/Foo.Tests.Integration.ctrf.json && exit 1"
+        let gate = receipt "r1" redReceipt + " && " + verdictOf [ "r1" ] + " && exit 1"
 
         let runDir, _ = serverMachine home gate ""
         let code, output = runServer home runDir None
@@ -469,3 +514,12 @@ let ``server half: a gate stopped because the releaser went away leaves no proce
             test <@ List.isEmpty (survivors 86381) @>
         finally
             killSurvivors 86381)
+
+[<Fact>]
+let ``server half: a gate that dies before its verdict still reports the runs it wrote`` () =
+    withTempDir "remote-canary-server-noverdict" (fun home ->
+        let runDir, _ = serverMachine home (receipt "r1" redReceipt + " && exit 3") ""
+        let code, output = runServer home runDir None
+        test <@ code = 3 @>
+        test <@ output.Contains "no fresh verdict names its runs" @>
+        test <@ output.Contains "remote-canary: FAILED Foo.Tests.Integration: settings page is fast" @>)
