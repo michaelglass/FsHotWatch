@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- perf: `.gitignore` rules are compiled once per process and skipped for a path that cannot match them
+  (AUTOMATION-1696, E5). On intelligence `TreeHash.compute` (JIT, the daemon path every check takes) drops
+  1,121 → 234 ms, the hash unchanged. New `PathFilter.IgnoreRules`, which `GitIgnores` now uses: the same `Ignore.IgnoreRule` per
+  line and the same last-match-wins answer, with each rule compiled once (`Ignore` builds a `RegexOptions.Compiled`
+  regex per rule for every matcher, so every `GitIgnores` paid a JIT compile per rule) and a rule skipped for an
+  ASCII path lacking a literal every match of it contains. Lines with classes, escapes or text `Ignore` leaves
+  unescaped, and paths with a non-ASCII character, always run the regex. Also on intelligence (JIT): resolving the
+  declared directories 300 → 21 ms, the tree walk 370 → 73 ms.
+  `GitIgnoreEquivalenceTests` checks the answers file by file against `Ignore` as the oracle, over generated rule
+  sets and generated trees with nested `.gitignore` files.
+
 ## 0.10.0-alpha.117 - 2026-11-14
 
 - fix: a directory removed after its parent listed it, before the walk read it, is absent, not a hole
