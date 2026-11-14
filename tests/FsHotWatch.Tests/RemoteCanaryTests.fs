@@ -413,3 +413,59 @@ let ``server half: a gate slower than the watchdog's poll runs to the end while 
         test <@ code = 0 @>
         test <@ File.Exists(Path.Combine(ws, "gate-ran")) @>
         test <@ not (output.Contains "connection closed") @>)
+
+/// A gate that leaves two processes behind in the workspace, each identified by a sleep
+/// length no other test uses: one still in the gate's process group, and one that left it
+/// (setpgrp), the way a daemon detaches. The teardown here does nothing, so only the
+/// script's own sweep can stop them.
+let private leaky (tag: int) (rest: string) =
+    $"(sleep {tag}1 &) ; perl -e 'setpgrp(0,0); exec \"sleep\", \"{tag}2\"' </dev/null >/dev/null 2>&1 & {rest}"
+
+let private survivors (tag: int) =
+    let pgrep = ProcessStartInfo("pgrep")
+
+    for arg in [ "-f"; $"^sleep {tag}[12]$" ] do
+        pgrep.ArgumentList.Add arg
+
+    pgrep.RedirectStandardOutput <- true
+    use p = Process.Start pgrep
+    let out = p.StandardOutput.ReadToEnd()
+    p.WaitForExit()
+    out.Split('\n', StringSplitOptions.RemoveEmptyEntries) |> Array.toList
+
+/// Clean up after a failing run, so a red test does not leave sleeps behind it.
+let private killSurvivors (tag: int) =
+    let pkill = ProcessStartInfo("pkill")
+
+    for arg in [ "-f"; $"^sleep {tag}[12]$" ] do
+        pkill.ArgumentList.Add arg
+
+    use p = Process.Start pkill
+    p.WaitForExit()
+
+[<Fact>]
+let ``server half: a green gate leaves no process running in the workspace`` () =
+    withTempDir "remote-canary-server-leak-green" (fun home ->
+        try
+            let runDir, _ = serverMachine home (leaky 86391 "touch gate-ran") ""
+            let code, output = runServer home runDir None
+            test <@ code = 0 @>
+            test <@ survivors 86391 = [] @>
+            test <@ output.Contains "leftover process" @>
+        finally
+            killSurvivors 86391)
+
+[<Fact>]
+let ``server half: a gate stopped because the releaser went away leaves no process running in the workspace`` () =
+    withTempDir "remote-canary-server-leak-gone" (fun home ->
+        try
+            let runDir, ws = serverMachine home (leaky 86381 "sleep 40; touch finished") ""
+
+            let code, _ =
+                runServer home runDir (Some(fun line -> line.StartsWith("$ (sleep 863811", StringComparison.Ordinal)))
+
+            test <@ code <> 0 @>
+            test <@ not (File.Exists(Path.Combine(ws, "finished"))) @>
+            test <@ survivors 86381 = [] @>
+        finally
+            killSurvivors 86381)

@@ -69,10 +69,40 @@ teardown() {
   echo "\$ $t   (teardown, in $ws)"
   (cd "$ws" && timeout 300 /bin/sh -c "$t") || echo "remote-canary: teardown exited $? (best effort)"
 }
+# Every process whose working directory is in the workspace, as "pid path" lines. The
+# teardown is the consumer's own word on what it leaves running (a daemon, test hosts),
+# but a gate can leave more, inside its process group or detached from it; this finds
+# them by where they run, not by what they are.
+in_workspace() {
+  local wsp; wsp=$(cd "$ws" 2>/dev/null && pwd -P) || return 0
+  if [ -d /proc/self ]; then
+    local p c
+    for p in /proc/[0-9]*; do
+      c=$(readlink "$p/cwd" 2>/dev/null) || continue
+      echo "${p#/proc/} $c"
+    done
+  else
+    lsof -d cwd -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2)} /^n/{print p" "substr($0,2)}'
+  fi | awk -v a="$ws" -v b="$wsp" -v self="$$" \
+    '$1 != self { d=substr($0, index($0," ")+1); if (d==a || d==b || index(d, a"/")==1 || index(d, b"/")==1) print }'
+}
+# After the teardown: stop whatever still runs in the workspace, TERM then KILL.
+sweep() {
+  local left pids
+  left=$(in_workspace)
+  [ -n "$left" ] || return 0
+  pids=$(awk '{print $1}' <<<"$left" | tr '\n' ' ')
+  echo "remote-canary: stopping $(wc -l <<<"$left" | tr -d ' ') leftover process(es) in $ws: $pids"
+  kill -TERM $pids 2>/dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -n "$(in_workspace)" ] || return 0; sleep 1; done
+  pids=$(in_workspace | awk '{print $1}' | tr '\n' ' ')
+  [ -n "$pids" ] && kill -KILL $pids 2>/dev/null
+  return 0
+}
 
 cd "$repo" || { echo "remote-canary: no repository at $repo"; report 66; }
 jj git fetch >/dev/null 2>&1 || { echo "remote-canary: jj git fetch failed in $repo"; report 66; }
-if [ -d "$ws" ]; then teardown; fi
+if [ -d "$ws" ]; then teardown; sweep; fi
 jj workspace forget "$name" >/dev/null 2>&1
 rm -rf "$ws"
 jj workspace add --name "$name" -r "$base" "$ws" >/dev/null 2>&1 \
@@ -118,6 +148,7 @@ sleep 1
 kill "$tailer" "$sampler" 2>/dev/null
 
 teardown
+sweep
 evict
 
 mkdir -p "$dir/evidence"
