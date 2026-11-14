@@ -306,6 +306,7 @@
     <Compile Include="ShadowVerdictTests.fs" />
     <Compile Include="ShadowIdlePluginTests.fs" />
     <Compile Include="PluginInputsTests.fs" />
+    <Compile Include="ShadowStartRerunTests.fs" />
     <Compile Include="ShadowKpSupersessionTests.fs" />
     <Compile Include="ShadowCrossCheckSupersessionTests.fs" />
     <Compile Include="ShadowReadKpTests.fs" />
