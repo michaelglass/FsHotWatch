@@ -62,11 +62,14 @@ let private idleable (json: string) : (string * string) list =
         let subscriptions = daemon.Host.RegisteredSubscriptions()
         let preprocessors = daemon.Host.PreprocessorNames()
 
-        [ for p in DaemonConfig.requiredPlugins config json do
+        [ for p in DaemonConfig.requiredPlugins json do
               match p.Eligibility with
               | PluginInputs.LookupEligibility.DeclaredInputs _ -> ()
               // Left unregistered above on purpose: a scratch checkout cannot hold their assemblies.
-              | PluginInputs.LookupEligibility.NoDeclaredInputs _ when p.Name = FsHotWatch.PluginActivity.AnalyzersPluginName -> ()
+              | PluginInputs.LookupEligibility.NoDeclaredInputs _ when
+                  p.Name = FsHotWatch.PluginActivity.AnalyzersPluginName
+                  ->
+                  ()
               | PluginInputs.LookupEligibility.NoDeclaredInputs _ when List.contains p.Name preprocessors -> ()
               | PluginInputs.LookupEligibility.NoDeclaredInputs _ ->
                   match Map.tryFind p.Name subscriptions with

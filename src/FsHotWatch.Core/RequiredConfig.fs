@@ -20,11 +20,14 @@ let AnalyzersPluginName = "analyzers"
 let TestPrunePluginName = "test-prune"
 
 /// What a configuration requires.
+[<NoComparison>]
 type Required =
     {
         /// The plugins whose outcome a green needs, in registration order: preprocessors, the
         /// formatter, lint, the analyzers, the build, file commands, coverage, then the tests.
-        Plugins: string list
+        /// Each says what its outcome is a function of (AUTOMATION-1577): only a file command
+        /// with a `pattern` and no `afterTests` declares its inputs, the files the pattern matches.
+        Plugins: PluginInputs.RequiredPlugin list
         /// The configured test projects, by the name their reports carry.
         TestProjects: string list
         /// The globs the tree hash leaves out (`exclude`): they decide which tree is being graded.
@@ -86,15 +89,78 @@ let private buildPlugin (root: JsonElement) : string list =
     | Some _
     | None -> [ "build" ]
 
-/// Each file command, by its `name`, else `file-cmd-<pattern>`.
-let private fileCommandPlugins (root: JsonElement) : string list =
+/// A plugin that reads the whole tree: only a run on the tree answers for it.
+let private readsWholeTree (name: string) : PluginInputs.RequiredPlugin =
+    PluginInputs.RequiredPlugin.wholeTree name (name + " reads the whole tree")
+
+/// Whether a file command runs after the tests: `afterTests` true, or a non-empty project list,
+/// as `DaemonConfig.parseConfig` reads it.
+let private runsAfterTests (fc: JsonElement) : bool =
+    match property fc "afterTests" with
+    | Some v when v.ValueKind = JsonValueKind.True -> true
+    | Some v when v.ValueKind = JsonValueKind.Array -> not (array v).IsEmpty
+    | Some _
+    | None -> false
+
+/// The fields of a file command's entry its key is a function of (`PluginInputs.entryDigest`),
+/// read as `DaemonConfig.parseConfig` reads them: `command` a non-blank string, `args` a string
+/// (empty when absent), `timeoutSec` a number. None when there is no usable `command`, which the
+/// daemon refuses outright; the plugin is then keyed by the whole tree, never by fewer inputs.
+let private entryOf (fc: JsonElement) : (string * string * int option) option =
+    let args =
+        match property fc "args" with
+        | Some v -> v.GetString()
+        | None -> ""
+
+    let timeoutSec =
+        match property fc "timeoutSec" with
+        | Some t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
+        | Some _
+        | None -> None
+
+    match stringOf fc "command" with
+    | Some command when not (System.String.IsNullOrWhiteSpace command) -> Some(command, args, timeoutSec)
+    | Some _
+    | None -> None
+
+/// Each file command, by its `name`, else `file-cmd-<pattern>`, with what its outcome is a
+/// function of.
+let private fileCommandPlugins (root: JsonElement) : PluginInputs.RequiredPlugin list =
     match property root "fileCommands" with
     | Some commands ->
         [ for fc in array commands do
-              match stringOf fc "name", stringOf fc "pattern" with
-              | Some name, _ -> name
-              | None, Some pattern -> $"file-cmd-{pattern}"
-              | None, None -> () ]
+              let pattern = stringOf fc "pattern"
+
+              let named =
+                  match stringOf fc "name", pattern with
+                  | Some name, _ -> Some name
+                  | None, Some pattern -> Some $"file-cmd-{pattern}"
+                  | None, None -> None
+
+              match named with
+              | None -> ()
+              | Some name ->
+                  match pattern, runsAfterTests fc, entryOf fc with
+                  | Some pattern, false, Some(command, args, timeoutSec) ->
+                      { PluginInputs.RequiredPlugin.Name = name
+                        PluginInputs.RequiredPlugin.Eligibility =
+                          PluginInputs.LookupEligibility.DeclaredInputs(
+                              PluginInputs.InputSpec.Matching(
+                                  WatchScope.FilePattern.parse pattern,
+                                  PluginInputs.entryDigest name pattern command args timeoutSec
+                              ),
+                              []
+                          ) }
+                  | Some _, false, None ->
+                      PluginInputs.RequiredPlugin.wholeTree name ("file command " + name + " names no command")
+                  | _, true, _ ->
+                      PluginInputs.RequiredPlugin.wholeTree
+                          name
+                          ("file command "
+                           + name
+                           + " runs after the tests, so its inputs are their outcomes")
+                  | None, false, _ ->
+                      PluginInputs.RequiredPlugin.wholeTree name ("file command " + name + " declares no pattern") ]
     | None -> []
 
 /// Coverage runs when it names a floor set, or a non-empty array of them.
@@ -131,15 +197,23 @@ let ofJson (json: string) : Required =
     let projects = testProjectsOf root
 
     { Plugins =
-        preprocessors
-        @ formatPlugin root
-        @ lintPlugin root
-        @ analyzersPlugin root
-        @ buildPlugin root
+        (preprocessors
+         |> List.map (fun name ->
+             PluginInputs.RequiredPlugin.wholeTree
+                 name
+                 ("preprocessor " + name + " runs over the files a check delivers")))
+        @ (formatPlugin root @ lintPlugin root @ analyzersPlugin root @ buildPlugin root
+           |> List.map readsWholeTree)
         @ fileCommandPlugins root
-        @ coveragePlugin root
-        @ (if projects.IsEmpty then [] else [ TestPrunePluginName ])
-        |> List.distinct
+        @ (coveragePlugin root |> List.map readsWholeTree)
+        @ (if projects.IsEmpty then
+               []
+           else
+               [ PluginInputs.RequiredPlugin.wholeTree
+                     TestPrunePluginName
+                     "test-prune runs the configured test projects over the whole tree" ])
+        // The first plugin of a name stands, as the daemon registers it.
+        |> List.distinctBy _.Name
       TestProjects = projects
       Exclude = excludeOf root }
 
