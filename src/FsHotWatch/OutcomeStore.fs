@@ -791,6 +791,61 @@ module Through =
     let lookup (store: OutcomeRecords.IOutcomeStore) (keyValue: ActionKey.KeyValue) : Record option =
         lookupWithOutputs store keyValue |> Option.map fst
 
+    /// Every record of `keyValue`, oldest first, or `Error` naming a file at the key that could
+    /// not be READ (AUTOMATION-1615). For a reader that must not take "could not be read" for
+    /// "nothing on file": it matches on `KeyRead` itself, never on `lookup`'s option.
+    let tryHistory (store: OutcomeRecords.IOutcomeStore) (keyValue: ActionKey.KeyValue) : Result<Record list, string> =
+        match store.Read keyValue with
+        | OutcomeRecords.KeyRead.Unreadable(file, why) ->
+            Error $"%s{IO.Path.GetFileName file} could not be read: %s{why}"
+        | OutcomeRecords.KeyRead.Answered _ as read ->
+            OutcomeRecords.KeyRead.history read |> List.map (ofStored >> fst) |> Ok
+        | OutcomeRecords.KeyRead.NothingFiled
+        | OutcomeRecords.KeyRead.OnlyRejected _ -> Ok []
+
+    /// File `record` with `outputs` as its key's only record (`Store.Supersede`): the bytes it is
+    /// filed as, or `None` when it could not be filed.
+    let supersede (store: OutcomeRecords.IOutcomeStore) (record: Record) (outputs: string option) : int64 option =
+        let stored = toStored record outputs
+
+        match store.Supersede stored with
+        | OutcomeRecords.Filing.Filed
+        | OutcomeRecords.Filing.AlreadyFiled ->
+            OutcomeRecords.RecordCodec.envelope (OutcomeRecords.RecordCodec.encodePayload stored)
+            |> Text.Encoding.UTF8.GetByteCount
+            |> int64
+            |> Some
+        | OutcomeRecords.Filing.NotFiled _ -> None
+
+/// Collecting a store after filing, keeping the given keys. GC belongs to the disk store, not to
+/// `IOutcomeStore`, so the code that opens a store hands its collection over with it (`Wired`):
+/// the disk store's `GcIfDue` (`collectDue`), or nothing for a store with no collection
+/// (`collectNothing`, the simulation's in-memory store). Code that files cannot tell which.
+type Collect = DateTimeOffset -> Set<ActionKey.KeyValue> -> unit
+
+/// The disk store's own collection, when it is due; `notDue` hears when it was not, and when
+/// the last one completed.
+let collectDue (store: Store) (notDue: DateTimeOffset -> unit) : Collect =
+    fun now keep ->
+        match store.GcIfDue(now, keep, defaultGcInterval) with
+        | GcRun.Ran _ -> ()
+        | GcRun.NotDue lastRanAt -> notDue lastRanAt
+
+/// No collection.
+let collectNothing: Collect = fun _ _ -> ()
+
+/// A store as the code that opened it hands it over: the store, and its collection.
+[<NoComparison; NoEquality>]
+type Wired =
+    { Store: OutcomeRecords.IOutcomeStore
+      Collect: Collect }
+
+module Wired =
+    /// The disk store `store` with its own collection.
+    let disk (store: Store) (notDue: DateTimeOffset -> unit) : Wired =
+        { Store = store
+          Collect = collectDue store notDue }
+
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =
     Store(

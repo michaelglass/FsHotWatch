@@ -605,7 +605,7 @@ let internal restartBaselineIn
                 Error
                     $"the index is sealed at %s{sealedAt}, not at a tree this checkout's full suite passed (the ledger's newest is %s{List.head passed}, %d{passed.Length} kept)"
             | Some tree ->
-                match evidence |> Option.bind (fun wiring -> wiring.Outcomes) with
+                match evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store with
                 | None -> Error "no outcome store is wired"
                 | Some store ->
                     TestBaseline.checkoutRecordFor store tree
@@ -693,7 +693,7 @@ let internal fileBaselineIn
     let outcome =
         try
             TestBaseline.file
-                (evidence |> Option.bind (fun wiring -> wiring.Outcomes))
+                (evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store)
                 (fun () -> currentOutcomeKeys ctx.ProjectGraph)
                 fileKeys
                 producer

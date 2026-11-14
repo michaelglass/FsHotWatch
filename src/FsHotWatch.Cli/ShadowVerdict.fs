@@ -540,22 +540,15 @@ let private fileRecords
 
     List.length filed
 
-/// Collecting the store after a publication, keeping the keys it required. GC belongs to the
-/// disk store, not to `IOutcomeStore`, so the code that opens a store wires its collection in:
-/// the disk store's `GcIfDue` (`collectDue`), or nothing for a store with no collection
-/// (`collectNothing`, the simulation's in-memory store). The code that observes cannot tell
-/// which it was given.
-type Collect = DateTimeOffset -> Set<ActionKey.KeyValue> -> unit
+/// Collecting the store after a publication (`OutcomeStore.Collect`): the code that opens the
+/// store wires it in, and `observeWith` cannot tell which it was given.
+type Collect = OutcomeStore.Collect
 
 /// The disk store's own collection, when it is due.
-let collectDue (store: OutcomeStore.Store) : Collect =
-    fun now keep ->
-        match store.GcIfDue(now, keep, OutcomeStore.defaultGcInterval) with
-        | OutcomeStore.GcRun.Ran _
-        | OutcomeStore.GcRun.NotDue _ -> ()
+let collectDue (store: OutcomeStore.Store) : Collect = OutcomeStore.collectDue store ignore
 
 /// No collection.
-let collectNothing: Collect = fun _ _ -> ()
+let collectNothing: Collect = OutcomeStore.collectNothing
 
 /// File `o`'s records, look the tree up, append the comparison to the shadow log, then
 /// `collect`, keeping every key the lookup required. Through any `IOutcomeStore`
