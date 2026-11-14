@@ -62,7 +62,7 @@ module IdentityError =
         | IdentityError.PathNotFound path -> $"no such file or directory: %s{path}"
         | IdentityError.NotADirectory path -> $"not a directory: %s{path}"
         | IdentityError.SymlinkLoop path -> $"too many levels of symbolic links resolving %s{path}"
-        | IdentityError.InvalidPath(path, reason) -> $"not a usable path (%s{reason}): %A{path}"
+        | IdentityError.InvalidPath(path, reason) -> $"not a usable path (%s{reason}): \"%s{path}\""
         | IdentityError.MalformedMetadata(file, reason) -> $"malformed VCS metadata in %s{file}: %s{reason}"
         | IdentityError.DanglingPointer(file, target) -> $"%s{file} points at %s{target}, which is not a directory"
 
