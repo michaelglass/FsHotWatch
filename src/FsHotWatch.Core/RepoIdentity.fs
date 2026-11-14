@@ -64,7 +64,7 @@ let namespaceOf (repoRoot: string) : string =
     let source = describe repoRoot
 
     let digest =
-        (FsHotWatch.CheckCache.sha256Hex (identitySource source)).Substring(0, 16)
+        (ContentHash.ofText (identitySource source)).Substring(0, 16)
 
     let label =
         let name = repositoryName source
