@@ -60,6 +60,7 @@
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="OutcomeStore.fs" />
     <Compile Include="TestFailureClearance.fs" />
+    <Compile Include="Lookup.fs" />
   </ItemGroup>
 
   <ItemGroup>
