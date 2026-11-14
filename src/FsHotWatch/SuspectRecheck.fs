@@ -216,7 +216,7 @@ module Receipt =
 
     /// File `receipt` with repo-relative paths: the store is shared across checkouts,
     /// and a key is a content address that speaks for any of them.
-    let file (store: OutcomeStore.Store) (binary: string) (repoRoot: string) (receipt: Receipt) : unit =
+    let file (store: OutcomeRecords.IOutcomeStore) (binary: string) (repoRoot: string) (receipt: Receipt) : unit =
         let relative (file: string) =
             Path.GetRelativePath(repoRoot, file).Replace('\\', '/')
 
@@ -231,21 +231,21 @@ module Receipt =
             else
                 OutcomeStore.Outcome.Fail
 
-        store.RecordWithOutputs(
-            OutcomeStore.Record.ofAction
+        OutcomeStore.Through.file
+            store
+            (OutcomeStore.Record.ofAction
                 (keyOf receipt.Tree)
                 "suspect-recheck"
                 outcome
                 binary
                 repoRoot
-                DateTimeOffset.UtcNow,
-            Some((toJson stored).ToJsonString())
-        )
+                DateTimeOffset.UtcNow)
+            (Some((toJson stored).ToJsonString()))
         |> ignore
 
     /// The newest receipt filed for `tree`, from any process.
-    let read (store: OutcomeStore.Store) (tree: string) : Receipt option =
-        match store.LookupWithOutputs(keyOf tree) with
+    let read (store: OutcomeRecords.IOutcomeStore) (tree: string) : Receipt option =
+        match OutcomeStore.Through.lookupWithOutputs store (keyOf tree).Value with
         | Some(_, Some outputs) -> JsonNode.Parse outputs |> tryOfJson
         | _ -> None
 
