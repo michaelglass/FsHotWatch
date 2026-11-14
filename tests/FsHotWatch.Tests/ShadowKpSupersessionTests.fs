@@ -160,7 +160,7 @@ let ``a full-suite K_P fail whose one named failure a later impact run passed at
                   suite "r1" "A.Tests" [ "A.x" ] [ "A.y"; "A.z" ]
                   bSuite ]
 
-        test <@ observeWith repo store (Some kp) configured o = LookupVerdict.Answer.Green @>)
+        test <@ observeWith repo store (Some kp) (collectDue store) configured o = LookupVerdict.Answer.Green @>)
 
 // ---------------------------------------------------------------------------
 // Never looser: each of these must stay red, as today's verdict is or would be.
@@ -187,7 +187,11 @@ let ``a failure the later run failed again stays red`` () =
                 TodayOutcome = "red"
                 ExitCode = 1 }
 
-        test <@ observeWith repo store (Some kp) configured o = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test
+            <@
+                observeWith repo store (Some kp) (collectDue store) configured o = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>)
 
 [<Fact>]
 let ``a later passing run that did not run the failed test leaves the K_P fail red`` () =
@@ -202,7 +206,11 @@ let ``a later passing run that did not run the failed test leaves the K_P fail r
                   suite "r1" "A.Tests" [ "A.x" ] [ "A.y" ]
                   bSuite ]
 
-        test <@ observeWith repo store (Some kp) configured o = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test
+            <@
+                observeWith repo store (Some kp) (collectDue store) configured o = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>)
 
 [<Fact>]
 let ``a later run that passed only some of the failures leaves the K_P fail red`` () =
@@ -217,7 +225,11 @@ let ``a later run that passed only some of the failures leaves the K_P fail red`
                   suite "r1" "A.Tests" [ "A.x"; "A.w" ] [ "A.y" ]
                   bSuite ]
 
-        test <@ observeWith repo store (Some kp) configured o = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test
+            <@
+                observeWith repo store (Some kp) (collectDue store) configured o = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>)
 
 [<Fact>]
 let ``a full fail with a failure its report does not name is never cleared`` () =
@@ -228,7 +240,7 @@ let ``a full fail with a failure its report does not name is never cleared`` () 
 
         test
             <@
-                observeWith repo store (Some kp) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
+                observeWith repo store (Some kp) (collectDue store) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
                     [ "test:A.Tests" ]
             @>)
 
@@ -260,7 +272,7 @@ let ``a timed-out full run is never cleared, whatever its report names`` () =
 
         test
             <@
-                observeWith repo store (Some kp) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
+                observeWith repo store (Some kp) (collectDue store) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
                     [ "test:A.Tests" ]
             @>)
 
@@ -273,7 +285,7 @@ let ``a pass filed before the full fail never clears it`` () =
 
         test
             <@
-                observeWith repo store (Some kp) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
+                observeWith repo store (Some kp) (collectDue store) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
                     [ "test:A.Tests" ]
             @>)
 
@@ -287,7 +299,7 @@ let ``a newer full fail at the same K_P is red again, though an older one was cl
 
         test
             <@
-                observeWith repo store (Some kp) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
+                observeWith repo store (Some kp) (collectDue store) configured (check stepThirtyFour) = LookupVerdict.Answer.Red
                     [ "test:A.Tests" ]
             @>)
 
@@ -308,7 +320,11 @@ let ``confirm never accepts a cleared full fail: it needs the full suite itself 
                 GradedRunId = Some "r1"
                 Scope = GradedScope.FullSuite }
 
-        test <@ observeWith repo store (Some kp) configured o = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test
+            <@
+                observeWith repo store (Some kp) (collectDue store) configured o = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>)
 
 
 /// The failed tests the fail record of a full run reporting `report` names, as filed.
