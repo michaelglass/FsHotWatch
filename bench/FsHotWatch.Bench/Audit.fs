@@ -25,7 +25,8 @@ let request (opts: Map<string, string list>) : RecordAudit.Request =
             | false, _ -> -1)
       Seed = one "seed"
       Keys = all "key"
-      PreferInput = one "prefer-input" }
+      PreferInput = one "prefer-input"
+      ShadowLogs = all "shadow-log" }
 
 /// Audit `target`'s store; the exit code (0 agree, 1 mismatch, 3 vacuous, 2 usage).
 let run (target: string) (opts: Map<string, string list>) : int =

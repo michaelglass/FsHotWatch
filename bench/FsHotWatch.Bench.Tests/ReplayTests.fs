@@ -701,4 +701,10 @@ let ``fshw-bench audit reads its request from the harness's arguments`` () =
     test <@ request.Sample = Some 0 && request.Seed = Some "n1" @>
     test <@ request.Keys = [ "ak1:x" ] @>
     test <@ (Audit.request (fst (Program.parseArgs [ "--sample"; "many" ]))).Sample = Some -1 @>
+
+    let logs =
+        (Audit.request (fst (Program.parseArgs [ "--shadow-log"; "/a.jsonl"; "--shadow-log"; "/b.jsonl" ]))).ShadowLogs
+
+    test <@ logs = [ "/a.jsonl"; "/b.jsonl" ] @>
+
     test <@ Audit.run "/nowhere" (fst (Program.parseArgs [])) = 2 @>

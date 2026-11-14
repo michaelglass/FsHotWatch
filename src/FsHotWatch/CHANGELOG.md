@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: the record audit reports LOOKUP AGREEMENT when given shadow logs (AUTOMATION-1577, ADR-074 night count (b)).
+  `RecordAudit.Options.ShadowLogs` / `Request.ShadowLogs`; `Report.Agreement : LookupAgreement = NotAsked | Tallied of
+  AgreementTally` (publications, daemon greens, the lookup greens among them, lookup greens on daemon reds); a lookup
+  green on a red makes the audit a mismatch, and 0% agreement or no daemon green makes it vacuous. `render` prints the
+  rate and `LOOKUP AGREEMENT 0%` / `LOOKUP GREEN ON RED`; the JSON carries `lookupAgreement` with an `alarm`. `Report.RecordsVerdict`
+  (JSON `recordsVerdict`, and the `records:` line) is the record comparison alone, ADR-074's night count (a), so an
+  agreement alarm never reads as a records verdict.
+
 - feat: a plugin that declares its own inputs is answered by its last outcome while they are unchanged
   (AUTOMATION-1577, ADR-074). New module `PluginInputs`: `LookupEligibility = DeclaredInputs of first: InputSpec *
   rest: InputSpec list | NoDeclaredInputs of reason`, `InputSpec.Matching of FilePattern * entry` (a file command's
