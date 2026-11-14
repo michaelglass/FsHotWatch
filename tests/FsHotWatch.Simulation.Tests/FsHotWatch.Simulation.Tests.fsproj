@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The deterministic simulation harness of the re-architecture's correctness core
+       (intelligence docs/plans/2026-11-12-fshw-rearchitecture.md §7.4, AUTOMATION-1695).
+
+       It drives the outcome store, the requirement set R(c, T) and the lookup verdict through
+       seeded histories (edits, killed and raced checks, restarts, torn records, clock jumps,
+       GC) and checks each answer against a reference interpreter's clean verdict.
+
+       Its own project, not part of FsHotWatch.Tests: it is meant to reference only
+       FsHotWatch.Core once L0-L2 have moved there, and a small project keeps the iteration
+       loop to seconds. Not in the coverage ratchet: what it exercises is measured by
+       FsHotWatch.Tests. CI measures it anyway (every *.Tests project runs with coverage on), into
+       a directory no floors file reads. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Model.fs" />
+    <Compile Include="System.fs" />
+    <Compile Include="Simulation.fs" />
+    <Compile Include="SimulationTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.v3.mtp-v2" />
+    <PackageReference Include="Unquote" />
+    <!-- CI's build job tests every tests/**/*.Tests.fsproj with coverage on, which needs this extension.
+         The report lands in coverage/FsHotWatch.Simulation/, which no floors file reads, and the
+         module filters are this project's own testconfig.json (CiLinuxTests). -->
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
+  </ItemGroup>
+</Project>
