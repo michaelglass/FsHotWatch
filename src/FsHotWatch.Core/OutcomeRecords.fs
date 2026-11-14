@@ -71,6 +71,9 @@ type StoredRecord =
         /// What the action produced, as JSON (ADR-059 §14), for a record that carries outputs.
         /// Kind-erased here: which kinds always, sometimes or never carry outputs is the typed
         /// record layer's to state (`Outcome<'Kind>`), not the store's.
+        /// OWED (AUTOMATION-1695, decided 2026-11-14): when callers move to `Outcome<'Kind>`, each
+        /// kind's outputs get their own type there and this option goes. Not an Outputs union here:
+        /// that would be this option under another name.
         Outputs: string option
     }
 
