@@ -51,10 +51,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="Locking.fs" />
     <Compile Include="DrainedTimer.fs" />
-    <Compile Include="Logging.fs" />
-    <Compile Include="Json.fs" />
     <Compile Include="SessionScope.fs" />
     <Compile Include="HostClock.fs" />
     <Compile Include="OperationWatchdog.fs" />
@@ -65,18 +62,14 @@
     <Compile Include="FcsSuppression.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="CachePathIdentity.fs" />
-    <Compile Include="PathFilter.fs" />
     <Compile Include="RepoFiles.fs" />
-    <Compile Include="SafeWalk.fs" />
     <Compile Include="ProcessRegistry.fs" />
     <Compile Include="DeadlineWorkers.fs" />
     <Compile Include="SpawnHelper.fs" />
     <Compile Include="InProcessProcessTable.fs" />
     <Compile Include="ProcessHelper.fs" />
-    <Compile Include="FsHwPaths.fs" />
     <Compile Include="Restart.fs" />
     <Compile Include="PidFile.fs" />
-    <Compile Include="ContentHash.fs" />
     <Compile Include="SnapshotEpoch.fs" />
     <Compile Include="DaemonIdentity.fs" />
     <Compile Include="MacAttrList.fs" />
@@ -117,12 +110,8 @@
     <Compile Include="PluginActivity.fs" />
     <Compile Include="MacFsEvents.fs" />
     <Compile Include="ContentDedup.fs" />
-    <Compile Include="Discovery.fs" />
     <Compile Include="Ctrf.fs" />
     <Compile Include="RunLog.fs" />
-    <Compile Include="VerdictInputs.fs" />
-    <Compile Include="ConfiguredTestRoots.fs" />
-    <Compile Include="TreeHash.fs" />
     <Compile Include="TestEvidenceKey.fs" />
     <Compile Include="TestEvidenceStore.fs" />
     <Compile Include="OutcomeStore.fs" />
@@ -193,6 +182,8 @@
   </Target>
 
   <ItemGroup>
+    <!-- Also what FsHotWatch.Core, which this package carries in lib/, needs at run time (the tree walk
+         moved there, AUTOMATION-1695): declared here so the nupkg brings it. -->
     <PackageReference Include="Ignore" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     <PackageReference Include="FSharp.Core" />

@@ -11,6 +11,11 @@
   lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
   when lines were dropped.
 
+- refactor: the tree walk and hash move into `FsHotWatch.Core.dll` under their own module names (AUTOMATION-1695,
+  experiment E5): `TreeHash`, `VerdictInputs`, `ConfiguredTestRoots`, `Discovery`, `PathFilter`, `SafeWalk`, `FsHwPaths`,
+  `ContentHash`, `Json`, `Logging` and `Locking`. No caller changes. Core now references `Ignore`, its one dependency besides
+  FSharp.Core, which this package declares for it.
+
 - fix: a record a deterministic action has just COMPUTED moves the unreadable or foreign files under its key into
   quarantine, by rename, and the key answers again (AUTOMATION-1701, ADR-072). Before, one unreadable file left its
   key a miss for as long as it stayed. New: `IOutcomeStore.FileComputed` taking `OutcomeRecords.Computed`

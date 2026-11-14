@@ -9,10 +9,12 @@ open System.Reflection
 open Xunit
 open Swensen.Unquote
 
-/// What FsHotWatch.Core may reference: the runtime and FSharp.Core. Anything else needs a decision
+/// What FsHotWatch.Core may reference, EXACTLY: the runtime, FSharp.Core, and `Ignore` (gitignore
+/// matching for the tree walk; decided 2026-11-14, AUTOMATION-1695). Anything else needs a decision
 /// recorded here and in Core's fsproj comment.
 let private allowed (name: AssemblyName) =
     name.Name = "FSharp.Core"
+    || name.Name = "Ignore"
     || name.Name = "netstandard"
     || name.Name = "mscorlib"
     || name.Name.StartsWith("System.", StringComparison.Ordinal)
@@ -27,7 +29,7 @@ let private forbidden (assembly: Assembly) : string list =
     |> List.ofArray
 
 [<Fact>]
-let ``FsHotWatch.Core references nothing but the runtime and FSharp.Core`` () =
+let ``FsHotWatch.Core references nothing but the runtime, FSharp.Core and Ignore`` () =
     let core = typeof<FsHotWatch.Core.NonEmpty<int>>.Assembly
     test <@ core.GetName().Name = "FsHotWatch.Core" @>
     test <@ forbidden core = [] @>
