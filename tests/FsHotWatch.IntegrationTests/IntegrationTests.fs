@@ -70,6 +70,23 @@ let private pinnedRepo (dir: string) : string =
     File.Copy(Path.Combine(repo, "global.json"), Path.Combine(dir, "global.json"), true)
     dir
 
+/// The format check's verdict once it finishes. A terminal `Failed` status ends the wait at
+/// once and fails with the plugin's own reason, so a refusal (an unrestored Fantomas, a
+/// pinned SDK that is missing) reads as itself instead of a 75 s wait for `Completed`.
+let private formatCheckVerdict (host: PluginHost) : RunVerdict =
+    let finished () =
+        match host.GetStatus "format-check" with
+        | Some(Completed _)
+        | Some(PluginStatus.Failed _) -> true
+        | _ -> false
+
+    waitUntilOr "format-check to complete or fail" finished FantomasRunWaitMs
+
+    match host.GetStatus "format-check" with
+    | Some(Completed(_, verdict)) -> verdict
+    | Some(PluginStatus.Failed(reason, _, _)) -> failwith $"format-check failed: %s{reason}"
+    | other -> failwith $"format-check left its finished status before it was read: %A{other}"
+
 /// The SDK `dotnet` selects in `dir`, as a child process started there sees it.
 let private sdkVersionIn (dir: string) : string =
     let psi = Diagnostics.ProcessStartInfo("dotnet", "--version")
@@ -558,6 +575,33 @@ let private pinnedFantomasVersion =
     | Result.Error e -> failwith $"this checkout must pin fantomas: %A{e}"
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``a format check that refuses fails the wait at once, naming the refusal`` () =
+    // Main's Linux red (run 43563214017) spent 75 s per test waiting for a Completed status
+    // that a refusal ("pinned … but not restored") never gives, then said only that the
+    // awaited condition did not happen. A terminal Failed status ends the wait with its reason:
+    // the claim is how the wait ended, never how long it took, so an exhausted budget (a
+    // TimeoutException naming the condition) cannot pass for it.
+    withTempFsFile "module Temp\n\nlet x = 5\n" (fun dir filePath ->
+        let repoRoot = pinnedRepo dir
+
+        File.WriteAllText(
+            Path.Combine(repoRoot, ".config", "dotnet-tools.json"),
+            """{ "version": 1, "isRoot": true, "tools": { "fantomas": { "version": "0.0.1-fshw-never-restored", "commands": ["fantomas"] } } }"""
+        )
+
+        let host =
+            PluginHost.create FsHotWatch.Tests.TestHelpers.sharedChecker.Value repoRoot
+
+        host.RegisterHandler(createFormatCheck repoRoot None)
+        host.EmitFileChanged(SourceChanged [ filePath ])
+
+        let failure = Assert.ThrowsAny<exn>(fun () -> formatCheckVerdict host |> ignore)
+
+        test <@ not (failure :? System.TimeoutException) @>
+        test <@ failure.Message.StartsWith "format-check failed: " @>
+        test <@ failure.Message.Contains "not restored" @>)
+
+[<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check plugin detects unformatted code`` () =
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
@@ -571,20 +615,12 @@ let ``format check plugin detects unformatted code`` () =
 
         host.EmitFileChanged(SourceChanged [ filePath ])
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            FantomasRunWaitMs
+        let verdict = formatCheckVerdict host
 
-        match host.GetStatus("format-check") with
-        | Some(Completed(_, verdict)) ->
-            test
-                <@
-                    verdict.Summary = $"1 of 1 files need formatting — dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)"
-                @>
-        | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
+        test
+            <@
+                verdict.Summary = $"1 of 1 files need formatting — dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)"
+            @>)
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check plugin passes on well-formatted code`` () =
@@ -598,20 +634,12 @@ let ``format check plugin passes on well-formatted code`` () =
 
         host.EmitFileChanged(SourceChanged [ filePath ])
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            FantomasRunWaitMs
+        let verdict = formatCheckVerdict host
 
-        match host.GetStatus("format-check") with
-        | Some(Completed(_, verdict)) ->
-            test
-                <@
-                    verdict.Summary = $"format OK (1 checked) — dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)"
-                @>
-        | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
+        test
+            <@
+                verdict.Summary = $"format OK (1 checked) — dotnet fantomas %s{pinnedFantomasVersion} (pinned in .config/dotnet-tools.json)"
+            @>)
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``plugin status reflects running to completed lifecycle`` () =
@@ -630,19 +658,8 @@ let ``plugin status reflects running to completed lifecycle`` () =
 
         host.EmitFileChanged(SourceChanged [ filePath ])
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            FantomasRunWaitMs
-
-        let afterStatus = host.GetStatus("format-check")
-        test <@ afterStatus.IsSome @>
-
-        match afterStatus.Value with
-        | Completed _ -> ()
-        | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
+        formatCheckVerdict host |> ignore
+        test <@ host.GetStatus("format-check").Value.IsCompleted @>)
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``multiple file changes are debounced into one batch by SourceChanged`` () =
@@ -672,16 +689,8 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
         host.EmitFileChanged(SourceChanged files)
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("format-check") with
-                | Some(Completed _) -> true
-                | _ -> false)
-            FantomasRunWaitMs
-
-        match host.GetStatus("format-check") with
-        | Some(Completed(_, verdict)) -> test <@ verdict.Summary.StartsWith "2 of 5 files need formatting" @>
-        | other -> Assert.Fail($"Unexpected format-check status: %A{other}")
+        let verdict = formatCheckVerdict host
+        test <@ verdict.Summary.StartsWith "2 of 5 files need formatting" @>
     finally
         try
             Directory.Delete(dir, true)
