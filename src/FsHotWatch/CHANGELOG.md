@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- build: the FsHotWatch package carries `FsHotWatch.Core.dll` in `lib/` (AUTOMATION-1695). Core is still not a
+  package of its own (AUTOMATION-1668); this package now references it, because the re-architecture moves the
+  correctness core (L0-L2) into it. FsHotWatch.Analyzers no longer packs its own copy, so the assembly ships once.
+
 ## 0.10.0-alpha.115 - 2026-11-14
 
 - feat: the clean-recompute audit reports a kind that compared nothing as a finding of its own, not only through exit
