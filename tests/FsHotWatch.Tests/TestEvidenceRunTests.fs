@@ -557,7 +557,7 @@ let ``a newer full fail at a project's key is not answered by an older green und
         let wiring =
             Some
                 { wiringFor store with
-                    Outcomes = Some outcomes }
+                    Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk outcomes ignore) }
 
         let rootNamed (name: string) =
             let root = Path.Combine(dir, name)
@@ -889,7 +889,7 @@ let ``every project a run launched is recorded in the outcome store under its K_
 
         let wiring =
             { wiringFor store with
-                Outcomes = Some outcomes }
+                Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk outcomes ignore) }
 
         let a = checkout root (Some wiring) false
         let launched, completed = run a
@@ -936,7 +936,7 @@ let ``a settled test-scope reply names the outcome key each project's full run o
                 root
                 (Some
                     { wiringFor store with
-                        Outcomes = Some outcomes })
+                        Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk outcomes ignore) })
                 false
 
         run a |> ignore

@@ -585,7 +585,7 @@ let ``with no evidence store or no identities every configured project is refuse
               Loaded = TestEvidenceKey.LoadedEnvironment.empty
               ProducerHash = "p"
               ExcludePatterns = []
-              Outcomes = Some(storeIn dir) }
+              Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk (storeIn dir) ignore) }
 
         let noIdentities =
             PluginSteps.currentOutcomeKeyResultsIn
