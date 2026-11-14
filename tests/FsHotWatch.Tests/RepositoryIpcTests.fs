@@ -147,6 +147,83 @@ let ``a frame written through awaits that all suspend arrives whole`` () =
     stream.Position <- 0L
     test <@ (readFrame stream CancellationToken.None).Result = Ok "héllo" @>
 
+/// A stream holding one frame whose header reads at once and whose payload read stays
+/// pending until the test releases it, so `readFrame`'s await on the payload suspends on
+/// any runtime. A real pipe decides that by timing: the payload has usually, not always,
+/// arrived by the time the header is read (AUTOMATION-1681).
+type private PayloadLaterStream(frame: byte[]) =
+    inherit MemoryStream(frame)
+
+    let payloadAsked = Threading.Tasks.TaskCompletionSource()
+    let release = Threading.Tasks.TaskCompletionSource()
+
+    /// Completes once `readFrame` has asked for the payload.
+    member _.PayloadAsked = payloadAsked.Task
+
+    member _.Release() = release.SetResult()
+
+    override this.ReadAsync(buffer: Memory<byte>, _: CancellationToken) =
+        if this.Position < 4L then
+            Threading.Tasks.ValueTask<int>(this.Read(buffer.Span))
+        else
+            payloadAsked.TrySetResult() |> ignore
+
+            Threading.Tasks.ValueTask<int>(
+                release.Task.ContinueWith(fun (_: Threading.Tasks.Task) -> this.Read(buffer.Span))
+            )
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a frame whose payload arrives after its header is read whole`` () =
+    use written = new MemoryStream()
+    (writeFrame written "héllo" CancellationToken.None).Wait()
+    use stream = new PayloadLaterStream(written.ToArray())
+
+    let read = readFrame stream CancellationToken.None
+
+    // The header was there; the payload is not yet, so the read is waiting on it.
+    test <@ stream.PayloadAsked.Wait FsHotWatch.Tests.TestHelpers.HangWait @>
+    test <@ not read.IsCompleted @>
+
+    stream.Release()
+    test <@ read.Result = Ok "héllo" @>
+
+/// A refused client's leftover bytes, which read at once, and then an end of stream that
+/// stays pending until the test releases it, so `drainUnread` takes both of its read's
+/// paths on any runtime: one that completes at once, and one that waits. A real pipe
+/// decides that by timing, on whether the client has closed before the drain reads.
+type private EndLaterStream(unread: byte[]) =
+    inherit MemoryStream(unread)
+
+    let endAsked = Threading.Tasks.TaskCompletionSource()
+    let release = Threading.Tasks.TaskCompletionSource()
+
+    /// Completes once every leftover byte is read and the drain waits for the end.
+    member _.EndAsked = endAsked.Task
+
+    member _.Release() = release.SetResult()
+
+    override this.ReadAsync(buffer: Memory<byte>, _: CancellationToken) =
+        if this.Position < this.Length then
+            Threading.Tasks.ValueTask<int>(this.Read(buffer.Span))
+        else
+            endAsked.TrySetResult() |> ignore
+            Threading.Tasks.ValueTask<int>(release.Task.ContinueWith(fun (_: Threading.Tasks.Task) -> 0))
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a refused connection's unread bytes are drained until the client closes`` () =
+    use stream = new EndLaterStream(Array.create 10 65uy)
+
+    // A bound no test reaches: only the end of stream may end this drain.
+    let drained = drainUnread stream (TimeSpan.FromMinutes 10.0)
+
+    test <@ stream.EndAsked.Wait FsHotWatch.Tests.TestHelpers.HangWait @>
+    test <@ stream.Position = stream.Length @>
+    // Every byte is read, and the drain is waiting for the client to close.
+    test <@ not drained.IsCompleted @>
+
+    stream.Release()
+    test <@ drained.Wait FsHotWatch.Tests.TestHelpers.HangWait @>
+
 [<Fact(Timeout = 5000)>]
 let ``a cancelled write still raises: cancellation is the caller's, not a hang-up`` () =
     use stream = new MemoryStream()

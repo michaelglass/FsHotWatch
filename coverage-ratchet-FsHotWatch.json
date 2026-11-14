@@ -1607,7 +1607,7 @@
       {
         "line": 100,
         "branch": 100,
-        "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value rounded down, the same on both platforms. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-17 on main a0658598): line 218/218, branch 87/87; and on Linux by CI run 39059935111 (commit 3cd92ed9, coverage-thresholds artifact): line 100%, branch 100%."
+        "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value rounded down, the same on both platforms. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-17 on main a0658598): line 218/218, branch 87/87; and on Linux by CI run 39059935111 (commit 3cd92ed9, coverage-thresholds artifact): line 100%, branch 100%. AUTOMATION-1681: the two counts differ because of how the task builders compile. Linux CI got resumable state machines, where every let! is a 2-way branch (did the awaited task finish already, or suspend). macOS Debug got closures with no such branch. A Release build reproduces the Linux shape locally. readFrame's payload await (line 123) was covered on its suspend path only when a real pipe's payload arrived after its header, so Linux went 110/111 on runs where it always arrived first. RepositoryIpcTests' PayloadLaterStream now pins that path."
       }
     ],
     "SessionFrames.fs": [
