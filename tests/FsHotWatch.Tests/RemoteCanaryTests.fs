@@ -33,15 +33,15 @@ let private executable (path: string) (text: string) =
     File.SetUnixFileMode(path, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
 
 /// Start `bash <script>` in `cwd` with HOME=`home`, TMPDIR=`home`/tmp and `bin` first on PATH.
-/// Standard input stays OPEN until `closeStdinAfter` elapses (never, when None): the server
-/// half reads EOF on it as "the releaser is gone".
+/// Standard input stays OPEN until the script prints a line `closeStdinOn` accepts (never,
+/// when None): the server half reads EOF on it as "the releaser is gone".
 let private run
     (home: string)
     (cwd: string)
     (scriptPath: string)
     (args: string list)
     (env: (string * string) list)
-    (closeStdinAfter: TimeSpan option)
+    (closeStdinOn: (string -> bool) option)
     =
     let start = ProcessStartInfo("bash")
     start.WorkingDirectory <- cwd
@@ -61,22 +61,31 @@ let private run
         start.Environment[k] <- v
 
     use child = Process.Start start
-    let stdout = child.StandardOutput.ReadToEndAsync()
     let stderr = child.StandardError.ReadToEndAsync()
+    let stdout = Text.StringBuilder()
 
-    match closeStdinAfter with
-    | Some delay ->
-        Threading.Thread.Sleep delay
-        child.StandardInput.Close()
-    | None -> ()
+    // Read stdout line by line until EOF, closing stdin at the first cue line.
+    let rec drain closed =
+        match child.StandardOutput.ReadLine() with
+        | null -> ()
+        | line ->
+            stdout.AppendLine line |> ignore
 
+            let cue = not closed && (closeStdinOn |> Option.exists (fun isCue -> isCue line))
+
+            if cue then
+                child.StandardInput.Close()
+
+            drain (closed || cue)
+
+    drain false
     let exited = child.WaitForExit(TimeSpan.FromSeconds 60.0)
 
     if not exited then
         child.Kill true
 
     test <@ exited @>
-    child.ExitCode, stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult()
+    child.ExitCode, stdout.ToString() + stderr.GetAwaiter().GetResult()
 
 // ---------------------------------------------------------------- the releaser's half
 
@@ -207,8 +216,11 @@ let ``a red remote gate refuses with the gate's exit code and fetches the eviden
         test <@ code = 1 @>
         test <@ output.Contains "FAILED Foo.Tests" @>
 
+        // One run directory, holding the verdict the fake pull planted: logs/remote-canary/<run>/.
         let evidence = Path.Combine(home, ".fssemantictagger", "logs", "remote-canary")
-        test <@ Directory.GetFiles(evidence, "verdict.json", SearchOption.AllDirectories).Length = 1 @>)
+        let runs = Directory.GetDirectories evidence
+        test <@ runs.Length = 1 @>
+        test <@ File.Exists(Path.Combine(runs[0], "verdict.json")) @>)
 
 [<Fact>]
 let ``a lost connection refuses`` () =
@@ -340,8 +352,8 @@ done
 
     runDir, Path.Combine(home, "src", "consumer", ".workspaces", "canary-foo-cli")
 
-let private runServer (home: string) (runDir: string) (closeStdinAfter: TimeSpan option) =
-    run home home (Path.Combine(runDir, "server.sh")) [] [] closeStdinAfter
+let private runServer (home: string) (runDir: string) (closeStdinOn: (string -> bool) option) =
+    run home home (Path.Combine(runDir, "server.sh")) [] [] closeStdinOn
 
 let private seeded (home: string) =
     Directory.Exists(Path.Combine(home, "nuget", "foo.cli", "1.2.0-alpha.3"))
@@ -380,10 +392,13 @@ let ``server half: a red gate reports its exit code and the failing tests' CTRF 
 let ``server half: the releaser going away stops the gate, tears down and evicts`` () =
     withTempDir "remote-canary-server-gone" (fun home ->
         let runDir, ws = serverMachine home "sleep 40; touch finished" "touch torn-down"
-        let started = Stopwatch.StartNew()
-        let code, _ = runServer home runDir (Some(TimeSpan.FromSeconds 3.0))
+        // Close the keepalive once the server half announces the gate: an event, not a wait.
+        let code, output =
+            runServer home runDir (Some(fun line -> line.StartsWith("$ sleep 40", StringComparison.Ordinal)))
+
         test <@ code <> 0 @>
-        test <@ started.Elapsed < TimeSpan.FromSeconds 30.0 @>
+        test <@ output.Contains "connection closed; stopping the gate" @>
+        // The gate never reached its last step: it was stopped, not waited out.
         test <@ not (File.Exists(Path.Combine(ws, "finished"))) @>
         test <@ File.Exists(Path.Combine(ws, "torn-down")) @>
         test <@ not (seeded home) @>)
