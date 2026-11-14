@@ -31,6 +31,10 @@
     <Compile Include="VerdictAndPurity.fs" />
     <Compile Include="KindedOutcome.fs" />
     <Compile Include="Need.fs" />
+    <!-- The legacy string-keyed core, moved here unchanged under its own module names (AUTOMATION-1695).
+         LAST, so nothing in namespace FsHotWatch.Core can resolve a name to them by accident. -->
+    <Compile Include="LegacyActionKey.fs" />
+    <Compile Include="LookupVerdict.fs" />
   </ItemGroup>
 
   <ItemGroup>

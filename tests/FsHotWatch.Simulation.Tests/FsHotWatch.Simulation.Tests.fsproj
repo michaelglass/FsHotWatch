@@ -32,6 +32,8 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
+    <!-- FsHotWatch.Core, which FsHotWatch references privately (AUTOMATION-1695). -->
+    <ProjectReference Include="../../src/FsHotWatch.Core/FsHotWatch.Core.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
   </ItemGroup>
 

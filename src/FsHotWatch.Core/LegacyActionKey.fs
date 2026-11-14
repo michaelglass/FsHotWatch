@@ -15,9 +15,14 @@
 /// byte stream. A duplicate label is refused rather than merged, because which of two
 /// digests a key "really" stands for is not a question a key may leave open. Nothing about
 /// time enters a key (ADR-008).
+///
+/// Part of the correctness core (L0, re-architecture Phase 1, AUTOMATION-1695): compiled into
+/// FsHotWatch.Core, which references no FCS, under the module name it always had. ADR-059 §9
+/// item 5 re-expresses its users as typed `FsHotWatch.Core.ActionKey` kinds.
 module FsHotWatch.ActionKey
 
 open System
+open System.Security.Cryptography
 open System.Text
 
 /// Names the recipe. Any change to WHAT or HOW a key is folded must change it.
@@ -39,7 +44,8 @@ let isValue (value: string) : bool =
 
 /// A key's value, parsed: text `isValue` accepts, and nothing else. A lookup that is handed
 /// one never asks again whether it names a key.
-[<Struct>]
+/// A reference type, not a struct: since the move to FsHotWatch.Core every reader is in another
+/// assembly, where `key.Value.Text` on a struct copies it (FS0052, an error at warning level 5).
 type KeyValue =
     private
     | KeyValue of string
@@ -60,6 +66,11 @@ type ActionKey =
     { Kind: string
       Value: KeyValue
       Inputs: (string * string) list }
+
+/// SHA-256 of `text`'s UTF-8 bytes, lowercase hex: `ContentHash.ofText`'s recipe, which this
+/// assembly cannot reference.
+let private sha256Hex (text: string) : string =
+    Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes text))
 
 let private byLabel (inputs: (string * string) list) =
     inputs |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
@@ -87,7 +98,7 @@ let encode (kind: string) (inputs: (string * string) list) : string =
 /// kind, a kind containing a line break, or a label given twice.
 let create (kind: string) (inputs: (string * string) list) : ActionKey =
     if String.IsNullOrEmpty kind || kind.Contains '\n' then
-        invalidArg (nameof kind) $"an action kind must be non-empty and on one line: %A{kind}"
+        invalidArg (nameof kind) $"an action kind must be non-empty and on one line: \"%s{kind}\""
 
     match inputs |> List.countBy fst |> List.filter (fun (_, n) -> n > 1) with
     | [] -> ()
@@ -96,7 +107,7 @@ let create (kind: string) (inputs: (string * string) list) : ActionKey =
         invalidArg (nameof inputs) $"an input label may appear once: %s{labels}"
 
     { Kind = kind
-      Value = KeyValue(Prefix + ContentHash.ofText (encode kind inputs))
+      Value = KeyValue(Prefix + sha256Hex (encode kind inputs))
       Inputs = byLabel inputs }
 
 /// The labels whose digest differs between `stored` and `current`: first the current
