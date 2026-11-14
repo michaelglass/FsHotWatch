@@ -3,7 +3,7 @@
 module FsHotWatch.Timing
 
 /// Times named phases and records counts.
-type PhaseTimer =
+type IPhaseTimer =
     /// Run `work` as the phase `phase`.
     abstract Time<'T> : phase: string * work: (unit -> 'T) -> 'T
     /// Record that the work covered `count` of `name` (files, requirements).
@@ -12,6 +12,6 @@ type PhaseTimer =
 module PhaseTimer =
     /// Times and counts nothing.
     let untimed =
-        { new PhaseTimer with
+        { new IPhaseTimer with
             member _.Time(_, work) = work ()
             member _.Count(_, _) = () }
