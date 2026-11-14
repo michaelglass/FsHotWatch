@@ -357,6 +357,7 @@
     <Compile Include="LintCoverageTests.fs" />
     <Compile Include="GatePurityTests.fs" />
     <Compile Include="CiParityTests.fs" />
+    <Compile Include="CiHalvesTests.fs" />
     <Compile Include="CiLinuxTests.fs" />
     <Compile Include="ToolchainPinTests.fs" />
     <Compile Include="WarnOnAlignmentTests.fs" />
