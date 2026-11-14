@@ -9,6 +9,8 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FsCheck
+open FsCheck.FSharp
 open FsHotWatch
 open FsHotWatch.Cli
 open FsHotWatch.Tests.TestHelpers
@@ -151,3 +153,94 @@ let ``a consumer's configuration: the required plugins are the configured ones``
             Assert.Skip $"FSHW_TEST_CONSUMER_CHECKOUT names %s{checkout}, which has no .fshw.json"
 
         holds (File.ReadAllText path)
+
+// --- generated file commands: eligibility and entry digest, against the daemon's parse --------
+
+/// One generated `fileCommands` entry at index `i`: its JSON. A command that runs after the tests
+/// always has a `name`, and names (given or derived from the pattern) are distinct by index, as a
+/// configuration the daemon accepts must be.
+let private fileCommandGen (i: int) : Gen<string> =
+    gen {
+        let! afterTests = Gen.elements [ None; Some "true"; Some "false"; Some """[ "P" ]"""; Some "[]" ]
+        let needsName = afterTests = Some "true" || afterTests = Some """[ "P" ]"""
+
+        let! named =
+            if needsName then
+                Gen.constant true
+            else
+                Gen.elements [ true; false ]
+
+        let! pattern = Gen.elements [ "*.md"; "*.fsx"; "build.fsx"; "README.md"; "*.ratchet.json" ]
+
+        let! hasPattern =
+            if needsName then
+                Gen.elements [ true; false ]
+            else
+                Gen.constant true
+
+        let! command = Gen.elements [ "echo"; "dotnet"; "bash -c 'x'" ]
+        let! args = Gen.elements [ None; Some ""; Some "-n x"; Some "fsi build.fsx --flag" ]
+        let! timeout = Gen.elements [ None; Some 5; Some 30 ]
+
+        let field (key: string) (value: string) = "\"" + key + "\": " + value
+
+        let fields =
+            [ if named then
+                  field "name" ("\"fc" + string i + "\"")
+              // An unnamed pattern names the plugin `file-cmd-<pattern>`: index it to stay distinct.
+              if hasPattern then
+                  field "pattern" ("\"" + (if named then pattern else pattern + "." + string i) + "\"")
+              field "command" ("\"" + command.Replace("'", "\\u0027") + "\"")
+              match args with
+              | Some a -> field "args" ("\"" + a + "\"")
+              | None -> ()
+              match timeout with
+              | Some t -> field "timeoutSec" (string t)
+              | None -> ()
+              match afterTests with
+              | Some a -> field "afterTests" a
+              | None -> () ]
+
+        return "{ " + String.Join(", ", fields) + " }"
+    }
+
+let private configGen: Gen<string> =
+    gen {
+        let! count = Gen.choose (1, 4)
+        let! entries = [ 0 .. count - 1 ] |> List.map fileCommandGen |> Gen.sequenceToList
+
+        return
+            """{ "format": "off", "lint": false, "build": false, "fileCommands": [ """
+            + String.Join(", ", entries)
+            + " ] }"
+    }
+
+[<Fact(Timeout = PropertyTestCapMs)>]
+let ``generated file commands: each is keyed by what the daemon's parse says it reads`` () =
+    let declared = ref 0
+
+    Check.One(
+        Config.QuickThrowOnFailure.WithMaxTest(500),
+        Prop.forAll (Arb.fromGen configGen) (fun json ->
+            let config = DaemonConfig.parseConfig json (defaultTestConfig ())
+            let required = RequiredConfig.ofJson json
+
+            declared.Value <-
+                declared.Value
+                + (required.Plugins
+                   |> List.filter (fun p ->
+                       match p.Eligibility with
+                       | PluginInputs.LookupEligibility.DeclaredInputs _ -> true
+                       | PluginInputs.LookupEligibility.NoDeclaredInputs _ -> false)
+                   |> List.length)
+
+            Set.ofList (required.Plugins |> List.map _.Name) = configured config
+            && (required.Plugins |> List.map (fun p -> p.Name, p.Eligibility)) = (required.Plugins
+                                                                                  |> List.map (fun p ->
+                                                                                      p.Name,
+                                                                                      eligibilityOf config p.Name)))
+    )
+
+    // A property that never reaches a declared-input plugin proves nothing about its entry digest.
+    if declared.Value < 300 then
+        failwith $"only {declared.Value} declared-input plugins were generated: the generator misses the region"

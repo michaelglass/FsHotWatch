@@ -32,8 +32,7 @@ let private checkout (dir: string) (config: string) =
 let private subjectOf (dir: string) (exclude: string list) : Requirements.Subject =
     { Tree = (TreeHash.compute dir exclude).Hash
       Producer = producer
-      OutcomeKeys = Map.empty
-      DeclaredInputKeys = Map.empty }
+      OutcomeKeys = Map.empty }
 
 /// File `outcome` for `key` in `dir`'s shadow store, as a publication would.
 let private record (dir: string) (key: ActionKey.ActionKey) (outcome: LookupVerdict.Outcome) =
@@ -140,7 +139,9 @@ let ``a file command is keyed by the files it matches, as the shadow keys it`` (
             (RequiredConfig.ofJson fsxGate).Plugins |> List.find (fun p -> p.Name = "gate")
 
         let gateKey () =
-            (PluginInputs.keyOf dir producer gate).Value
+            match (PluginInputs.keyed dir producer gate).Keying with
+            | PluginInputs.Keying.DeclaredInputs key -> key
+            | PluginInputs.Keying.WholeTree -> failwith "the gate declares its inputs"
 
         record dir (gateKey ()) LookupVerdict.Outcome.Pass
 
