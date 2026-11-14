@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a full pass whose index seal lags its receipt tree only by paths no build compiles records that tree and
+  re-seals the index there (AUTOMATION-1682, ADR-071 amendment). In every intelligence workspace the run's
+  `BatchChecked` sealed the index before `beforeRun` generated a JS bundle; the receipt rebound to the tree after it,
+  so the full pass kept no ledger tree (`reason=not-sealed`), filed no `test-baseline` record, and every restart ran
+  the full suite. A baseline-earning completion now re-seals at the receipt tree when
+  `ReceiptInputTree.sealCarriesTo` finds no compile input among the moved paths and the seal on disk still names the
+  sealed tree (no flush has written rows since), and logs `index re-sealed at the receipt tree …` or why not.
+  `TestPruneState.SealedTree` is now the `ReceiptTree` (identity and entries), and `RunFinishedEnv` gains
+  `CompileInputs`, `LoadSeal` and `SaveSeal`.
+
 ## 0.13.0-alpha.115 - 2026-11-14
 
 - feat!: `runtimeSelection: "runtime/record-static"` — runtime coverage decides what runs, and every completed impact

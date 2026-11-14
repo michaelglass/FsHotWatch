@@ -246,6 +246,23 @@ module internal ReceiptInputTree =
             launch, Some "the input tree could not be read after beforeRun, so the receipt keeps its launch binding"
         | _ -> launch, None
 
+    /// Whether an index sealed at `sealedAt`, with no rows written since, describes `current`
+    /// too: what moved between them, or why it does not. The index holds rows only for what
+    /// a build compiles, so paths no build compiles (a bundle `beforeRun` generated) cannot
+    /// make its rows wrong for `current`. It is the argument `afterBeforeRun` rebinds a
+    /// receipt on (AUTOMATION-1682).
+    let sealCarriesTo
+        (feedsCompile: string -> bool)
+        (sealedAt: ReceiptTree)
+        (current: ReceiptTree)
+        : Result<TreeDelta, string> =
+        let moved = delta sealedAt.Entries current.Entries
+
+        match moved.Changed @ moved.Added @ moved.Removed |> List.filter feedsCompile with
+        | [] -> Ok moved
+        | compileInputs ->
+            Error $"%d{List.length compileInputs} compile input(s) moved since the seal; %s{describeDelta moved}"
+
     let matches expected current =
         match expected, current with
         | Some before, Some after -> String.Equals(before, after, StringComparison.Ordinal)
