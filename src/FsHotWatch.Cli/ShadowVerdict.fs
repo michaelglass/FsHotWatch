@@ -237,7 +237,8 @@ type Configured = Requirements.Configured
 /// `configured` over `o`'s worktree, each plugin resolved as `PluginInputs.keyed` says: one that
 /// declares its inputs is keyed by them (AUTOMATION-1577). Reads the files they match.
 let resolvedFor (o: Observation) (configured: Configured) : Requirements.Resolved =
-    Requirements.resolve (PluginInputs.keyed o.Worktree o.Producer) configured
+    // One walk of the root, shared by every declared pattern (E5).
+    Requirements.resolve (PluginInputs.keyedIn (lazy (PluginInputs.scopeOf o.Worktree)) o.Producer) configured
 
 /// The key plugin `name`'s outcome is filed and looked up under for `o` (AUTOMATION-1577). A
 /// plugin that declares its inputs is keyed by them (`PluginInputs.key`), so its last outcome
@@ -670,10 +671,13 @@ let unrecordedDeclared
     (store: OutcomeStore.Store)
     (configured: Configured)
     : string list =
+    // One walk of the root, shared by every declared pattern (E5).
+    let scope = lazy (PluginInputs.scopeOf repoRoot)
+
     [ for p in configured.RequiredPlugins do
           match p.Eligibility with
           | PluginInputs.LookupEligibility.DeclaredInputs(first, rest) ->
-              match store.Lookup(PluginInputs.key repoRoot producer p.Name (first, rest)) with
+              match store.Lookup(PluginInputs.keyIn scope.Value producer p.Name (first, rest)) with
               | None -> p.Name
               | Some _ -> ()
           | PluginInputs.LookupEligibility.NoDeclaredInputs _ -> () ]
