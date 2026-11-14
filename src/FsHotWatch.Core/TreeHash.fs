@@ -137,7 +137,9 @@ type Walked =
 /// `exclude` filters the WALK only. A declared input outranks it: `exclude` says
 /// "do not go looking here", a declaration says "changing this changes the answer",
 /// and the specific statement wins over the general one.
-let files (repoRoot: string) (excludePatterns: string list) : Walked =
+///
+/// `timer` times each part of the walk (experiment E5); `files` is it untimed.
+let filesWith (timer: Timing.PhaseTimer) (repoRoot: string) (excludePatterns: string list) : Walked =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
     let isExcludedDir = PathFilter.isExcludedDirectory repoRoot excludePatterns
 
@@ -151,8 +153,12 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
     // up (a link into a directory that cannot be traversed) reads as absent there, and is
     // a hole here. `SafeWalk.walk` tells the two apart; a missing root walks to nothing.
     let walked =
-        Discovery.discoveryRoots repoRoot
-        |> List.map (fun root -> SafeWalk.walk SafeWalk.SourceExcludedDirs "*" root)
+        timer.Time(
+            "walk.roots",
+            fun () ->
+                Discovery.discoveryRoots repoRoot
+                |> List.map (fun root -> SafeWalk.walk SafeWalk.SourceExcludedDirs "*" root)
+        )
 
     // SYMLINKED DIRECTORIES under a discovery root (AUTOMATION-1563). The walk never
     // descends one (a portal out of the tree, possibly into a cycle), and the hash used
@@ -198,8 +204,7 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
                 [ { Path = link
                     Reason = SafeWalk.Unreadable reason } ] }
 
-        Discovery.existingDiscoveryRoots repoRoot
-        |> List.collect linksUnder
+        timer.Time("walk.links", fun () -> Discovery.existingDiscoveryRoots repoRoot |> List.collect linksUnder)
         |> List.map (fun (link, written) ->
             let target =
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(Path.GetDirectoryName link, written)))
@@ -213,28 +218,40 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
 
     // CONFIGURED TEST PROJECTS outside the roots, and their closures (AUTOMATION-1617).
     let located =
-        walked
-        |> List.collect (fun w -> w.Files |> List.map (fun f -> f.FullName))
-        |> List.filter (fun f -> f.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
-        |> ConfiguredTestRoots.locate repoRoot
+        timer.Time(
+            "walk.test-roots",
+            fun () ->
+                walked
+                |> List.collect (fun w -> w.Files |> List.map (fun f -> f.FullName))
+                |> List.filter (fun f -> f.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
+                |> ConfiguredTestRoots.locate repoRoot
+        )
 
     let configuredWalks =
-        located.Directories |> List.map (SafeWalk.walk SafeWalk.SourceExcludedDirs "*")
+        timer.Time(
+            "walk.test-root-walks",
+            fun () -> located.Directories |> List.map (SafeWalk.walk SafeWalk.SourceExcludedDirs "*")
+        )
 
     let walked = walked @ linkedWalks @ configuredWalks
 
     let filePaths =
-        walked
-        |> List.collect (fun w -> w.Files |> List.map (fun f -> f.FullName))
-        |> List.filter (isExcluded >> not)
+        timer.Time(
+            "walk.exclude",
+            fun () ->
+                walked
+                |> List.collect (fun w -> w.Files |> List.map (fun f -> f.FullName))
+                |> List.filter (isExcluded >> not)
+        )
 
-    let declaration = VerdictInputs.read repoRoot
-    let resolved = VerdictInputs.resolve repoRoot declaration
+    let resolved =
+        timer.Time("walk.declared", fun () -> VerdictInputs.resolveWith timer repoRoot (VerdictInputs.read repoRoot))
 
     // Deduplicated by ABSOLUTE path before relativising: a repo may well declare a
     // file the walk already found (a source file that is also a rule input), and
     // hashing it twice would make the entry list disagree with the file count.
-    let toolKnown = VerdictInputs.toolKnownInputs repoRoot
+    let toolKnown =
+        timer.Time("walk.tool-known", fun () -> VerdictInputs.toolKnownInputs repoRoot)
 
     let walkAndToolKnown = filePaths @ toolKnown |> List.distinct
 
@@ -265,6 +282,10 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
         |> List.distinct
         |> List.sortWith (fun a b -> String.CompareOrdinal(a, b))
       Unlocated = located.Unlocated }
+
+/// `filesWith`, untimed: the walk the tree hash is over.
+let files (repoRoot: string) (excludePatterns: string list) : Walked =
+    filesWith Timing.PhaseTimer.untimed repoRoot excludePatterns
 
 /// The content address of `entries` — the pure half, so the recipe is testable
 /// without a filesystem.

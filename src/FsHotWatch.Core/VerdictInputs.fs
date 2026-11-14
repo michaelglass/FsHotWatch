@@ -355,9 +355,11 @@ let internal globWalkPrefix (pattern: string) : string =
 /// directory, a restore cache or a metrics log under `infra/` is not what `infra` means,
 /// and keying it would move the hash on every build. A declared file, or a directory that
 /// is itself ignored, is taken as named.
-let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
+let resolveWith (timer: Timing.PhaseTimer) (repoRoot: string) (declaration: Declaration) : Resolution =
     let root = Path.GetFullPath repoRoot
-    let ignores = PathFilter.GitIgnores root
+
+    let ignores =
+        timer.Time("declared.gitignores", fun () -> PathFilter.GitIgnores root)
 
     // Every file a walk from `dir` sweeps into that the repository does not ignore, and
     // every directory under it the walk could not read (AUTOMATION-865): a declared input
@@ -403,14 +405,18 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
     // Anything else is walked too: a path that is not there walks to nothing, and one
     // that could not be looked up walks to a hole.
     let literalMatches =
-        literals
-        |> List.map (fun rel ->
-            let abs = Path.GetFullPath(Path.Combine(root, rel))
+        timer.Time(
+            "declared.literals",
+            fun () ->
+                literals
+                |> List.map (fun rel ->
+                    let abs = Path.GetFullPath(Path.Combine(root, rel))
 
-            if File.Exists abs then
-                rel, ([ abs ], [])
-            else
-                rel, walkTracked abs)
+                    if File.Exists abs then
+                        rel, ([ abs ], [])
+                    else
+                        rel, walkTracked abs)
+        )
 
     // --- globs: ONE walk per distinct prefix, ONE combined matcher -----------
     // Matching every pattern against every file would be O(patterns x files) with
@@ -419,34 +425,38 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
     // matcher first, and the per-pattern matchers only ever see the handful of
     // files that already matched something.
     let globMatches =
-        if List.isEmpty globs then
-            []
-        else
-            let prefixes = globs |> List.map globWalkPrefix |> List.distinct
-
-            let walkRoots =
-                if prefixes |> List.contains "" then
-                    [ root ]
+        timer.Time(
+            "declared.globs",
+            fun () ->
+                if List.isEmpty globs then
+                    []
                 else
-                    prefixes |> List.map (fun p -> Path.Combine(root, p))
+                    let prefixes = globs |> List.map globWalkPrefix |> List.distinct
 
-            let combined = (Ignore(), globs) ||> List.fold (fun (ig: Ignore) pat -> ig.Add pat)
+                    let walkRoots =
+                        if prefixes |> List.contains "" then
+                            [ root ]
+                        else
+                            prefixes |> List.map (fun p -> Path.Combine(root, p))
 
-            let walks = walkRoots |> List.map walkTracked
+                    let combined = (Ignore(), globs) ||> List.fold (fun (ig: Ignore) pat -> ig.Add pat)
 
-            let candidates =
-                walks
-                |> List.collect fst
-                |> List.distinct
-                |> List.filter (fun abs -> combined.IsIgnored(relativeTo abs))
+                    let walks = walkRoots |> List.map walkTracked
 
-            // A hole in any walk may hold what any glob would match.
-            let holes = walks |> List.collect snd |> List.distinct
+                    let candidates =
+                        walks
+                        |> List.collect fst
+                        |> List.distinct
+                        |> List.filter (fun abs -> combined.IsIgnored(relativeTo abs))
 
-            globs
-            |> List.map (fun pat ->
-                let one = Ignore().Add pat
-                pat, (candidates |> List.filter (fun abs -> one.IsIgnored(relativeTo abs)), holes))
+                    // A hole in any walk may hold what any glob would match.
+                    let holes = walks |> List.collect snd |> List.distinct
+
+                    globs
+                    |> List.map (fun pat ->
+                        let one = Ignore().Add pat
+                        pat, (candidates |> List.filter (fun abs -> one.IsIgnored(relativeTo abs)), holes))
+        )
 
     let all = literalMatches @ globMatches
 
@@ -467,6 +477,10 @@ let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
         |> List.map relativeTo
         |> List.distinct
         |> List.sort }
+
+/// `resolveWith`, untimed.
+let resolve (repoRoot: string) (declaration: Declaration) : Resolution =
+    resolveWith Timing.PhaseTimer.untimed repoRoot declaration
 
 /// The files fshw itself knows decide a check's answer for ANY repo: its own
 /// config, and the root-level toolchain/dependency files. Absolute paths, sorted.
