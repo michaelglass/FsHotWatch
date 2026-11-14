@@ -20,6 +20,11 @@ let configFile (repoRoot: string) = Path.Combine(repoRoot, ConfigFileName)
 let verdictFile (repoRoot: string) =
     Path.Combine(root repoRoot, "verdict.json")
 
+/// Absolute path to the checkout's content-hash cache, `.fshw/content-hash-cache`
+/// (`ContentHashCache`, E5): per checkout, because a file's identity is per filesystem object.
+let contentHashCacheFile (repoRoot: string) =
+    Path.Combine(root repoRoot, "content-hash-cache")
+
 /// Write contents atomically (temp file + rename). Used wherever we need a
 /// torn-write-safe persistence step — caches, history files, etc. — so a
 /// daemon crash mid-write can't leave a half-written file at `path`.

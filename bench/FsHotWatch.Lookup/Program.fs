@@ -1,7 +1,9 @@
-/// `fshw-lookup [check|confirm] [repo-dir]`: the lookup verdict of the checkout at `repo-dir`
-/// (default: the current directory) for `check` (the default) or `confirm`, read from the
-/// outcome stores alone (`Lookup.ofRepo`). One line on stdout; exit 0 green, 1 red, 3 no
+/// `fshw-lookup [--cached] [check|confirm] [repo-dir]`: the lookup verdict of the checkout at
+/// `repo-dir` (default: the current directory) for `check` (the default) or `confirm`, read from
+/// the outcome stores alone (`Lookup.ofRepoWith`). One line on stdout; exit 0 green, 1 red, 3 no
 /// verdict (missing evidence, no recorded producer, or an unreadable configuration), 2 usage.
+/// Every file is read for the tree hash unless `--cached` asks for the stat-validated content-hash
+/// cache (`TreeHash.Hashing.StatValidated`, E5): the inner-loop mode, never the one a land uses.
 /// With `FSHW_LOOKUP_PHASES` set, stderr also gets one `phase <name> <ms>` or `count <name> <n>` line
 /// per phase (experiment E5), and a timed walk of the whole root: the scope AUTOMATION-1577 adds.
 /// No printf: text is built with `+` and written with `Console`, so FSharp.Core's printf engine
@@ -13,7 +15,7 @@ open FsHotWatch
 
 [<RequireQualifiedAccess>]
 type private Invocation =
-    | Run of command: Requirements.Command * repoRoot: string
+    | Run of command: Requirements.Command * repoRoot: string * hashing: TreeHash.Hashing
     | Usage of problem: string
 
 let private commandOf (word: string) =
@@ -25,15 +27,29 @@ let private commandOf (word: string) =
 let private parse (argv: string list) : Invocation =
     let here = Environment.CurrentDirectory
 
+    let cached, argv =
+        match argv with
+        | "--cached" :: rest -> true, rest
+        | _ -> false, argv
+
+    let run (command: Requirements.Command) (repoRoot: string) =
+        let hashing =
+            if cached then
+                TreeHash.Hashing.StatValidated(FsHwPaths.contentHashCacheFile repoRoot)
+            else
+                TreeHash.Hashing.FullRehash
+
+        Invocation.Run(command, repoRoot, hashing)
+
     match argv with
-    | [] -> Invocation.Run(Requirements.Command.Check, here)
+    | [] -> run Requirements.Command.Check here
     | [ word ] ->
         match commandOf word with
-        | Some command -> Invocation.Run(command, here)
+        | Some command -> run command here
         | None -> Invocation.Usage("not a command: " + word)
     | [ word; dir ] ->
         match commandOf word with
-        | Some command -> Invocation.Run(command, IO.Path.GetFullPath dir)
+        | Some command -> run command (IO.Path.GetFullPath dir)
         | None -> Invocation.Usage("not a command: " + word)
     | _ -> Invocation.Usage "too many arguments"
 
@@ -83,9 +99,9 @@ let main argv =
     match parse (List.ofArray argv) with
     | Invocation.Usage problem ->
         Console.Error.WriteLine("fshw-lookup: " + problem)
-        Console.Error.WriteLine "usage: fshw-lookup [check|confirm] [repo-dir]"
+        Console.Error.WriteLine "usage: fshw-lookup [--cached] [check|confirm] [repo-dir]"
         2
-    | Invocation.Run(command, repoRoot) ->
+    | Invocation.Run(command, repoRoot, hashing) ->
         let timed =
             not (String.IsNullOrEmpty(Environment.GetEnvironmentVariable PhasesVariable))
 
@@ -93,10 +109,7 @@ let main argv =
         let total = Diagnostics.Stopwatch.GetTimestamp()
 
         let read =
-            if timed then
-                Lookup.ofRepoWith timer repoRoot command ignore
-            else
-                Lookup.ofRepo repoRoot command ignore
+            Lookup.ofRepoWith (if timed then timer else Timing.PhaseTimer.untimed) hashing repoRoot command ignore
 
         if timed then
             lines.Add("phase total " + ms (Diagnostics.Stopwatch.GetTimestamp() - total))

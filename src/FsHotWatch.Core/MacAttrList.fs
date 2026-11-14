@@ -59,3 +59,34 @@ let internal ask (path: string) (commonAttr: uint32) (options: uint32) (reply: b
         Ok()
     else
         Error(Marshal.GetLastPInvokeError())
+
+/// The modification time: a `timespec` (i64 seconds, i64 nanoseconds).
+[<Literal>]
+let internal AttrCmnModTime = 0x00000400u
+
+/// The device the entry is on: a `dev_t` (i32).
+[<Literal>]
+let internal AttrCmnDevId = 0x00000002u
+
+/// A file's logical length in bytes: an `off_t` (i64). A FILE attribute, after the common ones.
+[<Literal>]
+let internal AttrFileDataLength = 0x00000200u
+
+/// `ask`, with file attributes `fileAttr` too: the reply holds the common attributes, then
+/// the file ones, each in the order of its bit.
+let internal askWith
+    (path: string)
+    (commonAttr: uint32)
+    (fileAttr: uint32)
+    (options: uint32)
+    (reply: byte array)
+    : Result<unit, int> =
+    let mutable request = AttrList()
+    request.BitmapCount <- AttrBitMapCount
+    request.CommonAttr <- commonAttr
+    request.FileAttr <- fileAttr
+
+    if getattrlist (path, &request, reply, unativeint reply.Length, options) = 0 then
+        Ok()
+    else
+        Error(Marshal.GetLastPInvokeError())
