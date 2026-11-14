@@ -313,7 +313,10 @@ let private readable (root: string) (store: OutcomeStore.Store) (key: ActionKey.
 /// (`HoldsKey`): asked on every warm read, it reads no payload; a corrupt record is a miss
 /// where it is read.
 let mayAnswerLocally (store: OutcomeStore.Store option) (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) =
-    OutcomeStore.FiledWork.mayAnswerLocally (fun store key -> store.HoldsKey key) store (keyFor repoRoot result)
+    OutcomeStore.FiledWork.mayAnswerLocally
+        (fun (store: OutcomeStore.Store) key -> store.HoldsKey key)
+        store
+        (keyFor repoRoot result)
 
 /// `file`, only when `store` holds no readable analysis under `key` (AUTOMATION-1596,
 /// AUTOMATION-1609). Returns whether it filed.
