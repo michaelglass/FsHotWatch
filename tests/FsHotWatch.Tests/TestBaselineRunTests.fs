@@ -150,7 +150,7 @@ let private wiringFor (stores: Stores) : TestEvidenceRun.Wiring =
       Loaded = TestEvidenceKey.LoadedEnvironment.empty
       ProducerHash = "test-producer"
       ExcludePatterns = []
-      Outcomes = Some stores.Outcomes }
+      Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk stores.Outcomes ignore) }
 
 /// One checkout's daemon, what it completed, and every log line it wrote.
 type private Checkout =

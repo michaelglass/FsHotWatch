@@ -175,8 +175,8 @@ let private parseIndex (outputs: string) : IndexEntry list =
         []
 
 /// The index's entries, newest first; empty when there is none or it cannot be read.
-let readIndex (store: OutcomeStore.Store) : IndexEntry list =
-    match store.LookupWithOutputs indexKey with
+let readIndex (store: OutcomeRecords.IOutcomeStore) : IndexEntry list =
+    match OutcomeStore.Through.lookupWithOutputs store indexKey.Value with
     | Some(_, Some outputs) -> parseIndex outputs
     | _ -> []
 
@@ -237,10 +237,10 @@ let private parseRecord (tree: string) (key: string) (outputs: string) : Result<
 /// answer for that tree, was filed by this analyser build, and carries a readable manifest;
 /// otherwise why not. READ-ONLY. Every failure is a miss. The store's reads never throw: a
 /// record it cannot read is one it does not hold.
-let checkoutRecordFor (store: OutcomeStore.Store) (tree: string) : Result<CheckoutRecord, string> =
+let checkoutRecordFor (store: OutcomeRecords.IOutcomeStore) (tree: string) : Result<CheckoutRecord, string> =
     let key = keyOf tree
 
-    match store.LookupWithOutputs key with
+    match OutcomeStore.Through.lookupWithOutputs store key.Value with
     | None -> Error "no test-baseline record for that tree"
     | Some(record, _) when record.Outcome <> OutcomeStore.Outcome.Pass ->
         Error "the test-baseline record for that tree is not a pass"
@@ -269,12 +269,12 @@ let private indexOutputs (entries: IndexEntry list) : string =
 /// Put `entry` at the front of the index, drop any older entry for the same tree, keep the
 /// newest `IndexCapacity`, and rewrite the index as its key's one record. Returns the entry
 /// count and the record's bytes, or `None` when it could not be filed.
-let appendIndex (store: OutcomeStore.Store) (producer: Producer) (entry: IndexEntry) : (int * int64) option =
+let appendIndex (store: OutcomeRecords.IOutcomeStore) (producer: Producer) (entry: IndexEntry) : (int * int64) option =
     let entries =
         entry :: (readIndex store |> List.filter (fun e -> e.Tree <> entry.Tree))
         |> List.truncate IndexCapacity
 
-    store.Supersede(recordOf indexKey "index" None producer, Some(indexOutputs entries))
+    OutcomeStore.Through.supersede store (recordOf indexKey "index" None producer) (Some(indexOutputs entries))
     |> Option.map (fun bytes -> entries.Length, bytes)
 
 /// Each runnable project's full pass at its current K_P, or why it has none. The newest
@@ -284,7 +284,7 @@ let appendIndex (store: OutcomeStore.Store) (producer: Producer) (entry: IndexEn
 /// record this run's own green replayed (AUTOMATION-1682, ADR-071). A newer fail there
 /// refuses; a record at another K_P is no record.
 let private fullPasses
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (runId: string)
     (runnable: Set<string>)
     (fullKeys: Map<string, Result<string, string>>)
@@ -301,7 +301,7 @@ let private fullPasses
                   match ActionKey.KeyValue.tryParse text with
                   | None -> Error $"no K_P: %s{text} is not a key"
                   | Some key ->
-                      match store.Lookup key with
+                      match OutcomeStore.Through.lookup store key with
                       | None -> Error "no full-scope record at its current K_P"
                       | Some r when r.Outcome = OutcomeStore.Outcome.Fail ->
                           Error "its newest full-scope record is a fail"
@@ -380,7 +380,7 @@ let private baselineOutputs
 /// (`fullKeys`, which hashes the tree) and the index's file keys are read only once those
 /// hold. Never throws for a store that cannot be written: that is `NotFiled`.
 let file
-    (store: OutcomeStore.Store option)
+    (store: OutcomeRecords.IOutcomeStore option)
     (fullKeys: unit -> Map<string, Result<string, string>>)
     (fileKeys: unit -> Map<string, string>)
     (producer: Producer)
@@ -404,7 +404,9 @@ let file
             let key = keyOf tree
             let outputs = baselineOutputs facts tree entries projects keys
 
-            match store.Supersede(recordOf key tree (Some facts.RunId) producer, Some outputs) with
+            match
+                OutcomeStore.Through.supersede store (recordOf key tree (Some facts.RunId) producer) (Some outputs)
+            with
             | None -> Error [ Refusal.NotFiled "the outcome store did not file the baseline" ]
             | Some bytes ->
                 let entry =

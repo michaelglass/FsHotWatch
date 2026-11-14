@@ -171,7 +171,7 @@ let private verdictTreeWiring (store: FsHotWatch.TestEvidenceStore.Store) : Test
             Ev.testProjects
             |> List.map (fun t -> t, FsHotWatch.TestEvidenceKey.defaultConfig)
             |> Map.ofList
-        Outcomes = Some(outcomesBeside store) }
+        Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk (outcomesBeside store) ignore) }
 
 /// A daemon over `root` in a long-lived checkout. `seeded` gives it the full-suite
 /// baseline such a checkout already holds; a restart reads the one its predecessor left.
