@@ -3,8 +3,8 @@
 ## Unreleased
 
 - feat: `OutcomeStore.Through` (`file`, `lookup`, `lookupWithOutputs`) reads and files a `Record` through any
-  `OutcomeRecords.IOutcomeStore`; `TestFailureClearance.lookupForCheckIn` is the check-time lookup through one
-  (AUTOMATION-1695). `lookupForCheck` over the disk store is unchanged. `InMemoryOutcomeStore` gains `Keys`, `TextOf`
+  `OutcomeRecords.IOutcomeStore`; `TestFailureClearance.lookupForCheck` takes one
+  (AUTOMATION-1695); the disk store is one. `InMemoryOutcomeStore` gains `Keys`, `TextOf`
   and `Replace`.
 
 - refactor: L1, the outcome store's records, moves into `FsHotWatch.Core` as `OutcomeRecords` (AUTOMATION-1695).

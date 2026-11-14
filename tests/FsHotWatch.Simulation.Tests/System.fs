@@ -301,7 +301,13 @@ let decide (subject: Subject) (stores: Stores) (o: ShadowVerdict.Observation) =
 /// over what today filed, with its defect.
 let publish (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
     let answer =
-        ShadowVerdict.observeWith repoRoot stores.Shadow (Some stores.Kp) configured o
+        ShadowVerdict.observeWith
+            repoRoot
+            stores.Shadow
+            (Some stores.Kp)
+            (ShadowVerdict.collectDue stores.Shadow)
+            configured
+            o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass

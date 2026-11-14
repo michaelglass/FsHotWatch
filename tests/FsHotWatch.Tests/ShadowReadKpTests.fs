@@ -83,7 +83,9 @@ let ``a read right after a check that K_P records alone made green agrees green`
         kp.Record(kpRecord kpA OutcomeStore.Outcome.Pass "r1") |> ignore
         kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass "r1") |> ignore
 
-        test <@ observeWith repo store (Some kp) configured coldCheck = LookupVerdict.Answer.Green @>
+        test
+            <@ observeWith repo store (Some kp) (collectDue store) configured coldCheck = LookupVerdict.Answer.Green @>
+
         test <@ observeReadWith repo store (Some kp) configured (readOf coldCheck) = LookupVerdict.Answer.Green @>)
 
 // ---------------------------------------------------------------------------
@@ -94,7 +96,9 @@ let ``a read right after a check that K_P records alone made green agrees green`
 let private published repo store (kp: OutcomeStore.Store) (outcome: OutcomeStore.Outcome) =
     kp.Record(kpRecord kpA outcome "r1") |> ignore
     kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass "r1") |> ignore
-    observeWith repo store (Some kp) configured coldCheck |> ignore
+
+    observeWith repo store (Some kp) (collectDue store) configured coldCheck
+    |> ignore
 
 [<Fact>]
 let ``a read of another tree finds no key the check named`` () =
@@ -155,7 +159,10 @@ let ``a confirm read never reads a cleared K_P fail as a pass, and a check read 
         |> Option.iter (kp.Record >> ignore)
 
         kp.Record(kpRecord kpB OutcomeStore.Outcome.Pass "r1") |> ignore
-        test <@ observeWith repo store (Some kp) configured coldCheck = LookupVerdict.Answer.Green @>
+
+        test
+            <@ observeWith repo store (Some kp) (collectDue store) configured coldCheck = LookupVerdict.Answer.Green @>
+
         test <@ observeReadWith repo store (Some kp) configured (readOf coldCheck) = LookupVerdict.Answer.Green @>
 
         let confirmRead =

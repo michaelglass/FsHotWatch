@@ -113,6 +113,7 @@ let ``699: a verdict whose own suites report a failure is never looked up green`
                     repo
                     store
                     None
+                    (collectDue store)
                     { RequiredPlugins = []
                       TestProjects = [ "Database.Tests" ] }
                     contradictory = LookupVerdict.Answer.Red [ "test:Database.Tests" ]
@@ -173,6 +174,7 @@ let ``1242: a configured test project the model never discovered is still requir
                     repo
                     store
                     None
+                    (collectDue store)
                     { RequiredPlugins = []
                       TestProjects = [ "FsHotWatch.Tests"; "FsHotWatch.Bench.Tests" ] }
                     o = LookupVerdict.Answer.Missing [ "test:FsHotWatch.Bench.Tests" ]
