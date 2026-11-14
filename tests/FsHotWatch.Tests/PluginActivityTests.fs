@@ -407,3 +407,62 @@ let ``history yields to live recordings, oldest-committed first`` () =
     test <@ kept = [ 2..10 ] @>
     test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
     test <@ s.TotalByteSize = 9 * 200_000 + 3 * 80_000 @>
+
+// 1_100_000 chars = 2_200_000 bytes: past the 2 MB cap on its own, so live bytes leave
+// history a budget of nothing.
+let private overTheCap = String('x', 1_100_000)
+
+let private oneHistoryRun (s: State) =
+    s.Log("h", "old")
+    s.RecordTerminal("h", CompletedRun, at, at.AddMilliseconds(1.0))
+
+[<Fact(Timeout = 15000)>]
+let ``a summary past the cap leaves history no budget, and the bytes stay exact`` () =
+    let s = State()
+    oneHistoryRun s
+    s.SetSummary("p", overTheCap)
+    test <@ List.isEmpty (s.GetHistory "h") @>
+    test <@ s.TotalByteSize = tailBytes [ overTheCap ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a subtask label past the cap evicts history`` () =
+    let s = State()
+    oneHistoryRun s
+    s.StartSubtask("p", "k", overTheCap)
+    test <@ List.isEmpty (s.GetHistory "h") @>
+    test <@ s.TotalByteSize = tailBytes [ "k"; overTheCap ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a subtask relabelled past the cap evicts history`` () =
+    let s = State()
+    s.StartSubtask("p", "k", "small")
+    oneHistoryRun s
+    s.UpdateSubtask("p", "k", overTheCap)
+    test <@ List.isEmpty (s.GetHistory "h") @>
+    test <@ s.TotalByteSize = tailBytes [ "k"; overTheCap ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``UpdateSubtask for an absent key while Recording is a no-op`` () =
+    let s = State()
+    s.StartSubtask("p", "k", "label")
+    s.UpdateSubtask("p", "other", "relabel")
+    test <@ s.GetSubtasks "p" |> List.map (fun t -> t.Key, t.Label) = [ "k", "label" ] @>
+    test <@ s.TotalByteSize = tailBytes [ "k"; "label" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``the per-plugin history limit evicts that plugin's oldest run, past other plugins' runs`` () =
+    let s = State()
+    // "q" commits first, so it heads the history when "p" goes over its limit.
+    s.Log("q", "q-run")
+    s.RecordTerminal("q", CompletedRun, at, at.AddMilliseconds(1.0))
+
+    for i in 1..17 do
+        let started = at.AddSeconds(float i)
+        s.Log("p", sprintf "p-%d" i)
+        s.RecordTerminal("p", CompletedRun, started, started.AddMilliseconds(1.0))
+
+    test <@ s.GetHistory "q" |> List.map (fun r -> r.ActivityTail) = [ [ "q-run" ] ] @>
+    let kept = s.GetHistory "p" |> List.map (fun r -> r.ActivityTail)
+    test <@ kept = [ for i in 2..17 -> [ sprintf "p-%d" i ] ] @>
+    let held = tailBytes [ "q-run" ] + (kept |> List.sumBy tailBytes)
+    test <@ s.TotalByteSize = held @>
