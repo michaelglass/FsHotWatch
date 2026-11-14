@@ -57,6 +57,26 @@ let ``an unreadable file makes the whole key a miss and moves nothing`` () =
     test <@ s.FileNames key.Value = before @>
     test <@ s.Quarantined = [] @>
 
+/// AUTOMATION-1701: a writer holding the bytes the name is the digest of repairs an unreadable
+/// or torn file of that name; a read still moves nothing.
+[<Fact>]
+let ``filing the same record again repairs an unreadable or torn file of its name`` () =
+    let s = store ()
+    let r = recordOf LookupVerdict.Outcome.Pass testRun at
+    test <@ file s r = Filing.Filed @>
+    let name = s.FileNames key.Value |> List.exactlyOne
+
+    s.Replace(key.Value, name, Error "permission denied")
+    test <@ KeyRead.outcome (read s) = None @>
+    test <@ file s r = Filing.Filed @>
+    test <@ KeyRead.outcome (read s) = Some LookupVerdict.Outcome.Pass @>
+
+    s.Replace(key.Value, name, Ok "{\"schema\":\"fshw-outc")
+    test <@ file s r = Filing.Filed @>
+    test <@ s.FileNames key.Value = [ name ] @>
+    test <@ KeyRead.outcome (read s) = Some LookupVerdict.Outcome.Pass @>
+    test <@ file s r = Filing.AlreadyFiled @>
+
 [<Fact>]
 let ``a torn file is quarantined and the records beside it still answer`` () =
     let s = store ()

@@ -530,6 +530,91 @@ let ``a key whose records are all readable still answers with its newest beside 
             test <@ store.Lookup good |> Option.map _.Outcome = Some Outcome.Pass @>
             test <@ store.Lookup bad = None @>))
 
+// AUTOMATION-1701: a reader still moves nothing (1568), but a WRITER that has just computed the
+// bytes the file's name is the digest of repairs it. Filing those bytes again must not be skipped
+// because the name exists: that left the key a miss for as long as the file stayed unreadable.
+[<Fact>]
+let ``filing a record again replaces an unreadable file of the same name, and the key answers`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        let record = recordOf key Outcome.Pass t0
+        test <@ store.Record record @>
+        let file = recordFiles dir |> List.exactlyOne
+
+        unreadable file (fun () ->
+            test <@ store.Lookup key = None @>
+            test <@ store.Record record @>
+            // Answered while the old file's mode would still forbid it: the repair replaced it.
+            test <@ store.Lookup key = Some record @>)
+
+        test <@ recordFiles dir = [ file ] @>
+        test <@ store.Lookup key = Some record @>
+        test <@ not (Directory.Exists(Path.Combine(dir, "quarantine"))) @>)
+
+[<Fact>]
+let ``filing a record again replaces a torn file of the same name`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        let record = recordOf key Outcome.Fail t0
+        store.Record record |> ignore
+        let file = recordFiles dir |> List.exactlyOne
+        let whole = File.ReadAllText file
+        File.WriteAllText(file, whole.Substring(0, whole.Length / 2))
+
+        test
+            <@
+                (store :> OutcomeRecords.IOutcomeStore).File(OutcomeStore.toStored record None) = OutcomeRecords.Filing.Filed
+            @>
+
+        test <@ File.ReadAllText file = whole @>
+        test <@ store.Lookup key = Some record @>)
+
+[<Fact>]
+let ``filing a record again leaves a readable file of the same bytes untouched`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        let record = recordOf key Outcome.Pass t0
+        store.Record record |> ignore
+        let file = recordFiles dir |> List.exactlyOne
+        File.SetLastWriteTimeUtc(file, (File.GetLastWriteTimeUtc file).AddMinutes -5.0)
+        let before = File.GetLastWriteTimeUtc file
+
+        test
+            <@
+                (store :> OutcomeRecords.IOutcomeStore).File(OutcomeStore.toStored record None) = OutcomeRecords.Filing.AlreadyFiled
+            @>
+
+        test <@ File.GetLastWriteTimeUtc file = before @>)
+
+[<Fact>]
+let ``a repair that cannot be written is not filed, and nothing throws`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        let record = recordOf key Outcome.Pass t0
+        store.Record record |> ignore
+        let file = recordFiles dir |> List.exactlyOne
+        let keyDir = store.DirectoryOf key
+        let writable = File.GetUnixFileMode keyDir
+
+        unreadable file (fun () ->
+            File.SetUnixFileMode(keyDir, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+            try
+                let filing =
+                    (store :> OutcomeRecords.IOutcomeStore).File(OutcomeStore.toStored record None)
+
+                test
+                    <@
+                        match filing with
+                        | OutcomeRecords.Filing.NotFiled _ -> true
+                        | OutcomeRecords.Filing.Filed
+                        | OutcomeRecords.Filing.AlreadyFiled -> false
+                    @>
+
+                test <@ store.Lookup key = None @>
+            finally
+                File.SetUnixFileMode(keyDir, writable)))
+
 // AUTOMATION-1615: a reader that must not take "could not be read" for "nothing on file" (an
 // evidence reuse asking whether a newer fail is filed) gets the two apart.
 [<Fact>]

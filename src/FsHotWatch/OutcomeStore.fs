@@ -408,6 +408,23 @@ type Store(settings: Settings) =
     let readKey (keyValue: ActionKey.KeyValue) : Record list =
         readKeyWithOutputs keyValue |> List.map fst
 
+    /// Whether `path` holds exactly `text`. A file that cannot be read does not.
+    let holds (path: string) (text: string) : bool =
+        try
+            String.Equals(File.ReadAllText path, text, StringComparison.Ordinal)
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> false
+
+    /// File `text` at `path`, whose name is the digest of the payload `text` carries: true when
+    /// this call put it there, false when the file already held exactly these bytes.
+    ///
+    /// A file already at `path` that is unreadable or holds other bytes (torn) is REPLACED by the
+    /// same atomic rename (AUTOMATION-1701): the caller has just computed the bytes the name is
+    /// the digest of, so they are what belongs there. Skipping them left the key a miss for as
+    /// long as the bad file stayed. A reader still moves nothing (AUTOMATION-1568); only a writer
+    /// holding byte-identical content repairs. Never delete-then-write: there is no moment with
+    /// no file at the name. A rename that fails throws, for the caller's `NotFiled`.
     let writeOnce (path: string) (text: string) =
         Directory.CreateDirectory tmpDir |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
@@ -420,8 +437,11 @@ type Store(settings: Settings) =
                 File.Move(temporary, path, false)
                 true
             with :? IOException when File.Exists path ->
-                // Filed already: the name is the digest of the content, so it holds these bytes.
-                false
+                if holds path text then
+                    false
+                else
+                    File.Move(temporary, path, true)
+                    true
         finally
             if File.Exists temporary then
                 File.Delete temporary

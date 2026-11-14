@@ -403,15 +403,21 @@ type InMemoryOutcomeStore() =
             files[key] <- list
             list
 
+    /// As the disk store files (AUTOMATION-1701): a file of the record's name that holds exactly
+    /// its bytes is left alone; one that is unreadable or holds other bytes is replaced in place.
     let file (record: StoredRecord) =
         let payload = RecordCodec.encodePayload record
         let name = RecordCodec.fileName payload
+        let text = RecordCodec.envelope payload
         let list = filesOf record.Key.Value
 
-        if list |> Seq.exists (fun (n, _) -> n = name) then
-            name, Filing.AlreadyFiled
-        else
-            list.Add(name, Ok(RecordCodec.envelope payload))
+        match Seq.tryFindIndex (fun (n, _) -> n = name) list with
+        | Some i when list[i] = (name, Ok text) -> name, Filing.AlreadyFiled
+        | Some i ->
+            list[i] <- (name, Ok text)
+            name, Filing.Filed
+        | None ->
+            list.Add(name, Ok text)
             name, Filing.Filed
 
     /// Put `text` under `key` as file `name`, as a torn or foreign write would.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: filing a record again repairs an unreadable or torn file of the same name (AUTOMATION-1701). A record's
+  name is the digest of its payload, so a writer that has just computed those bytes knows what belongs there. Where the
+  file is unreadable or holds other bytes, the new bytes replace it by the same atomic rename; a file holding exactly
+  these bytes is left untouched. Before, the write was skipped because the name existed, and the key stayed a miss for
+  as long as the bad file stayed. Reads still move nothing (AUTOMATION-1568). A rename that fails is `NotFiled`.
+
 - feat: `OutcomeStore.Through` (`file`, `lookup`, `lookupWithOutputs`) reads and files a `Record` through any
   `OutcomeRecords.IOutcomeStore`; `TestFailureClearance.lookupForCheck` takes one
   (AUTOMATION-1695); the disk store is one. `InMemoryOutcomeStore` gains `Keys`, `TextOf`
