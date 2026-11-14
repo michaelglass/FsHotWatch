@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: test evidence, test baselines and the reuse refusal read and file through `OutcomeRecords.IOutcomeStore`
+  (AUTOMATION-1695). `TestEvidenceRun.Wiring.Outcomes` is an `OutcomeStore.Wired option`: the store and its
+  collection, which the plugin wires as the disk store's GcIfDue with the same "not due" log line. Behaviour unchanged.
+
 ## 0.13.0-alpha.115 - 2026-11-14
 
 - feat!: `runtimeSelection: "runtime/record-static"` — runtime coverage decides what runs, and every completed impact

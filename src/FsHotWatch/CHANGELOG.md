@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `OutcomeStore.Collect`, `collectDue`, `collectNothing` and `Wired` (a store with the collection the code
+  that opened it hands over), plus `Through.tryHistory` (tells an unreadable key from an empty one, AUTOMATION-1615)
+  and `Through.supersede` (AUTOMATION-1695). `ShadowVerdict.Collect` is now an abbreviation of `OutcomeStore.Collect`.
+
 - fix: filing a record again repairs an unreadable or torn file of the same name (AUTOMATION-1701). A record's
   name is the digest of its payload, so a writer that has just computed those bytes knows what belongs there. Where the
   file is unreadable or holds other bytes, the new bytes replace it by the same atomic rename; a file holding exactly
