@@ -309,6 +309,8 @@ type Options =
         /// Sample keys with an input of this label first (e.g. a new key shape that most
         /// needs auditing), then the rest.
         PreferInput: string option
+        /// Shadow logs to read lookup agreement from (ADR-074 (b)); none asks nothing.
+        ShadowLogs: string list
     }
 
 module Options =
@@ -317,7 +319,8 @@ module Options =
           Sample = Some DefaultSample
           Seed = "fshw-audit"
           Keys = []
-          PreferInput = None }
+          PreferInput = None
+          ShadowLogs = [] }
 
 /// A record as a report names it.
 type RecordSummary =
@@ -388,6 +391,131 @@ module KindTally =
         else
             KindFinding.Vacuous "no shared key holds a readable record"
 
+/// What the shadow logs say about the lookup on the trees today's daemon graded: ADR-074's
+/// night count (b), LOOKUP AGREEMENT (AUTOMATION-1577). Publications only (`check`,
+/// `confirm`); a `fshw verdict` read and a line the shadow could not compare are not counted.
+type AgreementTally =
+    {
+        /// The logs read.
+        Logs: string list
+        /// Publications compared.
+        Publications: int
+        /// Of those, the ones today's daemon graded green.
+        DaemonGreen: int
+        /// Of the daemon greens, the ones the lookup also answered green.
+        LookupGreen: int
+        /// Publications the daemon graded RED that the lookup answered green: a false green.
+        LookupGreenOnRed: int
+        /// Lines that are not a shadow line.
+        Unreadable: int
+    }
+
+/// What an agreement tally establishes.
+[<RequireQualifiedAccess>]
+type AgreementFinding =
+    /// Some daemon greens were answered green by the lookup, and no red was.
+    | Agreeing
+    /// No publication was graded green, so nothing was compared: no answer.
+    | NoDaemonGreen
+    /// Daemon greens exist and the lookup answered none of them green: 0% agreement.
+    | NoAgreement
+    /// The lookup answered green on trees the daemon graded red.
+    | GreenOnRed of count: int
+
+module AgreementTally =
+    /// The tally of shadow-log `lines` read from `logs`.
+    let ofLines (logs: string list) (lines: string seq) : AgreementTally =
+        let read (line: string) =
+            try
+                use doc = JsonDocument.Parse line
+                let root = doc.RootElement
+
+                let text (el: JsonElement) (name: string) =
+                    match el.TryGetProperty name with
+                    | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+                    | _ -> None
+
+                let child (name: string) =
+                    match root.TryGetProperty name with
+                    | true, v when v.ValueKind = JsonValueKind.Object -> Some v
+                    | _ -> None
+
+                Some(
+                    text root "command",
+                    child "today" |> Option.bind (fun t -> text t "class"),
+                    child "lookup" |> Option.bind (fun l -> text l "outcome")
+                )
+            with :? JsonException ->
+                None
+
+        let empty =
+            { Logs = logs
+              Publications = 0
+              DaemonGreen = 0
+              LookupGreen = 0
+              LookupGreenOnRed = 0
+              Unreadable = 0 }
+
+        lines
+        |> Seq.filter (fun l -> not (String.IsNullOrWhiteSpace l))
+        |> Seq.fold
+            (fun t line ->
+                match read line with
+                | None -> { t with Unreadable = t.Unreadable + 1 }
+                | Some(Some("check" | "confirm"), Some today, Some(("green" | "red" | "missing") as lookup)) ->
+                    { t with
+                        Publications = t.Publications + 1
+                        DaemonGreen = t.DaemonGreen + (if today = "green" then 1 else 0)
+                        LookupGreen = t.LookupGreen + (if today = "green" && lookup = "green" then 1 else 0)
+                        LookupGreenOnRed = t.LookupGreenOnRed + (if today = "red" && lookup = "green" then 1 else 0) }
+                | Some _ -> t)
+            empty
+
+    let finding (t: AgreementTally) : AgreementFinding =
+        if t.LookupGreenOnRed > 0 then
+            AgreementFinding.GreenOnRed t.LookupGreenOnRed
+        elif t.DaemonGreen = 0 then
+            AgreementFinding.NoDaemonGreen
+        elif t.LookupGreen = 0 then
+            AgreementFinding.NoAgreement
+        else
+            AgreementFinding.Agreeing
+
+    /// The share of daemon greens the lookup answered green, in percent.
+    let rate (t: AgreementTally) : float =
+        if t.DaemonGreen = 0 then
+            0.0
+        else
+            100.0 * float t.LookupGreen / float t.DaemonGreen
+
+/// Whether an audit was asked about lookup agreement, and what the logs said.
+[<RequireQualifiedAccess>]
+type LookupAgreement =
+    /// No shadow log was named: the report says nothing about agreement.
+    | NotAsked
+    | Tallied of AgreementTally
+
+module LookupAgreement =
+    /// The agreement of the shadow logs at `paths`; `NotAsked` for none. A log that is absent or
+    /// cannot be read contributes no line, and is still named in `Logs`.
+    let read (paths: string list) : LookupAgreement =
+        match paths with
+        | [] -> LookupAgreement.NotAsked
+        | _ ->
+            let lines =
+                paths
+                |> Seq.collect (fun p ->
+                    try
+                        if File.Exists p then
+                            File.ReadAllLines p :> string seq
+                        else
+                            Seq.empty
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException -> Seq.empty)
+
+            LookupAgreement.Tallied(AgreementTally.ofLines paths lines)
+
 [<RequireQualifiedAccess>]
 type Verdict =
     /// Something was compared and nothing differed.
@@ -413,9 +541,26 @@ type Report =
         /// records.
         UnreadableClean: int
         UnreadableAudited: int
+        /// What the shadow logs say about lookup agreement (ADR-074 (b)), when the audit was asked.
+        Agreement: LookupAgreement
     }
 
     member this.Verdict =
+        if not this.Mismatches.IsEmpty then
+            Verdict.Mismatch
+        else
+            match this.Agreement with
+            | LookupAgreement.Tallied t ->
+                match AgreementTally.finding t with
+                | AgreementFinding.GreenOnRed _ -> Verdict.Mismatch
+                | AgreementFinding.NoDaemonGreen
+                | AgreementFinding.NoAgreement -> Verdict.Vacuous
+                | AgreementFinding.Agreeing -> this.RecordsVerdict
+            | LookupAgreement.NotAsked -> this.RecordsVerdict
+
+    /// The verdict of the record comparison alone, whatever lookup agreement says: ADR-074's night
+    /// count (a), RECORD CORRECTNESS, which counts on this and never on the overall `Verdict`.
+    member this.RecordsVerdict =
         if not this.Mismatches.IsEmpty then
             Verdict.Mismatch
         elif
@@ -662,7 +807,8 @@ let auditStores (stores: Stores) (options: Options) : Report =
       AuditedKeys = results |> List.map (fun (_, _, keys) -> keys)
       Unmatched = unmatched
       UnreadableClean = unreadableClean
-      UnreadableAudited = unreadableAudited }
+      UnreadableAudited = unreadableAudited
+      Agreement = LookupAgreement.read options.ShadowLogs }
 
 /// Audit the records `auditedRoot` holds against the clean recompute filed in `cleanRoot`,
 /// outcome stores only.
@@ -694,6 +840,7 @@ let toJson (report: Report) : string =
     let o = JsonObject()
     o["schema"] <- ReportSchema
     o["verdict"] <- verdictToken report.Verdict
+    o["recordsVerdict"] <- verdictToken report.RecordsVerdict
     o["exitCode"] <- exitCode report.Verdict
     o["seed"] <- report.Seed
 
@@ -763,6 +910,28 @@ let toJson (report: Report) : string =
 
     o["unreadableClean"] <- report.UnreadableClean
     o["unreadableAudited"] <- report.UnreadableAudited
+
+    match report.Agreement with
+    | LookupAgreement.NotAsked -> ()
+    | LookupAgreement.Tallied t ->
+        let a = JsonObject()
+        a["logs"] <- JsonArray(t.Logs |> List.map (fun l -> JsonValue.Create l :> JsonNode) |> Array.ofList)
+        a["publications"] <- t.Publications
+        a["daemonGreen"] <- t.DaemonGreen
+        a["lookupGreen"] <- t.LookupGreen
+        a["agreementPercent"] <- AgreementTally.rate t
+        a["lookupGreenOnRed"] <- t.LookupGreenOnRed
+        a["unreadable"] <- t.Unreadable
+
+        a["alarm"] <-
+            match AgreementTally.finding t with
+            | AgreementFinding.Agreeing -> null
+            | AgreementFinding.NoDaemonGreen -> JsonValue.Create "no-daemon-green"
+            | AgreementFinding.NoAgreement -> JsonValue.Create "no-agreement"
+            | AgreementFinding.GreenOnRed _ -> JsonValue.Create "lookup-green-on-red"
+
+        o["lookupAgreement"] <- a
+
     o.ToJsonString(JsonSerializerOptions(WriteIndented = true))
 
 /// The report for a person.
@@ -796,12 +965,39 @@ let render (report: Report) : string list =
       if report.UnreadableClean + report.UnreadableAudited > 0 then
           $"  unreadable files: clean %d{report.UnreadableClean}, audited %d{report.UnreadableAudited}"
 
-      let verdict =
-          match report.Verdict with
+      match report.Agreement with
+      | LookupAgreement.NotAsked -> ()
+      | LookupAgreement.Tallied t ->
+          let rate =
+              (AgreementTally.rate t).ToString("0.0", Globalization.CultureInfo.InvariantCulture)
+
+          $"  lookup agreement: %d{t.LookupGreen} of %d{t.DaemonGreen} daemon-green publication(s) answered green by the lookup (%s{rate}%%), lookup green on daemon red %d{t.LookupGreenOnRed}, %d{t.Publications} publication(s) in %d{t.Logs.Length} log(s)"
+
+          match AgreementTally.finding t with
+          | AgreementFinding.Agreeing -> ()
+          | AgreementFinding.NoDaemonGreen ->
+              "  LOOKUP AGREEMENT VACUOUS: no publication was graded green, so nothing was compared"
+          | AgreementFinding.NoAgreement ->
+              $"  LOOKUP AGREEMENT 0%%: the lookup answered none of %d{t.DaemonGreen} daemon-green publication(s) green"
+          | AgreementFinding.GreenOnRed n ->
+              $"  LOOKUP GREEN ON RED: %d{n} publication(s) the daemon graded red were answered green by the lookup"
+
+      // The records' own verdict, ADR-074's night count (a), whatever lookup agreement says.
+      let records =
+          match report.RecordsVerdict with
           | Verdict.Agree -> "AGREE: every audited record equals its clean recompute"
           | Verdict.Mismatch ->
               $"MISMATCH: %d{report.Mismatches.Length} stored record(s) differ from a clean recompute under the same key: a key missed an input"
           | Verdict.Vacuous -> "VACUOUS: a kind or a named key compared nothing; no answer"
+
+      $"records: %s{records}"
+
+      let verdict =
+          match report.Verdict, report.Agreement with
+          | v, _ when v = report.RecordsVerdict -> records
+          | Verdict.Mismatch, _ -> "MISMATCH: the lookup answered green on a publication the daemon graded red"
+          | Verdict.Vacuous, _ -> "VACUOUS: lookup agreement compared nothing or was 0%"
+          | Verdict.Agree, _ -> records
 
       $"audit: %s{verdict}" ]
 
@@ -842,6 +1038,8 @@ type Request =
         Seed: string option
         Keys: string list
         PreferInput: string option
+        /// Shadow logs to read lookup agreement from (`--shadow-log`, repeatable).
+        ShadowLogs: string list
     }
 
 module Request =
@@ -853,7 +1051,8 @@ module Request =
           Sample = None
           Seed = None
           Keys = []
-          PreferInput = None }
+          PreferInput = None
+          ShadowLogs = [] }
 
 /// An audit resolved against a repository: the two stores and what to compare.
 type Setup =
@@ -925,7 +1124,8 @@ let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
                   Sample = sample
                   Seed = request.Seed |> Option.defaultValue Options.defaults.Seed
                   Keys = keys |> List.choose Result.toOption
-                  PreferInput = request.PreferInput } }
+                  PreferInput = request.PreferInput
+                  ShadowLogs = request.ShadowLogs |> List.map Path.GetFullPath } }
 
 /// Run a resolved audit: refuse a store audited against itself or a missing clean store,
 /// then compare. Error is a usage error (exit 2).

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `fshw audit --shadow-log <log>` (repeatable) adds LOOKUP AGREEMENT to the report (AUTOMATION-1577, ADR-074), as
+  `fshw-bench audit --shadow-log` does for the nightly; the nightly workflow passes its workspace's shadow log.
+
 - feat: a daemon start runs each declared-input plugin that has no record for its inputs as they are now (AUTOMATION-1577,
   ADR-074; ADR-059 §2, a miss means run). `ShadowVerdict.unrecordedDeclared` names them and `runUnrecordedDeclared`
   re-runs each through `PluginHost.RerunPlugin`, so a fresh checkout's idle file commands get on record once instead

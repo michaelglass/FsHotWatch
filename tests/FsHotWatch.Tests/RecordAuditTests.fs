@@ -447,7 +447,8 @@ let ``a kind that compared nothing is marked vacuous in the text and the JSON, b
           AuditedKeys = []
           Unmatched = []
           UnreadableClean = 0
-          UnreadableAudited = 0 }
+          UnreadableAudited = 0
+          Agreement = RecordAudit.LookupAgreement.NotAsked }
 
     test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
     test <@ RecordAudit.exitCode report.Verdict = 3 @>
@@ -501,7 +502,8 @@ let ``a report with no kind at all is vacuous`` () =
           AuditedKeys = []
           Unmatched = []
           UnreadableClean = 0
-          UnreadableAudited = 0 }
+          UnreadableAudited = 0
+          Agreement = RecordAudit.LookupAgreement.NotAsked }
 
     test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
     test <@ (List.last (RecordAudit.render report)).StartsWith "audit: VACUOUS" @>
@@ -936,3 +938,151 @@ let ``outputs are tokenized in every string, keeping nulls, numbers and booleans
 
     test <@ normalized "null" = Some "null" @>
     test <@ normalized "/w/a/x.fs {" = Some "${repo}/x.fs {" @>
+
+// ---- Lookup agreement (AUTOMATION-1577, ADR-074 night count (b)) ----------------------------
+
+/// One shadow-log line: what today's daemon concluded and what the lookup answered.
+let private shadowLine (command: string) (today: string) (lookup: string) =
+    $"""{{"schema":"fshw-shadow-v1","command":"%s{command}","today":{{"outcome":"%s{today}","class":"%s{today}","exit":0}},"lookup":{{"outcome":"%s{lookup}"}}}}"""
+
+let private agreementOf (lines: string list) =
+    RecordAudit.AgreementTally.ofLines [ "log" ] lines
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``agreement counts publications only: daemon greens the lookup also answered green, and lookup greens on red`` () =
+    let tally =
+        agreementOf
+            [ shadowLine "check" "green" "green"
+              shadowLine "confirm" "green" "missing"
+              shadowLine "check" "green" "red"
+              shadowLine "check" "red" "green" // a false green: the lookup answered green where the daemon was red
+              shadowLine "check" "red" "red"
+              shadowLine "verdict" "green" "green" // a read, not a publication
+              """{"command":"check","today":{"class":"green"},"lookup":{"outcome":"not-compared"}}"""
+              "{ torn" ]
+
+    test <@ tally.Publications = 5 @>
+    test <@ tally.DaemonGreen = 3 @>
+    test <@ tally.LookupGreen = 1 @>
+    test <@ tally.LookupGreenOnRed = 1 @>
+    test <@ tally.Unreadable = 1 @>
+
+let private reportWith (agreement: RecordAudit.LookupAgreement) : RecordAudit.Report =
+    { Seed = "s"
+      Sample = Some 0
+      AuditedStore = "/a"
+      CleanStore = "/c"
+      Kinds =
+        [ { Kind = "check"
+            CleanKeys = 1
+            Shared = 1
+            Audited = 1
+            Records = 1
+            Mismatched = 0 } ]
+      Mismatches = []
+      AuditedKeys = []
+      Unmatched = []
+      UnreadableClean = 0
+      UnreadableAudited = 0
+      Agreement = agreement }
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``no agreement asked for leaves the verdict alone; some agreement does too`` () =
+    test <@ (reportWith RecordAudit.LookupAgreement.NotAsked).Verdict = RecordAudit.Verdict.Agree @>
+
+    let partly =
+        agreementOf [ shadowLine "check" "green" "green"; shadowLine "check" "green" "missing" ]
+
+    let report = reportWith (RecordAudit.LookupAgreement.Tallied partly)
+    test <@ report.Verdict = RecordAudit.Verdict.Agree @>
+
+    test
+        <@
+            RecordAudit.render report
+            |> List.exists (fun l ->
+                l.Contains "lookup agreement: 1 of 2 daemon-green publication(s) answered green by the lookup (50.0%)")
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``zero agreement is an alarm of the vacuous class, in the text and the JSON`` () =
+    let none =
+        agreementOf [ shadowLine "check" "green" "missing"; shadowLine "check" "green" "missing" ]
+
+    let report = reportWith (RecordAudit.LookupAgreement.Tallied none)
+    test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
+
+    test
+        <@
+            RecordAudit.render report
+            |> List.exists (fun l -> l.Contains "LOOKUP AGREEMENT 0%")
+        @>
+
+    let json = JsonDocument.Parse(RecordAudit.toJson report).RootElement
+    let agreement = json.GetProperty "lookupAgreement"
+    let daemonGreen = agreement.GetProperty("daemonGreen").GetInt32()
+    let lookupGreen = agreement.GetProperty("lookupGreen").GetInt32()
+    let alarm = agreement.GetProperty("alarm").GetString()
+    test <@ daemonGreen = 2 && lookupGreen = 0 && alarm = "no-agreement" @>
+
+    // No daemon green at all is no answer either: nothing was compared.
+    let nothing = agreementOf [ shadowLine "check" "red" "red" ]
+    test <@ (reportWith (RecordAudit.LookupAgreement.Tallied nothing)).Verdict = RecordAudit.Verdict.Vacuous @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a lookup green on a daemon red is a mismatch: the lookup would have passed a red tree`` () =
+    let falseGreen =
+        agreementOf [ shadowLine "check" "green" "green"; shadowLine "check" "red" "green" ]
+
+    let report = reportWith (RecordAudit.LookupAgreement.Tallied falseGreen)
+    test <@ report.Verdict = RecordAudit.Verdict.Mismatch @>
+
+    test
+        <@
+            RecordAudit.render report
+            |> List.exists (fun l -> l.Contains "LOOKUP GREEN ON RED: 1")
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a request names its shadow logs, and the audit reads them`` () =
+    withTempDir "audit-agreement" (fun dir ->
+        let log = Path.Combine(dir, "lookup-verdict.jsonl")
+        File.WriteAllLines(log, [ shadowLine "check" "green" "green" ])
+
+        let resolved =
+            RecordAudit.resolve
+                "/repo"
+                { RecordAudit.Request.empty with
+                    Clean = Some "/c"
+                    ShadowLogs = [ log ] }
+
+        test <@ resolved |> Result.map _.Options.ShadowLogs = Ok [ Path.GetFullPath log ] @>
+
+        match RecordAudit.LookupAgreement.read [ log ] with
+        | RecordAudit.LookupAgreement.Tallied t -> test <@ t.DaemonGreen = 1 && t.LookupGreen = 1 @>
+        | RecordAudit.LookupAgreement.NotAsked -> failwith "a named log is read"
+
+        test <@ RecordAudit.LookupAgreement.read [] = RecordAudit.LookupAgreement.NotAsked @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an agreement alarm never reads as a records verdict: the records count on their own`` () =
+    let none = agreementOf [ shadowLine "check" "green" "missing" ]
+    let report = reportWith (RecordAudit.LookupAgreement.Tallied none)
+
+    // ADR-074: night count (a) is the records' verdict, which agrees here; (b) is the alarm.
+    test <@ report.RecordsVerdict = RecordAudit.Verdict.Agree @>
+    test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
+
+    let lines = RecordAudit.render report
+
+    test
+        <@
+            lines
+            |> List.contains "records: AGREE: every audited record equals its clean recompute"
+        @>
+
+    test <@ List.last lines = "audit: VACUOUS: lookup agreement compared nothing or was 0%" @>
+
+    let json = JsonDocument.Parse(RecordAudit.toJson report).RootElement
+    let recordsVerdict = json.GetProperty("recordsVerdict").GetString()
+    let verdict = json.GetProperty("verdict").GetString()
+    test <@ recordsVerdict = "agree" && verdict = "vacuous" @>
