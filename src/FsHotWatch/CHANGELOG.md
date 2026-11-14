@@ -11,6 +11,11 @@
   lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
   when lines were dropped.
 
+- feat: `OutcomeStore.Through` (`file`, `lookup`, `lookupWithOutputs`) reads and files a `Record` through any
+  `OutcomeRecords.IOutcomeStore`; `TestFailureClearance.lookupForCheckIn` is the check-time lookup through one
+  (AUTOMATION-1695). `lookupForCheck` over the disk store is unchanged. `InMemoryOutcomeStore` gains `Keys`, `TextOf`
+  and `Replace`.
+
 - refactor: L1, the outcome store's records, moves into `FsHotWatch.Core` as `OutcomeRecords` (AUTOMATION-1695).
   It contains the record codec (`RecordCodec`, unchanged byte for byte, which `RecordBytesGoldenTests` pins), `StoredRecord`,
   whose counts, duration and run id live in `Ran` (`TestRun | InRun | NonTest`) and nowhere else, and one read

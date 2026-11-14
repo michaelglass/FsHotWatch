@@ -5,6 +5,10 @@
 - feat: a run whose activity log outgrew its share says so after its summary — `activity cap dropped N earlier log
   lines` — read from `lastRun.activityDropped` (AUTOMATION-1703).
 
+- feat: `ShadowVerdict.observeIn` and `observeReadIn` do a publication's and a read's shadow work through any
+  `OutcomeRecords.IOutcomeStore` (AUTOMATION-1695). `observeIn` returns the answer and the keys a collection must keep.
+  `observeWith` and `observeReadWith` keep their disk-store signatures and behaviour.
+
 - refactor: `ShadowVerdict.requirements`, `Configured` and the key functions are thin wrappers over
   `FsHotWatch.Requirements` in FsHotWatch.Core (AUTOMATION-1695). Signatures unchanged; `Configured` is an abbreviation.
 
