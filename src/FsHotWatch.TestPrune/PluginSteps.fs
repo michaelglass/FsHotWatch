@@ -575,9 +575,15 @@ let internal currentOutcomeKeyResultsIn
     | Some _, None -> refuseAll "the project model publishes no compile-input identities"
 
 /// The full pass a restarted daemon would diff from, whatever the tree is when it restarts:
-/// the ledger records the tree T that pass was earned on, the impact index beside `dbPath` is
-/// still sealed at T, and the box-wide `test-baseline` record for exactly T is a pass from
-/// this analyser build whose manifest hashes to T. Otherwise why not.
+/// the tree T the impact index beside `dbPath` is sealed at, which is the tree the cold
+/// scan's diff against the index's rows starts from. T must be one this checkout's own full
+/// suite passed with the index sealed there (the ledger's tree or an earlier one it keeps),
+/// and the box-wide `test-baseline` record for exactly T a pass from this analyser build
+/// whose manifest hashes to T. Otherwise why not.
+///
+/// The record alone is not enough (AUTOMATION-1682, ADR-071): it is keyed by the tree's
+/// bytes, and another checkout may have filed it under another toolchain or environment.
+/// This checkout's own pass at T is what says its tests passed there as they run here.
 let internal restartBaselineIn
     (evidence: TestEvidenceRun.Wiring option)
     (dbPath: string)
@@ -586,18 +592,19 @@ let internal restartBaselineIn
     match ledger with
     | None -> Error "this checkout's ledger records no full-suite baseline"
     | Some baseline ->
-        match baseline.Tree with
-        | None ->
+        match FullSuiteBaseline.passedTrees baseline with
+        | [] ->
             let runId = baseline.RunId.ToString "N"
 
             Error
                 $"the ledger's full-suite baseline (run %s{runId}) records no tree it passed with the index sealed there"
-        | Some tree ->
+        | passed ->
             match IndexSeal.load dbPath with
-            | sealedAt when sealedAt <> Some tree ->
-                let sealedText = sealedAt |> Option.defaultValue "no tree"
-                Error $"the index is sealed at %s{sealedText}, not at the baseline's tree %s{tree}"
-            | _ ->
+            | None -> Error "the index is sealed at no tree"
+            | Some sealedAt when not (List.contains sealedAt passed) ->
+                Error
+                    $"the index is sealed at %s{sealedAt}, not at a tree this checkout's full suite passed (the ledger's newest is %s{List.head passed}, %d{passed.Length} kept)"
+            | Some tree ->
                 match evidence |> Option.bind (fun wiring -> wiring.Outcomes) with
                 | None -> Error "no outcome store is wired"
                 | Some store ->
@@ -614,20 +621,28 @@ let internal restartBaselineIn
                                     { Identity = tree
                                       Entries = record.Entries } })
 
-/// This checkout's own last full pass, when a restarted daemon may diff from it
+/// A full pass of this checkout's own, when a restarted daemon may diff from it
 /// (AUTOMATION-1587): `restartBaselineIn`'s conditions, and the current tree MOVED from T.
 /// Every failure is a miss, and a miss is today's launch. An unchanged tree is a miss on
-/// purpose: the skip on records answers it at once.
+/// purpose, whether it is the ledger's tree or T: the skip on records answers it at once.
 let internal checkoutBaselineIn
     (evidence: TestEvidenceRun.Wiring option)
     (dbPath: string)
     (ledger: FullSuiteBaseline.Baseline option)
     (current: string)
     : Result<CheckoutBaseline, string> =
-    match ledger |> Option.bind (fun baseline -> baseline.Tree) with
-    | Some tree when String.Equals(tree, current, StringComparison.Ordinal) ->
+    let unmoved =
         Error "the tree has not moved from the ledger's full-suite baseline (the skip on records answers it)"
-    | _ -> restartBaselineIn evidence dbPath ledger
+
+    match ledger |> Option.bind (fun baseline -> baseline.Tree) with
+    | Some tree when String.Equals(tree, current, StringComparison.Ordinal) -> unmoved
+    | _ ->
+        restartBaselineIn evidence dbPath ledger
+        |> Result.bind (fun baseline ->
+            if String.Equals(baseline.Tree, current, StringComparison.Ordinal) then
+                unmoved
+            else
+                Ok baseline)
 
 /// What a restarted daemon's first check would select (AUTOMATION-1623, ADR-069): it diffs
 /// from the full pass `restartBaselineIn` finds and selects from the diff, or it finds none

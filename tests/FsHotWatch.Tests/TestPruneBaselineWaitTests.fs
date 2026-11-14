@@ -6,9 +6,9 @@
 /// ran every project in full; the edit then ran again in a queued re-run (the repro: the diff
 /// folded 9 s after the launch, 20,817 tests then 162 classes).
 ///
-/// When the tree MOVED from this checkout's own last full pass at T (the ledger records T,
-/// the index is still sealed at T, and a passing `test-baseline` record for exactly T holds
-/// T's manifest), the first launch now waits for the fold and selects from the diff T to T'
+/// When the tree MOVED from a full pass of this checkout's own at T (the index is sealed at
+/// T, the ledger records this checkout passing T in full, as its tree or an earlier one it
+/// keeps, and a passing `test-baseline` record for exactly T holds T's manifest), the first launch now waits for the fold and selects from the diff T to T'
 /// as a warm session would. An unchanged tree does not wait: the skip on records answers it.
 /// A miss, or a wait that runs out its bound, is today's launch.
 module FsHotWatch.Tests.TestPruneBaselineWaitTests
@@ -498,6 +498,137 @@ let ``a ledger with no tree is a miss`` () =
         | other -> failwith $"expected a ledger baseline, got %A{other}")
 
 // ---------------------------------------------------------------------------
+// (6) AUTOMATION-1682: the cycle. A full pass earned at an EDITED tree X moved the ledger's
+// tree to X; the revert re-sealed the index at T; the next restart refused ("the index is
+// sealed at T, not at the baseline's tree X") and ran every project in full, earning the
+// ledger at the next edited tree, and so on: every restart after an edit was a full suite.
+// The cold scan's diff is from the tree the index IS sealed at, so that is the tree a
+// restart diffs from, when this checkout's own full suite passed it.
+// ---------------------------------------------------------------------------
+
+let private ledgerOf (v: Verified) =
+    match FullSuiteBaseline.load v.F.Ctx.RepoRoot with
+    | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> baseline
+    | other -> failwith $"expected a ledger baseline, got %A{other}"
+
+let private restoreLib (v: Verified) =
+    write v.F.Ctx.RepoRoot "src/Lib.fs" "module Lib\nlet f x = x\n"
+
+/// A daemon over `v` passes every project in full over the tree as it is now, with its index
+/// sealed there, and files that tree's record: a full suite earned at an edited tree.
+let private passInFullHere (v: Verified) =
+    let d = restart v
+    let sealedState = update d.F d.F.Handler.Init (BatchChecked(batch ()))
+    let tree = (ReceiptInputTree.read v.F.Ctx.RepoRoot).Value
+
+    let full =
+        { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+            ModelGeneration = Some 1L
+            InputTree = ReceiptInputTree.readTree v.F.Ctx.RepoRoot }
+
+    let passed = update d.F sealedState (finishedGreen full)
+    publish d.F sealedState passed
+    let runId = passed.Debt.Baseline.Value.RunId.ToString "N"
+
+    fileRecord v.Outcomes v.F.Ctx.RepoRoot runId AnalysisRecords.analyzerIdentity
+    |> ignore
+
+    Assert.True(((ledgerOf v).Tree = Some tree), "positive control: the ledger moved to the edited tree")
+    d, passed, tree
+
+[<Fact(Timeout = 30000)>]
+let ``after a full pass at an edited tree and a revert, a restart diffs from the reverted tree it passed`` () =
+    let v = verified true
+    editLib v
+    let d, passed, edited = passInFullHere v
+    test <@ edited <> v.Tree @>
+
+    // The revert: a fold re-seals the index at T, and no full suite runs there again.
+    restoreLib v
+    update d.F passed (BatchChecked(batch ())) |> ignore
+    Assert.True((IndexSeal.load (dbPathOf v.F) = Some v.Tree), "positive control: the index is re-sealed at T")
+    Assert.True(((ledgerOf v).Tree = Some edited), "positive control: the ledger still names the edited tree")
+
+    // The next edit, and a fresh daemon.
+    write v.F.Ctx.RepoRoot "src/Lib.fs" "module Lib\nlet f x = x + 1\n"
+    let next = restart v
+    // What idle-exit is told agrees: a restart now would select from T.
+    test <@ Restart.read v.F.Ctx.RepoRoot = Restart.Selection.SelectsCorrectly v.Tree @>
+    let held, lines = firstBuild next
+
+    test <@ held.AwaitingDiff.IsSome @>
+
+    test
+        <@
+            waitLines lines
+            |> List.exists (fun l ->
+                l.Contains "diff-wait: holding"
+                && l.Contains $"checkout-baseline tree=%s{v.Tree} record=%s{v.Key.Value}")
+        @>
+
+    update next.F (withDiff held) (BatchChecked(batch ())) |> ignore
+    let launch = scheduledLaunch next.F
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+    test <@ next.Queued.Value = 0 @>
+
+[<Fact(Timeout = 30000)>]
+let ``after a full pass at an edited tree, a restart still sealed there diffs from it, as before`` () =
+    // The ordinary case keeps working: the index stayed sealed at the ledger's own tree.
+    let v = verified true
+    editLib v
+    let _, _, edited = passInFullHere v
+    write v.F.Ctx.RepoRoot "src/Lib.fs" "module Lib\nlet f x = x + 2\n"
+    let next = restart v
+    let held, lines = firstBuild next
+    test <@ held.AwaitingDiff.IsSome @>
+
+    test
+        <@
+            waitLines lines
+            |> List.exists (fun l ->
+                l.Contains "diff-wait: holding"
+                && l.Contains $"checkout-baseline tree=%s{edited}")
+        @>
+
+/// The first build of a restart after the covered edit, with the index sealed at T and T's
+/// record filed box-wide, but `forget` applied to this checkout's own ledger first. It must
+/// not wait, must run every project in full, and must say why.
+let private ownLedgerMisses (forget: Verified -> unit) =
+    let v = verified true
+    editLib v
+    forget v
+    Assert.True((IndexSeal.load (dbPathOf v.F) = Some v.Tree), "positive control: the index is sealed at T")
+
+    Assert.True(
+        (TestBaseline.checkoutRecordFor v.Outcomes v.Tree |> Result.isOk),
+        "positive control: T's record is filed box-wide"
+    )
+
+    let d = restart v
+    let held, lines = firstBuild d
+    test <@ held.AwaitingDiff.IsNone @>
+    test <@ held.CheckoutBaseline.IsNone @>
+    test <@ (scheduledLaunch d.F).Selection = everyProjectInFull @>
+    test <@ waitLines lines |> List.exists (fun l -> l.Contains "no checkout baseline") @>
+
+[<Fact(Timeout = 30000)>]
+let ``negative control (1587): a checkout with no full-suite baseline of its own does not diff from another's record``
+    ()
+    =
+    // T's record was filed by a run elsewhere and this checkout's index is sealed at T, but
+    // this checkout never passed anything in full: its own tests may never have run here.
+    ownLedgerMisses (fun v -> File.Delete(FullSuiteBaseline.sidecarPath v.F.Ctx.RepoRoot))
+
+[<Fact(Timeout = 30000)>]
+let ``negative control (1587): a sealed tree this checkout's full suite never passed is a miss, record or not`` () =
+    // This checkout's own full passes were all at another tree; T's record is someone else's.
+    ownLedgerMisses (fun v ->
+        FullSuiteBaseline.save
+            v.F.Ctx.RepoRoot
+            { ledgerOf v with
+                Tree = Some "sha256:elsewhere" })
+
+// ---------------------------------------------------------------------------
 // The seal itself.
 // ---------------------------------------------------------------------------
 
@@ -580,8 +711,9 @@ let ``a restart whose diff finds only uncovered symbols runs rather than skip wi
 // --- What a restart would select, published for idle-exit (AUTOMATION-1623, ADR-069) ---
 //
 // The test plugin publishes, from the same three facts `checkoutBaselineIn` reads, whether a
-// restarted daemon's first check would select its tests correctly: the ledger's full-suite
-// tree T, the index still sealed at T, and T's `test-baseline` record. idle-exit's AUTO window
+// restarted daemon's first check would select its tests correctly: the tree T the index is
+// sealed at, the ledger recording this checkout passing T in full, and T's `test-baseline`
+// record. idle-exit's AUTO window
 // is 5 minutes only while it says so. A stale "selects correctly" must not survive anything
 // that changes one of the three facts.
 
@@ -615,7 +747,7 @@ let ``a re-seal at another tree republishes WouldRunFullSuite, so a stale Select
     test
         <@
             published v = Restart.Selection.WouldRunFullSuite
-                $"the index is sealed at %s{tree'}, not at the baseline's tree %s{v.Tree}"
+                $"the index is sealed at %s{tree'}, not at a tree this checkout's full suite passed (the ledger's newest is %s{v.Tree}, 1 kept)"
         @>
 
 [<Fact(Timeout = 30000)>]
