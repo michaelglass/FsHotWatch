@@ -788,7 +788,7 @@ type CheckPipeline
                 match record.Outputs with
                 // The walk read a record for other bytes than the file holds now.
                 | Some _ -> CheckRecords.RecordMiss.Moved [ "content" ]
-                | None -> CheckRecords.explain store repoRoot options.ProjectFileName record
+                | None -> CheckRecords.explain (CheckRecords.LastKeys.at store) repoRoot options.ProjectFileName record
 
             let project = CheckRecords.shown repoRoot options.ProjectFileName
             let reason = CheckRecords.RecordMiss.describe miss
@@ -887,6 +887,7 @@ type CheckPipeline
                         if
                             CheckRecords.file
                                 store
+                                (CheckRecords.LastKeys.at store)
                                 repoRoot
                                 checkToolchain
                                 options.ProjectFileName

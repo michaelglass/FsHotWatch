@@ -78,7 +78,15 @@ let private fileAll (store: OutcomeStore.Store) (repoRoot: string) (hashFile: st
         fun (projectOptions: FSharpProjectOptions) file key ->
             let outputs = checkOf file
 
-            CheckRecords.file store (Some repoRoot) toolchain projectOptions.ProjectFileName file key outputs
+            CheckRecords.file
+                store
+                (CheckRecords.LastKeys.at store)
+                (Some repoRoot)
+                toolchain
+                projectOptions.ProjectFileName
+                file
+                key
+                outputs
             |> ignore
 
             Some outputs
