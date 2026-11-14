@@ -11,6 +11,15 @@
   lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
   when lines were dropped.
 
+- refactor: `ActionKey` and `LookupVerdict` (with the record outcome `Pass | Fail`) move into `FsHotWatch.Core.dll`, which
+  this package carries, under the same module names (AUTOMATION-1695, re-architecture Phase 1: the correctness core
+  into a project with no FCS reference). `OutcomeStore.Outcome` is now an abbreviation of `LookupVerdict.Outcome`, so
+  every `OutcomeStore.Outcome.Pass` / `.Fail` still compiles. Source-compatible. A project that references FsHotWatch
+  by project reference must also reference FsHotWatch.Core, as every project in this repository now does. Two
+  details changed: `ActionKey.KeyValue` is a reference type rather than a struct (a struct read across the assembly
+  boundary copies on every `.Text`, FS0052), and the empty-or-multiline kind error quotes the kind with `%s`, not
+  `%A` (Core compiles with `--reflectionfree`).
+
 - build: the FsHotWatch package carries `FsHotWatch.Core.dll` in `lib/` (AUTOMATION-1695). Core is still not a
   package of its own (AUTOMATION-1668); this package now references it, because the re-architecture moves the
   correctness core (L0-L2) into it. FsHotWatch.Analyzers no longer packs its own copy, so the assembly ships once.
