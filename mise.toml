@@ -346,8 +346,12 @@ run = "dotnet tool run fssemantictagger release --dry-run"
 depends = ["restore", "check-msbuild-deps"]
 
 [tasks.compile]
-description = "Compile the solution (dotnet build)"
-run = "dotnet build"
+description = "Compile the solution (dotnet build), with stale reference assemblies settled around it"
+# Through scripts/compile.sh, not a bare `dotnet build`: when a type moves between assemblies with
+# its API unchanged, MSBuild leaves a dependent's `ref/` assembly stale and the build fails with
+# FS0193 until it is copied (AUTOMATION-1700). The daemon's build plugin repairs that; this task
+# runs before the daemon in `land-check` and `ci`, so it repairs it too. CompileScriptTests.
+run = "bash scripts/compile.sh"
 depends = ["restore"]
 
 [tasks.ci]
