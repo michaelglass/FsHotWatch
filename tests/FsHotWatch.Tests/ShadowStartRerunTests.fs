@@ -98,7 +98,7 @@ let ``a declared-input plugin with a record for its inputs does not run at start
             observeWith repo (storeAt repo) None configured publication |> ignore
 
         let daemon = started repo
-        test <@ rerunUnrecordedDeclaredIn true repo daemon = [] @>
+        test <@ List.isEmpty (rerunUnrecordedDeclaredIn true repo daemon) @>
         settled daemon
         test <@ runCount runs = 0 @>)
 
@@ -107,8 +107,24 @@ let ``with the shadow off nothing runs at start`` () =
     withTempDir "shadow-start-off" (fun repo ->
         let runs = checkout repo
         let daemon = started repo
-        test <@ rerunUnrecordedDeclaredIn false repo daemon = [] @>
+        test <@ List.isEmpty (rerunUnrecordedDeclaredIn false repo daemon) @>
         settled daemon
         test <@ runCount runs = 0 @>
         // `FSHW_OUTCOME_SHADOW=0` is what turns it off at a real start (`startDeclaredInputs`).
         test <@ not (enabledBy "0") @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a start whose re-run is refused or throws runs nothing and reports nothing re-run`` () =
+    withTempDir "shadow-start-refused" (fun repo ->
+        checkout repo |> ignore
+        test <@ List.isEmpty (runUnrecordedDeclared repo (fun _ -> Error "no such plugin")) @>
+        test <@ List.isEmpty (runUnrecordedDeclared repo (fun _ -> failwith "the host is gone")) @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a start over a configuration the daemon refuses checks nothing and runs nothing`` () =
+    withTempDir "shadow-start-unconfigured" (fun repo ->
+        let runs = checkout repo
+        File.WriteAllText(Path.Combine(repo, ".fshw.json"), """{ "runHookCommands": "check" }""")
+        let rerun (_: string) : Result<unit, string> = failwith "nothing may be re-run"
+        test <@ List.isEmpty (runUnrecordedDeclared repo rerun) @>
+        test <@ runCount runs = 0 @>)

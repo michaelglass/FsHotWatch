@@ -85,12 +85,12 @@ let private everyKind =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every whole-tree plugin of every kind runs on an event a first scan delivers`` () =
-    test <@ idleable everyKind = [] @>
-    test <@ idleable """{ "format": "auto" }""" = [] @>
+    test <@ List.isEmpty (idleable everyKind) @>
+    test <@ List.isEmpty (idleable """{ "format": "auto" }""") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``every whole-tree plugin FsHotWatch's own configuration requires runs on a first scan`` () =
-    test <@ idleable (File.ReadAllText(Path.Combine(RepoTasks.repoRoot (), ".fshw.json"))) = [] @>
+    test <@ List.isEmpty (idleable (File.ReadAllText(Path.Combine(RepoTasks.repoRoot (), ".fshw.json")))) @>
 
 /// A consumer's checkout on a machine that has one (`FSHW_TEST_CONSUMER_CHECKOUT`: intelligence's).
 /// Where it is unset (CI, the server's gate) the case is reported SKIPPED with why, never passed:
@@ -106,4 +106,4 @@ let ``every whole-tree plugin a consumer's configuration requires runs on a firs
         if not (File.Exists path) then
             Assert.Skip $"FSHW_TEST_CONSUMER_CHECKOUT names %s{checkout}, which has no .fshw.json"
 
-        test <@ idleable (File.ReadAllText path) = [] @>
+        test <@ List.isEmpty (idleable (File.ReadAllText path)) @>
