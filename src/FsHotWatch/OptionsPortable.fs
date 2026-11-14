@@ -372,7 +372,7 @@ let private portableOf
 /// (so under the same guard: no input moved while it was evaluated). The key is read twice,
 /// and nothing is filed unless both readings agree. Otherwise why not.
 let file
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (request: Request)
     (inputs: EvaluationInputs)
     (projects: Types.ProjectOptions list)
@@ -393,21 +393,21 @@ let file
             Error "an input moved while it was read"
         else
             let filed (recordKey: ActionKey.ActionKey) (subject: string) (text: string) =
-                store.RecordWithOutputs(
-                    OutcomeStore.Record.ofAction
+                OutcomeStore.Through.file
+                    store
+                    (OutcomeStore.Record.ofAction
                         recordKey
                         subject
                         OutcomeStore.Outcome.Pass
                         request.Toolchain
                         root
-                        DateTimeOffset.UtcNow,
-                    Some text
-                )
+                        DateTimeOffset.UtcNow)
+                    (Some text)
 
             // The options first, and only where no checkout filed them already: the record a
             // later lookup compares against stays the first checkout's.
             if
-                (store.HoldsKey key || filed key OptionsKind outputs)
+                (store.HoldsKey key.Value || filed key OptionsKind outputs)
                 && filed request' RequestKind (IndexJson.toJson index key)
             then
                 Ok()
@@ -464,7 +464,7 @@ let private filedOf (record: OutcomeStore.Record) (text: string) : Filed option 
     | :? FormatException -> None
 
 /// What a portable record of `request` would replay in `root` now.
-let lookup (store: OutcomeStore.Store) (request: Request) (environment: (string * string) list) : Lookup =
+let lookup (store: OutcomeRecords.IOutcomeStore) (request: Request) (environment: (string * string) list) : Lookup =
     let root = request.Root
     let request' = requestKey request
 
@@ -477,7 +477,7 @@ let lookup (store: OutcomeStore.Store) (request: Request) (environment: (string 
           GeneratedPresent = 0
           GeneratedAbsent = 0 }
 
-    match store.LookupWithOutputs request' with
+    match OutcomeStore.Through.lookupWithOutputs store request'.Value with
     | None -> missed "no portable evaluation of this request is filed"
     | Some(_, outputs) ->
         match outputs |> Option.bind IndexJson.tryOfJson with
@@ -495,7 +495,7 @@ let lookup (store: OutcomeStore.Store) (request: Request) (environment: (string 
                 |> List.partition fst
 
             let key = keyOf root request' index (List.map snd (present @ absent)) environment
-            let record = store.LookupWithOutputs filedKey
+            let record = OutcomeStore.Through.lookupWithOutputs store filedKey
 
             let filed =
                 match record with
@@ -707,7 +707,7 @@ let logPathFor (storeRoot: string) =
 /// (`PathToken.portableRoot`). `fshw` names this build in each line, and `commit` the
 /// checkout's commit, read when a line is written.
 let shadow
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (root: string)
     (logPath: string)
     (fshw: string)
