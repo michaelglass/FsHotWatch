@@ -25,10 +25,27 @@ let private report (violations: Violation list) =
 
 [<Fact>]
 let ``the current lookup keeps the theorem over every history`` () =
-    let violations = explore Subject.Current firstSeed histories
+    let violations = explore Backend.Disk Subject.Current firstSeed histories
 
     if not violations.IsEmpty then
         failwith $"%d{violations.Length} violation(s):\n%s{report violations}"
+
+/// The same histories through FsHotWatch.Core's in-memory store (L1's `IOutcomeStore`), where
+/// faults are injected at the interface. Beside the disk runs, never instead of them.
+[<Fact>]
+let ``the current lookup keeps the theorem over every history on the in-memory store`` () =
+    let violations = explore Backend.InMemory Subject.Current firstSeed histories
+
+    if not violations.IsEmpty then
+        failwith $"%d{violations.Length} violation(s):\n%s{report violations}"
+
+/// A planted defect is caught on the in-memory store too, so its runs have teeth of their own.
+[<Fact>]
+let ``a planted defect is caught on the in-memory store`` () =
+    test <@ not (explore Backend.InMemory (Subject.Mutated Mutant.FailReadAsPass) firstSeed histories).IsEmpty @>
+
+    test
+        <@ not (explore Backend.InMemory (Subject.Mutated(Mutant.KpOmitsFile "B/Two.fs")) firstSeed histories).IsEmpty @>
 
 [<Fact>]
 let ``a history is a function of its seed`` () =
@@ -54,7 +71,7 @@ let ``every planted defect is caught`` (name: string) =
         | "kp-omits-file" -> Mutant.KpOmitsFile "B/Two.fs"
         | other -> failwith $"no mutant named %s{other}"
 
-    let violations = explore (Subject.Mutated mutant) firstSeed histories
+    let violations = explore Backend.Disk (Subject.Mutated mutant) firstSeed histories
     test <@ not violations.IsEmpty @>
 
 /// A caught violation replays from its seed alone.
@@ -62,9 +79,10 @@ let ``every planted defect is caught`` (name: string) =
 let ``a violation reproduces from its seed`` () =
     let subject = Subject.Mutated Mutant.FailReadAsPass
 
-    match explore subject firstSeed histories with
+    match explore Backend.Disk subject firstSeed histories with
     | first :: _ ->
-        let again = execute subject first.Seed (generate first.Seed HistoryLength)
+        let again =
+            execute Backend.Disk subject first.Seed (generate first.Seed HistoryLength)
 
         test
             <@

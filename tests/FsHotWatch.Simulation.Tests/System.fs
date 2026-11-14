@@ -78,9 +78,26 @@ let treeKey (subject: Subject) (tree: Tree) : string =
 
 /// The two stores a lookup reads: the publication's (the shadow store under the checkout) and the
 /// box-wide one the test runner files K_P records in.
+[<RequireQualifiedAccess>]
 type Stores =
-    { Shadow: OutcomeStore.Store
-      Kp: OutcomeStore.Store }
+    /// The CLI's own disk store, opened and collected as the CLI does: what the harness proves.
+    | Disk of shadow: OutcomeStore.Store * kp: OutcomeStore.Store
+    /// FsHotWatch.Core's in-memory store over the same codec (L1, AUTOMATION-1695): histories
+    /// run faster, and faults are injected at the store interface.
+    | InMemory of shadow: OutcomeRecords.InMemoryOutcomeStore * kp: OutcomeRecords.InMemoryOutcomeStore
+
+module Stores =
+    /// The publication's store, as the interface every backend implements.
+    let shadow (stores: Stores) : OutcomeRecords.IOutcomeStore =
+        match stores with
+        | Stores.Disk(shadow, _) -> shadow
+        | Stores.InMemory(shadow, _) -> shadow
+
+    /// The box-wide K_P store, as the interface every backend implements.
+    let kp (stores: Stores) : OutcomeRecords.IOutcomeStore =
+        match stores with
+        | Stores.Disk(_, kp) -> kp
+        | Stores.InMemory(_, kp) -> kp
 
 /// A test project's K_P over `tree`: a key over exactly the inputs its run reads, so a run of
 /// another tree with the same inputs answers for this one (ADR-059 step 7).
@@ -234,7 +251,10 @@ let fileKp (subject: Subject) (stores: Stores) (run: Run) (producer: string) (wo
                 else
                     OutcomeStore.Outcome.Pass
 
-            stores.Kp.Record(OutcomeStore.Record.ofAction (kpKey subject tp run.Read) tp outcome producer worktree now)
+            OutcomeStore.Through.file
+                (Stores.kp stores)
+                (OutcomeStore.Record.ofAction (kpKey subject tp run.Read) tp outcome producer worktree now)
+                None
             |> ignore
     | ShadowVerdict.GradedScope.ImpactFiltered
     | ShadowVerdict.GradedScope.Unscoped -> ()
@@ -268,12 +288,13 @@ let readObservation
 /// The answer for one key, as today's lookup reads it for `command`: the shadow store's, else
 /// the K_P store's (`ShadowVerdict.lookupIn`).
 let currentLookup (command: Verdict.Command) (stores: Stores) (key: ActionKey.KeyValue) =
-    let readIn (store: OutcomeStore.Store) =
+    let readIn (store: OutcomeRecords.IOutcomeStore) =
         match command with
         | Verdict.Command.Check -> TestFailureClearance.lookupForCheck store key
-        | Verdict.Command.Confirm -> store.Lookup key |> Option.map _.Outcome
+        | Verdict.Command.Confirm -> OutcomeStore.Through.lookup store key |> Option.map _.Outcome
 
-    readIn stores.Shadow |> Option.orElseWith (fun () -> readIn stores.Kp)
+    readIn (Stores.shadow stores)
+    |> Option.orElseWith (fun () -> readIn (Stores.kp stores))
 
 let private mutatedLookup (subject: Subject) (command: Verdict.Command) (stores: Stores) =
     let current = currentLookup command stores
@@ -293,21 +314,20 @@ let private mutatedLookup (subject: Subject) (command: Verdict.Command) (stores:
 /// A read names no K_P keys; as `observeReadWith` does, it takes those earlier publications named.
 let decide (subject: Subject) (stores: Stores) (o: ShadowVerdict.Observation) =
     let o =
-        ShadowVerdict.withRecordedOutcomeKeys stores.Shadow configured.TestProjects o
+        ShadowVerdict.withRecordedOutcomeKeys (Stores.shadow stores) configured.TestProjects o
 
     LookupVerdict.decide (ShadowVerdict.requirements o configured) (mutatedLookup subject o.Command stores)
 
-/// A publication: today's shadow files the run and answers. A lookup mutant answers again
-/// over what today filed, with its defect.
+/// A publication: today's shadow files the run and answers, on the disk store exactly as the CLI
+/// does it (collection included, `collectDue`), on the in-memory one with no collection
+/// (`collectNothing`). A lookup mutant answers again over what today filed, with its defect.
 let publish (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
     let answer =
-        ShadowVerdict.observeWith
-            repoRoot
-            stores.Shadow
-            (Some stores.Kp)
-            (ShadowVerdict.collectDue stores.Shadow)
-            configured
-            o
+        match stores with
+        | Stores.Disk(shadow, kp) ->
+            ShadowVerdict.observeWith repoRoot shadow (Some kp) (ShadowVerdict.collectDue shadow) configured o
+        | Stores.InMemory(shadow, kp) ->
+            ShadowVerdict.observeWith repoRoot shadow (Some kp) ShadowVerdict.collectNothing configured o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass
@@ -319,10 +339,10 @@ let publish (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVer
 /// first takes the K_P keys earlier publications named for this tree.
 let read (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
     let o =
-        ShadowVerdict.withRecordedOutcomeKeys stores.Shadow configured.TestProjects o
+        ShadowVerdict.withRecordedOutcomeKeys (Stores.shadow stores) configured.TestProjects o
 
     let answer =
-        ShadowVerdict.observeReadWith repoRoot stores.Shadow (Some stores.Kp) configured o
+        ShadowVerdict.observeReadWith repoRoot (Stores.shadow stores) (Some(Stores.kp stores)) configured o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass
@@ -332,11 +352,11 @@ let read (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdic
 
 /// File the first `count` records a publication of `o` would file, and stop: the process
 /// was killed between two writes.
-let fileKilled (store: OutcomeStore.Store) (o: ShadowVerdict.Observation) (count: int) : unit =
+let fileKilled (store: OutcomeRecords.IOutcomeStore) (o: ShadowVerdict.Observation) (count: int) : unit =
     if ShadowVerdict.concluded o then
         ShadowVerdict.recordsOf o configured.TestProjects
         |> List.truncate count
-        |> List.iter (store.Record >> ignore)
+        |> List.iter (fun r -> OutcomeStore.Through.file store r None |> ignore)
 
 /// Every record file under `root`, in a stable order.
 let recordFiles (root: string) : string list =
