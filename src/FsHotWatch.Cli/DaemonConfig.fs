@@ -2930,7 +2930,10 @@ let registerPluginsIn
                 None
 
         daemon.RegisterPreprocessor(
-            FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor(?timeoutSec = config.TimeoutSec, ?store = store)
+            FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor(
+                ?timeoutSec = config.TimeoutSec,
+                ?store = (store |> Option.map (fun s -> s :> FsHotWatch.OutcomeRecords.IOutcomeStore))
+            )
         )
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"
