@@ -892,7 +892,8 @@ let internal settleDebt (facts: DebtSettlementFacts) : DebtSettlement =
                         { RunId = completed.RunId
                           EarnedAt = DateTime.UtcNow
                           Projects = runnableProjects
-                          Tree = None } }
+                          Tree = None
+                          EarlierTrees = [] } }
         else
             debt
 

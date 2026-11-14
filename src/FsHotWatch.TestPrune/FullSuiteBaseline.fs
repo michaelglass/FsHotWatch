@@ -54,7 +54,32 @@ type Baseline =
         /// at exactly that tree at completion; `None` otherwise, and for a record written
         /// before it was kept. A restarted daemon diffs from it (AUTOMATION-1587).
         Tree: string option
+        /// The trees EARLIER full-suite passes of this checkout earned with the index sealed
+        /// there, newest first, at most `TreeHistory`, never naming `Tree`. A restart whose
+        /// index a revert re-sealed at one of them diffs from it (AUTOMATION-1682, ADR-071).
+        EarlierTrees: string list
     }
+
+/// How many trees a ledger remembers its full suite passing, `Tree` included.
+[<Literal>]
+let TreeHistory = 20
+
+/// Every tree this checkout's full suite passed with the index sealed there, newest first.
+let passedTrees (baseline: Baseline) : string list =
+    Option.toList baseline.Tree @ baseline.EarlierTrees
+
+/// The ledger after `next` is earned over `previous`: `next`, remembering every tree the
+/// earlier ones passed, newest first and bounded, without repeating `next`'s own.
+let succeed (previous: Baseline option) (next: Baseline) : Baseline =
+    let earlier =
+        previous
+        |> Option.map passedTrees
+        |> Option.defaultValue []
+        |> List.filter (fun tree -> Some tree <> next.Tree)
+        |> List.distinct
+        |> List.truncate (TreeHistory - (Option.count next.Tree))
+
+    { next with EarlierTrees = earlier }
 
 [<RequireQualifiedAccess>]
 type LoadedBaseline =
@@ -108,6 +133,12 @@ let load (repoRoot: string) : LoadedBaseline =
                     | null -> None
                     | node -> Some(node.GetValue<string>())
 
+                // Absent in a ledger written before it was kept: no earlier tree is known.
+                let earlierTrees =
+                    match obj.["earlierTrees"] with
+                    | null -> []
+                    | node -> node.AsArray() |> Seq.map (fun n -> n.GetValue<string>()) |> List.ofSeq
+
                 match runId, earnedAt, projects with
                 | Some runId, Some earnedAt, Some projects ->
                     LoadedBaseline.Loaded(
@@ -115,7 +146,8 @@ let load (repoRoot: string) : LoadedBaseline =
                             { RunId = runId
                               EarnedAt = earnedAt
                               Projects = projects
-                              Tree = tree }
+                              Tree = tree
+                              EarlierTrees = earlierTrees }
                     )
                 | _ ->
                     LoadedBaseline.Unreadable
@@ -137,6 +169,13 @@ let save (repoRoot: string) (baseline: Baseline) : unit =
     match baseline.Tree with
     | Some tree -> obj.["tree"] <- JsonValue.Create(tree)
     | None -> ()
+
+    let earlier = JsonArray()
+
+    for tree in baseline.EarlierTrees do
+        earlier.Add(JsonValue.Create(tree))
+
+    obj.["earlierTrees"] <- earlier
 
     FsHwPaths.atomicWriteAllText (sidecarPath repoRoot) (obj.ToJsonString())
 

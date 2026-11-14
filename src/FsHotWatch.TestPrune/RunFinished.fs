@@ -260,7 +260,9 @@ let internal onRunFinishedWith
         let earnsBaseline = settled.EarnsBaseline
 
         // The tree the baseline was earned on, kept only when the index was sealed at exactly
-        // that tree: a restarted daemon diffs its cold scan from it (AUTOMATION-1587).
+        // that tree: a restarted daemon diffs its cold scan from it (AUTOMATION-1587). The
+        // trees earlier full passes earned are kept beside it, so a revert that re-seals the
+        // index at one of them still leaves a restart a tree to diff from (AUTOMATION-1682).
         let debt =
             match debt.Baseline with
             | Some baseline when earnsBaseline ->
@@ -271,9 +273,12 @@ let internal onRunFinishedWith
 
                 { debt with
                     Baseline =
-                        Some
-                            { baseline with
-                                Tree = sealedReceiptTree } }
+                        Some(
+                            FullSuiteBaseline.succeed
+                                state.Debt.Baseline
+                                { baseline with
+                                    Tree = sealedReceiptTree }
+                        ) }
             | _ -> debt
 
         let earned =
