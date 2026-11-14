@@ -144,7 +144,7 @@ let private requiredOf (repoRoot: string) : Result<RequiredConfig.Required, stri
 /// `timer` times each phase and counts what it covered (experiment E5); `PhaseTimer.untimed`
 /// does neither. `hashing` says how the tree hash reads each file (`TreeHash.Hashing`).
 let ofRepoWith
-    (timer: PhaseTimer)
+    (timer: IPhaseTimer)
     (hashing: TreeHash.Hashing)
     (repoRoot: string)
     (command: Requirements.Command)
