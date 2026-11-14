@@ -64,7 +64,7 @@ type internal FileCheckedEnv =
         UpdateFreshness: FileFreshness.Store -> unit
         EnqueuePending: string list -> VerificationDebt -> VerificationDebt
         /// Where analyses are filed and read (AUTOMATION-1482); None files and reads none.
-        AnalysisRecords: FsHotWatch.OutcomeStore.Store option
+        AnalysisRecords: FsHotWatch.OutcomeRecords.IOutcomeStore option
     }
 
 /// The file one `FileChecked` event is about, as its handler reads it.

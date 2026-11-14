@@ -260,22 +260,24 @@ let tryOfJson (root: string) (text: string) : AnalysisResult option =
 
 /// The analysis filed under `key`, read under `root`; None for no record or one that does
 /// not read.
-let lookup (store: OutcomeStore.Store) (root: string) (key: ActionKey.ActionKey) : AnalysisResult option =
-    store.LookupWithOutputs key |> Option.bind snd |> Option.bind (tryOfJson root)
+let lookup (store: OutcomeRecords.IOutcomeStore) (root: string) (key: ActionKey.ActionKey) : AnalysisResult option =
+    OutcomeStore.Through.lookupWithOutputs store key.Value
+    |> Option.bind snd
+    |> Option.bind (tryOfJson root)
 
 /// File `analysis` under `key`, for `relPath`, its paths named relative to `root`. Returns
 /// whether it is filed.
 let file
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (root: string)
     (relPath: string)
     (key: ActionKey.ActionKey)
     (analysis: AnalysisResult)
     : bool =
-    store.RecordWithOutputs(
-        OutcomeStore.Record.ofAction key relPath OutcomeStore.Outcome.Pass analyzerIdentity root DateTimeOffset.UtcNow,
-        Some(toJson root analysis)
-    )
+    OutcomeStore.Through.file
+        store
+        (OutcomeStore.Record.ofAction key relPath OutcomeStore.Outcome.Pass analyzerIdentity root DateTimeOffset.UtcNow)
+        (Some(toJson root analysis))
 
 /// The project identity an analysis is made under: the project file's name, with a
 /// script's synthesized `.fsx` dropped, so `"Lib"` names `Lib.fsproj` and `Lib.fsx` alike.
@@ -298,13 +300,13 @@ let keyFor (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) : Acti
         keyOf identity relPath (projectNameOf result.ProjectOptions.ProjectFileName))
 
 /// Whether `store` holds a readable analysis for `result`.
-let holds (store: OutcomeStore.Store) (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) : bool =
+let holds (store: OutcomeRecords.IOutcomeStore) (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) : bool =
     keyFor repoRoot result
     |> Option.bind (fun key -> lookup store repoRoot key)
     |> Option.isSome
 
 /// Whether `store` holds an analysis under `key` that reads under `root`.
-let private readable (root: string) (store: OutcomeStore.Store) (key: ActionKey.ActionKey) : bool =
+let private readable (root: string) (store: OutcomeRecords.IOutcomeStore) (key: ActionKey.ActionKey) : bool =
     lookup store root key |> Option.isSome
 
 /// Whether TestPrune's task-cache entry for `result` may stand in for analysing it: only
@@ -312,16 +314,20 @@ let private readable (root: string) (store: OutcomeStore.Store) (key: ActionKey.
 /// AUTOMATION-1609). A refusal re-analyses the check, which files it. A key-only probe
 /// (`HoldsKey`): asked on every warm read, it reads no payload; a corrupt record is a miss
 /// where it is read.
-let mayAnswerLocally (store: OutcomeStore.Store option) (repoRoot: string) (result: FsHotWatch.Events.FileCheckResult) =
+let mayAnswerLocally
+    (store: OutcomeRecords.IOutcomeStore option)
+    (repoRoot: string)
+    (result: FsHotWatch.Events.FileCheckResult)
+    =
     OutcomeStore.FiledWork.mayAnswerLocally
-        (fun (store: OutcomeStore.Store) key -> store.HoldsKey key)
+        (fun (store: OutcomeRecords.IOutcomeStore) key -> store.HoldsKey key.Value)
         store
         (keyFor repoRoot result)
 
 /// `file`, only when `store` holds no readable analysis under `key` (AUTOMATION-1596,
 /// AUTOMATION-1609). Returns whether it filed.
 let fileIfAbsent
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (root: string)
     (relPath: string)
     (key: ActionKey.ActionKey)
