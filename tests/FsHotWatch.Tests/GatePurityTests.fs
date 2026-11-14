@@ -235,6 +235,11 @@ let ``the landing gate runs check's command without any direct test or coverage 
     test <@ runLine landingGate = runLine "check" @>
     test <@ Set.contains "compile" closure @>
 
+    // AUTOMATION-1700: `compile` is no longer a bare `dotnet build`. It runs before the daemon,
+    // so it settles stale reference assemblies itself, through the build plugin's own
+    // `RefAssemblyFreshness` (scripts/compile.sh -> settle-refs.fsx; CompileScriptTests).
+    test <@ runLine "compile" = Some "run = \"bash scripts/compile.sh\"" @>
+
 /// The directory `test-direct` writes its Cobertura report into, relative to the repo root.
 let private testDirectReportDir mise =
     let m =
