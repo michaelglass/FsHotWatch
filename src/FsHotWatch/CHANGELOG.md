@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a pattern plugin's declared inputs are matched by the daemon's own case-insensitive `FilePattern.matches`,
+  never by the OS glob (AUTOMATION-1577, ADR-074). The glob is case-sensitive on Linux, so a file such as `X.FSX`
+  would have been left out of the `*.fsx` key while the watcher reacts to it: a change to it would not have moved
+  the key, and an older outcome would have answered. `PluginInputs.matches` enumerates every file in the watcher's
+  scope and filters with `FilePattern.matches`; a test pins it.
+
 - feat: the record audit reports LOOKUP AGREEMENT when given shadow logs (AUTOMATION-1577, ADR-074 night count (b)).
   `RecordAudit.Options.ShadowLogs` / `Request.ShadowLogs`; `Report.Agreement : LookupAgreement = NotAsked | Tallied of
   AgreementTally` (publications, daemon greens, the lookup greens among them, lookup greens on daemon reds); a lookup
