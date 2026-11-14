@@ -108,6 +108,9 @@
 
   <ItemGroup>
     <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+    <!-- FsHotWatch.Core ships in the FsHotWatch package's lib/ (AUTOMATION-1695); PrivateAssets keeps it
+         out of this nupkg's dependencies. -->
+    <ProjectReference Include="../FsHotWatch.Core/FsHotWatch.Core.fsproj" PrivateAssets="all" />
     <!-- TestPrune lives in this repository (AUTOMATION-1367), so the plugin builds against its
          source rather than a released package: a cross-cutting fix is one commit and one CI run,
          with no release-then-pin step between them. Packed, these become package dependencies
