@@ -11,6 +11,8 @@
   against the current tree. Shadow outcome records (`.fshw/shadow/`) naming an absent project need no cleanup either:
   they are diagnostic only, never change the exit code or `verdict.json`, are keyed by the tree they describe, and
   their lookup requires only configured projects.
+  A run's summary names any project judged absent, e.g. `(1 symbol(s) not owed: project Sim is no longer in this
+  tree)`, so a wrong judgement shows on a green run too.
 
 - fix: a restarted daemon diffs from this checkout's own full pass instead of running the full suite again (AUTOMATION-1682,
   ADR-071; not in alpha.148). A replayed full pass files the `test-baseline` record; a restart diffs from the tree the

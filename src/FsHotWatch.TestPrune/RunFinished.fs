@@ -74,6 +74,9 @@ type internal RunFinishedEnv =
         /// Publish what a restarted daemon would select, from the ledger this completion
         /// leaves (AUTOMATION-1623, ADR-069).
         PublishRestartSelection: FullSuiteBaseline.Baseline option -> unit
+        /// Each covering project the current tree no longer has and the symbols it no longer
+        /// covers, since the last run reported (AUTOMATION-1717). Draining empties it.
+        DrainAbsentCoverers: unit -> Map<string, Set<string>>
         /// Whether a repo-relative path is an input of the impact index, under the model as it
         /// is now and the sources the index recorded (`ReceiptInputTree.indexInput`).
         IndexInputs: PluginCtx<TestPruneMsg> -> string -> bool
@@ -424,7 +427,8 @@ let internal onRunFinishedWith
                   QueueAfterCommit = queueAfterCommit
                   PendingDescription = pendingDescription
                   ReceiptTransition = receiptTransition
-                  EvidenceReceipt = evidenceReceipt }
+                  EvidenceReceipt = evidenceReceipt
+                  AbsentCoverers = env.DrainAbsentCoverers() }
                 testResults)
 
         let replies =

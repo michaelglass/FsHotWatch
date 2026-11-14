@@ -278,3 +278,44 @@ let ``a covering project the inventory does not name but whose test sources are 
             Assert.True((failedMessage host).IsSome, "a coverer whose tests are in the tree keeps the run red")
         finally
             host.Teardown())
+
+// The absence decision is on the RUN'S summary, not only in the daemon log: a project wrongly
+// judged absent then shows even on a green run, in `fshw status`, `check` and the agent JSON.
+
+let private completedSummary (host: PluginHost) =
+    match host.GetStatus("test-prune") with
+    | Some(PluginStatus.Completed(_, verdict)) -> verdict.Summary
+    | other -> failwith $"expected a completed test-prune run, got %A{other}"
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a run with an absent coverer names it in the run's summary`` () =
+    withTempDir "tp-absent-summary" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let configs = owedToP1AndSim tmpDir dbPath
+        let host = settleBuildOver tmpDir dbPath configs [ "P1" ]
+
+        try
+            Assert.Contains("1 symbol(s) not owed: project Sim is no longer in this tree", completedSummary host)
+        finally
+            host.Teardown())
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a run with no absent coverer carries no absence note`` () =
+    withTempDir "tp-no-absent-summary" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
+        seedBaseline tmpDir [ "P1" ]
+        PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+
+        let configs =
+            [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+
+        let host = settleBuildOver tmpDir dbPath configs [ "P1" ]
+
+        try
+            let summary = completedSummary host
+            Assert.DoesNotContain("not owed", summary)
+            Assert.DoesNotContain("no longer in this tree", summary)
+        finally
+            host.Teardown())
