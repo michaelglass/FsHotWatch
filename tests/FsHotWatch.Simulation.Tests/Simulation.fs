@@ -49,6 +49,8 @@ type Event =
     | TornRecord of pick: int
     /// A record file is copied under another key's directory.
     | ForeignRecord of pick: int * into: int
+    /// A record file can no longer be read (taken modulo how many there are).
+    | UnreadableRecord of pick: int
     | ClockJump of minutes: int
     /// GC under a budget too small for the store.
     | Gc
@@ -97,6 +99,7 @@ let eventText (e: Event) : string =
     | Event.LedgerLost -> "selector ledger lost"
     | Event.TornRecord n -> $"torn record %d{n}"
     | Event.ForeignRecord(n, into) -> $"record %d{n} copied under key %d{into}"
+    | Event.UnreadableRecord n -> $"record %d{n} unreadable"
     | Event.ClockJump m -> $"clock jump %+d{m} min"
     | Event.Gc -> "gc under a tiny budget"
     | Event.ProducerUpgrade -> "fshw upgrade"
@@ -155,6 +158,8 @@ let generate (seed: int) (length: int) : Event list =
               Event.TornRecord(rng.Next 1000)
           elif roll < 0.91 then
               Event.ForeignRecord(rng.Next 1000, rng.Next 1000)
+          elif roll < 0.92 then
+              Event.UnreadableRecord(rng.Next 1000)
           elif roll < 0.95 then
               Event.ClockJump(rng.Next(-48 * 60, 48 * 60))
           elif roll < 0.98 then
@@ -173,8 +178,23 @@ type private State =
       LastCommand: Verdict.Command
       Runs: int }
 
-/// Run `events` against `subject` in a fresh temporary repository; every violation, in step order.
-let execute (subject: Subject) (seed: int) (events: Event list) : Violation list =
+/// Which store a history runs on.
+[<RequireQualifiedAccess>]
+type Backend =
+    /// The CLI's disk store: the default suite, so the real store is what the harness proves.
+    | Disk
+    /// FsHotWatch.Core's in-memory store, through the store interface.
+    | InMemory
+
+/// The in-memory store's files in a stable order: key, then name.
+let private memoryFiles (store: OutcomeRecords.InMemoryOutcomeStore) =
+    [ for key in store.Keys |> List.sortBy _.Text do
+          for name in store.FileNames key |> List.sort do
+              key, name ]
+
+/// Run `events` against `subject` on `backend`, in a fresh temporary repository; every
+/// violation, in step order.
+let execute (backend: Backend) (subject: Subject) (seed: int) (events: Event list) : Violation list =
     let repoRoot =
         Path.Combine(Path.GetTempPath(), "fshw-sim", Guid.NewGuid().ToString "N")
 
@@ -182,9 +202,16 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
     let storeRoot = ShadowVerdict.storeRoot repoRoot
     let kpRoot = Path.Combine(repoRoot, "box-wide-outcomes")
 
+    let memory =
+        OutcomeRecords.InMemoryOutcomeStore(), OutcomeRecords.InMemoryOutcomeStore()
+
+    /// A new process's stores: on disk, new instances over the same directories; in memory, the
+    /// same stores, which ARE the persistent medium.
     let openStores () =
-        { Shadow = openStore storeRoot OutcomeStore.defaultMaxBytes
-          Kp = openStore kpRoot OutcomeStore.defaultMaxBytes }
+        match backend with
+        | Backend.Disk ->
+            Stores.Disk(openStore storeRoot OutcomeStore.defaultMaxBytes, openStore kpRoot OutcomeStore.defaultMaxBytes)
+        | Backend.InMemory -> Stores.InMemory memory
 
     let violations = ResizeArray<Violation>()
 
@@ -229,12 +256,28 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
     let publishRun (step: int) (s: State) (run: Run) (endedAt: Tree) (unfaulted: bool) =
         let o = observation subject run endedAt (producerText s) repoRoot s.Now
         fileKp subject s.Stores run (producerText s) repoRoot s.Now
+        fileDirect s.Stores run.Read (producerText s) repoRoot s.Now
         let answer = publish subject repoRoot s.Stores o
         checkSound step run.Started answer
 
+        // The direct records were just COMPUTED: each answers its clean outcome, whatever unreadable
+        // or torn file a fault left under its key (ADR-072).
+        if unfaulted then
+            for path, why in directMisses s.Stores run.Read do
+                match why with
+                | "a miss" -> violation step Property.Completeness $"the direct check of %s{path} just filed is a miss"
+                | wrong -> violation step Property.Soundness $"the direct check of %s{path} %s{wrong}"
+
         match run.Command, o.Today, unfaulted, answer with
-        | Verdict.Command.Confirm, today, true, LookupVerdict.Answer.Missing _ when today <> ShadowVerdict.Class.Missing ->
-            violation step Property.Completeness $"a concluded unfaulted confirm answered %s{answerText answer}"
+        | Verdict.Command.Confirm, today, true, LookupVerdict.Answer.Missing missing when
+            today <> ShadowVerdict.Class.Missing
+            ->
+            // A test key holding an unreadable file stays a miss by design (ADR-072, `excusedMiss`).
+            match missing |> List.filter (excusedMiss s.Stores o >> not) with
+            | [] -> ()
+            | unexcused ->
+                let names = String.concat ", " unexcused
+                violation step Property.Completeness $"a concluded unfaulted confirm answered missing [%s{names}]"
         | _ -> ()
 
         { s with
@@ -265,7 +308,7 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
             if count % 2 = 1 then
                 fileKp subject s.Stores run (producerText s) repoRoot s.Now
 
-            fileKilled s.Stores.Shadow o (count % (total + 1))
+            fileKilled (Stores.shadow s.Stores) o (count % (total + 1))
             { s with Runs = s.Runs + 1 }
         | Event.Run(command, RunFault.EditedMidRun(path, content)) ->
             let edited = Map.add path content s.Tree
@@ -296,29 +339,71 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
         | Event.Restart -> { s with Stores = openStores () }
         | Event.LedgerLost -> { s with Selector = SelectorState.cold }
         | Event.TornRecord n ->
-            match recordFiles storeRoot with
-            | [] -> s
-            | files ->
+            match backend, recordFiles storeRoot, memoryFiles (fst memory) with
+            | Backend.Disk, (_ :: _ as files), _ ->
                 let file = files[n % files.Length]
-                let text = File.ReadAllText file
-                File.WriteAllText(file, text.Substring(0, text.Length / 2))
+
+                try
+                    let text = File.ReadAllText file
+                    File.WriteAllText(file, text.Substring(0, text.Length / 2))
+                with :? UnauthorizedAccessException ->
+                    () // already unreadable: a torn rewrite of it changes nothing a read can see
+
                 s
+            | Backend.InMemory, _, (_ :: _ as files) ->
+                let key, name = files[n % files.Length]
+
+                (fst memory).TextOf(key, name)
+                |> Option.iter (fun text -> (fst memory).Replace(key, name, Ok(text.Substring(0, text.Length / 2))))
+
+                s
+            | Backend.Disk, [], _
+            | Backend.InMemory, _, [] -> s
         | Event.ForeignRecord(n, into) ->
-            match recordFiles storeRoot with
-            | [] -> s
-            | files ->
+            match backend, recordFiles storeRoot, memoryFiles (fst memory) with
+            | Backend.Disk, (_ :: _ as files), _ ->
                 let file = files[n % files.Length]
                 let target = Path.GetDirectoryName files[into % files.Length]
 
                 if target <> Path.GetDirectoryName file then
-                    File.Copy(file, Path.Combine(target, "foreign-" + Path.GetFileName file), true)
+                    try
+                        File.Copy(file, Path.Combine(target, "foreign-" + Path.GetFileName file), true)
+                    with :? UnauthorizedAccessException ->
+                        ()
 
                 s
+            | Backend.InMemory, _, (_ :: _ as files) ->
+                let key, name = files[n % files.Length]
+                let target, _ = files[into % files.Length]
+
+                if target <> key then
+                    (fst memory).TextOf(key, name)
+                    |> Option.iter (fun text -> (fst memory).Replace(target, "foreign-" + name, Ok text))
+
+                s
+            | Backend.Disk, [], _
+            | Backend.InMemory, _, [] -> s
+        | Event.UnreadableRecord n ->
+            match backend, recordFiles storeRoot, memoryFiles (fst memory) with
+            | Backend.Disk, (_ :: _ as files), _ ->
+                File.SetUnixFileMode(files[n % files.Length], UnixFileMode.None)
+                s
+            | Backend.InMemory, _, (_ :: _ as files) ->
+                let key, name = files[n % files.Length]
+                (fst memory).Replace(key, name, Error "permission denied")
+                s
+            | Backend.Disk, [], _
+            | Backend.InMemory, _, [] -> s
         | Event.ClockJump minutes ->
             { s with
                 Now = s.Now.AddMinutes(float minutes) }
         | Event.Gc ->
-            (openStore storeRoot 2048L).Gc(s.Now, Set.empty) |> ignore
+            // GC is the disk store's (it is not on the store interface): correctness-neutral, since
+            // a collected key is a miss, and a miss means run.
+            match backend with
+            | Backend.Disk -> (openStore storeRoot 2048L).Gc(s.Now, Set.empty) |> ignore
+            | Backend.InMemory -> ()
+
             s
         | Event.ProducerUpgrade -> { s with Producer = s.Producer + 1 }
 
@@ -347,9 +432,9 @@ let HistoryLength = 40
 
 /// Run `count` histories from seeds `firstSeed ..`; every violation, stopping at the first
 /// history that has any.
-let explore (subject: Subject) (firstSeed: int) (count: int) : Violation list =
+let explore (backend: Backend) (subject: Subject) (firstSeed: int) (count: int) : Violation list =
     seq { firstSeed .. firstSeed + count - 1 }
-    |> Seq.map (fun seed -> execute subject seed (generate seed HistoryLength))
+    |> Seq.map (fun seed -> execute backend subject seed (generate seed HistoryLength))
     |> Seq.tryFind (List.isEmpty >> not)
     |> Option.defaultValue []
 
