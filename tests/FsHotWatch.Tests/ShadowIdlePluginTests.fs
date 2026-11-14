@@ -74,12 +74,12 @@ let private withCheckout (config: string) (body: string -> OutcomeStore.Store ->
 let ``an idle file command whose matches are unchanged answers its last pass`` () =
     withCheckout fsxOnly (fun repo store configured ->
         // T0: the `.fsx` changed, so the file command ran and passed.
-        observeWith repo store None configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
+        observeWith repo store None (collectDue store) configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
         |> ignore
 
         // T1: only an unrelated file changed; the file command stayed idle and reported nothing.
         write repo "src/A/a.fs" "module A // edited"
-        let answer = observeWith repo store None configured (check repo "sha256:t1" 1.0 [])
+        let answer = observeWith repo store None (collectDue store) configured (check repo "sha256:t1" 1.0 [])
 
         test <@ answer = LookupVerdict.Answer.Green @>)
 
@@ -92,7 +92,7 @@ let ``an idle file command whose matches are unchanged answers its last fail`` (
                 TodayOutcome = "red"
                 ExitCode = 1 }
 
-        observeWith repo store None configured red |> ignore
+        observeWith repo store None (collectDue store) configured red |> ignore
         write repo "src/A/a.fs" "module A // edited"
 
         let idle =
@@ -101,12 +101,12 @@ let ``an idle file command whose matches are unchanged answers its last fail`` (
                 TodayOutcome = "red"
                 ExitCode = 1 }
 
-        test <@ observeWith repo store None configured idle = LookupVerdict.Answer.Red [ "plugin:" + fsx ] @>)
+        test <@ observeWith repo store None (collectDue store) configured idle = LookupVerdict.Answer.Red [ "plugin:" + fsx ] @>)
 
 [<Fact>]
 let ``a changed match makes the idle file command missing until it runs again`` () =
     withCheckout fsxOnly (fun repo store configured ->
-        observeWith repo store None configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
+        observeWith repo store None (collectDue store) configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
         |> ignore
 
         // The positive control: the `.fsx` itself changed, so the earlier pass says nothing.
@@ -114,7 +114,7 @@ let ``a changed match makes the idle file command missing until it runs again`` 
 
         test
             <@
-                observeWith repo store None configured (check repo "sha256:t1" 1.0 []) = LookupVerdict.Answer.Missing
+                observeWith repo store None (collectDue store) configured (check repo "sha256:t1" 1.0 []) = LookupVerdict.Answer.Missing
                     [ "plugin:" + fsx ]
             @>
 
@@ -125,6 +125,7 @@ let ``a changed match makes the idle file command missing until it runs again`` 
                     repo
                     store
                     None
+                    (collectDue store)
                     configured
                     (check repo "sha256:t1" 2.0 [ fsx, Some OutcomeStore.Outcome.Pass ]) = LookupVerdict.Answer.Green
             @>)
@@ -134,7 +135,7 @@ let ``nothing on record is never green: an idle file command that never ran is m
     withCheckout fsxOnly (fun repo store configured ->
         test
             <@
-                observeWith repo store None configured (check repo "sha256:t0" 0.0 []) = LookupVerdict.Answer.Missing
+                observeWith repo store None (collectDue store) configured (check repo "sha256:t0" 0.0 []) = LookupVerdict.Answer.Missing
                     [ "plugin:" + fsx ]
             @>
 
@@ -143,7 +144,7 @@ let ``nothing on record is never green: an idle file command that never ran is m
 
         test
             <@
-                observeWith repo store None configured (check repo "sha256:t1" 1.0 []) = LookupVerdict.Answer.Missing
+                observeWith repo store None (collectDue store) configured (check repo "sha256:t1" 1.0 []) = LookupVerdict.Answer.Missing
                     [ "plugin:" + fsx ]
             @>)
 
@@ -156,12 +157,13 @@ let ``a plugin with no declared inputs that sat idle is missing, and named as su
             repo
             store
             None
+            (collectDue store)
             configured
             (check repo "sha256:t0" 0.0 [ "format", Some OutcomeStore.Outcome.Pass ])
         |> ignore
 
         write repo "src/A/a.fs" "module A // edited"
-        let answer = observeWith repo store None configured (check repo "sha256:t1" 1.0 [])
+        let answer = observeWith repo store None (collectDue store) configured (check repo "sha256:t1" 1.0 [])
 
         test <@ answer = LookupVerdict.Answer.Missing [ "plugin:format" ] @>
         test <@ noDeclaredInputs configured answer = [ "plugin:format", "format reads the whole tree" ] @>
@@ -196,7 +198,7 @@ let ``a declared-input plugin with no record for its current inputs is the one a
     withCheckout fsxOnly (fun repo store configured ->
         test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>
 
-        observeWith repo store None configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
+        observeWith repo store None (collectDue store) configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
         |> ignore
 
         test <@ List.isEmpty (unrecordedDeclared repo "fshw 1" store configured) @>

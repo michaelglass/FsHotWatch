@@ -87,7 +87,7 @@ let private logLines (repo: string) =
 [<Fact>]
 let ``a green confirm is looked up green from what it recorded, and the log says they agree`` () =
     withStore (fun repo store ->
-        let answer = observeWith repo store None configured confirmGreen
+        let answer = observeWith repo store None (collectDue store) configured confirmGreen
         test <@ answer = LookupVerdict.Answer.Green @>
         let line = logLines repo |> List.exactlyOne
         test <@ (str [ "schema" ] line) = LogSchema @>
@@ -103,7 +103,7 @@ let ``a later publication that ran nothing answers from the records already on f
     // The restart case: a new daemon, nothing in memory, the same bytes. Today's verdict
     // could not conclude; the lookup still knows the tree was verified.
     withStore (fun repo store ->
-        observeWith repo store None configured confirmGreen |> ignore
+        observeWith repo store None (collectDue store) configured confirmGreen |> ignore
 
         let ranNothing =
             { confirmGreen with
@@ -114,7 +114,7 @@ let ``a later publication that ran nothing answers from the records already on f
                 GradedRunId = None
                 RecordedAt = t0.AddMinutes 5.0 }
 
-        test <@ observeWith repo store None configured ranNothing = LookupVerdict.Answer.Green @>
+        test <@ observeWith repo store None (collectDue store) configured ranNothing = LookupVerdict.Answer.Green @>
         let line = logLines repo |> List.last
         test <@ (str [ "direction" ] line) = "looser" @>
         test <@ (num [ "recorded" ] line) = 0 @>)
@@ -122,7 +122,7 @@ let ``a later publication that ran nothing answers from the records already on f
 [<Fact>]
 let ``a store opened afresh over the same directory gives the same answer`` () =
     withStore (fun repo store ->
-        observeWith repo store None configured confirmGreen |> ignore
+        observeWith repo store None (collectDue store) configured confirmGreen |> ignore
 
         let reopened =
             OutcomeStore.Store(
@@ -137,12 +137,13 @@ let ``a store opened afresh over the same directory gives the same answer`` () =
                 Today = Class.Missing
                 Suites = [] }
 
-        test <@ observeWith repo reopened None configured ranNothing = LookupVerdict.Answer.Green @>)
+        test
+            <@ observeWith repo reopened None (collectDue reopened) configured ranNothing = LookupVerdict.Answer.Green @>)
 
 [<Fact>]
 let ``another tree finds none of those records`` () =
     withStore (fun repo store ->
-        observeWith repo store None configured confirmGreen |> ignore
+        observeWith repo store None (collectDue store) configured confirmGreen |> ignore
 
         let otherTree =
             { confirmGreen with
@@ -152,7 +153,7 @@ let ``another tree finds none of those records`` () =
 
         test
             <@
-                observeWith repo store None configured otherTree = LookupVerdict.Answer.Missing
+                observeWith repo store None (collectDue store) configured otherTree = LookupVerdict.Answer.Missing
                     [ "plugin:build"; "plugin:lint"; "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>)
 
@@ -163,7 +164,12 @@ let ``a confirm that did not run a configured project is missing it, whatever to
             { confirmGreen with
                 Suites = [ suite "r1" "A.Tests" 0 ] }
 
-        test <@ observeWith repo store None configured onlyA = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>
+        test
+            <@
+                observeWith repo store None (collectDue store) configured onlyA = LookupVerdict.Answer.Missing
+                    [ "test:B.Tests" ]
+            @>
+
         test <@ (str [ "direction" ] (logLines repo |> List.last)) = "stricter" @>)
 
 [<Fact>]
@@ -176,7 +182,12 @@ let ``a failed suite is red and records no baseline`` () =
                 ExitCode = 1
                 Suites = [ suite "r1" "A.Tests" 1; suite "r1" "B.Tests" 0 ] }
 
-        test <@ observeWith repo store None configured red = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>
+        test
+            <@
+                observeWith repo store None (collectDue store) configured red = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>
+
         test <@ store.Lookup(baselineKey "A.Tests") = None @>
         test <@ store.Lookup(baselineKey "B.Tests") <> None @>)
 
@@ -192,7 +203,10 @@ let ``a failing plugin and a red diagnostic are both red`` () =
                 DiagnosticsFailed = true }
 
         test
-            <@ observeWith repo store None configured red = LookupVerdict.Answer.Red [ "plugin:lint"; "diagnostics" ] @>)
+            <@
+                observeWith repo store None (collectDue store) configured red = LookupVerdict.Answer.Red
+                    [ "plugin:lint"; "diagnostics" ]
+            @>)
 
 [<Fact>]
 let ``a plugin still running records nothing and is missing`` () =
@@ -201,13 +215,17 @@ let ``a plugin still running records nothing and is missing`` () =
             { confirmGreen with
                 Plugins = [ "build", Some OutcomeStore.Outcome.Pass; "lint", None ] }
 
-        test <@ observeWith repo store None configured running = LookupVerdict.Answer.Missing [ "plugin:lint" ] @>)
+        test
+            <@
+                observeWith repo store None (collectDue store) configured running = LookupVerdict.Answer.Missing
+                    [ "plugin:lint" ]
+            @>)
 
 [<Fact>]
 let ``an impact-filtered check is green on its selection plus each project's full baseline`` () =
     withStore (fun repo store ->
         // A full green on an earlier tree earns each project's baseline.
-        observeWith repo store None configured { confirmGreen with Tree = "sha256:t0" }
+        observeWith repo store None (collectDue store) configured { confirmGreen with Tree = "sha256:t0" }
         |> ignore
 
         let check =
@@ -220,7 +238,7 @@ let ``an impact-filtered check is green on its selection plus each project's ful
                 RecordedAt = t0.AddMinutes 1.0 }
 
         // B.Tests had nothing selected: an impact pass of zero tests, under its baseline.
-        test <@ observeWith repo store None configured check = LookupVerdict.Answer.Green @>
+        test <@ observeWith repo store None (collectDue store) configured check = LookupVerdict.Answer.Green @>
 
         test
             <@
@@ -241,7 +259,7 @@ let ``an impact-filtered check with no full baseline is missing, as today's exit
                 Scope = GradedScope.ImpactFiltered
                 Suites = [ suite "r1" "A.Tests" 0 ] }
 
-        test <@ classOf (observeWith repo store None configured check) = Class.Missing @>
+        test <@ classOf (observeWith repo store None (collectDue store) configured check) = Class.Missing @>
         test <@ (flag [ "agree" ] (logLines repo |> List.last)) @>)
 
 [<Fact>]
@@ -252,7 +270,11 @@ let ``an impact batch never stands in for the full suite under confirm`` () =
             { confirmGreen with
                 Suites = [ suite "r0" "B.Tests" 0; suite "r1" "A.Tests" 0 ] }
 
-        test <@ observeWith repo store None configured o = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
+        test
+            <@
+                observeWith repo store None (collectDue store) configured o = LookupVerdict.Answer.Missing
+                    [ "test:B.Tests" ]
+            @>)
 
 [<Fact>]
 let ``direction names which side is greener`` () =
@@ -375,7 +397,7 @@ let ``a stale or in-flight read is no answer today`` () =
 [<Fact>]
 let ``a read answers from what publications filed, labels its line verdict, and files nothing`` () =
     withStore (fun repo store ->
-        observeWith repo store None configured confirmGreen |> ignore
+        observeWith repo store None (collectDue store) configured confirmGreen |> ignore
         let before = List.length (allFilesUnder "*.json" (storeRoot repo))
 
         let read =
@@ -394,7 +416,7 @@ let ``a read answers from what publications filed, labels its line verdict, and 
 [<Fact>]
 let ``a stale read of a tree the store already verified is looser, not a disagreement about the code`` () =
     withStore (fun repo store ->
-        observeWith repo store None configured confirmGreen |> ignore
+        observeWith repo store None (collectDue store) configured confirmGreen |> ignore
 
         let staleRead =
             { confirmGreen with
@@ -558,7 +580,10 @@ let ``a project's K_P record satisfies its test requirement on a tree no publica
         // Every test is satisfied from the box-wide store; only the tree's own diagnostics
         // are still owed.
         test
-            <@ observeWith repo store (Some kp) pluginless freshTree = LookupVerdict.Answer.Missing [ "diagnostics" ] @>)
+            <@
+                observeWith repo store (Some kp) (collectDue store) pluginless freshTree = LookupVerdict.Answer.Missing
+                    [ "diagnostics" ]
+            @>)
 
 [<Fact>]
 let ``a K_P fail is red, and a project the daemon named no key for is still missing`` () =
@@ -569,14 +594,18 @@ let ``a K_P fail is red, and a project the daemon named no key for is still miss
             { freshTree with
                 OutcomeKeys = Map.ofList [ "A.Tests", kpA.Value ] }
 
-        test <@ observeWith repo store (Some kp) pluginless onlyA = LookupVerdict.Answer.Red [ "test:A.Tests" ] @>)
+        test
+            <@
+                observeWith repo store (Some kp) (collectDue store) pluginless onlyA = LookupVerdict.Answer.Red
+                    [ "test:A.Tests" ]
+            @>)
 
 [<Fact>]
 let ``with no K_P store the named keys decide nothing`` () =
     withKpStore (fun repo store _ ->
         test
             <@
-                observeWith repo store None pluginless freshTree = LookupVerdict.Answer.Missing
+                observeWith repo store None (collectDue store) pluginless freshTree = LookupVerdict.Answer.Missing
                     [ "diagnostics"; "test:A.Tests"; "test:B.Tests" ]
             @>)
 
@@ -618,13 +647,14 @@ let private named run project (failed: string list) (passed: string list) : Suit
 
 /// An impact check over T1 graded from `r2`, after a full green over T0 earned both baselines.
 let private checkAfterBaseline repo store (suites: Suite list) (order: string list) =
-    observeWith repo store None configured { confirmGreen with Tree = "sha256:t0" }
+    observeWith repo store None (collectDue store) configured { confirmGreen with Tree = "sha256:t0" }
     |> ignore
 
     observeWith
         repo
         store
         None
+        (collectDue store)
         configured
         { confirmGreen with
             Command = Verdict.Check
@@ -697,14 +727,14 @@ let ``an earlier impact failure is superseded by a later full run that passed it
                       named "r2" "B.Tests" [] [ "B.x" ] ]
                 RunOrder = [ "r1"; "r2" ] }
 
-        test <@ observeWith repo store None configured check = LookupVerdict.Answer.Green @>)
+        test <@ observeWith repo store None (collectDue store) configured check = LookupVerdict.Answer.Green @>)
 
 [<Fact>]
 let ``a baseline earned under one fshw binary still vouches for an impact check under the next`` () =
     // Class (a): server land 2026-10-31 17:22 and 18:10, the first checks on alpha.132 after
     // the baselines alpha.130 filed at 15:53. Today's full-suite watermark is not per binary.
     withStore (fun repo store ->
-        observeWith repo store None configured { confirmGreen with Tree = "sha256:t0" }
+        observeWith repo store None (collectDue store) configured { confirmGreen with Tree = "sha256:t0" }
         |> ignore
 
         let check =
@@ -717,7 +747,7 @@ let ``a baseline earned under one fshw binary still vouches for an impact check 
                 Suites = [ suite "r2" "A.Tests" 0 ]
                 RecordedAt = t0.AddMinutes 1.0 }
 
-        test <@ observeWith repo store None configured check = LookupVerdict.Answer.Green @>)
+        test <@ observeWith repo store None (collectDue store) configured check = LookupVerdict.Answer.Green @>)
 
 [<Fact>]
 let ``a full-suite run whose publication did not conclude still earns each passing project's baseline`` () =
@@ -734,7 +764,7 @@ let ``a full-suite run whose publication did not conclude still earns each passi
 
         let records = recordsOf incomplete projects
         test <@ records |> List.map (fun r -> r.Key.Kind, r.Subject) = [ "test-baseline", "A.Tests" ] @>
-        observeWith repo store None configured incomplete |> ignore
+        observeWith repo store None (collectDue store) configured incomplete |> ignore
 
         let check =
             { confirmGreen with
@@ -746,7 +776,11 @@ let ``a full-suite run whose publication did not conclude still earns each passi
                 RecordedAt = t0.AddMinutes 1.0 }
 
         // B's full run failed, so only A has a baseline; B is missing, not green.
-        test <@ observeWith repo store None configured check = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
+        test
+            <@
+                observeWith repo store None (collectDue store) configured check = LookupVerdict.Answer.Missing
+                    [ "test:B.Tests" ]
+            @>)
 
 [<Fact>]
 let ``an unconcluded impact-filtered publication files nothing at all`` () =
@@ -889,7 +923,7 @@ let ``a watermark run's passing project earns a baseline from a red publication,
                 Scope = GradedScope.ImpactFiltered
                 Suites = [ suite "r1" "A.Tests" 0; suite "r1" "B.Tests" 1; suite "r2" "B.Tests" 1 ] }
 
-        observeWith repo store None configured red |> ignore
+        observeWith repo store None (collectDue store) configured red |> ignore
 
         let check =
             { confirmGreen with
@@ -900,4 +934,8 @@ let ``a watermark run's passing project earns a baseline from a red publication,
                 Suites = [ suite "r3" "A.Tests" 0; suite "r3" "B.Tests" 0 ]
                 RecordedAt = t0.AddMinutes 1.0 }
 
-        test <@ observeWith repo store None configured check = LookupVerdict.Answer.Missing [ "test:B.Tests" ] @>)
+        test
+            <@
+                observeWith repo store None (collectDue store) configured check = LookupVerdict.Answer.Missing
+                    [ "test:B.Tests" ]
+            @>)
