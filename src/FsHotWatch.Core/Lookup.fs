@@ -168,8 +168,15 @@ let ofRepoWith
             let producer = DaemonIdentity.BinaryIdentity.render identity
 
             let configured: Requirements.Configured =
-                { RequiredPlugins = required.Plugins
+                { RequiredPlugins = required.Plugins |> List.map _.Name
                   TestProjects = List.sort required.TestProjects }
+
+            // Each plugin that declares its inputs keyed by them, as the shadow keys it (AUTOMATION-1577).
+            let declaredInputKeys =
+                timer.Time(
+                    "declared-input-keys",
+                    fun () -> PluginInputs.declaredInputKeys repoRoot producer required.Plugins
+                )
 
             let store = timer.Time("store-open", fun () -> storeAt repoRoot log)
 
@@ -183,10 +190,7 @@ let ofRepoWith
                             { Tree = tree
                               Producer = producer
                               OutcomeKeys = Map.empty
-                              // Not yet computed here: the pure lookup keys every plugin by the whole
-                              // tree until the declared inputs can be read in Core (AUTOMATION-1577;
-                              // the shadow keys them).
-                              DeclaredInputKeys = Map.empty }
+                              DeclaredInputKeys = declaredInputKeys }
                 )
 
             let kpStore =
