@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: a tree's file hashes can be read through a stat-validated cache (AUTOMATION-1696, E5).
+  `TreeHash.Hashing = FullRehash | StatValidated of cacheFile` and `TreeHash.ofWalkedWith`; `ofWalked` and
+  `Lookup.ofRepo` keep the full re-read, the mode for the nightly audit and the verdict before a land or a release.
+  `ContentHashCache` remembers each file's hash in `.fshw/content-hash-cache` with its identity (`FileIdentity`: size,
+  mtime and ctime in nanoseconds, inode, device; getattrlist on macOS, statx on Linux) and trusts it only while that
+  identity is unchanged and the file last changed more than two seconds before its read began (git's racy rule);
+  anything else is read again and reported untrusted with why. `fshw-lookup --cached` uses it: on intelligence (AOT,
+  laptop) a warm lookup takes 69 ms against 172 ms for the full re-read, the tree hash the same.
+
 - perf: `.gitignore` rules are compiled once per process and skipped for a path that cannot match them
   (AUTOMATION-1696, E5). On intelligence `TreeHash.compute` (JIT, the daemon path every check takes) drops
   1,121 → 234 ms, the hash unchanged. New `PathFilter.IgnoreRules`, which `GitIgnores` now uses: the same `Ignore.IgnoreRule` per
