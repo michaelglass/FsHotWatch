@@ -172,8 +172,7 @@ let concluded (o: Observation) = o.Today <> Class.Missing
 let subjectOf (o: Observation) : Requirements.Subject =
     { Tree = o.Tree
       Producer = o.Producer
-      OutcomeKeys = o.OutcomeKeys
-      DeclaredInputKeys = Map.empty }
+      OutcomeKeys = o.OutcomeKeys }
 
 let pluginKey (o: Observation) (name: string) =
     Requirements.pluginKey (subjectOf o) name
@@ -231,41 +230,24 @@ let FullScope = Requirements.FullScope
 [<Literal>]
 let ImpactScope = Requirements.ImpactScope
 
-/// What R(c, T) is computed from: the configuration, never the run (ADR-059 §7 step 2).
-type Configured =
-    {
-        /// The plugins the configuration registers, each with what its outcome is a function of
-        /// (`RequiredConfig.ofJson`).
-        RequiredPlugins: PluginInputs.RequiredPlugin list
-        /// The configured test projects, by the name their reports carry.
-        TestProjects: string list
-    }
+/// What R(c, T) is computed from: the configuration, never the run (ADR-059 §7 step 2), each
+/// plugin with what its outcome is a function of (`Requirements.Configured`).
+type Configured = Requirements.Configured
 
-/// `configured` as `Requirements` reads it: the plugins by name.
-let coreConfigured (configured: Configured) : Requirements.Configured =
-    { RequiredPlugins = configured.RequiredPlugins |> List.map _.Name
-      TestProjects = configured.TestProjects }
-
-/// Plugin `p`'s declared-input key over `o`'s worktree (`PluginInputs.key`, AUTOMATION-1577), or
-/// none when it declares no inputs and is keyed by the whole tree. Reads the files it declares.
-let declaredInputKey (o: Observation) (p: PluginInputs.RequiredPlugin) : ActionKey.ActionKey option =
-    PluginInputs.keyOf o.Worktree o.Producer p
-
-/// The keys of `o`'s tree with each plugin that declares its inputs keyed by them.
-let subjectFor (o: Observation) (configured: Configured) : Requirements.Subject =
-    { subjectOf o with
-        DeclaredInputKeys = PluginInputs.declaredInputKeys o.Worktree o.Producer configured.RequiredPlugins }
+/// `configured` over `o`'s worktree, each plugin resolved as `PluginInputs.keyed` says: one that
+/// declares its inputs is keyed by them (AUTOMATION-1577). Reads the files they match.
+let resolvedFor (o: Observation) (configured: Configured) : Requirements.Resolved =
+    Requirements.resolve (PluginInputs.keyed o.Worktree o.Producer) configured
 
 /// The key plugin `name`'s outcome is filed and looked up under for `o` (AUTOMATION-1577). A
 /// plugin that declares its inputs is keyed by them (`PluginInputs.key`), so its last outcome
 /// answers on any tree where they are unchanged; every other plugin, and one the configuration
 /// does not name, is keyed by the whole tree.
 let pluginKeyFor (o: Observation) (configured: Configured) (name: string) : ActionKey.ActionKey =
-    // The same rule as `Requirements.pluginKeyIn` over `subjectFor`, digesting only `name`'s inputs.
-    configured.RequiredPlugins
-    |> List.tryFind (fun p -> p.Name = name)
-    |> Option.bind (declaredInputKey o)
-    |> Option.defaultWith (fun () -> pluginKey o name)
+    // The rule `Requirements.requirements` keys by, resolving only `name`.
+    match configured.RequiredPlugins |> List.tryFind (fun p -> p.Name = name) with
+    | Some plugin -> Requirements.keyOf (subjectOf o) (PluginInputs.keyed o.Worktree o.Producer plugin)
+    | None -> pluginKey o name
 
 /// The missing plugin requirements of `answer` that declare no inputs, each with why: only a
 /// run on this tree could answer them, and none did. Named, so a reader can tell "the plugin
@@ -291,7 +273,7 @@ let commandOf (command: Verdict.Command) : Requirements.Command =
 /// R(c, T) for `o`'s command and tree (`Requirements.requirements`, in FsHotWatch.Core), each
 /// plugin keyed as `pluginKeyFor` says.
 let requirements (o: Observation) (configured: Configured) : LookupVerdict.Requirement list =
-    Requirements.requirements (commandOf o.Command) (subjectFor o configured) (coreConfigured configured)
+    Requirements.requirements (commandOf o.Command) (subjectOf o) (resolvedFor o configured)
 
 /// The failed suites of `o` that a LATER run of the same check ran again and passed.
 ///
@@ -643,7 +625,7 @@ let observeReadWith
 
     // The one definition a pure lookup shares (`Lookup.answer`), so E5 times this answer.
     let answer =
-        Lookup.answer (commandOf o.Command) store kpStore (coreConfigured configured) (subjectFor o configured)
+        Lookup.answer (commandOf o.Command) store kpStore (resolvedFor o configured) (subjectOf o)
 
     appendLine repoRoot (lineAs "verdict" o answer (noDeclaredInputs configured answer) 0)
     answer
