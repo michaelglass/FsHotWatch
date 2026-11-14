@@ -319,3 +319,34 @@ let ``a run with no absent coverer carries no absence note`` () =
             Assert.DoesNotContain("no longer in this tree", summary)
         finally
             host.Teardown())
+
+// --- `ImpactQueries.TestSourceFiles`, the third signal of absence, against a real index ---
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``TestSourceFiles names each requested project's test sources, and omits a project with none`` () =
+    withTempDir "tp-test-sources" (fun tmpDir ->
+        let db = Database.create (Path.Combine(tmpDir, "tp.db"))
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.a" "Lib.fs" "P1" "P1Tests" "aTest"
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.b" "Lib.fs" "P2" "P2Tests" "bTest"
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.c" "Other.fs" "P2" "P2More" "cTest"
+        let sources = (PluginQueries.ImpactQueries.ofDatabase db).TestSourceFiles
+
+        Assert.Equal(
+            Some(
+                Map.ofList
+                    [ "P1", Set.ofList [ "P1Tests.fs" ]
+                      "P2", Set.ofList [ "P2Tests.fs"; "P2More.fs" ] ]
+            ),
+            sources [ "P1"; "P2"; "Unindexed" ]
+        )
+
+        Assert.Equal(Some(Map.ofList [ "P2", Set.ofList [ "P2Tests.fs"; "P2More.fs" ] ]), sources [ "P2" ])
+        Assert.Equal(Some Map.empty, sources [ "Unindexed" ])
+        Assert.Equal(Some Map.empty, sources []))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``TestSourceFiles over an index it cannot read answers None, so nothing is judged absent`` () =
+    // An in-memory index is private to the connection that made it: a new connection finds no
+    // `test_methods` table. Unknown is not absent.
+    let db = Database.create ":memory:"
+    Assert.Equal(None, (PluginQueries.ImpactQueries.ofDatabase db).TestSourceFiles [ "P1" ])
