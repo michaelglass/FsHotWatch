@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- `fshw-lookup`: the pure-lookup verdict of a checkout (`FsHotWatch.Lookup.ofRepo`), with no
+       daemon, no IPC and no FCS (AUTOMATION-1695, Phase 1 step C). Not a package: it is what
+       experiment E5 times (scripts/e5-verdict-cost.sh), wall time and peak RSS, published Native
+       AOT. It references FsHotWatch.Core ONLY, so a publish that needs anything else fails here. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>5</WarningLevel>
+    <AssemblyName>fshw-lookup</AssemblyName>
+    <RootNamespace>FsHotWatch.Lookup</RootNamespace>
+    <OtherFlags>$(OtherFlags) --reflectionfree</OtherFlags>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Security pin, this project only (experiment E5). The SDK's implicit Native AOT toolchain,
+         Microsoft.DotNet.ILCompiler 10.0.11 and the 10.0.11 runtime packs it pairs with, had
+         GHSA-p3jp-9v83-76w9 (Brotli decoder out-of-bounds write), patched in 10.0.14. The runtime
+         packs follow RuntimeFrameworkVersion and the compiler follows KnownILCompilerPack below (the
+         SDK's own item, so no explicit PackageReference). The repository's SDK/runtime bump is
+         separate. -->
+    <RuntimeFrameworkVersion>10.0.14</RuntimeFrameworkVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <KnownILCompilerPack Update="Microsoft.DotNet.ILCompiler" ILCompilerPackVersion="10.0.14" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/FsHotWatch.Core/FsHotWatch.Core.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>
