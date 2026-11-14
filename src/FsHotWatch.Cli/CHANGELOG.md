@@ -6,6 +6,11 @@
   "symbol(s) still owed to tests in P" (AUTOMATION-1717). Leftover build output or fshw state never makes a project
   owe: it must be configured, in the discovered inventory, or have its test sources in the tree. See
   FsHotWatch.TestPrune.
+  Once this ships, the remote-ci block that drops a slot's `test-history.json` and `deps-baseline.json` when the
+  tree's project set changes can be removed: neither feeds what is owed, and the index rows that did are now judged
+  against the current tree. Shadow outcome records (`.fshw/shadow/`) naming an absent project need no cleanup either:
+  they are diagnostic only, never change the exit code or `verdict.json`, are keyed by the tree they describe, and
+  their lookup requires only configured projects.
 
 - fix: a restarted daemon diffs from this checkout's own full pass instead of running the full suite again (AUTOMATION-1682,
   ADR-071; not in alpha.148). A replayed full pass files the `test-baseline` record; a restart diffs from the tree the
