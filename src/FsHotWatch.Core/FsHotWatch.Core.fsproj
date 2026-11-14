@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- FsHotWatch.Core (AUTOMATION-1635): the re-architecture's pure foundation types. Its
        rules hold from day one, because each is cheap to keep and expensive to restore:
-       - NO FSharp.Compiler.Service, NO MSBuild, NO xUnit. Only FSharp.Core.
+       - NO FSharp.Compiler.Service, NO MSBuild, NO xUnit. Only FSharp.Core and `Ignore` (below).
        - NO `%A` and no reflection-based serialisation. `reflectionfree` below makes the
          compiler refuse `%A` and stop generating the `%+A` ToString on records/unions,
          so a type that wants text writes it.
@@ -37,9 +37,36 @@
     <Compile Include="LookupVerdict.fs" />
     <Compile Include="Requirements.fs" />
     <Compile Include="OutcomeRecords.fs" />
+    <!-- The tree walk and hash (AUTOMATION-1695, Phase 1 step C), moved unchanged under their own
+         module names, so a pure-lookup verdict runs on this assembly alone (experiment E5). -->
+    <Compile Include="Locking.fs" />
+    <Compile Include="Logging.fs" />
+    <Compile Include="Json.fs" />
+    <Compile Include="ContentHash.fs" />
+    <Compile Include="FsHwPaths.fs" />
+    <Compile Include="SafeWalk.fs" />
+    <Compile Include="PathFilter.fs" />
+    <Compile Include="Discovery.fs" />
+    <Compile Include="VerdictInputs.fs" />
+    <Compile Include="ConfiguredTestRoots.fs" />
+    <Compile Include="TreeHash.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="FSharp.Core" />
+    <!-- The ONE permitted dependency besides FSharp.Core (decided 2026-11-14, AUTOMATION-1695): gitignore
+         matching for the tree walk (PathFilter, VerdictInputs). Pure .NET; E5's AOT publish must show it
+         trims with zero warnings. CoreBoundaryTests holds the exact allowlist. -->
+    <PackageReference Include="Ignore" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The same assemblies FsHotWatch lets see its internals, and FsHotWatch itself: `Locking` and
+         `Discovery` are internal and moved here with the tree walk. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo"><_Parameter1>FsHotWatch</_Parameter1></AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo"><_Parameter1>FsHotWatch.Tests</_Parameter1></AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo"><_Parameter1>FsHotWatch.IntegrationTests</_Parameter1></AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo"><_Parameter1>FsHotWatch.Cli</_Parameter1></AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo"><_Parameter1>FsHotWatch.TestPrune</_Parameter1></AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo"><_Parameter1>FsHotWatch.Build</_Parameter1></AssemblyAttribute>
   </ItemGroup>
 </Project>
