@@ -78,9 +78,26 @@ let treeKey (subject: Subject) (tree: Tree) : string =
 
 /// The two stores a lookup reads: the publication's (the shadow store under the checkout) and the
 /// box-wide one the test runner files K_P records in.
+[<RequireQualifiedAccess>]
 type Stores =
-    { Shadow: OutcomeStore.Store
-      Kp: OutcomeStore.Store }
+    /// The CLI's own disk store, opened and collected as the CLI does: what the harness proves.
+    | Disk of shadow: OutcomeStore.Store * kp: OutcomeStore.Store
+    /// FsHotWatch.Core's in-memory store over the same codec (L1, AUTOMATION-1695): histories
+    /// run faster, and faults are injected at the store interface.
+    | InMemory of shadow: OutcomeRecords.InMemoryOutcomeStore * kp: OutcomeRecords.InMemoryOutcomeStore
+
+module Stores =
+    /// The publication's store, as the interface every backend implements.
+    let shadow (stores: Stores) : OutcomeRecords.IOutcomeStore =
+        match stores with
+        | Stores.Disk(shadow, _) -> shadow
+        | Stores.InMemory(shadow, _) -> shadow
+
+    /// The box-wide K_P store, as the interface every backend implements.
+    let kp (stores: Stores) : OutcomeRecords.IOutcomeStore =
+        match stores with
+        | Stores.Disk(_, kp) -> kp
+        | Stores.InMemory(_, kp) -> kp
 
 /// A test project's K_P over `tree`: a key over exactly the inputs its run reads, so a run of
 /// another tree with the same inputs answers for this one (ADR-059 step 7).
@@ -234,7 +251,10 @@ let fileKp (subject: Subject) (stores: Stores) (run: Run) (producer: string) (wo
                 else
                     OutcomeStore.Outcome.Pass
 
-            stores.Kp.Record(OutcomeStore.Record.ofAction (kpKey subject tp run.Read) tp outcome producer worktree now)
+            OutcomeStore.Through.file
+                (Stores.kp stores)
+                (OutcomeStore.Record.ofAction (kpKey subject tp run.Read) tp outcome producer worktree now)
+                None
             |> ignore
     | ShadowVerdict.GradedScope.ImpactFiltered
     | ShadowVerdict.GradedScope.Unscoped -> ()
@@ -268,12 +288,13 @@ let readObservation
 /// The answer for one key, as today's lookup reads it for `command`: the shadow store's, else
 /// the K_P store's (`ShadowVerdict.lookupIn`).
 let currentLookup (command: Verdict.Command) (stores: Stores) (key: ActionKey.KeyValue) =
-    let readIn (store: OutcomeStore.Store) =
+    let readIn (store: OutcomeRecords.IOutcomeStore) =
         match command with
         | Verdict.Command.Check -> TestFailureClearance.lookupForCheck store key
-        | Verdict.Command.Confirm -> store.Lookup key |> Option.map _.Outcome
+        | Verdict.Command.Confirm -> OutcomeStore.Through.lookup store key |> Option.map _.Outcome
 
-    readIn stores.Shadow |> Option.orElseWith (fun () -> readIn stores.Kp)
+    readIn (Stores.shadow stores)
+    |> Option.orElseWith (fun () -> readIn (Stores.kp stores))
 
 let private mutatedLookup (subject: Subject) (command: Verdict.Command) (stores: Stores) =
     let current = currentLookup command stores
@@ -293,21 +314,20 @@ let private mutatedLookup (subject: Subject) (command: Verdict.Command) (stores:
 /// A read names no K_P keys; as `observeReadWith` does, it takes those earlier publications named.
 let decide (subject: Subject) (stores: Stores) (o: ShadowVerdict.Observation) =
     let o =
-        ShadowVerdict.withRecordedOutcomeKeys stores.Shadow configured.TestProjects o
+        ShadowVerdict.withRecordedOutcomeKeys (Stores.shadow stores) configured.TestProjects o
 
     LookupVerdict.decide (ShadowVerdict.requirements o configured) (mutatedLookup subject o.Command stores)
 
-/// A publication: today's shadow files the run and answers. A lookup mutant answers again
-/// over what today filed, with its defect.
+/// A publication: today's shadow files the run and answers, on the disk store exactly as the CLI
+/// does it (collection included, `collectDue`), on the in-memory one with no collection
+/// (`collectNothing`). A lookup mutant answers again over what today filed, with its defect.
 let publish (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
     let answer =
-        ShadowVerdict.observeWith
-            repoRoot
-            stores.Shadow
-            (Some stores.Kp)
-            (ShadowVerdict.collectDue stores.Shadow)
-            configured
-            o
+        match stores with
+        | Stores.Disk(shadow, kp) ->
+            ShadowVerdict.observeWith repoRoot shadow (Some kp) (ShadowVerdict.collectDue shadow) configured o
+        | Stores.InMemory(shadow, kp) ->
+            ShadowVerdict.observeWith repoRoot shadow (Some kp) ShadowVerdict.collectNothing configured o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass
@@ -319,10 +339,10 @@ let publish (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVer
 /// first takes the K_P keys earlier publications named for this tree.
 let read (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
     let o =
-        ShadowVerdict.withRecordedOutcomeKeys stores.Shadow configured.TestProjects o
+        ShadowVerdict.withRecordedOutcomeKeys (Stores.shadow stores) configured.TestProjects o
 
     let answer =
-        ShadowVerdict.observeReadWith repoRoot stores.Shadow (Some stores.Kp) configured o
+        ShadowVerdict.observeReadWith repoRoot (Stores.shadow stores) (Some(Stores.kp stores)) configured o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass
@@ -332,11 +352,11 @@ let read (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdic
 
 /// File the first `count` records a publication of `o` would file, and stop: the process
 /// was killed between two writes.
-let fileKilled (store: OutcomeStore.Store) (o: ShadowVerdict.Observation) (count: int) : unit =
+let fileKilled (store: OutcomeRecords.IOutcomeStore) (o: ShadowVerdict.Observation) (count: int) : unit =
     if ShadowVerdict.concluded o then
         ShadowVerdict.recordsOf o configured.TestProjects
         |> List.truncate count
-        |> List.iter (store.Record >> ignore)
+        |> List.iter (fun r -> OutcomeStore.Through.file store r None |> ignore)
 
 /// Every record file under `root`, in a stable order.
 let recordFiles (root: string) : string list =
@@ -350,3 +370,73 @@ let recordFiles (root: string) : string list =
         |> List.sortWith (fun a b -> String.CompareOrdinal(a, b))
     else
         []
+
+/// Whether the requirement named `name`, missing from a lookup of `o`, is one of the two kinds of
+/// requirement whose key holding a file that cannot be read is a miss by design (AUTOMATION-1701,
+/// ADR-072). The completeness property excuses exactly these and nothing else:
+///
+/// * A SHADOW `plugin:*` or `diagnostics` key. The shadow publication projects a verdict's
+///   outcomes, and the verdict does not record whether a plugin ran in this check or was answered
+///   from its cache (AUTOMATION-1702). Only a COMPUTED record may move an unreadable file aside
+///   (supervisor condition 1), so the publication files these as copied, and the key stays a miss.
+///   Quarantine itself is proved on the direct action records (`directRecords`), which are computed.
+/// * A TEST key. A test run's key keeps the
+/// AUTOMATION-1568 rule: a flaky suite can fail in a concurrent run that files AFTER ours, and if
+/// that newer fail is the unreadable file, moving it aside would let our older pass answer, a
+/// false green. Nothing orders the two without filesystem time (ADR-008). Soundness outranks
+/// completeness, so such a key stays a miss; `an unreadable test record keeps its key a miss` pins it.
+let excusedMiss (stores: Stores) (o: ShadowVerdict.Observation) (name: string) : bool =
+    let o =
+        ShadowVerdict.withRecordedOutcomeKeys (Stores.shadow stores) configured.TestProjects o
+
+    let unreadable (key: ActionKey.KeyValue) =
+        [ Stores.shadow stores; Stores.kp stores ]
+        |> List.exists (fun store ->
+            match store.Read key with
+            | OutcomeRecords.KeyRead.Unreadable _ -> true
+            | OutcomeRecords.KeyRead.NothingFiled
+            | OutcomeRecords.KeyRead.OnlyRejected _
+            | OutcomeRecords.KeyRead.Answered _ -> false)
+
+    (name.StartsWith("test:", StringComparison.Ordinal)
+     || name.StartsWith("plugin:", StringComparison.Ordinal)
+     || name = "diagnostics")
+    && ShadowVerdict.requirements o configured
+       |> List.filter (fun r -> r.Name = name)
+       |> List.collect (fun r -> List.concat r.Alternatives)
+       |> List.exists unreadable
+
+/// The direct action the engine runs for each file it reads, as a daemon's check does: keyed by the
+/// file's path and content, failing on a type error, and filed as COMPUTED. A deterministic action,
+/// so filing it moves every unreadable or foreign file under its key aside (ADR-072). This is where
+/// the harness proves quarantine: the shadow publication files copies and may not (`excusedMiss`).
+let directKey (path: string) (tree: Tree) : ActionKey.ActionKey =
+    ActionKey.create "check" [ "file", path; "content", digestOf [ path ] tree ]
+
+/// What a clean check of `path` in `tree` concludes.
+let directOutcome (path: string) (tree: Tree) : OutcomeStore.Outcome =
+    match tree[path].Fault with
+    | Some Fault.TypeError -> OutcomeStore.Outcome.Fail
+    | Some Fault.Build
+    | Some Fault.Lint
+    | Some Fault.Format
+    | Some Fault.TestBreak
+    | None -> OutcomeStore.Outcome.Pass
+
+/// File every file's direct record over `read`, as computed in this process.
+let fileDirect (stores: Stores) (read: Tree) (producer: string) (worktree: string) (now: DateTimeOffset) =
+    for path in paths do
+        OutcomeStore.Through.fileComputed
+            (Stores.shadow stores)
+            (OutcomeStore.justRan
+                (OutcomeStore.Record.ofAction (directKey path read) path (directOutcome path read) producer worktree now)
+                None)
+        |> ignore
+
+/// Every file's direct key over `tree` that does not answer its clean outcome, with what it answered.
+let directMisses (stores: Stores) (tree: Tree) : (string * string) list =
+    [ for path in paths do
+          match OutcomeStore.Through.lookup (Stores.shadow stores) (directKey path tree).Value with
+          | Some record when record.Outcome = directOutcome path tree -> ()
+          | Some record -> path, $"answered %A{record.Outcome}"
+          | None -> path, "a miss" ]

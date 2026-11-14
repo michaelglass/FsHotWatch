@@ -25,10 +25,27 @@ let private report (violations: Violation list) =
 
 [<Fact>]
 let ``the current lookup keeps the theorem over every history`` () =
-    let violations = explore Subject.Current firstSeed histories
+    let violations = explore Backend.Disk Subject.Current firstSeed histories
 
     if not violations.IsEmpty then
         failwith $"%d{violations.Length} violation(s):\n%s{report violations}"
+
+/// The same histories through FsHotWatch.Core's in-memory store (L1's `IOutcomeStore`), where
+/// faults are injected at the interface. Beside the disk runs, never instead of them.
+[<Fact>]
+let ``the current lookup keeps the theorem over every history on the in-memory store`` () =
+    let violations = explore Backend.InMemory Subject.Current firstSeed histories
+
+    if not violations.IsEmpty then
+        failwith $"%d{violations.Length} violation(s):\n%s{report violations}"
+
+/// A planted defect is caught on the in-memory store too, so its runs have teeth of their own.
+[<Fact>]
+let ``a planted defect is caught on the in-memory store`` () =
+    test <@ not (explore Backend.InMemory (Subject.Mutated Mutant.FailReadAsPass) firstSeed histories).IsEmpty @>
+
+    test
+        <@ not (explore Backend.InMemory (Subject.Mutated(Mutant.KpOmitsFile "B/Two.fs")) firstSeed histories).IsEmpty @>
 
 [<Fact>]
 let ``a history is a function of its seed`` () =
@@ -54,17 +71,40 @@ let ``every planted defect is caught`` (name: string) =
         | "kp-omits-file" -> Mutant.KpOmitsFile "B/Two.fs"
         | other -> failwith $"no mutant named %s{other}"
 
-    let violations = explore (Subject.Mutated mutant) firstSeed histories
+    let violations = explore Backend.Disk (Subject.Mutated mutant) firstSeed histories
     test <@ not violations.IsEmpty @>
+
+/// AUTOMATION-1701, as the harness found it: a record file made unreadable left its key a miss for
+/// good, so a concluded unfaulted confirm on that tree answered Missing (disk seed 73:
+/// `missing [plugin:format]`; in-memory seed 52: `missing [diagnostics]`). These seeds stay in
+/// the suite whatever the first seed and N are.
+[<Theory>]
+[<InlineData("disk", 73)>]
+[<InlineData("in-memory", 52)>]
+let ``an unreadable record no longer makes its key a permanent miss (AUTOMATION-1701)`` (backend: string, seed: int) =
+    let backend =
+        match backend with
+        | "disk" -> Backend.Disk
+        | "in-memory" -> Backend.InMemory
+        | other -> failwith $"no backend named %s{other}"
+
+    let history = generate seed HistoryLength
+    test <@ history |> List.exists (fun e -> e.IsUnreadableRecord) @>
+
+    let violations = execute backend Subject.Current seed history
+
+    if not violations.IsEmpty then
+        failwith $"%d{violations.Length} violation(s):\n%s{report violations}"
 
 /// A caught violation replays from its seed alone.
 [<Fact>]
 let ``a violation reproduces from its seed`` () =
     let subject = Subject.Mutated Mutant.FailReadAsPass
 
-    match explore subject firstSeed histories with
+    match explore Backend.Disk subject firstSeed histories with
     | first :: _ ->
-        let again = execute subject first.Seed (generate first.Seed HistoryLength)
+        let again =
+            execute Backend.Disk subject first.Seed (generate first.Seed HistoryLength)
 
         test
             <@
@@ -87,3 +127,48 @@ let ``the reference interpreter reddens exactly the faulted requirement`` () =
     test <@ cleanFailing (withFault "B/Two.fs" Fault.TestBreak) = set [ "test:B.Tests" ] @>
     test <@ cleanFailing (withFault "A.Tests/Tests.fs" Fault.TestBreak) = set [ "test:A.Tests" ] @>
     test <@ cleanFailing (withFault "B/One.fs" Fault.TypeError) = set [ "diagnostics" ] @>
+
+/// The pin on the completeness exclusion (ADR-072): a TEST requirement whose record cannot be read
+/// stays a miss after a fresh confirm, and the harness excuses exactly that. Kept beside the
+/// exclusion so it is asserted, not merely tolerated.
+[<Fact>]
+let ``an unreadable test record keeps its key a miss (ADR-072)`` () =
+    let repoRoot =
+        IO.Path.Combine(IO.Path.GetTempPath(), "fshw-sim", Guid.NewGuid().ToString "N")
+
+    IO.Directory.CreateDirectory repoRoot |> ignore
+
+    try
+        let shadow = FsHotWatch.OutcomeRecords.InMemoryOutcomeStore()
+
+        let stores =
+            Stores.InMemory(shadow, FsHotWatch.OutcomeRecords.InMemoryOutcomeStore())
+
+        let at = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
+
+        let confirm (runId: string) (now: DateTimeOffset) =
+            let run =
+                { Command = FsHotWatch.Cli.Verdict.Command.Confirm
+                  Key = treeKey Subject.Current initialTree
+                  Started = initialTree
+                  Read = initialTree
+                  Selected = testProjects
+                  Scope = FsHotWatch.Cli.ShadowVerdict.GradedScope.FullSuite
+                  RunId = runId }
+
+            let o = observation Subject.Current run initialTree "sim-fshw" repoRoot now
+            o, publish Subject.Current repoRoot stores o
+
+        let first, answer = confirm "run1" at
+        test <@ answer = FsHotWatch.LookupVerdict.Answer.Green @>
+
+        let full = FsHotWatch.Cli.ShadowVerdict.testKey first "A.Tests" "full"
+        let name = shadow.FileNames full.Value |> List.exactlyOne
+        shadow.Replace(full.Value, name, Error "permission denied")
+
+        let second, answer = confirm "run2" (at.AddMinutes 1.0)
+        test <@ answer = FsHotWatch.LookupVerdict.Answer.Missing [ "test:A.Tests" ] @>
+        test <@ excusedMiss stores second "test:A.Tests" @>
+        test <@ not (excusedMiss stores second "plugin:lint") @>
+    finally
+        IO.Directory.Delete(repoRoot, true)
