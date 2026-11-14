@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.117 - 2026-11-14
+
 - fix: a directory removed after its parent listed it, before the walk read it, is absent, not a hole
   (AUTOMATION-1721). `SafeWalk` reported it as "could not be read (Could not find a part of the path …)", so any walk
   racing a directory's deletion came back incomplete: the pin test over `tests/` failed a good run while

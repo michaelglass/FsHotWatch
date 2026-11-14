@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.150 - 2026-11-14
+
+- fix(core): a directory removed mid-walk is absent, not a hole (AUTOMATION-1721)
+- docs(changelog): a directory vanishing mid-walk now leaves the tree hash computable (AUTOMATION-1721)
+- CHANGELOG: name the case-insensitive pattern matching as a fix of its own
+- Fix the 1577 land-check: analyzer findings, coverage of the new lines, and a floor for PluginInputs
+- Hold every whole-tree plugin to running on a first scan, over the registered plugin set
+- Test the start re-run on a real daemon, and route both starts through one step
+- Report lookup agreement in the nightly audit, and alarm on 0% or a lookup green on a red
+- Run a declared-input plugin at daemon start when nothing is on record for its inputs
+- Answer an idle plugin from its last outcome while its own declared inputs are unchanged
+
+
 ## 0.14.0-alpha.149 - 2026-11-14
 
 - fix: a test project an earlier checkout ran, and the current tree no longer has, no longer reds a green run with
