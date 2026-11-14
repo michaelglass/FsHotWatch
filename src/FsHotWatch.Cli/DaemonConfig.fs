@@ -2297,56 +2297,31 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
 /// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
-/// The plugins `config` registers (`registerPluginsIn`), by the name each reports its status
-/// under, other than the test plugin: preprocessors, the formatter, lint, analyzers, build,
-/// file commands and coverage. ADR-059 §3 requires `plugin:<name>` once per configured
-/// non-test plugin; test projects are required as `test:<project>` instead.
-let nonTestPluginNames (config: DaemonConfiguration) : string list =
-    [ for p in config.Preprocessors do
-          p.Name
-      match config.Format with
-      | Auto -> "format"
-      | Check -> "format-check"
-      | Off -> ()
-      if config.Lint then
-          "lint"
-      if config.Analyzers.IsSome then
-          FsHotWatch.PluginActivity.AnalyzersPluginName
-      match config.Build with
-      | Some builds when not builds.IsEmpty -> "build"
-      | _ -> ()
-      for fc in config.FileCommands do
-          fc.PluginName
-      if not (List.isEmpty config.Coverage) then
-          "coverage" ]
-    |> List.distinct
+/// The plugins a green requires of `json`, a `.fshw.json`'s text: `RequiredConfig.ofJson`, the ONE
+/// definition (AUTOMATION-1695), so the daemon and a pure lookup can never disagree on it. The test
+/// plugin is required as well as `test:<project>` because it can fail with no project carrying the
+/// failure (an index flush, an impact DB that will not open, a wedged plugin); without it, passing
+/// test records an earlier publication of the same tree filed would answer green over that failure
+/// (AUTOMATION-1568 rework). `RequiredConfigParityTests` holds it to what `registerPlugins` registers.
+let requiredPluginNames (json: string) : string list = (RequiredConfig.ofJson json).Plugins
 
-/// The plugins a green requires of `config`: its non-test plugins, and the test plugin when tests
-/// are configured. The test plugin is required as well as `test:<project>` because it can fail
-/// with no project carrying the failure (an index flush, an impact DB that will not open, a
-/// wedged plugin). Without it, passing test records an earlier publication of the same tree
-/// filed would answer green over that failure (AUTOMATION-1568 rework).
-let requiredPluginNames (config: DaemonConfiguration) : string list =
-    nonTestPluginNames config
-    @ (if config.Tests.IsSome then
-           [ FsHotWatch.PluginActivity.TestPrunePluginName ]
-       else
-           [])
-
-/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`requiredPluginNames`), read the
-/// way `loadConfig` reads it, with the defaults when there is no file. It neither validates the
-/// test scope nor logs: it names plugins and has nothing to report about the tree.
-/// Raises ConfigErrorException when the file cannot be parsed.
-let configuredPlugins (repoRoot: string) : string list =
+/// What `repoRoot`'s `.fshw.json` requires of a green (`RequiredConfig.ofJson`): the file is first
+/// parsed the way `loadConfig` parses it, so a configuration the daemon refuses is refused here too;
+/// the defaults when there is no file. It neither validates the test scope nor logs. Raises
+/// ConfigErrorException when the file cannot be parsed.
+let configuredRequirements (repoRoot: string) : RequiredConfig.Required =
     let path = FsHwPaths.configFile repoRoot
 
-    let config =
-        if File.Exists path then
-            parseConfig (File.ReadAllText path) (defaultConfig ())
-        else
-            defaultConfig ()
+    if File.Exists path then
+        let json = File.ReadAllText path
+        parseConfig json (defaultConfig ()) |> ignore
+        RequiredConfig.ofJson json
+    else
+        RequiredConfig.defaults
 
-    requiredPluginNames config
+/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`configuredRequirements`).
+let configuredPlugins (repoRoot: string) : string list =
+    (configuredRequirements repoRoot).Plugins
 
 /// Count the plugins that would be registered for a given configuration.
 /// Used by `fshw config check` to report how many plugins are configured.

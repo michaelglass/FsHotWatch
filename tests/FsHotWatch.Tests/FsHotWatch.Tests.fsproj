@@ -377,6 +377,7 @@
     <Compile Include="CoreTypesTests.fs" />
     <Compile Include="CoreBoundaryTests.fs" />
     <Compile Include="RequiredConfigGoldenTests.fs" />
+    <Compile Include="RequiredConfigParityTests.fs" />
     <Compile Include="NeedActionTests.fs" />
   </ItemGroup>
 

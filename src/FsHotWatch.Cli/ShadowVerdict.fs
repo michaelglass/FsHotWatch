@@ -627,14 +627,16 @@ let configuredTestProjects (repoRoot: string) : Result<string list, string> =
 /// What `repoRoot`'s configuration requires of a green: its non-test plugins and its test
 /// projects. An error when either cannot be read: the shadow never guesses a requirement set.
 let configuredOf (repoRoot: string) : Result<Configured, string> =
-    configuredTestProjects repoRoot
-    |> Result.bind (fun projects ->
-        try
-            Ok
-                { RequiredPlugins = DaemonConfig.configuredPlugins repoRoot
-                  TestProjects = projects }
-        with DaemonConfig.ConfigErrorException message ->
-            Error message)
+    try
+        let required = DaemonConfig.configuredRequirements repoRoot
+
+        Ok
+            { RequiredPlugins = required.Plugins
+              // Sorted, as the project map they were read from before (`TestEvidenceKey.configsOf`).
+              TestProjects = List.sort required.TestProjects }
+    with
+    | DaemonConfig.ConfigErrorException message -> Error message
+    | :? Text.Json.JsonException as ex -> Error ex.Message
 
 /// The shadow for one publication. Never throws and never changes anything a gate reads:
 /// a failure is logged and the publication goes on exactly as it would have.
