@@ -724,22 +724,44 @@ let unrecordedDeclared
 /// names, so its outcome is on record for the inputs it declares. Once a plugin has run on
 /// them, a later start finds the record and runs nothing. Never throws; a plugin that cannot be
 /// re-run is logged and left missing.
-let runUnrecordedDeclared (repoRoot: string) (rerun: string -> Result<unit, string>) : unit =
-    if enabledBy (Environment.GetEnvironmentVariable KillSwitchEnvVar) then
-        try
-            match configuredOf repoRoot with
-            | Error reason -> Logging.warn "shadow" $"declared inputs not checked: %s{reason}"
-            | Ok configured ->
-                let producer =
-                    DaemonIdentity.BinaryIdentity.render (DaemonIdentity.currentIdentity ())
+let runUnrecordedDeclared (repoRoot: string) (rerun: string -> Result<unit, string>) : string list =
+    try
+        match configuredOf repoRoot with
+        | Error reason ->
+            Logging.warn "shadow" $"declared inputs not checked: %s{reason}"
+            []
+        | Ok configured ->
+            let producer =
+                DaemonIdentity.BinaryIdentity.render (DaemonIdentity.currentIdentity ())
 
-                for name in unrecordedDeclared repoRoot producer (storeAt repoRoot) configured do
-                    match rerun name with
-                    | Ok() -> Logging.info "shadow" $"%s{name}: no record for its declared inputs; running it"
-                    | Error reason ->
-                        Logging.warn "shadow" $"%s{name}: no record for its declared inputs, and %s{reason}"
-        with ex ->
-            Logging.warn "shadow" $"declared inputs not checked: %s{ex.GetType().Name}: %s{ex.Message}"
+            [ for name in unrecordedDeclared repoRoot producer (storeAt repoRoot) configured do
+                  match rerun name with
+                  | Ok() ->
+                      Logging.info "shadow" $"%s{name}: no record for its declared inputs; running it"
+                      name
+                  | Error reason -> Logging.warn "shadow" $"%s{name}: no record for its declared inputs, and %s{reason}" ]
+    with ex ->
+        Logging.warn "shadow" $"declared inputs not checked: %s{ex.GetType().Name}: %s{ex.Message}"
+        []
+
+/// What a daemon's start does about declared inputs: with the shadow on, re-run on `daemon`'s
+/// host each declared-input plugin that has nothing on record for its inputs
+/// (`runUnrecordedDeclared`); with it off (`FSHW_OUTCOME_SHADOW=0`, `shadowEnabled` false),
+/// nothing. Returns the plugins it re-ran. Both daemon starts call it.
+let rerunUnrecordedDeclaredIn
+    (shadowEnabled: bool)
+    (repoRoot: string)
+    (daemon: FsHotWatch.Daemon.Daemon)
+    : string list =
+    if shadowEnabled then
+        runUnrecordedDeclared repoRoot (fun name -> daemon.Host.RerunPlugin(name, fun () -> []))
+    else
+        []
+
+/// `rerunUnrecordedDeclaredIn`, with the shadow switched by `FSHW_OUTCOME_SHADOW`.
+let startDeclaredInputs (repoRoot: string) (daemon: FsHotWatch.Daemon.Daemon) : unit =
+    rerunUnrecordedDeclaredIn (enabledBy (Environment.GetEnvironmentVariable KillSwitchEnvVar)) repoRoot daemon
+    |> ignore
 
 /// The shadow for one publication. Never throws and never changes anything a gate reads:
 /// a failure is logged and the publication goes on exactly as it would have.

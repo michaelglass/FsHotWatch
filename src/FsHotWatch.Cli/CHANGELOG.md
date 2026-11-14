@@ -5,12 +5,16 @@
 - feat: `fshw audit --shadow-log <log>` (repeatable) adds LOOKUP AGREEMENT to the report (AUTOMATION-1577, ADR-074), as
   `fshw-bench audit --shadow-log` does for the nightly; the nightly workflow passes its workspace's shadow log.
 
+- **Behaviour change:** after a daemon (re)start, a file command with a `pattern` runs once even though no file it
+  matches changed, when nothing is on record for its inputs as they are now. A LATENT failure in such a command (a
+  broken `build.fsx` type-check under intelligence's `*.fsx` command, say) therefore turns the FIRST check after a
+  restart red, where that check stayed green before because the command never ran. Off with the shadow
+  (`FSHW_OUTCOME_SHADOW=0`). AUTOMATION-1577, ADR-074.
 - feat: a daemon start runs each declared-input plugin that has no record for its inputs as they are now (AUTOMATION-1577,
-  ADR-074; ADR-059 §2, a miss means run). `ShadowVerdict.unrecordedDeclared` names them and `runUnrecordedDeclared`
-  re-runs each through `PluginHost.RerunPlugin`, so a fresh checkout's idle file commands get on record once instead
-  of staying missing until a match changes. Behaviour change: such a command now runs at start even when nothing it
-  matches changed, so one that would fail (a broken `build.fsx` type-check) turns that first check red where it
-  stayed green before. Off with the shadow (`FSHW_OUTCOME_SHADOW=0`).
+  ADR-074; ADR-059 §2, a miss means run), so a fresh checkout's idle file commands get on record once instead of
+  staying missing until a match changes. `ShadowVerdict.unrecordedDeclared` names them; `rerunUnrecordedDeclaredIn`
+  re-runs each on a daemon's host through `PluginHost.RerunPlugin` and returns them, and `startDeclaredInputs` is it
+  switched by `FSHW_OUTCOME_SHADOW`, which both starts call; `runUnrecordedDeclared` returns the names it re-ran.
 
 - fix: the shadow lookup answers an idle file command from its last outcome while the files its pattern matches are
   unchanged, instead of reporting it missing on every tree it did not run on (AUTOMATION-1577, ADR-074; every
