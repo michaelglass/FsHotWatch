@@ -533,7 +533,8 @@ let ``FullSuiteBaseline round-trips, reads a missing file as none, and an existi
             { RunId = Guid.NewGuid()
               EarnedAt = DateTime(2026, 9, 6, 10, 30, 0, DateTimeKind.Utc)
               Projects = Set.ofList [ "A"; "B" ]
-              Tree = None }
+              Tree = None
+              EarlierTrees = [] }
 
         FullSuiteBaseline.save tmpDir baseline
         test <@ FullSuiteBaseline.load tmpDir = FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) @>
@@ -545,12 +546,62 @@ let ``FullSuiteBaseline round-trips, reads a missing file as none, and an existi
         | other -> failwithf "a torn baseline must be Unreadable, got %A" other)
 
 [<Fact>]
+let ``FullSuiteBaseline remembers the sealed trees its earlier full passes earned, newest first and bounded`` () =
+    // AUTOMATION-1682: a full pass at an edited tree must not forget the tree a revert
+    // re-seals, or every restart after it runs the full suite.
+    let earned (tree: string option) : FullSuiteBaseline.Baseline =
+        { RunId = Guid.NewGuid()
+          EarnedAt = DateTime(2026, 11, 14, 8, 0, 0, DateTimeKind.Utc)
+          Projects = Set.ofList [ "A" ]
+          Tree = tree
+          EarlierTrees = [] }
+
+    let first = FullSuiteBaseline.succeed None (earned (Some "t1"))
+    test <@ FullSuiteBaseline.passedTrees first = [ "t1" ] @>
+
+    let second = FullSuiteBaseline.succeed (Some first) (earned (Some "t2"))
+    test <@ FullSuiteBaseline.passedTrees second = [ "t2"; "t1" ] @>
+
+    // An earn with no sealed tree forgets nothing; one at a tree already named moves it to
+    // the front without repeating it.
+    let unsealed = FullSuiteBaseline.succeed (Some second) (earned None)
+    test <@ unsealed.Tree = None && FullSuiteBaseline.passedTrees unsealed = [ "t2"; "t1" ] @>
+    let again = FullSuiteBaseline.succeed (Some unsealed) (earned (Some "t1"))
+    test <@ FullSuiteBaseline.passedTrees again = [ "t1"; "t2" ] @>
+
+    let many =
+        [ 1..30 ]
+        |> List.fold (fun ledger i -> FullSuiteBaseline.succeed (Some ledger) (earned (Some $"t%d{i}"))) first
+
+    test <@ FullSuiteBaseline.passedTrees many |> List.length = FullSuiteBaseline.TreeHistory @>
+    test <@ FullSuiteBaseline.passedTrees many |> List.head = "t30" @>
+
+    withTempDir "baseline-history" (fun tmpDir ->
+        FullSuiteBaseline.save tmpDir again
+        test <@ FullSuiteBaseline.load tmpDir = FullSuiteBaseline.LoadedBaseline.Loaded(Some again) @>
+
+        // A ledger written before the history was kept reads as one with no earlier tree.
+        let runId = Guid.NewGuid().ToString "N"
+
+        File.WriteAllText(
+            FullSuiteBaseline.sidecarPath tmpDir,
+            "{\"runId\":\""
+            + runId
+            + "\",\"earnedAt\":\"2026-11-14T08:00:00Z\",\"projects\":[\"A\"],\"tree\":\"t1\"}"
+        )
+
+        match FullSuiteBaseline.load tmpDir with
+        | FullSuiteBaseline.LoadedBaseline.Loaded(Some old) -> test <@ FullSuiteBaseline.passedTrees old = [ "t1" ] @>
+        | other -> failwithf "an older ledger must still load, got %A" other)
+
+[<Fact>]
 let ``FullSuiteBaseline.staleness names exactly the configured projects the baseline never executed`` () =
     let baseline: FullSuiteBaseline.Baseline =
         { RunId = Guid.NewGuid()
           EarnedAt = DateTime.UtcNow
           Projects = Set.ofList [ "A"; "B" ]
-          Tree = None }
+          Tree = None
+          EarlierTrees = [] }
 
     test <@ FullSuiteBaseline.staleness (Set.ofList [ "A" ]) baseline = None @>
     test <@ FullSuiteBaseline.staleness (Set.ofList [ "A"; "B" ]) baseline = None @>

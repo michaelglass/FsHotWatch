@@ -74,9 +74,10 @@ type LaunchScope =
     | LaunchedFullSuite
     | LaunchedSelection
 
-/// This checkout's own last full pass, as a restarted daemon may diff from it
-/// (AUTOMATION-1587): the tree T the durable full-suite ledger records, with the impact index
-/// still sealed at T and a passing `test-baseline` record for exactly T. The cold scan's diff
+/// A full pass of this checkout's own, as a restarted daemon may diff from it
+/// (AUTOMATION-1587): the tree T the impact index is sealed at, which the durable full-suite
+/// ledger records this checkout passing in full (its tree or an earlier one it keeps,
+/// AUTOMATION-1682), and a passing `test-baseline` record for exactly T. The cold scan's diff
 /// against the index's rows is then the diff T to T'.
 type CheckoutBaseline =
     {

@@ -2253,7 +2253,8 @@ let private seedBaseline (projects: string list) (repoRoot: string) =
         { RunId = Guid.NewGuid()
           EarnedAt = DateTime.UtcNow
           Projects = Set.ofList projects
-          Tree = None }
+          Tree = None
+          EarlierTrees = [] }
 
 [<Fact>]
 let ``parse test-rerun --allow-full-suite returns TestRerun AllowFullSuite`` () =
