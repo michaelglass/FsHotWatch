@@ -64,7 +64,7 @@ let private storesBeside (root: string) =
           Loaded = TestEvidenceKey.LoadedEnvironment.empty
           ProducerHash = "test-producer"
           ExcludePatterns = []
-          Outcomes = Some outcomes }
+          Outcomes = Some(FsHotWatch.OutcomeStore.Wired.disk outcomes ignore) }
 
     outcomes, wiring
 

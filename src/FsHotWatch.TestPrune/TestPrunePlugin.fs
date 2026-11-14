@@ -360,7 +360,7 @@ let internal createWithEvidenceAndQueries
     let analysisRecords =
         evidence
         |> Option.bind (fun (wiring: TestEvidenceRun.Wiring) -> wiring.Outcomes)
-        |> Option.map (fun store -> store :> FsHotWatch.OutcomeRecords.IOutcomeStore)
+        |> Option.map _.Store
 
     let initialState =
         { initialStateOf initialMode mayReplay loadedDebt restored with
@@ -659,7 +659,15 @@ let internal evidenceWiringWhen
                       ExcludePatterns = excludePatterns
                       // ADR-059 step 7: every completed project run is recorded, box-wide,
                       // under the K_P it ran over. The shadow verdict reads these next.
-                      Outcomes = Some(OutcomeStore.openFor repoRoot (Logging.info "test-prune")) }
+                      Outcomes =
+                        Some(
+                            OutcomeStore.Wired.disk
+                                (OutcomeStore.openFor repoRoot (Logging.info "test-prune"))
+                                (fun lastRanAt ->
+                                    Logging.info
+                                        "test-prune"
+                                        $"outcome store gc: not due, the last completed at %O{lastRanAt}")
+                        ) }
             with ex ->
                 Logging.warn "test-prune" $"test evidence: off — the store could not be opened: %s{ex.Message}"
                 None

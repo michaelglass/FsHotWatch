@@ -11,6 +11,10 @@
   lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
   when lines were dropped.
 
+- feat: `OutcomeStore.Collect`, `collectDue`, `collectNothing` and `Wired` (a store with the collection the code
+  that opened it hands over), plus `Through.tryHistory` (tells an unreadable key from an empty one, AUTOMATION-1615)
+  and `Through.supersede` (AUTOMATION-1695). `ShadowVerdict.Collect` is now an abbreviation of `OutcomeStore.Collect`.
+
 - feat: `OutcomeStore.Through` (`file`, `lookup`, `lookupWithOutputs`) reads and files a `Record` through any
   `OutcomeRecords.IOutcomeStore`; `TestFailureClearance.lookupForCheck` takes one
   (AUTOMATION-1695); the disk store is one. `InMemoryOutcomeStore` gains `Keys`, `TextOf`
