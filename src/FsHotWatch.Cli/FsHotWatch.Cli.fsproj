@@ -85,6 +85,9 @@
 
     <ItemGroup>
         <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+        <!-- FsHotWatch.Core ships in the FsHotWatch package's lib/ (AUTOMATION-1695); PrivateAssets keeps it
+             out of this nupkg's dependencies. -->
+        <ProjectReference Include="../FsHotWatch.Core/FsHotWatch.Core.fsproj" PrivateAssets="all" />
         <ProjectReference Include="../FsHotWatch.Build/FsHotWatch.Build.fsproj" />
         <ProjectReference Include="../FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
         <ProjectReference Include="../FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />

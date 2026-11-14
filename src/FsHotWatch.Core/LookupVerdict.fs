@@ -11,7 +11,17 @@
 ///   * otherwise an alternative whose keys all PASSED satisfies it;
 ///   * otherwise it is missing: nothing on record decides it, so it must run.
 /// The verdict is red if any requirement is, else missing if any is, else green.
+///
+/// Part of the correctness core (L2, re-architecture Phase 1, AUTOMATION-1695): compiled into
+/// FsHotWatch.Core, which references no FCS, under the module name it always had.
 module FsHotWatch.LookupVerdict
+
+/// What a record concluded about the inputs its key names. The outcome store files it
+/// (`OutcomeStore.Outcome` is this type); the lookup reads it.
+[<RequireQualifiedAccess>]
+type Outcome =
+    | Pass
+    | Fail
 
 /// One required piece of evidence, by name, satisfied by any one of its alternatives.
 type Requirement =
@@ -38,16 +48,14 @@ type private Status =
     | Failed
     | Undecided
 
-let private statusOf (lookup: ActionKey.KeyValue -> OutcomeStore.Outcome option) (r: Requirement) : Status =
+let private statusOf (lookup: ActionKey.KeyValue -> Outcome option) (r: Requirement) : Status =
     let outcomes = r.Alternatives |> List.map (List.map lookup)
 
-    if outcomes |> List.exists (List.contains (Some OutcomeStore.Outcome.Fail)) then
+    if outcomes |> List.exists (List.contains (Some Outcome.Fail)) then
         Status.Failed
     elif
         outcomes
-        |> List.exists (fun alt ->
-            not (List.isEmpty alt)
-            && alt |> List.forall ((=) (Some OutcomeStore.Outcome.Pass)))
+        |> List.exists (fun alt -> not (List.isEmpty alt) && alt |> List.forall ((=) (Some Outcome.Pass)))
     then
         Status.Passed
     else
@@ -55,7 +63,7 @@ let private statusOf (lookup: ActionKey.KeyValue -> OutcomeStore.Outcome option)
 
 /// The lookup verdict of `requirements` against `lookup`, the newest recorded outcome of
 /// a key value (`OutcomeStore.Store.Lookup`).
-let decide (requirements: Requirement list) (lookup: ActionKey.KeyValue -> OutcomeStore.Outcome option) : Answer =
+let decide (requirements: Requirement list) (lookup: ActionKey.KeyValue -> Outcome option) : Answer =
     let statuses = requirements |> List.map (fun r -> r.Name, statusOf lookup r)
 
     let named (status: Status) =
