@@ -32,15 +32,17 @@ let ``this repository's configuration requires what it required before the move`
 
 /// A consumer's checkout, on a machine that has one: `FSHW_TEST_CONSUMER_CHECKOUT` names it, and
 /// `FSHW_TEST_CONSUMER_REQUIRED` holds what it required before the move, as
-/// `plugin,plugin|project,project` (its configuration is the consumer's, not kept here).
+/// `plugin,plugin|project,project` (its configuration is the consumer's, not kept here). Where
+/// either is unset (CI, the server's gate) the case is reported SKIPPED with why, never passed.
 [<Fact>]
 let ``a consumer's configuration requires what it required before the move`` () =
     match
         Environment.GetEnvironmentVariable "FSHW_TEST_CONSUMER_CHECKOUT",
         Environment.GetEnvironmentVariable "FSHW_TEST_CONSUMER_REQUIRED"
     with
-    | (null | ""), _
-    | _, (null | "") -> ()
+    | (null | ""), _ -> Assert.Skip "FSHW_TEST_CONSUMER_CHECKOUT is unset: no consumer configuration on this machine"
+    | _, (null | "") ->
+        Assert.Skip "FSHW_TEST_CONSUMER_REQUIRED is unset: nothing recorded to compare the consumer's requirements with"
     | checkout, expected when Directory.Exists checkout ->
         let plugins, projects = requiredOf checkout
         let render (items: string list) = String.Join(",", items)
@@ -51,4 +53,4 @@ let ``a consumer's configuration requires what it required before the move`` () 
             | Error why -> $"%s{render plugins}|ERROR %s{why}"
 
         test <@ actual = expected @>
-    | _ -> ()
+    | checkout, _ -> Assert.Skip $"FSHW_TEST_CONSUMER_CHECKOUT names %s{checkout}, which is not a directory"
