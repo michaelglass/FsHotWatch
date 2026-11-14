@@ -470,16 +470,17 @@ let file
             OutcomeStore.Outcome.Pass
 
     let filed =
-        OutcomeStore.Through.file
+        OutcomeStore.Through.fileComputed
             store
-            (OutcomeStore.Record.ofAction
-                key
-                (CachePathIdentity.keyOf repoRoot file)
-                outcome
-                toolchain
-                (defaultArg repoRoot "")
-                DateTimeOffset.UtcNow)
-            (Some(CheckOutputs.toJson repoRoot outputs))
+            (OutcomeStore.justRan
+                (OutcomeStore.Record.ofAction
+                    key
+                    (CachePathIdentity.keyOf repoRoot file)
+                    outcome
+                    toolchain
+                    (defaultArg repoRoot "")
+                    DateTimeOffset.UtcNow)
+                (Some(CheckOutputs.toJson repoRoot outputs)))
 
     if filed then
         LastKeys.remember lastKeys (LastKeys.subjectOf repoRoot projectFile file) key

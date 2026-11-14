@@ -530,6 +530,154 @@ let ``a key whose records are all readable still answers with its newest beside 
             test <@ store.Lookup good |> Option.map _.Outcome = Some Outcome.Pass @>
             test <@ store.Lookup bad = None @>))
 
+// AUTOMATION-1701 (ADR-072): a reader still moves nothing unreadable (1568). A WRITER that has just
+// COMPUTED a record of a deterministic action moves every file under its key that cannot be read,
+// or is not a record of it, into quarantine, by rename, and files again if its own name was one of
+// them. A test run's record never does: a newer flaky fail could be the unreadable file.
+
+/// A deterministic action's record (a check, an analysis): no counts, no run.
+let private actionRecordAt (key: ActionKey.ActionKey) (outcome: Outcome) (at: DateTimeOffset) =
+    Record.ofAction key "src/A.fs" outcome "fshw-1" "ws-a" at
+
+let private fileComputed (store: Store) (record: Record) =
+    (store :> OutcomeRecords.IOutcomeStore).FileComputed(OutcomeStore.justRan record None)
+
+let private quarantineNotes (dir: string) =
+    let notes = Path.Combine(dir, QuarantineWhyDirectory)
+
+    if Directory.Exists notes then
+        Directory.GetFiles(notes, "*.json")
+        |> Array.map File.ReadAllText
+        |> List.ofArray
+    else
+        []
+
+[<Fact>]
+let ``a computed deterministic record moves an unreadable sibling aside, and the key answers`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = actionKey "check" "A.fs"
+        store.Record(actionRecordAt key Outcome.Pass t0) |> ignore
+        let older = recordFiles dir |> List.exactlyOne
+        let fresh = actionRecordAt key Outcome.Pass (t0.AddMinutes 1.0)
+
+        unreadable older (fun () ->
+            test <@ store.Lookup key = None @>
+            test <@ fileComputed store fresh = OutcomeRecords.Filing.Filed @>
+            test <@ store.Lookup key = Some fresh @>
+            test <@ not (File.Exists older) @>)
+
+        test <@ Directory.GetFiles(Path.Combine(dir, "quarantine")).Length = 1 @>
+
+        let note = quarantineNotes dir |> List.exactlyOne
+
+        test
+            <@
+                note.Contains key.Value.Text
+                && note.Contains "\"by\":\"writer\""
+                && note.Contains "\"kind\":\"check\""
+            @>
+
+        // What `fshw audit` reports from (ADR-072): never out of sight.
+        let census = readQuarantine dir
+        test <@ census.Unnoted = 0 @>
+        test <@ census.Noted |> List.map (fun n -> n.Key, n.Mover) = [ key.Value.Text, Mover.Writer "check" ] @>)
+
+[<Fact>]
+let ``a computed deterministic record replaces an unreadable file of its own name`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = actionKey "check" "A.fs"
+        let record = actionRecordAt key Outcome.Pass t0
+        test <@ store.Record record @>
+        let file = recordFiles dir |> List.exactlyOne
+
+        unreadable file (fun () ->
+            test <@ store.Lookup key = None @>
+            test <@ fileComputed store record = OutcomeRecords.Filing.Filed @>
+            // Answered while the old file's mode would still forbid it: it was moved aside.
+            test <@ store.Lookup key = Some record @>)
+
+        test <@ recordFiles dir = [ file ] @>)
+
+[<Fact>]
+let ``a computed deterministic record moves a torn file of its own name aside`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = actionKey "check" "A.fs"
+        let record = actionRecordAt key Outcome.Fail t0
+        store.Record record |> ignore
+        let file = recordFiles dir |> List.exactlyOne
+        let whole = File.ReadAllText file
+        File.WriteAllText(file, whole.Substring(0, whole.Length / 2))
+
+        test <@ fileComputed store record = OutcomeRecords.Filing.Filed @>
+        test <@ File.ReadAllText file = whole @>
+        test <@ store.Lookup key = Some record @>)
+
+[<Fact>]
+let ``a computed record leaves a readable file of the same bytes untouched`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = actionKey "check" "A.fs"
+        let record = actionRecordAt key Outcome.Pass t0
+        store.Record record |> ignore
+        let file = recordFiles dir |> List.exactlyOne
+        File.SetLastWriteTimeUtc(file, (File.GetLastWriteTimeUtc file).AddMinutes -5.0)
+        let before = File.GetLastWriteTimeUtc file
+
+        test <@ fileComputed store record = OutcomeRecords.Filing.AlreadyFiled @>
+        test <@ File.GetLastWriteTimeUtc file = before @>
+        test <@ not (Directory.Exists(Path.Combine(dir, "quarantine"))) @>)
+
+/// The pin on the exclusion (ADR-072): a TEST run's key keeps AUTOMATION-1568 as it was. A newer
+/// flaky fail could be the unreadable file; moving it aside would let this pass answer.
+[<Fact>]
+let ``a computed test-run record never moves an unreadable sibling, and the key stays a miss`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t1"
+        store.Record(recordOf key Outcome.Fail t0) |> ignore
+        let fail = recordFiles dir |> List.exactlyOne
+        let pass = recordOf key Outcome.Pass (t0.AddMinutes 1.0)
+
+        unreadable fail (fun () ->
+            test <@ fileComputed store pass = OutcomeRecords.Filing.Filed @>
+            test <@ store.Lookup key = None @>
+            test <@ File.Exists fail @>
+            test <@ not (Directory.Exists(Path.Combine(dir, "quarantine"))) @>))
+
+/// A replayed or copied record (`File`) never moves anything, whatever its kind: only a record
+/// computed here may (supervisor condition 1).
+[<Fact>]
+let ``a record filed without being computed never moves an unreadable sibling`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = actionKey "check" "A.fs"
+        store.Record(actionRecordAt key Outcome.Pass t0) |> ignore
+        let older = recordFiles dir |> List.exactlyOne
+
+        unreadable older (fun () ->
+            test <@ store.Record(actionRecordAt key Outcome.Pass (t0.AddMinutes 1.0)) @>
+            test <@ store.Lookup key = None @>
+            test <@ File.Exists older @>))
+
+[<Fact>]
+let ``a quarantine that cannot be written leaves the key a miss, and nothing throws`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = actionKey "check" "A.fs"
+        let record = actionRecordAt key Outcome.Pass t0
+        store.Record record |> ignore
+        let file = recordFiles dir |> List.exactlyOne
+        let keyDir = store.DirectoryOf key
+        let writable = File.GetUnixFileMode keyDir
+
+        unreadable file (fun () ->
+            File.SetUnixFileMode(keyDir, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+            try
+                fileComputed store (actionRecordAt key Outcome.Pass (t0.AddMinutes 1.0))
+                |> ignore
+
+                test <@ store.Lookup key = None @>
+                test <@ File.Exists file @>
+            finally
+                File.SetUnixFileMode(keyDir, writable)))
+
 // AUTOMATION-1615: a reader that must not take "could not be read" for "nothing on file" (an
 // evidence reuse asking whether a newer fail is filed) gets the two apart.
 [<Fact>]

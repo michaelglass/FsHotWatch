@@ -124,6 +124,50 @@ type Filing =
     /// It could not be filed. That costs a future lookup, never the run that produced it.
     | NotFiled of why: string
 
+/// A record an action has just COMPUTED in this process: it ran here, now, and produced these
+/// outcomes (AUTOMATION-1701, ADR-072). Only a computed record may move unreadable files under
+/// its key aside, so a replay (a record read back from a store, a cache or another checkout)
+/// can never launder a key whose only real evidence is the unreadable file. A distinct type,
+/// so a call site states which it holds; `Computed.justRan` is called only where the action ran.
+type Computed = private Computed of StoredRecord
+
+module Computed =
+    /// `record`, which an action has just computed in this process.
+    let justRan (record: StoredRecord) : Computed = Computed record
+
+    /// The record.
+    let record (Computed record) : StoredRecord = record
+
+/// What filing a COMPUTED record does with unreadable files already under its key, decided by
+/// what the action ran (`Ran`), never by a flag (AUTOMATION-1701, ADR-072).
+[<RequireQualifiedAccess>]
+type SiblingPolicy =
+    /// A deterministic action (a check, an analysis, an options evaluation, a format pass, a
+    /// plugin): its outcome is a function of its key's inputs, so an unreadable record under the
+    /// same key carries the outcome just computed, and moving it aside loses nothing.
+    | QuarantineUnreadable
+    /// A test run, or what one earned: a flaky suite can fail in a concurrent run that files
+    /// AFTER this one, and that newer fail may be the unreadable file. Moving it aside would let
+    /// this older pass answer, a false green; nothing orders the two without filesystem time
+    /// (ADR-008). AUTOMATION-1568 stands: the key stays a miss.
+    | KeepUnreadable
+
+module SiblingPolicy =
+    /// The policy of a record of what `ran` ran.
+    let ofRan (ran: Ran) : SiblingPolicy =
+        match ran with
+        | Ran.NonTest -> SiblingPolicy.QuarantineUnreadable
+        | Ran.TestRun _
+        | Ran.InRun _ -> SiblingPolicy.KeepUnreadable
+
+/// Why a file under a key was moved into quarantine.
+[<RequireQualifiedAccess>]
+type QuarantineReason =
+    /// A read found it is not a record of its key.
+    | Rejected of Rejected
+    /// A writer that had just computed a deterministic record found it unreadable.
+    | Unreadable of why: string
+
 /// L1: an outcome store. Time comes in as an argument; nothing here reads a clock.
 type IOutcomeStore =
     /// Everything filed under a key, read once.
@@ -131,8 +175,15 @@ type IOutcomeStore =
     /// Whether any file is filed under the key, by name alone (AUTOMATION-1609): nothing is
     /// read or verified, so a corrupt record answers yes.
     abstract HoldsKey: ActionKey.KeyValue -> bool
-    /// File a record.
+    /// File a record, write-once: a file already of its name is left as it is. Never moves another
+    /// file: what a replayed or copied record may do.
     abstract File: StoredRecord -> Filing
+    /// File a record this process has just COMPUTED (AUTOMATION-1701, ADR-072). As `File`; then, when
+    /// it is filed (now or already) and its `SiblingPolicy` is `QuarantineUnreadable`, every file
+    /// under its key that cannot be read, or is not a record of it, is moved into quarantine (never
+    /// deleted), and the record is filed again if its own name was one of them. Reads still move
+    /// nothing unreadable (AUTOMATION-1568).
+    abstract FileComputed: Computed -> Filing
     /// File a record as its key's only one: file it, then drop the key's others (AUTOMATION-1587).
     abstract Supersede: StoredRecord -> Filing
 
@@ -393,7 +444,7 @@ type InMemoryOutcomeStore() =
     let files =
         Collections.Generic.Dictionary<ActionKey.KeyValue, ResizeArray<string * Result<string, string>>>()
 
-    let quarantined = ResizeArray<string * Rejected>()
+    let quarantined = ResizeArray<string * QuarantineReason>()
 
     let filesOf (key: ActionKey.KeyValue) =
         match files.TryGetValue key with
@@ -403,6 +454,7 @@ type InMemoryOutcomeStore() =
             files[key] <- list
             list
 
+    /// Write-once, as the disk store files: a file already of the record's name is left as it is.
     let file (record: StoredRecord) =
         let payload = RecordCodec.encodePayload record
         let name = RecordCodec.fileName payload
@@ -413,6 +465,16 @@ type InMemoryOutcomeStore() =
         else
             list.Add(name, Ok(RecordCodec.envelope payload))
             name, Filing.Filed
+
+    /// The files under `key` that cannot be read or are not a record of it, with why.
+    let unanswering (key: ActionKey.KeyValue) : (string * QuarantineReason) list =
+        [ for name, text in filesOf key do
+              match text with
+              | Error why -> name, QuarantineReason.Unreadable why
+              | Ok text ->
+                  match RecordCodec.decode key text with
+                  | Error rejected -> name, QuarantineReason.Rejected rejected
+                  | Ok _ -> () ]
 
     /// Put `text` under `key` as file `name`, as a torn or foreign write would.
     member _.Plant(key: ActionKey.KeyValue, name: string, text: string) = (filesOf key).Add(name, Ok text)
@@ -449,8 +511,8 @@ type InMemoryOutcomeStore() =
         | Some i -> list[i] <- (name, text)
         | None -> list.Add(name, text)
 
-    /// The files a read moved out, with why.
-    member _.Quarantined: (string * Rejected) list = List.ofSeq quarantined
+    /// The files moved into quarantine, by a read or by a computing writer, with why.
+    member _.Quarantined: (string * QuarantineReason) list = List.ofSeq quarantined
 
     interface IOutcomeStore with
         member _.Read key =
@@ -461,7 +523,7 @@ type InMemoryOutcomeStore() =
 
             for name, why in KeyRead.rejected read do
                 (filesOf key).RemoveAll(fun (n, _) -> n = name) |> ignore
-                quarantined.Add(name, why)
+                quarantined.Add(name, QuarantineReason.Rejected why)
 
             read
 
@@ -471,6 +533,25 @@ type InMemoryOutcomeStore() =
             | false, _ -> false
 
         member _.File record = snd (file record)
+
+        member _.FileComputed computed =
+            let record = Computed.record computed
+            let name, filing = file record
+
+            match filing, SiblingPolicy.ofRan record.Ran with
+            | (Filing.Filed | Filing.AlreadyFiled), SiblingPolicy.QuarantineUnreadable ->
+                let moved = unanswering record.Key.Value
+
+                for movedName, why in moved do
+                    (filesOf record.Key.Value).RemoveAll(fun (n, _) -> n = movedName) |> ignore
+                    quarantined.Add(movedName, why)
+
+                if moved |> List.exists (fun (n, _) -> n = name) then
+                    snd (file record)
+                else
+                    filing
+            | Filing.NotFiled _, _
+            | _, SiblingPolicy.KeepUnreadable -> filing
 
         member _.Supersede record =
             let name, filing = file record
