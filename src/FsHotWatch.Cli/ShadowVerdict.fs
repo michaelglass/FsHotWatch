@@ -215,7 +215,7 @@ let outcomeKeyRecords (o: Observation) : (OutcomeStore.Record * string) list =
 /// The K_P keys publications over `o`'s tree and binary named, by project; a project none
 /// named, or whose record does not read back as a key, is absent.
 let recordedOutcomeKeys
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (testProjects: string list)
     (o: Observation)
     : Map<string, ActionKey.KeyValue> =
@@ -235,14 +235,14 @@ let recordedOutcomeKeys
 
     testProjects
     |> List.choose (fun project ->
-        store.LookupWithOutputs(outcomeKeyKey o project)
+        OutcomeStore.Through.lookupWithOutputs store (outcomeKeyKey o project).Value
         |> Option.bind snd
         |> Option.bind keyIn
         |> Option.map (fun key -> project, key))
     |> Map.ofList
 
 /// `o` with the K_P keys earlier publications named, when it names none itself: a read.
-let withRecordedOutcomeKeys (store: OutcomeStore.Store) (testProjects: string list) (o: Observation) =
+let withRecordedOutcomeKeys (store: OutcomeRecords.IOutcomeStore) (testProjects: string list) (o: Observation) =
     if Map.isEmpty o.OutcomeKeys then
         { o with
             OutcomeKeys = recordedOutcomeKeys store testProjects o }
@@ -470,14 +470,14 @@ let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : strin
 /// (`TestFailureClearance`, AUTOMATION-1444); `confirm` grades the full suite itself.
 let private lookupIn
     (command: Verdict.Command)
-    (store: OutcomeStore.Store)
-    (kpStore: OutcomeStore.Store option)
+    (store: OutcomeRecords.IOutcomeStore)
+    (kpStore: OutcomeRecords.IOutcomeStore option)
     (key: ActionKey.KeyValue)
     =
-    let read (s: OutcomeStore.Store) =
+    let read (s: OutcomeRecords.IOutcomeStore) =
         match command with
-        | Verdict.Check -> TestFailureClearance.lookupForCheck s key
-        | Verdict.Confirm -> s.Lookup key |> Option.map _.Outcome
+        | Verdict.Check -> TestFailureClearance.lookupForCheckIn s key
+        | Verdict.Confirm -> OutcomeStore.Through.lookup s key |> Option.map _.Outcome
 
     match read store with
     | Some outcome -> Some outcome
@@ -490,7 +490,11 @@ let private lookupIn
 /// this tree's test keys for its project (`TestFailureClearance`, AUTOMATION-1472): check N's
 /// full run failed a test, and check N+1 on the same tree ran it again and passed it. Its
 /// passed names are read from its report only when there is such a fail to clear.
-let private fileRecords (store: OutcomeStore.Store) (o: Observation) (records: OutcomeStore.Record list) : int =
+let private fileRecords
+    (store: OutcomeRecords.IOutcomeStore)
+    (o: Observation)
+    (records: OutcomeStore.Record list)
+    : int =
     let suiteOf (r: OutcomeStore.Record) =
         if r.Key.Kind = "test" then
             o.Suites
@@ -508,8 +512,8 @@ let private fileRecords (store: OutcomeStore.Store) (o: Observation) (records: O
                     |> Option.filter (List.isEmpty >> not)
                     |> Option.map TestFailureClearance.outputsOf
 
-                store.RecordWithOutputs(r, outputs)
-            | _ -> store.Record r)
+                OutcomeStore.Through.file store r outputs
+            | _ -> OutcomeStore.Through.file store r None)
 
     for r in records do
         match suiteOf r with
@@ -527,21 +531,22 @@ let private fileRecords (store: OutcomeStore.Store) (o: Observation) (records: O
             for scope in [ FullScope; ImpactScope ] do
                 let key = testKey o s.Project scope
 
-                match store.LookupWithOutputs key with
+                match OutcomeStore.Through.lookupWithOutputs store key.Value with
                 | Some(newest, _) as onFile when newest.Outcome = OutcomeStore.Outcome.Fail ->
                     TestFailureClearance.clearanceOf key.Value onFile passed.Value r
-                    |> Option.iter (store.Record >> ignore)
+                    |> Option.iter (fun clearance -> OutcomeStore.Through.file store clearance None |> ignore)
                 | _ -> ()
         | _ -> ()
 
     List.length filed
 
-/// File `o`'s records, look the tree up, and append the comparison to the shadow log.
-/// Returns the lookup's answer. `configured` is what the configuration requires.
-let observeWith
+/// File `o`'s records, look the tree up, and append the comparison to the shadow log, through
+/// any `IOutcomeStore` (AUTOMATION-1695). Returns the lookup's answer and every key it required,
+/// which a collection must keep. `configured` is what the configuration requires.
+let observeIn
     (repoRoot: string)
-    (store: OutcomeStore.Store)
-    (kpStore: OutcomeStore.Store option)
+    (store: OutcomeRecords.IOutcomeStore)
+    (kpStore: OutcomeRecords.IOutcomeStore option)
     (configured: Configured)
     (o: Observation)
     =
@@ -552,7 +557,7 @@ let observeWith
     let named = outcomeKeyRecords o
 
     for record, outputs in named do
-        store.RecordWithOutputs(record, Some outputs) |> ignore
+        OutcomeStore.Through.file store record (Some outputs) |> ignore
 
     let required = requirements o configured
 
@@ -566,6 +571,19 @@ let observeWith
         |> Set.ofList
         |> Set.union (named |> List.map (fun (r, _) -> r.Key.Value) |> Set.ofList)
 
+    answer, keep
+
+/// `observeIn` over the disk store, which then collects what is due, keeping every required key.
+let observeWith
+    (repoRoot: string)
+    (store: OutcomeStore.Store)
+    (kpStore: OutcomeStore.Store option)
+    (configured: Configured)
+    (o: Observation)
+    =
+    let answer, keep =
+        observeIn repoRoot store (kpStore |> Option.map (fun kp -> kp :> OutcomeRecords.IOutcomeStore)) configured o
+
     match store.GcIfDue(o.RecordedAt, keep, OutcomeStore.defaultGcInterval) with
     | OutcomeStore.GcRun.Ran _
     | OutcomeStore.GcRun.NotDue _ -> ()
@@ -575,10 +593,10 @@ let observeWith
 /// The shadow of a `fshw verdict` READ: look the CURRENT tree up and log the comparison with
 /// what the read reported, labelled `verdict`. A read files no record and evicts nothing —
 /// reading cannot perturb.
-let observeReadWith
+let observeReadIn
     (repoRoot: string)
-    (store: OutcomeStore.Store)
-    (kpStore: OutcomeStore.Store option)
+    (store: OutcomeRecords.IOutcomeStore)
+    (kpStore: OutcomeRecords.IOutcomeStore option)
     (configured: Configured)
     (o: Observation)
     =
@@ -589,6 +607,16 @@ let observeReadWith
 
     appendLine repoRoot (lineAs "verdict" o answer 0)
     answer
+
+/// `observeReadIn` over the disk store.
+let observeReadWith
+    (repoRoot: string)
+    (store: OutcomeStore.Store)
+    (kpStore: OutcomeStore.Store option)
+    (configured: Configured)
+    (o: Observation)
+    =
+    observeReadIn repoRoot store (kpStore |> Option.map (fun kp -> kp :> OutcomeRecords.IOutcomeStore)) configured o
 
 /// The shadow store of `repoRoot`, with the default TTL and byte budget.
 let storeAt (repoRoot: string) =
