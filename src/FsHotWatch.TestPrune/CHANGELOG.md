@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.115 - 2026-11-14
+
 - feat!: `runtimeSelection: "runtime/record-static"` — runtime coverage decides what runs, and every completed impact
   run files what static selection alone would have run, with outcomes (AUTOMATION-1686, ADR-070). The type is now
   `CoverageArtifacts.SelectionMode = RuntimeDecides | RuntimeDecidesStaticRecorded | StaticDecidesRuntimeLogged`

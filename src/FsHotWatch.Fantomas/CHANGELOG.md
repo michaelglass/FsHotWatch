@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.37 - 2026-11-14
+
 - fix: the format preprocessor and the format check consider only the repository's own sources (AUTOMATION-1680
   follow-up). A project compiles in files from outside the repository: a package's `_content` source in the shared
   NuGet cache (xunit.v3.core.mtp-v2's `_content/DefaultResultWriters.fs`), or a file behind a symbolic link that points

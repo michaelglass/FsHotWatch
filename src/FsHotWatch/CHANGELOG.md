@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.115 - 2026-11-14
+
 - feat: the clean-recompute audit reports a kind that compared nothing as a finding of its own, not only through exit
   3 (AUTOMATION-1684). `RecordAudit.KindTally.finding` is `KindFinding.Compared | Vacuous of why` (the clean store
   holds no key of the kind; the audited store holds none of its clean keys; no shared key holds a readable record).

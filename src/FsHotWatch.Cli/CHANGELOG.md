@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.148 - 2026-11-14
+
 - feat: `tests.projects[].runtimeSelection` names who decides and what is recorded: `"runtime"` (the default),
   `"runtime/record-static"` (runtime decides, unchanged, and each completed impact run files a record of what static
   selection alone would have run, with outcomes) or `"static/log-runtime"` (AUTOMATION-1686, ADR-070). `"decide"` and
