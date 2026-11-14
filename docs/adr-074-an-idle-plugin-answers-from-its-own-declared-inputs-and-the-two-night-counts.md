@@ -97,6 +97,10 @@ lookup-agreement evidence the switch waits on could not accrue.
   - Measured on thellma-and-louisa: across 253 daemon-green publications of alpha.140–149, the only
     plugins ever missing were the two pattern commands (`file-cmd-*.fsx` 170 times, `changelog-gate`
     20 times), never a whole-tree plugin.
+  - `WholeTreeRunConditionTests` holds every real configuration (FsHotWatch's, a consumer's such as
+    intelligence's, and one of every kind) to the rule over the REGISTERED plugin set: each required
+    plugin that declares no inputs is a preprocessor or subscribes to an event a first scan delivers.
+    A subscription is not an execution, which is what the measurement above covers.
   - The carried status is a separate, pre-existing gap: the verdict does not say whether a plugin ran on
     this tree (AUTOMATION-1702). It applies to the tree key exactly as before.
 
