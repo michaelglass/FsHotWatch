@@ -350,3 +350,28 @@ let ``TestSourceFiles over an index it cannot read answers None, so nothing is j
     // `test_methods` table. Unknown is not absent.
     let db = Database.create ":memory:"
     Assert.Equal(None, (PluginQueries.ImpactQueries.ofDatabase db).TestSourceFiles [ "P1" ])
+
+// --- `RunOutcomeReport.absentCoverersNote`, the absence note every terminal summary appends ---
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the absence note is empty when no coverer was judged absent`` () =
+    Assert.Equal("", RunOutcomeReport.absentCoverersNote Map.empty)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the absence note names one absent project in the singular`` () =
+    Assert.Equal(
+        " (2 symbol(s) not owed: project Sim is no longer in this tree)",
+        RunOutcomeReport.absentCoverersNote (Map.ofList [ "Sim", Set.ofList [ "Lib.a"; "Lib.b" ] ])
+    )
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the absence note names several absent projects and counts each symbol once`` () =
+    // Lib.b was owed to both: it is one symbol not owed, not two.
+    Assert.Equal(
+        " (3 symbol(s) not owed: projects Old, Sim are no longer in this tree)",
+        RunOutcomeReport.absentCoverersNote (
+            Map.ofList
+                [ "Sim", Set.ofList [ "Lib.a"; "Lib.b" ]
+                  "Old", Set.ofList [ "Lib.b"; "Lib.c" ] ]
+        )
+    )
