@@ -258,19 +258,47 @@ let ImpactScope = "impact"
 /// What R(c, T) is computed from: the configuration, never the run (ADR-059 §7 step 2).
 type Configured =
     {
-        /// The plugins the configuration registers (`DaemonConfig.requiredPluginNames`).
-        RequiredPlugins: string list
+        /// The plugins the configuration registers, each with what its outcome is a function of
+        /// (`DaemonConfig.requiredPlugins`).
+        RequiredPlugins: PluginInputs.RequiredPlugin list
         /// The configured test projects, by the name their reports carry.
         TestProjects: string list
     }
 
+/// The key plugin `name`'s outcome is filed and looked up under for `o` (AUTOMATION-1577). A
+/// plugin that declares its inputs is keyed by them (`PluginInputs.key`), so its last outcome
+/// answers on any tree where they are unchanged; every other plugin, and one the configuration
+/// does not name, is keyed by the whole tree.
+let pluginKeyFor (o: Observation) (configured: Configured) (name: string) : ActionKey.ActionKey =
+    match configured.RequiredPlugins |> List.tryFind (fun p -> p.Name = name) with
+    | Some { Eligibility = PluginInputs.LookupEligibility.DeclaredInputs(first, rest) } ->
+        PluginInputs.key o.Worktree o.Producer name (first, rest)
+    | Some { Eligibility = PluginInputs.LookupEligibility.NoDeclaredInputs _ }
+    | None -> pluginKey o name
+
+/// The missing plugin requirements of `answer` that declare no inputs, each with why: only a
+/// run on this tree could answer them, and none did. Named, so a reader can tell "the plugin
+/// did not run here" from "nothing on record" (AUTOMATION-1577).
+let noDeclaredInputs (configured: Configured) (answer: LookupVerdict.Answer) : (string * string) list =
+    match answer with
+    | LookupVerdict.Answer.Missing missing ->
+        [ for p in configured.RequiredPlugins do
+              match p.Eligibility with
+              | PluginInputs.LookupEligibility.NoDeclaredInputs reason when List.contains ("plugin:" + p.Name) missing ->
+                  "plugin:" + p.Name, reason
+              | PluginInputs.LookupEligibility.NoDeclaredInputs _
+              | PluginInputs.LookupEligibility.DeclaredInputs _ -> () ]
+    | LookupVerdict.Answer.Green
+    | LookupVerdict.Answer.Red _ -> []
+
 /// R(c, T): what a green for this command over this tree requires (ADR-059 §3). Plugins and
 /// test projects are both the configured ones. A plugin idle with no run record is left out
 /// of today's `plugins[]` (`Verdict.pluginVerdicts`), so a requirement set read from the run
-/// could not miss a configured gate nobody ran on the tree (AUTOMATION-1568).
+/// could not miss a configured gate nobody ran on the tree (AUTOMATION-1568). Each plugin is
+/// keyed as `pluginKeyFor` says.
 let requirements (o: Observation) (configured: Configured) : LookupVerdict.Requirement list =
-    [ for name in configured.RequiredPlugins do
-          LookupVerdict.Requirement.single ("plugin:" + name) (pluginKey o name)
+    [ for p in configured.RequiredPlugins do
+          LookupVerdict.Requirement.single ("plugin:" + p.Name) (pluginKeyFor o configured p.Name)
       LookupVerdict.Requirement.single "diagnostics" (diagnosticsKey o)
       for project in configured.TestProjects do
           let full = [ (testKey o project FullScope).Value ]
@@ -332,7 +360,13 @@ let supersededFailures (o: Observation) : Suite list =
 /// was graded from. A baseline names no tree, and today's watermark is earned by that run
 /// whatever the publication concluded; filing none left every later check missing
 /// (AUTOMATION-1428, the run of 2026-10-30 22:49 on intelligence's land workspace).
-let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record list =
+///
+/// A plugin's outcome is filed under `keyOf` its name (`pluginKeyFor`, AUTOMATION-1577).
+let recordsKeyed
+    (keyOf: string -> ActionKey.ActionKey)
+    (o: Observation)
+    (testProjects: string list)
+    : OutcomeStore.Record list =
     let record (key: ActionKey.ActionKey) subject outcome counts runId : OutcomeStore.Record =
         { Key = key
           Subject = subject
@@ -398,12 +432,17 @@ let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record
 
         [ for (name, outcome) in o.Plugins do
               match outcome with
-              | Some outcome -> record (pluginKey o name) name outcome None None
+              | Some outcome -> record (keyOf name) name outcome None None
               | None -> ()
           record (diagnosticsKey o) "diagnostics" (outcomeOf (not o.DiagnosticsFailed)) None None ]
         @ suites
         @ baselines
         @ unselected
+
+/// `recordsKeyed` with every plugin keyed by the whole tree (`pluginKey`): the records of a
+/// publication whose plugins all declare no inputs.
+let recordsOf (o: Observation) (testProjects: string list) : OutcomeStore.Record list =
+    recordsKeyed (pluginKey o) o testProjects
 
 let classOf (answer: LookupVerdict.Answer) : Class =
     match answer with
@@ -439,8 +478,15 @@ let private lineWith (command: string) (o: Observation) (lookup: JsonObject) (di
     root["recorded"] <- recorded
     root.ToJsonString()
 
-/// The log line for one comparison, under the command label `command`.
-let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
+/// The log line for one comparison, under the command label `command`. `undeclared` names the
+/// missing plugins that declare no inputs, and why (`noDeclaredInputs`).
+let lineAs
+    (command: string)
+    (o: Observation)
+    (answer: LookupVerdict.Answer)
+    (undeclared: (string * string) list)
+    (recorded: int)
+    : string =
     let strings (items: string list) =
         let a = JsonArray()
 
@@ -466,6 +512,16 @@ let lineAs (command: string) (o: Observation) (answer: LookupVerdict.Answer) (re
             | _ -> []
         )
 
+    let named = JsonArray()
+
+    for requirement, why in undeclared do
+        let entry = JsonObject()
+        entry["requirement"] <- requirement
+        entry["why"] <- why
+        named.Add entry
+
+    lookup["noDeclaredInputs"] <- named
+
     lineWith command o lookup (direction o.Today (classOf answer)) recorded
 
 /// The log line for a publication or read the shadow could not compare, and why
@@ -484,8 +540,8 @@ let appendLine (repoRoot: string) (text: string) =
     File.AppendAllText(path, text + "\n")
 
 /// The log line for one publication: labelled with its own command.
-let line (o: Observation) (answer: LookupVerdict.Answer) (recorded: int) : string =
-    lineAs (Verdict.Command.token o.Command) o answer recorded
+let line (o: Observation) (answer: LookupVerdict.Answer) (undeclared: (string * string) list) (recorded: int) : string =
+    lineAs (Verdict.Command.token o.Command) o answer undeclared recorded
 
 /// The answer for a key under `command`: the shadow store's, else the K_P store's, where the
 /// test runner files. Under `check`, a K_P full fail whose every named failure a later run
@@ -568,7 +624,7 @@ let observeWith
     (configured: Configured)
     (o: Observation)
     =
-    let records = recordsOf o configured.TestProjects
+    let records = recordsKeyed (pluginKeyFor o configured) o configured.TestProjects
     let recorded = fileRecords store o records
 
     // Not counted in `recorded`: they name keys, not outcomes this publication established.
@@ -581,7 +637,7 @@ let observeWith
 
     let answer = LookupVerdict.decide required (lookupIn o.Command store kpStore)
 
-    appendLine repoRoot (line o answer recorded)
+    appendLine repoRoot (line o answer (noDeclaredInputs configured answer) recorded)
 
     let keep =
         required
@@ -610,7 +666,7 @@ let observeReadWith
     let answer =
         LookupVerdict.decide (requirements o configured) (lookupIn o.Command store kpStore)
 
-    appendLine repoRoot (lineAs "verdict" o answer 0)
+    appendLine repoRoot (lineAs "verdict" o answer (noDeclaredInputs configured answer) 0)
     answer
 
 /// The shadow store of `repoRoot`, with the default TTL and byte budget.
@@ -641,7 +697,7 @@ let configuredOf (repoRoot: string) : Result<Configured, string> =
     |> Result.bind (fun projects ->
         try
             Ok
-                { RequiredPlugins = DaemonConfig.configuredPlugins repoRoot
+                { RequiredPlugins = DaemonConfig.configuredRequiredPlugins repoRoot
                   TestProjects = projects }
         with DaemonConfig.ConfigErrorException message ->
             Error message)

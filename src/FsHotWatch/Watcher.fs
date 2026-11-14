@@ -212,7 +212,7 @@ let internal classifyChange (path: string) =
 /// prunes (`SafeWalk.ToolingExcludedDirs`): what the native stream never sees, the
 /// polling fallback never visits either. `.workspaces` holds sibling checkouts, each
 /// watched by its own stream.
-let private kernelExcludedDirs =
+let internal kernelExcludedDirs =
     [ ".jj"
       ".git"
       ".fshw"

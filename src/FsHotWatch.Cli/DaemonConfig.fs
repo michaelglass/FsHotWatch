@@ -2297,47 +2297,82 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
 /// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
-/// The plugins `config` registers (`registerPluginsIn`), by the name each reports its status
-/// under, other than the test plugin: preprocessors, the formatter, lint, analyzers, build,
-/// file commands and coverage. ADR-059 §3 requires `plugin:<name>` once per configured
-/// non-test plugin; test projects are required as `test:<project>` instead.
-let nonTestPluginNames (config: DaemonConfiguration) : string list =
+/// The plugins `config` registers (`registerPluginsIn`), each by the name it reports its status
+/// under and with what its outcome is a function of (AUTOMATION-1577), other than the test
+/// plugin: preprocessors, the formatter, lint, analyzers, build, file commands and coverage.
+/// ADR-059 §3 requires `plugin:<name>` once per configured non-test plugin; test projects are
+/// required as `test:<project>` instead.
+///
+/// Only a file command with a `pattern` and no `afterTests` declares its inputs: the files the
+/// pattern matches are what run it. Every other plugin reads the whole tree, or (an `afterTests`
+/// command) the outcomes of tests, so it declares none and only a run on the tree answers.
+let nonTestPlugins (config: DaemonConfiguration) : PluginInputs.RequiredPlugin list =
+    let wholeTree name =
+        PluginInputs.RequiredPlugin.wholeTree name $"%s{name} reads the whole tree"
+
     [ for p in config.Preprocessors do
-          p.Name
+          PluginInputs.RequiredPlugin.wholeTree p.Name $"preprocessor %s{p.Name} runs over the files a check delivers"
       match config.Format with
-      | Auto -> "format"
-      | Check -> "format-check"
+      | Auto -> wholeTree "format"
+      | Check -> wholeTree "format-check"
       | Off -> ()
       if config.Lint then
-          "lint"
+          wholeTree "lint"
       if config.Analyzers.IsSome then
-          FsHotWatch.PluginActivity.AnalyzersPluginName
+          wholeTree FsHotWatch.PluginActivity.AnalyzersPluginName
       match config.Build with
-      | Some builds when not builds.IsEmpty -> "build"
+      | Some builds when not builds.IsEmpty -> wholeTree "build"
       | _ -> ()
       for fc in config.FileCommands do
-          fc.PluginName
+          match fc.Pattern, fc.AfterTests with
+          | Some pattern, None ->
+              { PluginInputs.RequiredPlugin.Name = fc.PluginName
+                PluginInputs.RequiredPlugin.Eligibility =
+                  PluginInputs.LookupEligibility.DeclaredInputs(
+                      PluginInputs.InputSpec.Matching(
+                          Watcher.FilePattern.parse pattern,
+                          PluginInputs.entryDigest fc.PluginName pattern fc.Command fc.Args fc.TimeoutSec
+                      ),
+                      []
+                  ) }
+          | Some _, Some _
+          | None, Some _ ->
+              PluginInputs.RequiredPlugin.wholeTree
+                  fc.PluginName
+                  $"file command %s{fc.PluginName} runs after the tests, so its inputs are their outcomes"
+          | None, None ->
+              PluginInputs.RequiredPlugin.wholeTree fc.PluginName $"file command %s{fc.PluginName} declares no pattern"
       if not (List.isEmpty config.Coverage) then
-          "coverage" ]
-    |> List.distinct
+          wholeTree "coverage" ]
+    |> List.distinctBy _.Name
+
+/// The names of `nonTestPlugins`.
+let nonTestPluginNames (config: DaemonConfiguration) : string list =
+    nonTestPlugins config |> List.map _.Name
 
 /// The plugins a green requires of `config`: its non-test plugins, and the test plugin when tests
 /// are configured. The test plugin is required as well as `test:<project>` because it can fail
 /// with no project carrying the failure (an index flush, an impact DB that will not open, a
 /// wedged plugin). Without it, passing test records an earlier publication of the same tree
 /// filed would answer green over that failure (AUTOMATION-1568 rework).
-let requiredPluginNames (config: DaemonConfiguration) : string list =
-    nonTestPluginNames config
+let requiredPlugins (config: DaemonConfiguration) : PluginInputs.RequiredPlugin list =
+    nonTestPlugins config
     @ (if config.Tests.IsSome then
-           [ FsHotWatch.PluginActivity.TestPrunePluginName ]
+           [ PluginInputs.RequiredPlugin.wholeTree
+                 FsHotWatch.PluginActivity.TestPrunePluginName
+                 "test-prune runs the configured test projects over the whole tree" ]
        else
            [])
 
-/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`requiredPluginNames`), read the
+/// The names of `requiredPlugins`.
+let requiredPluginNames (config: DaemonConfiguration) : string list =
+    requiredPlugins config |> List.map _.Name
+
+/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`requiredPlugins`), read the
 /// way `loadConfig` reads it, with the defaults when there is no file. It neither validates the
 /// test scope nor logs: it names plugins and has nothing to report about the tree.
 /// Raises ConfigErrorException when the file cannot be parsed.
-let configuredPlugins (repoRoot: string) : string list =
+let configuredRequiredPlugins (repoRoot: string) : PluginInputs.RequiredPlugin list =
     let path = FsHwPaths.configFile repoRoot
 
     let config =
@@ -2346,7 +2381,11 @@ let configuredPlugins (repoRoot: string) : string list =
         else
             defaultConfig ()
 
-    requiredPluginNames config
+    requiredPlugins config
+
+/// The names of `configuredRequiredPlugins`.
+let configuredPlugins (repoRoot: string) : string list =
+    configuredRequiredPlugins repoRoot |> List.map _.Name
 
 /// Count the plugins that would be registered for a given configuration.
 /// Used by `fshw config check` to report how many plugins are configured.
