@@ -214,22 +214,6 @@ let ``the in-memory check key and the signature chain stand for the files before
 
 // --- through the compiler: a replay equals what FCS reports under the new list ---
 
-/// Counts the checks a pipeline actually ran in FCS: a replay logs no start.
-type private CheckCounter() =
-    let mutable started = 0
-    member _.Started = started
-
-    interface FsHotWatch.PluginActivity.IActivitySink with
-        member _.StartSubtask(_, _) = ()
-        member _.UpdateSubtask(_, _) = ()
-        member _.EndSubtask _ = ()
-
-        member _.Log line =
-            if line.StartsWith "check start " then
-                started <- started + 1
-
-        member _.SetSummary _ = ()
-
 /// An application over `files` under `root`, against the framework a script resolves.
 let private application (checker: FSharpChecker) (root: string) (files: string list) =
     let script = Path.Combine(root, "Base.fsx")
@@ -256,22 +240,20 @@ let private toolchain = "toolchain-under-test"
 
 let private pipelineOver (store: OutcomeStore.Store option) (options: FSharpProjectOptions) =
     let checker = FsHotWatch.Daemon.Daemon.createChecker ()
-    let counter = CheckCounter()
 
     let pipeline =
         match store with
         | Some store ->
             CheckPipeline(
                 checker,
-                activity = counter,
                 repoRoot = Path.GetDirectoryName options.ProjectFileName,
                 checkRecords = store,
                 checkToolchain = toolchain
             )
-        | None -> CheckPipeline(checker, activity = counter, repoRoot = Path.GetDirectoryName options.ProjectFileName)
+        | None -> CheckPipeline(checker, repoRoot = Path.GetDirectoryName options.ProjectFileName)
 
     pipeline.RegisterProject(options.ProjectFileName, options)
-    pipeline, counter
+    pipeline
 
 let private outputsOf (root: string) (pipeline: CheckPipeline) (file: string) =
     match pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously with
@@ -303,19 +285,19 @@ let ``a file appended after filed checks replays the earlier ones as FCS reports
         let main = Path.Combine(root, "Main.fs")
         let tail = Path.Combine(root, "Tail.fs")
 
-        let seeding, _ = pipelineOver (Some store) before
+        let seeding = pipelineOver (Some store) before
         let seededTail = outputsOf root seeding tail
         outputsOf root seeding main |> ignore
         test <@ seeding.PersistCheckRecords() = 2 @>
 
-        let next, counter = pipelineOver (Some store) after
+        let next = pipelineOver (Some store) after
         let replayedMain = next.ReplayCheck(AbsFilePath.create main, after)
         test <@ replayedMain.IsSome @>
         test <@ next.ReplayCheck(AbsFilePath.create tail, after) = None @>
-        test <@ counter.Started = 0 @>
+        test <@ next.CheckStarts = 0L @>
 
         // What FCS reports under the new list: Main as filed, Tail no longer legal.
-        let forced, _ = pipelineOver None after
+        let forced = pipelineOver None after
         test <@ replayedMain = outputsOf root forced main @>
 
         let errorNumbers (outputs: CheckOutputs option) =
@@ -335,14 +317,12 @@ let ``within one process a file appended to a registered project re-checks none 
         File.WriteAllText(Path.Combine(root, "Second.fs"), "module Second\nlet s : int = Main.v\n")
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
         let before = application checker root [ "Main.fs"; "Second.fs"; "Tail.fs" ]
-        let counter = CheckCounter()
 
         let pipeline =
             CheckPipeline(
                 checker,
                 cacheBackend =
                     (FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100) :> FsHotWatch.CheckCache.ICheckCacheBackend),
-                activity = counter,
                 repoRoot = root
             )
 
@@ -353,9 +333,9 @@ let ``within one process a file appended to a registered project re-checks none 
         for file in before.SourceFiles do
             outputsOf root pipeline file |> ignore
 
-        let checks = counter.Started
+        let checks = pipeline.CheckStarts
         // Positive control: every file was checked once.
-        test <@ checks = 3 @>
+        test <@ checks = 3L @>
 
         let after =
             { before with
@@ -364,4 +344,4 @@ let ``within one process a file appended to a registered project re-checks none 
         pipeline.RegisterProject(after.ProjectFileName, after)
         outputsOf root pipeline main |> ignore
         outputsOf root pipeline second |> ignore
-        test <@ counter.Started = checks @>)
+        test <@ pipeline.CheckStarts = checks @>)

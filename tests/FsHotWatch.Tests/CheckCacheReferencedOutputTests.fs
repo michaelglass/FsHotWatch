@@ -33,22 +33,6 @@ let private compile (checker: FSharpChecker) (frameworkOptions: string array) (o
     if Option.isSome error || not (Array.isEmpty errors) then
         failwith $"compiling %s{source} failed: %A{error} %A{errors}"
 
-/// Counts the checks a pipeline actually ran: a check served from the cache logs no start.
-type private CheckCounter() =
-    let mutable started = 0
-    member _.Started = started
-
-    interface FsHotWatch.PluginActivity.IActivitySink with
-        member _.StartSubtask(_, _) = ()
-        member _.UpdateSubtask(_, _) = ()
-        member _.EndSubtask _ = ()
-
-        member _.Log line =
-            if line.StartsWith "check start " then
-                started <- started + 1
-
-        member _.SetSummary _ = ()
-
 /// A worktree holding `A.fs` and `B.fs` (`let y : int = A.v`), with B referencing A
 /// through `-r:` its output and as an F# project, as Ionide.ProjInfo reports it.
 type private Tree =
@@ -105,17 +89,14 @@ let private pipelineOver
     (cache: FsHotWatch.CheckCache.ICheckCacheBackend option)
     (frames: FsHotWatch.PathFrame.FrameChoice)
     =
-    let counter = CheckCounter()
-
     let pipeline =
         match cache with
-        | Some backend ->
-            CheckPipeline(checker, cacheBackend = backend, activity = counter, repoRoot = tree.Root, frames = frames)
-        | None -> CheckPipeline(checker, activity = counter, repoRoot = tree.Root, frames = frames)
+        | Some backend -> CheckPipeline(checker, cacheBackend = backend, repoRoot = tree.Root, frames = frames)
+        | None -> CheckPipeline(checker, repoRoot = tree.Root, frames = frames)
 
     pipeline.RegisterProject(tree.A.ProjectFileName, tree.A)
     pipeline.RegisterProject(tree.B.ProjectFileName, tree.B)
-    pipeline, counter
+    pipeline
 
 /// The errors a full check of `file` reports through `pipeline`.
 let private errorsOf (pipeline: CheckPipeline) (file: string) =
@@ -147,8 +128,7 @@ let ``a cached check is not served after the referenced project's dll is rebuilt
 
         let cache = FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100)
 
-        let cached, checks =
-            pipelineOver checker tree (Some cache) FsHotWatch.PathFrame.realPaths
+        let cached = pipelineOver checker tree (Some cache) FsHotWatch.PathFrame.realPaths
 
         // Positive control: typed against the stale dll, where `v` is a string.
         test <@ errorsOf cached tree.BSource = 1 @>
@@ -158,17 +138,17 @@ let ``a cached check is not served after the referenced project's dll is rebuilt
         File.SetLastWriteTimeUtc(tree.ADll, File.GetLastWriteTimeUtc(tree.ASource).AddHours 2.0)
 
         // Control: without a check cache, the checker's answer is clean.
-        let uncached, _ = pipelineOver checker tree None FsHotWatch.PathFrame.realPaths
+        let uncached = pipelineOver checker tree None FsHotWatch.PathFrame.realPaths
         test <@ errorsOf uncached tree.BSource = 0 @>
 
         // The entry recorded the old dll's bytes, so it misses once and re-checks...
-        let before = checks.Started
+        let before = cached.CheckStarts
         test <@ errorsOf cached tree.BSource = 0 @>
-        test <@ checks.Started = before + 1 @>
+        test <@ cached.CheckStarts = before + 1L @>
 
         // ...and with the dll unchanged since, the next check is served from the cache.
         test <@ errorsOf cached tree.BSource = 0 @>
-        test <@ checks.Started = before + 1 @>)
+        test <@ cached.CheckStarts = before + 1L @>)
 
 [<Fact(Timeout = 180000)>]
 let ``framed worktrees whose referenced dlls differ in bytes share one cache entry`` () =
@@ -185,16 +165,15 @@ let ``framed worktrees whose referenced dlls differ in bytes share one cache ent
             File.WriteAllText(tree.ADll, dllBytes)
             let frame = FsHotWatch.PathFrame.create tree.Root virtualRoot
 
-            let pipeline, checks =
-                pipelineOver checker tree (Some cache) (fun _ _ _ -> Some frame)
+            let pipeline = pipelineOver checker tree (Some cache) (fun _ _ _ -> Some frame)
 
-            tree, pipeline, checks
+            tree, pipeline
 
-        let treeA, pipelineA, checksA = framedPipeline "a" "built in a"
-        let treeB, pipelineB, checksB = framedPipeline "b" "built in b, differently"
+        let treeA, pipelineA = framedPipeline "a" "built in a"
+        let treeB, pipelineB = framedPipeline "b" "built in b, differently"
 
         test <@ errorsOf pipelineA treeA.BSource = 0 @>
-        test <@ checksA.Started = 1 @>
+        test <@ pipelineA.CheckStarts = 1L @>
 
         test <@ errorsOf pipelineB treeB.BSource = 0 @>
-        test <@ checksB.Started = 0 @>)
+        test <@ pipelineB.CheckStarts = 0L @>)

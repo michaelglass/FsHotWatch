@@ -14,22 +14,6 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.Tests.TestHelpers
 
-/// Counts the checks a pipeline actually ran in FCS: a replay logs no start.
-type private CheckCounter() =
-    let mutable started = 0
-    member _.Started = started
-
-    interface FsHotWatch.PluginActivity.IActivitySink with
-        member _.StartSubtask(_, _) = ()
-        member _.UpdateSubtask(_, _) = ()
-        member _.EndSubtask _ = ()
-
-        member _.Log line =
-            if line.StartsWith "check start " then
-                started <- started + 1
-
-        member _.SetSummary _ = ()
-
 /// Library A (A1.fs, A2.fs) and B (B1.fs, B2.fs), B referencing A as an F# project.
 /// A2 carries a type error and B2 a warning, so the store is exercised on diagnostics
 /// that are not empty.
@@ -111,23 +95,15 @@ let private storeIn (dir: string) =
 /// A fresh process's view: a new checker, a new pipeline, the same store on disk.
 let private restart (tree: Tree) (store: OutcomeStore.Store option) (toolchain: string) (b: FSharpProjectOptions) =
     let checker = FsHotWatch.Daemon.Daemon.createChecker ()
-    let counter = CheckCounter()
 
     let pipeline =
         match store with
-        | Some store ->
-            CheckPipeline(
-                checker,
-                activity = counter,
-                repoRoot = tree.Root,
-                checkRecords = store,
-                checkToolchain = toolchain
-            )
-        | None -> CheckPipeline(checker, activity = counter, repoRoot = tree.Root)
+        | Some store -> CheckPipeline(checker, repoRoot = tree.Root, checkRecords = store, checkToolchain = toolchain)
+        | None -> CheckPipeline(checker, repoRoot = tree.Root)
 
     pipeline.RegisterProject(tree.A.ProjectFileName, tree.A)
     pipeline.RegisterProject(b.ProjectFileName, b)
-    pipeline, counter
+    pipeline
 
 let private toolchain = "toolchain-under-test"
 
@@ -143,7 +119,7 @@ let private checkAll (tree: Tree) (pipeline: CheckPipeline) (files: string list)
 
 /// What a forced check reports: a new checker, no store, nothing cached.
 let private forced (tree: Tree) (b: FSharpProjectOptions) (files: string list) =
-    let pipeline, _ = restart tree None toolchain b
+    let pipeline = restart tree None toolchain b
     checkAll tree pipeline files |> Map.ofList
 
 let private replay (tree: Tree) (pipeline: CheckPipeline) (b: FSharpProjectOptions) (file: string) =
@@ -160,7 +136,7 @@ let private seededUnder (toolchain: string) (dir: string) =
     let checker = FsHotWatch.Daemon.Daemon.createChecker ()
     let tree = treeIn checker (Path.Combine(dir, "repo"))
     let store = storeIn dir
-    let pipeline, _ = restart tree (Some store) toolchain tree.B
+    let pipeline = restart tree (Some store) toolchain tree.B
     let files = [ tree.A1; tree.A2; tree.B1; tree.B2 ]
     let checkedNow = checkAll tree pipeline files |> Map.ofList
     let filed = pipeline.PersistCheckRecords()
@@ -189,13 +165,13 @@ let ``records filed by one fshw build replay under the next when FCS, FSharp.Cor
 
         test <@ filed = 4 @>
 
-        let next, counter =
+        let next =
             restart tree (Some store) (CheckCache.CheckerBuild.keyIdentity buildNPlus1) tree.B
 
         for file in files do
             test <@ replay tree next tree.B file |> Option.isSome @>
 
-        test <@ counter.Started = 0 @>)
+        test <@ next.CheckStarts = 0L @>)
 
 [<Fact(Timeout = 240000)>]
 let ``a schema bump, an FCS version or an FSharp.Core version re-keys every record`` () =
@@ -212,7 +188,7 @@ let ``a schema bump, an FCS version or an FSharp.Core version re-keys every reco
                   FSharpCore = "FSharp.Core@10.0.1.0/22222222-2222-2222-2222-222222222222" } ]
 
         for build in rekeyed do
-            let pipeline, _ =
+            let pipeline =
                 restart tree (Some store) (CheckCache.CheckerBuild.keyIdentity build) tree.B
 
             for file in files do
@@ -242,12 +218,12 @@ let ``a restart replays every filed check, equal to a forced re-check, without r
                 |> List.contains FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning
             @>
 
-        let pipeline, counter = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
 
         let replayed =
             [ for file in files -> file, replay tree pipeline tree.B file ] |> Map.ofList
 
-        test <@ counter.Started = 0 @>
+        test <@ pipeline.CheckStarts = 0L @>
         test <@ replayed |> Map.forall (fun _ outputs -> outputs.IsSome) @>
 
         let fresh = forced tree tree.B files
@@ -261,18 +237,18 @@ let ``an edited file misses and a comment edit upstream is cut off once the edit
         let tree, store, files, _, _ = seeded dir
         File.AppendAllLines(tree.A1, [| "// a comment changes the bytes, not the API" |])
 
-        let pipeline, counter = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
         test <@ replay tree pipeline tree.B tree.A1 = None @>
 
         // Lazily, in dependency order: re-check the miss, file it, and walk on.
         checkAll tree pipeline [ tree.A1 ] |> ignore
         test <@ pipeline.PersistCheckRecords() = 1 @>
-        let checks = counter.Started
+        let checks = pipeline.CheckStarts
 
         let replayed =
             [ for file in files -> file, replay tree pipeline tree.B file ] |> Map.ofList
 
-        test <@ counter.Started = checks @>
+        test <@ pipeline.CheckStarts = checks @>
         test <@ replayed |> Map.forall (fun _ outputs -> outputs.IsSome) @>
         let fresh = forced tree tree.B files
 
@@ -286,7 +262,7 @@ let ``an API edit upstream misses every file after it, in its project and downst
         // `v` changes type: A2 and B1 now report errors they did not before.
         File.WriteAllLines(tree.A1, [| "module A1"; "let v : string = \"one\"" |])
 
-        let pipeline, _ = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
         checkAll tree pipeline [ tree.A1 ] |> ignore
         test <@ pipeline.PersistCheckRecords() = 1 @>
         test <@ replay tree pipeline tree.B tree.A1 |> Option.isSome @>
@@ -309,14 +285,14 @@ let ``a changed project option, toolchain or referenced output misses exactly th
 
         // A define on B reaches B's files only.
         let defined = tree.BWith [ "--define:EXTRA" ]
-        let pipeline, _ = restart tree (Some store) toolchain defined
+        let pipeline = restart tree (Some store) toolchain defined
         test <@ replay tree pipeline defined tree.A1 |> Option.isSome @>
         test <@ replay tree pipeline defined tree.A2 |> Option.isSome @>
         test <@ replay tree pipeline defined tree.B1 = None @>
         test <@ replay tree pipeline defined tree.B2 = None @>
 
         // Another checker build reaches every file.
-        let other, _ = restart tree (Some store) "another-toolchain" tree.B
+        let other = restart tree (Some store) "another-toolchain" tree.B
 
         for file in files do
             test <@ replay tree other tree.B file = None @>
@@ -324,7 +300,7 @@ let ``a changed project option, toolchain or referenced output misses exactly th
         // A's output appearing (or its bytes changing) reaches B, whose check may type
         // against it, and not A.
         File.WriteAllText(tree.ADll, "not the bytes B was checked against")
-        let rebuilt, _ = restart tree (Some store) toolchain tree.B
+        let rebuilt = restart tree (Some store) toolchain tree.B
         test <@ replay tree rebuilt tree.B tree.A1 |> Option.isSome @>
         test <@ replay tree rebuilt tree.B tree.B1 = None @>
         test <@ replay tree rebuilt tree.B tree.B2 = None @>)
@@ -335,13 +311,13 @@ let ``a check whose input moved before it was filed is not filed`` () =
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let store = storeIn dir
-        let pipeline, _ = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
         checkAll tree pipeline [ tree.A1; tree.A2 ] |> ignore
         // A1 edited after its check and before the records are filed.
         File.AppendAllLines(tree.A1, [| "let later = 2" |])
         test <@ pipeline.PersistCheckRecords() = 0 @>
 
-        let restarted, _ = restart tree (Some store) toolchain tree.B
+        let restarted = restart tree (Some store) toolchain tree.B
         test <@ replay tree restarted tree.B tree.A1 = None @>
         test <@ replay tree restarted tree.B tree.A2 = None @>)
 
@@ -351,10 +327,10 @@ let ``a reverted edit is served again: the store is addressed by content`` () =
         let tree, store, files, _, _ = seeded dir
         let original = File.ReadAllText tree.B1
         File.WriteAllText(tree.B1, original + "\nlet z = 3\n")
-        let edited, _ = restart tree (Some store) toolchain tree.B
+        let edited = restart tree (Some store) toolchain tree.B
         test <@ replay tree edited tree.B tree.B1 = None @>
         File.WriteAllText(tree.B1, original)
-        let reverted, _ = restart tree (Some store) toolchain tree.B
+        let reverted = restart tree (Some store) toolchain tree.B
 
         for file in files do
             test <@ replay tree reverted tree.B file |> Option.isSome @>)
@@ -393,23 +369,15 @@ let private projectC (tree: Tree) : Cut =
 /// A pipeline over C and D, with the store `store`.
 let private pipelineC (tree: Tree) (store: OutcomeStore.Store option) (cut: Cut) =
     let checker = FsHotWatch.Daemon.Daemon.createChecker ()
-    let counter = CheckCounter()
 
     let pipeline =
         match store with
-        | Some store ->
-            CheckPipeline(
-                checker,
-                activity = counter,
-                repoRoot = tree.Root,
-                checkRecords = store,
-                checkToolchain = toolchain
-            )
-        | None -> CheckPipeline(checker, activity = counter, repoRoot = tree.Root)
+        | Some store -> CheckPipeline(checker, repoRoot = tree.Root, checkRecords = store, checkToolchain = toolchain)
+        | None -> CheckPipeline(checker, repoRoot = tree.Root)
 
     pipeline.RegisterProject(cut.C.ProjectFileName, cut.C)
     pipeline.RegisterProject(cut.D.ProjectFileName, cut.D)
-    pipeline, counter
+    pipeline
 
 /// `file` checked through `pipeline` as a scan dispatches it: with its project's options.
 let private checkIn (pipeline: CheckPipeline) (cut: Cut) (file: string) =
@@ -430,7 +398,7 @@ let private seededC (dir: string) =
     let tree = treeIn checker (Path.Combine(dir, "repo"))
     let store = storeIn dir
     let cut = projectC tree
-    let seeding, _ = pipelineC tree (Some store) cut
+    let seeding = pipelineC tree (Some store) cut
 
     let seeded =
         [ for file in cut.Files @ [ cut.D1 ] ->
@@ -448,7 +416,7 @@ let private isReplayed (result: FileCheckResult) =
 
 /// What every file of C and D reports, checked in FCS by a pipeline with no store.
 let private forcedC (tree: Tree) (cut: Cut) =
-    let pipeline, _ = pipelineC tree None cut
+    let pipeline = pipelineC tree None cut
 
     [ for file in cut.Files @ [ cut.D1 ] ->
           let _, result = checkIn pipeline cut file |> Async.RunSynchronously
@@ -478,19 +446,19 @@ let ``a body-only edit is cut off at the edited file, in its project and downstr
     withTempDir "check-records-cutoff" (fun dir ->
         let tree, store, cut, _ = seededC dir
         editBody cut
-        let pipeline, counter = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         let _, first = checkIn pipeline cut cut.Files[0] |> Async.RunSynchronously
         let _, edited = checkIn pipeline cut cut.Files[1] |> Async.RunSynchronously
         test <@ isReplayed first @>
         test <@ not (isReplayed edited) @>
-        test <@ counter.Started = 1 @>
+        test <@ pipeline.CheckStarts = 1L @>
 
         // Nothing is filed yet: the cutoff reads the check this pipeline just ran.
         let _, after = checkIn pipeline cut cut.Files[2] |> Async.RunSynchronously
         let _, downstream = checkIn pipeline cut cut.D1 |> Async.RunSynchronously
         test <@ isReplayed after @>
         test <@ isReplayed downstream @>
-        test <@ counter.Started = 1 @>
+        test <@ pipeline.CheckStarts = 1L @>
         let fresh = forcedC tree cut
         test <@ outputsOf tree after = fresh[cut.Files[2]] @>
         test <@ outputsOf tree downstream = fresh[cut.D1] @>)
@@ -502,16 +470,16 @@ let ``an edit to a file with errors cuts nothing off: it has no API signature to
         // A2 reports an error, so its signature is unknown and the files after it are
         // keyed by its content, which moved.
         File.WriteAllLines(tree.A2, [| "module A2"; "let w : int = A1.v + 2"; "let bad : int = \"s\"" |])
-        let pipeline, counter = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
         checkAll tree pipeline [ tree.A1; tree.A2 ] |> ignore
-        test <@ counter.Started = 1 @>
+        test <@ pipeline.CheckStarts = 1L @>
 
         let downstream =
             [ for file in [ tree.B1; tree.B2 ] ->
                   (pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously).Value ]
 
         test <@ downstream |> List.forall (isReplayed >> not) @>
-        test <@ counter.Started = 3 @>
+        test <@ pipeline.CheckStarts = 3L @>
         let fresh = forced tree tree.B files
 
         for result in downstream do
@@ -522,10 +490,10 @@ let ``files dispatched together wait for the edited file before them, then repla
     withTempDir "check-records-cutoff-together" (fun dir ->
         let tree, store, cut, _ = seededC dir
         editBody cut
-        let pipeline, counter = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         // The last file first: it must not decide before the edited file is checked.
         let results = dispatched pipeline cut (List.rev cut.Files)
-        test <@ counter.Started = 1 @>
+        test <@ pipeline.CheckStarts = 1L @>
         test <@ not (isReplayed results[cut.Files[1]]) @>
         test <@ isReplayed results[cut.Files[2]] @>
         test <@ isReplayed results[cut.Files[0]] @>
@@ -537,9 +505,9 @@ let ``an API edit still re-checks every file after it, though they were dispatch
         let tree, store, cut, seededOutputs = seededC dir
         // `two` now returns a string: C3 reports a new error.
         File.WriteAllLines(cut.Files[1], [| "module C2"; "let two () : string = \"two\"" |])
-        let pipeline, counter = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         let results = dispatched pipeline cut (List.rev cut.Files)
-        test <@ counter.Started = 2 @>
+        test <@ pipeline.CheckStarts = 2L @>
         test <@ not (isReplayed results[cut.Files[2]]) @>
         let _, downstream = checkIn pipeline cut cut.D1 |> Async.RunSynchronously
         test <@ not (isReplayed downstream) @>
@@ -554,14 +522,14 @@ let ``a wait for a dispatched check that never runs ends when the dispatch ends`
     withTempDir "check-records-cutoff-abandoned" (fun dir ->
         let tree, store, cut, _ = seededC dir
         editBody cut
-        let pipeline, counter = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         pipeline.ExpectChecks [ for file in cut.Files -> AbsFilePath.create file, cut.C.ProjectFileName ]
         // C2 is dispatched but never checked; C3 is checked while the dispatch is open.
         let pending = checkIn pipeline cut cut.Files[2] |> Async.StartAsTask
         pipeline.EndExpectedChecks()
         let _, after = pending.Result
         test <@ not (isReplayed after) @>
-        test <@ counter.Started = 1 @>)
+        test <@ pipeline.CheckStarts = 1L @>)
 
 [<Fact(Timeout = 240000)>]
 let ``with nothing on file, files dispatched together are all checked and none waits`` () =
@@ -569,10 +537,53 @@ let ``with nothing on file, files dispatched together are all checked and none w
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let cut = projectC tree
-        let pipeline, counter = pipelineC tree (Some(storeIn dir)) cut
+        let pipeline = pipelineC tree (Some(storeIn dir)) cut
         let results = dispatched pipeline cut (List.rev cut.Files)
-        test <@ counter.Started = 3 @>
+        test <@ pipeline.CheckStarts = 3L @>
         test <@ results |> Map.forall (fun _ result -> not (isReplayed result)) @>)
+
+/// Holds every `check start` line until `parties` of them are inside the sink at once,
+/// so checks that really start concurrently all log while the others are mid-call.
+type private RendezvousSink(parties: int) =
+    let barrier = new Threading.Barrier(parties)
+    let mutable allMet = true
+    member _.AllMet = allMet
+
+    interface FsHotWatch.PluginActivity.IActivitySink with
+        member _.StartSubtask(_, _) = ()
+        member _.UpdateSubtask(_, _) = ()
+        member _.EndSubtask _ = ()
+
+        member _.Log line =
+            if line.StartsWith "check start " && not (barrier.SignalAndWait HangWait) then
+                allMet <- false
+
+        member _.SetSummary _ = ()
+
+[<Fact(Timeout = 240000)>]
+let ``files dispatched together log their check starts concurrently, and every start is counted`` () =
+    // CI run 43575002015 counted 2 of these 3 starts: a sink that counted `check start`
+    // lines with an unsynchronised `+ 1` lost one. The pipeline's own count is atomic.
+    withTempDir "check-records-cutoff-concurrent" (fun dir ->
+        let checker = FsHotWatch.Daemon.Daemon.createChecker ()
+        let tree = treeIn checker (Path.Combine(dir, "repo"))
+        let cut = projectC tree
+        let sink = RendezvousSink(cut.Files.Length)
+
+        let pipeline =
+            CheckPipeline(
+                checker,
+                activity = sink,
+                repoRoot = tree.Root,
+                checkRecords = storeIn dir,
+                checkToolchain = toolchain
+            )
+
+        pipeline.RegisterProject(cut.C.ProjectFileName, cut.C)
+        dispatched pipeline cut (List.rev cut.Files) |> ignore
+        // The positive control: all three starts were inside the sink together.
+        test <@ sink.AllMet @>
+        test <@ pipeline.CheckStarts = 3L @>)
 
 // ---------------------------------------------------------------------------
 // A record's key does not depend on which records existed when it was filed
@@ -592,7 +603,7 @@ let ``a record filed late for an earlier file lets every file after it replay`` 
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let store = storeIn dir
         let cut = projectC tree
-        let pipeline, _ = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         // C2 has no check yet: C1, C3 and D1 do, and are filed first.
         checkEach pipeline cut [ cut.Files[0]; cut.Files[2]; cut.D1 ]
         pipeline.PersistCheckRecords() |> ignore
@@ -601,14 +612,14 @@ let ``a record filed late for an earlier file lets every file after it replay`` 
         pipeline.PersistCheckRecords() |> ignore
 
         // A new process reads every file from the store, the files after C2 included.
-        let restarted, counter = pipelineC tree (Some store) cut
+        let restarted = pipelineC tree (Some store) cut
 
         let results =
             [ for file in cut.Files @ [ cut.D1 ] -> checkIn restarted cut file |> Async.RunSynchronously ]
             |> Map.ofList
 
         test <@ results |> Map.forall (fun _ result -> isReplayed result) @>
-        test <@ counter.Started = 0 @>
+        test <@ restarted.CheckStarts = 0L @>
         let fresh = forcedC tree cut
 
         for KeyValue(file, result) in results do
@@ -621,7 +632,7 @@ let ``a record filed late after an API edit does not let the files checked befor
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let store = storeIn dir
         let cut = projectC tree
-        let pipeline, _ = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         checkEach pipeline cut [ cut.Files[0]; cut.D1 ]
         let _, before = checkIn pipeline cut cut.Files[2] |> Async.RunSynchronously
         pipeline.PersistCheckRecords() |> ignore
@@ -630,7 +641,7 @@ let ``a record filed late after an API edit does not let the files checked befor
         checkEach pipeline cut [ cut.Files[1] ]
         pipeline.PersistCheckRecords() |> ignore
 
-        let restarted, _ = pipelineC tree (Some store) cut
+        let restarted = pipelineC tree (Some store) cut
         test <@ restarted.ReplayCheck(AbsFilePath.create cut.Files[1], cut.C) |> Option.isSome @>
         test <@ restarted.ReplayCheck(AbsFilePath.create cut.Files[2], cut.C) = None @>
         test <@ restarted.ReplayCheck(AbsFilePath.create cut.D1, cut.D) = None @>
@@ -644,13 +655,13 @@ let ``checks behind a file that never gets a record are reported as provisional 
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let store = storeIn dir
         let cut = projectC tree
-        let pipeline, _ = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         // C2 is never checked in this daemon: C3, and D1 downstream, wait behind it.
         checkEach pipeline cut [ cut.Files[0]; cut.Files[2]; cut.D1 ]
         test <@ pipeline.PersistCheckRecords() = 1 @>
         test <@ pipeline.ProvisionalAfterFiling = [ cut.Files[1], 2 ] @>
 
-        let restarted, _ = pipelineC tree (Some store) cut
+        let restarted = pipelineC tree (Some store) cut
         test <@ restarted.ReplayCheck(AbsFilePath.create cut.Files[2], cut.C) = None @>
         test <@ restarted.ReplayCheck(AbsFilePath.create cut.D1, cut.D) = None @>
 
@@ -667,7 +678,7 @@ let ``checks held behind an unknown file are bounded by one per file and current
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let store = storeIn dir
         let cut = projectC tree
-        let pipeline, _ = pipelineC tree (Some store) cut
+        let pipeline = pipelineC tree (Some store) cut
         checkEach pipeline cut [ cut.Files[0]; cut.Files[2]; cut.D1 ]
         pipeline.PersistCheckRecords() |> ignore
         test <@ pipeline.PendingRecordCount = 2 @>
@@ -708,12 +719,9 @@ let ``a file compiled into two projects is filed, and replayed, in each project'
         let slots = [ e, shared; e, e1; f, shared; f, f1 ]
 
         let pipelineEF () =
-            let counter = CheckCounter()
-
             let pipeline =
                 CheckPipeline(
                     FsHotWatch.Daemon.Daemon.createChecker (),
-                    activity = counter,
                     repoRoot = tree.Root,
                     checkRecords = store,
                     checkToolchain = toolchain
@@ -721,24 +729,24 @@ let ``a file compiled into two projects is filed, and replayed, in each project'
 
             pipeline.RegisterProject(e.ProjectFileName, e)
             pipeline.RegisterProject(f.ProjectFileName, f)
-            pipeline, counter
+            pipeline
 
         let checkWith (pipeline: CheckPipeline) (options: FSharpProjectOptions) (file: string) =
             (pipeline.CheckFileWithOptions(AbsFilePath.create file, options)
              |> Async.RunSynchronously)
                 .Value
 
-        let seeding, _ = pipelineEF ()
+        let seeding = pipelineEF ()
 
         for options, file in slots do
             checkWith seeding options file |> ignore
 
         test <@ seeding.PersistCheckRecords() = 4 @>
 
-        let restarted, counter = pipelineEF ()
+        let restarted = pipelineEF ()
         let results = [ for options, file in slots -> checkWith restarted options file ]
         test <@ results |> List.forall isReplayed @>
-        test <@ counter.Started = 0 @>)
+        test <@ restarted.CheckStarts = 0L @>)
 
 let private sampleOutputs (root: string) : CheckOutputs =
     let bFile = Path.Combine(root, "src", "B.fs")
@@ -803,7 +811,7 @@ let ``a pipeline with no store files and replays nothing`` () =
     withTempDir "check-records-none" (fun dir ->
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
         let tree = treeIn checker (Path.Combine(dir, "repo"))
-        let pipeline, _ = restart tree None toolchain tree.B
+        let pipeline = restart tree None toolchain tree.B
         test <@ pipeline.PersistCheckRecords() = 0 @>
         test <@ pipeline.ReplayCheck(AbsFilePath.create tree.A1, tree.A) = None @>
         test <@ List.isEmpty (pipeline.ReplayProject tree.A) @>
@@ -825,13 +833,13 @@ let private seenBy (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[])
 let ``a restarted pipeline answers every filed file as Replayed, read by consumers exactly as the live check`` () =
     withTempDir "check-records-pipeline" (fun dir ->
         let tree, store, files, _, _ = seeded dir
-        let pipeline, counter = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
 
         let replayed =
             [ for file in files -> file, (pipeline.CheckFile(AbsFilePath.create file) |> Async.RunSynchronously).Value ]
             |> Map.ofList
 
-        test <@ counter.Started = 0 @>
+        test <@ pipeline.CheckStarts = 0L @>
 
         test
             <@
@@ -843,7 +851,7 @@ let ``a restarted pipeline answers every filed file as Replayed, read by consume
             @>
 
         // A live check of each, demanded past the store, through a fresh pipeline.
-        let live, liveCounter = restart tree (Some store) toolchain tree.B
+        let live = restart tree (Some store) toolchain tree.B
 
         for file in files do
             let liveResult =
@@ -887,7 +895,7 @@ let ``a restarted pipeline answers every filed file as Replayed, read by consume
                         liveResult
                 @>
 
-        test <@ liveCounter.Started = files.Length @>
+        test <@ live.CheckStarts = int64 files.Length @>
 
         // What a daemon logs as it stops (ADR-059 §17): every answer replayed, then every
         // live check demanded and started.
@@ -907,7 +915,7 @@ let ``a restarted pipeline answers every filed file as Replayed, read by consume
 let ``a replayed result refuses, loudly, to stand in for a typed tree`` () =
     withTempDir "check-records-loud" (fun dir ->
         let tree, store, _, _, _ = seeded dir
-        let pipeline, _ = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
 
         let replayed =
             (pipeline.CheckFile(AbsFilePath.create tree.A1) |> Async.RunSynchronously).Value
@@ -1093,7 +1101,7 @@ let ``FCS does not type a project against a referenced project it passes no -r: 
         let tree = treeIn checker (Path.Combine(dir, "repo"))
 
         let errorsIn (b: FSharpProjectOptions) =
-            let pipeline, _ = restart tree None toolchain b
+            let pipeline = restart tree None toolchain b
 
             match pipeline.CheckFile(AbsFilePath.create tree.B1) |> Async.RunSynchronously with
             | Some result ->
@@ -1136,14 +1144,12 @@ let ``a restart served from check records tallies replays, with no miss, through
     withTempDir "check-records-tally" (fun dir ->
         let tree, store, files, _, _ = seeded dir
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
-        let counter = CheckCounter()
 
         let pipeline =
             CheckPipeline(
                 checker,
                 cacheBackend =
                     (FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(100) :> FsHotWatch.CheckCache.ICheckCacheBackend),
-                activity = counter,
                 repoRoot = tree.Root,
                 checkRecords = store,
                 checkToolchain = toolchain
@@ -1157,7 +1163,7 @@ let ``a restart served from check records tallies replays, with no miss, through
 
         let tally = pipeline.CacheTally
 
-        test <@ counter.Started = 0 @>
+        test <@ pipeline.CheckStarts = 0L @>
         test <@ tally.Replayed = int64 files.Length @>
         test <@ CheckCacheTally.CacheTally.misses tally = 0L @>)
 
@@ -1170,10 +1176,10 @@ let ``the clean-recompute audit agrees with real FCS records filed by two indepe
         let tree, store, files, _, filed = seeded dir
         test <@ filed = 4 @>
         let clean = storeIn (Path.Combine(dir, "clean"))
-        let pipeline, counter = restart tree (Some clean) toolchain tree.B
+        let pipeline = restart tree (Some clean) toolchain tree.B
         checkAll tree pipeline files |> ignore
         test <@ pipeline.PersistCheckRecords() = 4 @>
-        test <@ counter.Started = 4 @>
+        test <@ pipeline.CheckStarts = 4L @>
 
         let report =
             RecordAudit.audit
@@ -1196,7 +1202,7 @@ let ``a record miss names the key component that moved, and the files behind it 
 
         // A define on B moves B's options (and so its upstream chain); A is untouched.
         let defined = tree.BWith [ "--define:EXTRA" ]
-        let pipeline, _ = restart tree (Some store) toolchain defined
+        let pipeline = restart tree (Some store) toolchain defined
         checkAll tree pipeline files |> ignore
 
         test
@@ -1209,7 +1215,7 @@ let ``a record miss names the key component that moved, and the files behind it 
 let ``a record miss under another checker build names the toolchain`` () =
     withTempDir "check-records-why-toolchain" (fun dir ->
         let tree, store, _, _, _ = seeded dir
-        let pipeline, _ = restart tree (Some store) "another-toolchain" tree.B
+        let pipeline = restart tree (Some store) "another-toolchain" tree.B
         checkAll tree pipeline [ tree.A1 ] |> ignore
 
         test <@ pipeline.RecordMisses = Map [ "A.fsproj", Map [ "key moved: toolchain", 1L ] ] @>)
@@ -1220,12 +1226,12 @@ let ``a file with no earlier record remembered says so, and nothing is explained
         let checker = FsHotWatch.Daemon.Daemon.createChecker ()
         let tree = treeIn checker (Path.Combine(dir, "repo"))
         let store = storeIn dir
-        let pipeline, _ = restart tree (Some store) toolchain tree.B
+        let pipeline = restart tree (Some store) toolchain tree.B
         checkAll tree pipeline [ tree.A1 ] |> ignore
         test <@ pipeline.RecordMisses = Map [ "A.fsproj", Map [ "no earlier record remembered", 1L ] ] @>
 
         let tree, store, files, _, _ = seeded (Path.Combine(dir, "seeded"))
-        let replaying, _ = restart tree (Some store) toolchain tree.B
+        let replaying = restart tree (Some store) toolchain tree.B
         checkAll tree replaying files |> ignore
         test <@ replaying.RecordMisses = Map.empty @>)
 
