@@ -137,14 +137,17 @@ let ``this repository's configuration: the required plugins are the configured o
     holds (File.ReadAllText(Path.Combine(RepoTasks.repoRoot (), ".fshw.json")))
 
 /// A consumer's checkout on a machine that has one (`FSHW_TEST_CONSUMER_CHECKOUT`, as in
-/// `RequiredConfigGoldenTests`); its configuration is the consumer's, not kept here.
+/// `RequiredConfigGoldenTests`); its configuration is the consumer's, not kept here. Where it is
+/// unset (CI, the server's gate) the case is reported SKIPPED with why, never passed.
 [<Fact>]
 let ``a consumer's configuration: the required plugins are the configured ones`` () =
     match Environment.GetEnvironmentVariable "FSHW_TEST_CONSUMER_CHECKOUT" with
     | null
-    | "" -> ()
+    | "" -> Assert.Skip "FSHW_TEST_CONSUMER_CHECKOUT is unset: no consumer configuration on this machine"
     | checkout ->
         let path = Path.Combine(checkout, ".fshw.json")
 
-        if File.Exists path then
-            holds (File.ReadAllText path)
+        if not (File.Exists path) then
+            Assert.Skip $"FSHW_TEST_CONSUMER_CHECKOUT names %s{checkout}, which has no .fshw.json"
+
+        holds (File.ReadAllText path)
