@@ -32,14 +32,12 @@ let enabledBy (value: string) = isNull value || value.Trim() <> "0"
 [<Literal>]
 let LogSchema = "fshw-shadow-v1"
 
-let directory (repoRoot: string) =
-    Path.Combine(FsHwPaths.root repoRoot, "shadow")
+let directory (repoRoot: string) = Lookup.directory repoRoot
 
 let logPath (repoRoot: string) =
     Path.Combine(directory repoRoot, "lookup-verdict.jsonl")
 
-let storeRoot (repoRoot: string) =
-    Path.Combine(directory repoRoot, "outcomes")
+let storeRoot (repoRoot: string) = Lookup.storeRoot repoRoot
 
 /// The class two verdicts are compared in.
 [<RequireQualifiedAccess>]
@@ -193,10 +191,10 @@ let baselineKey (project: string) = Requirements.baselineKey project
 /// The K_P key a publication named for `project` over this tree and binary (AUTOMATION-1443):
 /// a `fshw verdict` read has no daemon to name it, so it reads it back from here.
 let outcomeKeyKey (o: Observation) (project: string) =
-    ActionKey.create "test-outcome-key" [ "tree", o.Tree; "producer", o.Producer; "project", project ]
+    Lookup.outcomeKeyKey (subjectOf o) project
 
 [<Literal>]
-let private OutcomeKeyField = "outcomeKey"
+let private OutcomeKeyField = Lookup.OutcomeKeyField
 
 /// The records naming each K_P key `o` carries, with their outputs.
 let outcomeKeyRecords (o: Observation) : (OutcomeStore.Record * string) list =
@@ -220,35 +218,12 @@ let recordedOutcomeKeys
     (testProjects: string list)
     (o: Observation)
     : Map<string, ActionKey.KeyValue> =
-    let keyIn (outputs: string) =
-        try
-            match JsonNode.Parse outputs with
-            | :? JsonObject as obj ->
-                match obj[OutcomeKeyField] with
-                | :? JsonValue as v ->
-                    match v.TryGetValue<string>() with
-                    | true, text -> ActionKey.KeyValue.tryParse text
-                    | _ -> None
-                | _ -> None
-            | _ -> None
-        with :? Text.Json.JsonException ->
-            None
-
-    testProjects
-    |> List.choose (fun project ->
-        OutcomeStore.Through.lookupWithOutputs store (outcomeKeyKey o project).Value
-        |> Option.bind snd
-        |> Option.bind keyIn
-        |> Option.map (fun key -> project, key))
-    |> Map.ofList
+    Lookup.recordedOutcomeKeys store testProjects (subjectOf o)
 
 /// `o` with the K_P keys earlier publications named, when it names none itself: a read.
 let withRecordedOutcomeKeys (store: OutcomeRecords.IOutcomeStore) (testProjects: string list) (o: Observation) =
-    if Map.isEmpty o.OutcomeKeys then
-        { o with
-            OutcomeKeys = recordedOutcomeKeys store testProjects o }
-    else
-        o
+    { o with
+        OutcomeKeys = (Lookup.withRecordedOutcomeKeys store testProjects (subjectOf o)).OutcomeKeys }
 
 [<Literal>]
 let FullScope = Requirements.FullScope
@@ -313,15 +288,16 @@ let noDeclaredInputs (configured: Configured) (answer: LookupVerdict.Answer) : (
     | LookupVerdict.Answer.Green
     | LookupVerdict.Answer.Red _ -> []
 
+/// The command a verdict graded, as R(c, T) names it.
+let commandOf (command: Verdict.Command) : Requirements.Command =
+    match command with
+    | Verdict.Check -> Requirements.Command.Check
+    | Verdict.Confirm -> Requirements.Command.Confirm
+
 /// R(c, T) for `o`'s command and tree (`Requirements.requirements`, in FsHotWatch.Core), each
 /// plugin keyed as `pluginKeyFor` says.
 let requirements (o: Observation) (configured: Configured) : LookupVerdict.Requirement list =
-    let command =
-        match o.Command with
-        | Verdict.Check -> Requirements.Command.Check
-        | Verdict.Confirm -> Requirements.Command.Confirm
-
-    Requirements.requirements command (subjectFor o configured) (coreConfigured configured)
+    Requirements.requirements (commandOf o.Command) (subjectFor o configured) (coreConfigured configured)
 
 /// The failed suites of `o` that a LATER run of the same check ran again and passed.
 ///
@@ -548,24 +524,14 @@ let appendLine (repoRoot: string) (text: string) =
 let line (o: Observation) (answer: LookupVerdict.Answer) (undeclared: (string * string) list) (recorded: int) : string =
     lineAs (Verdict.Command.token o.Command) o answer undeclared recorded
 
-/// The answer for a key under `command`: the shadow store's, else the K_P store's, where the
-/// test runner files. Under `check`, a K_P full fail whose every named failure a later run
-/// passed at the same K_P reads as a pass, as today's outstanding-failure ledger clears it
-/// (`TestFailureClearance`, AUTOMATION-1444); `confirm` grades the full suite itself.
+/// The answer for a key under `command` (`Lookup.lookupIn`, in FsHotWatch.Core).
 let private lookupIn
     (command: Verdict.Command)
     (store: OutcomeRecords.IOutcomeStore)
     (kpStore: OutcomeRecords.IOutcomeStore option)
     (key: ActionKey.KeyValue)
     =
-    let read (s: OutcomeRecords.IOutcomeStore) =
-        match command with
-        | Verdict.Check -> TestFailureClearance.lookupForCheck s key
-        | Verdict.Confirm -> OutcomeStore.Through.lookup s key |> Option.map _.Outcome
-
-    match read store with
-    | Some outcome -> Some outcome
-    | None -> kpStore |> Option.bind read
+    Lookup.lookupIn (commandOf command) store kpStore key
 
 /// File `records`, a publication's, in `store`; returns how many were filed.
 ///
@@ -681,20 +647,16 @@ let observeReadWith
     =
     let o = withRecordedOutcomeKeys store configured.TestProjects o
 
+    // The one definition a pure lookup shares (`Lookup.answer`), so E5 times this answer.
     let answer =
-        LookupVerdict.decide (requirements o configured) (lookupIn o.Command store kpStore)
+        Lookup.answer (commandOf o.Command) store kpStore (coreConfigured configured) (subjectFor o configured)
 
     appendLine repoRoot (lineAs "verdict" o answer (noDeclaredInputs configured answer) 0)
     answer
 
 /// The shadow store of `repoRoot`, with the default TTL and byte budget.
 let storeAt (repoRoot: string) =
-    OutcomeStore.Store(
-        { Root = storeRoot repoRoot
-          Ttl = OutcomeStore.defaultTtl
-          MaxBytes = OutcomeStore.defaultMaxBytes
-          Log = Logging.info "shadow" }
-    )
+    Lookup.storeAt repoRoot (Logging.info "shadow")
 
 /// The box-wide store the test runner files K_P records in, opened only when the daemon named
 /// keys to look up: a publication with none has nothing to read there.
