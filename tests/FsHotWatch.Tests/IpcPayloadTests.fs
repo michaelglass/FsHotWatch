@@ -118,7 +118,33 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
     test <@ run.Outcome = CompletedRun @>
     test <@ run.Summary = Some "did 3 things" @>
     test <@ run.ActivityTail = [ "line one"; "line two"; "line three" ] @>
+    test <@ run.ActivityTrim = Untrimmed @>
     test <@ run.Elapsed >= TimeSpan.Zero @>
+
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``GetStatus payload carries the lines the activity cap dropped`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    // 64 lines of 80_000 bytes against a 262_144-byte log share: 61 are dropped.
+    let line = String('x', 40_000)
+
+    let handler =
+        completedHandlerWith "noisy" "done" (fun ctx ->
+            async {
+                for _ in 1..64 do
+                    ctx.Log line
+            })
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "a.fs" ])
+    waitUntil (fun () -> host.GetHistory("noisy") |> List.isEmpty |> not) 12000
+    waitForTerminalStatus host "noisy" 12000
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let parsed = FsHotWatch.Tests.TestHelpers.parseStatuses (target.GetStatus())
+    let run = parsed.["noisy"].LastRun.Value
+    test <@ run.ActivityTrim = Trimmed 61 @>
+    test <@ run.ActivityTail.Length = 3 @>
 
 let private verifiedNothingHandler (name: string) (detail: string) =
     { Name = PluginName.create name

@@ -471,13 +471,22 @@ module RunOutcome =
         | Some detail -> VerifiedNothing detail
         | None -> CompletedRun
 
+/// Whether a run's activity log outgrew its byte share, so its OLDEST lines were
+/// dropped to keep the daemon's memory bounded. Only `Trimmed` has a count, and it is
+/// at least 1. Lines that merely scrolled out of the fixed-length tail are not counted:
+/// the tail is a tail by design.
+type ActivityTrim =
+    | Untrimmed
+    | Trimmed of droppedLines: int
+
 /// Record of a single completed or failed plugin run.
 type RunRecord =
     { StartedAt: System.DateTime
       Elapsed: System.TimeSpan
       Outcome: RunOutcome
       Summary: string option
-      ActivityTail: string list }
+      ActivityTail: string list
+      ActivityTrim: ActivityTrim }
 
 
 /// Result of a single test project execution. The `wasFiltered` flag indicates

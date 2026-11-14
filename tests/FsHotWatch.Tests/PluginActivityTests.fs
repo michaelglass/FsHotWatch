@@ -1,6 +1,7 @@
 module FsHotWatch.Tests.PluginActivityTests
 
 open System
+open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -314,3 +315,95 @@ let ``StartSubtask then EndSubtask sequentially leaves no open subtasks`` () =
         s.EndSubtask("p", k)
 
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
+
+// AUTOMATION-1703: a live recording past the global cap with no history to evict.
+// Each line is 80_000 bytes (40_000 chars * 2); 64 of them (the tail's line limit)
+// hold 5 MB against the 2 MB cap.
+let private capLine i = sprintf "%05d" i + String('x', 39_995)
+
+let private logPastTheCap (s: State) (plugin: string) =
+    // Run on the pool and bound the wait, so a regression to a spinning cap fails
+    // this test instead of hanging the suite.
+    let logging =
+        Task.Run(fun () ->
+            for i in 1..64 do
+                s.Log(plugin, capLine i))
+
+    logging.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+[<Fact(Timeout = 15000)>]
+let ``Log past the global cap with no history to evict returns`` () =
+    let s = State()
+    logPastTheCap s "p"
+    test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
+
+let private tailBytes (tail: string list) =
+    tail |> List.sumBy (fun l -> l.Length * 2)
+
+let private at = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+
+// A recording's log share is 2 MB / 8 = 262_144 bytes: three 80_000-byte lines.
+[<Fact(Timeout = 15000)>]
+let ``a live recording past its share drops its oldest lines and counts them`` () =
+    let s = State()
+    logPastTheCap s "p"
+    test <@ s.GetActivityTail "p" = [ capLine 62; capLine 63; capLine 64 ] @>
+    s.RecordTerminal("p", CompletedRun, at, at.AddMilliseconds(1.0))
+    let record = s.GetHistory "p" |> List.exactlyOne
+    test <@ record.ActivityTrim = Trimmed 61 @>
+    test <@ record.ActivityTail = [ capLine 62; capLine 63; capLine 64 ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a run that kept every line records Untrimmed`` () =
+    let s = State()
+    s.Log("p", "one")
+    s.RecordTerminal("p", CompletedRun, at, at.AddMilliseconds(1.0))
+    test <@ (s.GetHistory "p" |> List.exactlyOne).ActivityTrim = Untrimmed @>
+
+[<Fact(Timeout = 15000)>]
+let ``a single line larger than the share is dropped and counted`` () =
+    let s = State()
+    s.Log("p", String('x', 200_000))
+    test <@ List.isEmpty (s.GetActivityTail "p") @>
+    test <@ s.TotalByteSize = 0 @>
+    s.RecordTerminal("p", CompletedRun, at, at.AddMilliseconds(1.0))
+    test <@ (s.GetHistory "p" |> List.exactlyOne).ActivityTrim = Trimmed 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``trimming keeps the byte accounting exact, live, committed and reset`` () =
+    let s = State()
+    s.StartSubtask("p", "k", "label")
+    s.SetSummary("p", "summary")
+    logPastTheCap s "p"
+    // Every byte counted is a byte still held.
+    let live = tailBytes (s.GetActivityTail "p") + tailBytes [ "k"; "label"; "summary" ]
+    test <@ s.TotalByteSize = live @>
+
+    s.RecordTerminal("p", CompletedRun, at, at.AddMilliseconds(1.0))
+    let record = s.GetHistory "p" |> List.exactlyOne
+    test <@ s.TotalByteSize = tailBytes record.ActivityTail + tailBytes [ "summary" ] @>
+
+    logPastTheCap s "q"
+    s.ResetRun "q"
+    test <@ s.TotalByteSize = tailBytes record.ActivityTail + tailBytes [ "summary" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``history yields to live recordings, oldest-committed first`` () =
+    let s = State()
+    // Ten 200_000-byte runs: 2_000_000 bytes, under the 2 MB cap on their own.
+    for i in 1..10 do
+        let started = at.AddSeconds(float i)
+        s.Log("h", String('x', 100_000))
+        s.RecordTerminal("h", CompletedRun, started, started.AddMilliseconds(1.0))
+
+    test <@ (s.GetHistory "h").Length = 10 @>
+    // 240_000 live bytes leave history 1_857_152: the oldest run goes.
+    for i in 1..3 do
+        s.Log("live", capLine i)
+
+    let kept =
+        s.GetHistory "h" |> List.map (fun r -> int (r.StartedAt - at).TotalSeconds)
+
+    test <@ kept = [ 2..10 ] @>
+    test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
+    test <@ s.TotalByteSize = 9 * 200_000 + 3 * 80_000 @>

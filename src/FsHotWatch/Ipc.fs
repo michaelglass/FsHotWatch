@@ -241,11 +241,18 @@ let private pluginStatusPayload
                 | Some s -> box s
                 | None -> null
 
+            // Present only when lines were dropped; a reader takes its absence as none.
+            let activityDropped =
+                match r.ActivityTrim with
+                | Trimmed n -> box n
+                | Untrimmed -> null
+
             {| startedAt = r.StartedAt.ToString("O")
                elapsedMs = int64 r.Elapsed.TotalMilliseconds
                outcome = outcomePayload r.Outcome
                summary = summary
-               activityTail = r.ActivityTail |}
+               activityTail = r.ActivityTail
+               activityDropped = activityDropped |}
             :> obj
 
     let d = Map.tryFind name counts |> Option.defaultValue DiagnosticCounts.empty

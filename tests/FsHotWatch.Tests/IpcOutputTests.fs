@@ -2228,7 +2228,8 @@ let ``a zero-test convergence result preserves a prior applicable full-suite gre
                       Elapsed = System.TimeSpan.FromSeconds 25.0
                       Outcome = CompletedRun
                       Summary = Some "21 passed, 0 failed in 7 projects"
-                      ActivityTail = [] }
+                      ActivityTail = []
+                      ActivityTrim = Untrimmed }
               Diagnostics = DiagnosticCounts.empty }
 
         let initialExitCode =

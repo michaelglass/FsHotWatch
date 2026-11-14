@@ -1981,7 +1981,8 @@ let private status (view: StatusView) (elapsed: TimeSpan) (outcome: RunOutcome) 
               Elapsed = elapsed
               Outcome = outcome
               Summary = summary
-              ActivityTail = [] }
+              ActivityTail = []
+              ActivityTrim = Untrimmed }
       Diagnostics = ErrorLedger.DiagnosticCounts.empty }
 
 [<Fact>]

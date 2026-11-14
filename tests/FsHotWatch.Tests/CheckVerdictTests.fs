@@ -1062,7 +1062,8 @@ let ``a Completed plugin whose run VERIFIED NOTHING is not a failed plugin — t
                   Elapsed = TimeSpan.Zero
                   Outcome = FsHotWatch.Events.VerifiedNothing "0 test project(s) ran, no test executed"
                   Summary = Some "NOTHING VERIFIED: 0 test project(s) ran, no test executed"
-                  ActivityTail = [] }
+                  ActivityTail = []
+                  ActivityTrim = FsHotWatch.Events.Untrimmed }
           Diagnostics = DiagnosticCounts.empty }
 
     let statuses = Map.ofList [ "test-prune", verifiedNothing ]

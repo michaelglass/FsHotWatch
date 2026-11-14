@@ -56,6 +56,11 @@ let private maxTailPerPlugin = 64
 let private maxHistoryPerPlugin = 16
 let private maxTotalBytes = 2 * 1024 * 1024
 
+/// One live recording's share of `maxTotalBytes` for its activity log. Past it, the
+/// recording drops its oldest lines. Live recordings are bounded here, on their own,
+/// and never by the history budget: history is the only thing the global cap evicts.
+let private maxLogBytesPerRecording = maxTotalBytes / 8
+
 let private stringBytes (s: string) = if isNull s then 0 else s.Length * 2
 
 let private runRecordBytes (r: RunRecord) =
@@ -83,6 +88,9 @@ type private RecordingState =
     {
         Subtasks: Dictionary<string, Subtask>
         ActivityLog: Queue<string>
+        /// The bytes of the lines in `ActivityLog`, kept equal to their sum.
+        mutable LogBytes: int
+        mutable Trim: ActivityTrim
         mutable SummaryOverride: string option
         mutable SummaryBytes: int
         /// Override applied to the next RecordTerminal call. Plugins set this
@@ -94,9 +102,15 @@ type private RecordingState =
     static member Create() =
         { Subtasks = Dictionary<string, Subtask>()
           ActivityLog = Queue<string>()
+          LogBytes = 0
+          Trim = Untrimmed
           SummaryOverride = None
           SummaryBytes = 0
           OutcomeOverride = None }
+
+/// Every byte a recording holds, as the live counter counted it.
+let private recordingBytes (r: RecordingState) =
+    (r.Subtasks.Values |> Seq.sumBy subtaskBytes) + r.LogBytes + r.SummaryBytes
 
 /// Phase of a plugin's activity tracking. `Idle` carries no in-progress data,
 /// so calling `RecordTerminal` on an `Idle` plugin cannot accidentally splice
@@ -109,9 +123,14 @@ type private ActivityPhase =
 [<NoComparison; NoEquality>]
 type private PerPlugin =
     { Gate: System.Threading.Lock
-      mutable Phase: ActivityPhase
-      History: Queue<RunRecord>
-      mutable Bytes: int }
+      mutable Phase: ActivityPhase }
+
+/// A committed run, with the bytes the history counter holds for it.
+[<NoComparison; NoEquality>]
+type private HistoryEntry =
+    { Plugin: string
+      Record: RunRecord
+      Bytes: int }
 
 /// Snapshot of a plugin's current activity state — taken under one lock.
 type Snapshot =
@@ -119,10 +138,22 @@ type Snapshot =
       ActivityTail: string list
       LastRun: RunRecord option }
 
+/// Lock order: a plugin's `Gate`, then `historyGate`; `pluginsGate` is never held
+/// with either.
 type State() =
     let pluginsGate = System.Threading.Lock()
     let plugins = Dictionary<string, PerPlugin>()
-    let mutable totalBytes = 0
+
+    /// Bytes held by live recordings. Each plugin changes it under its own gate.
+    let mutable liveBytes = 0
+
+    let historyGate = System.Threading.Lock()
+
+    /// Every plugin's committed runs, oldest-committed first, under `historyGate`.
+    let history = LinkedList<HistoryEntry>()
+
+    /// The bytes of the entries in `history`, kept equal to their sum, under `historyGate`.
+    let mutable historyBytes = 0
 
     let getOrCreate name =
         Locking.locked pluginsGate (fun () ->
@@ -131,44 +162,32 @@ type State() =
             | _ ->
                 let p =
                     { Gate = System.Threading.Lock()
-                      Phase = Idle
-                      History = Queue<RunRecord>()
-                      Bytes = 0 }
+                      Phase = Idle }
 
                 plugins.[name] <- p
                 p)
 
-    let enforceGlobalCap () =
-        // Called after additions. Evict oldest history entries across all plugins
-        // until under budget. Each plugin updates totalBytes + its own Bytes when it
-        // evicts, so we only need to find the global oldest each iteration.
-        while totalBytes > maxTotalBytes do
-            let mutable candidate: (PerPlugin * DateTime) option = None
+    let addLive (n: int) =
+        System.Threading.Interlocked.Add(&liveBytes, n) |> ignore
 
-            Locking.locked pluginsGate (fun () ->
-                for KeyValue(_, p) in plugins do
-                    Locking.locked p.Gate (fun () ->
-                        if p.History.Count > 0 then
-                            let h = p.History.Peek()
+    // Must be called while holding historyGate.
+    let removeHistory (node: LinkedListNode<HistoryEntry>) =
+        history.Remove node
+        historyBytes <- historyBytes - node.Value.Bytes
 
-                            match candidate with
-                            | None -> candidate <- Some(p, h.StartedAt)
-                            | Some(_, t) when h.StartedAt < t -> candidate <- Some(p, h.StartedAt)
-                            | _ -> ()))
+    // Must be called while holding historyGate. History may use what live recordings
+    // leave of the cap, and never less than nothing. Past that, the oldest-committed
+    // run is evicted. `historyBytes` is the sum of `history`'s entries, so while it
+    // exceeds a budget of at least 0 there is an entry to evict.
+    let evictOverBudget () =
+        let budget () =
+            max 0 (maxTotalBytes - System.Threading.Volatile.Read(&liveBytes))
 
-            match candidate with
-            | Some(p, _) ->
-                Locking.locked p.Gate (fun () ->
-                    if p.History.Count > 0 then
-                        let evicted = p.History.Dequeue()
-                        let sz = runRecordBytes evicted
-                        p.Bytes <- p.Bytes - sz
-                        System.Threading.Interlocked.Add(&totalBytes, -sz) |> ignore)
-            | None -> ()
+        while historyBytes > budget () do
+            removeHistory history.First
 
-    let addBytes (p: PerPlugin) (n: int) =
-        p.Bytes <- p.Bytes + n
-        System.Threading.Interlocked.Add(&totalBytes, n) |> ignore
+    let enforceHistoryBudget () =
+        Locking.locked historyGate evictOverBudget
 
     // Must be called while holding p.Gate. Log/SetSummary after RecordTerminal
     // lazily start a fresh Recording so late-arriving output stays observable;
@@ -181,6 +200,41 @@ type State() =
             let r = RecordingState.Create()
             p.Phase <- Recording r
             r
+
+    // Must be called while holding the recording's plugin gate.
+    let dropOldestLine (r: RecordingState) =
+        let dropped = stringBytes (r.ActivityLog.Dequeue())
+        r.LogBytes <- r.LogBytes - dropped
+        addLive (-dropped)
+
+    // Must be called while holding the recording's plugin gate. `LogBytes` is the sum
+    // of `ActivityLog`'s lines, so while it exceeds the share there is a line to drop.
+    let trimToShare (r: RecordingState) =
+        while r.LogBytes > maxLogBytesPerRecording do
+            dropOldestLine r
+
+            r.Trim <-
+                match r.Trim with
+                | Untrimmed -> Trimmed 1
+                | Trimmed n -> Trimmed(n + 1)
+
+    // Must be called while holding historyGate.
+    let historyOf (plugin: string) : RunRecord list =
+        [ for e in history do
+              if e.Plugin = plugin then
+                  yield e.Record ]
+
+    // Must be called while holding historyGate, when the plugin holds more runs than
+    // the per-plugin limit, so it has an entry to find.
+    let rec oldestOf (plugin: string) (node: LinkedListNode<HistoryEntry>) =
+        if node.Value.Plugin = plugin then
+            node
+        else
+            oldestOf plugin node.Next
+
+    let overCap () =
+        System.Threading.Volatile.Read(&liveBytes)
+        + System.Threading.Volatile.Read(&historyBytes) > maxTotalBytes
 
     member _.StartSubtask(plugin: string, key: string, label: string) : unit =
         let p = getOrCreate plugin
@@ -195,10 +249,10 @@ type State() =
                       StartedAt = DateTime.UtcNow }
 
                 r.Subtasks.[key] <- t
-                addBytes p (subtaskBytes t))
+                addLive (subtaskBytes t))
 
-        if totalBytes > maxTotalBytes then
-            enforceGlobalCap ()
+        if overCap () then
+            enforceHistoryBudget ()
 
     member _.UpdateSubtask(plugin: string, key: string, label: string) : unit =
         let p = getOrCreate plugin
@@ -208,15 +262,14 @@ type State() =
             | Recording r ->
                 match r.Subtasks.TryGetValue key with
                 | true, t ->
-                    addBytes p (-(subtaskBytes t))
                     let updated = { t with Label = label }
                     r.Subtasks.[key] <- updated
-                    addBytes p (subtaskBytes updated)
+                    addLive (subtaskBytes updated - subtaskBytes t)
                 | _ -> ()
             | Idle -> ())
 
-        if totalBytes > maxTotalBytes then
-            enforceGlobalCap ()
+        if overCap () then
+            enforceHistoryBudget ()
 
     member _.EndSubtask(plugin: string, key: string) : unit =
         let p = getOrCreate plugin
@@ -227,7 +280,7 @@ type State() =
                 match r.Subtasks.TryGetValue key with
                 | true, t ->
                     r.Subtasks.Remove key |> ignore
-                    addBytes p (-(subtaskBytes t))
+                    addLive (-(subtaskBytes t))
                 | _ -> ()
             | Idle -> ())
 
@@ -237,27 +290,30 @@ type State() =
         Locking.locked p.Gate (fun () ->
             let r = ensureRecording p
             r.ActivityLog.Enqueue(message)
-            addBytes p (stringBytes message)
+            let added = stringBytes message
+            r.LogBytes <- r.LogBytes + added
+            addLive added
 
             if r.ActivityLog.Count > maxTailPerPlugin then
-                let dropped = r.ActivityLog.Dequeue()
-                addBytes p (-(stringBytes dropped)))
+                dropOldestLine r
 
-        if totalBytes > maxTotalBytes then
-            enforceGlobalCap ()
+            trimToShare r)
+
+        if overCap () then
+            enforceHistoryBudget ()
 
     member _.SetSummary(plugin: string, summary: string) : unit =
         let p = getOrCreate plugin
 
         Locking.locked p.Gate (fun () ->
             let r = ensureRecording p
-            addBytes p (-r.SummaryBytes)
+            let previous = r.SummaryBytes
             r.SummaryOverride <- Some summary
             r.SummaryBytes <- stringBytes summary
-            addBytes p r.SummaryBytes)
+            addLive (r.SummaryBytes - previous))
 
-        if totalBytes > maxTotalBytes then
-            enforceGlobalCap ()
+        if overCap () then
+            enforceHistoryBudget ()
 
     member _.SetNextTerminalOutcome(plugin: string, outcome: RunOutcome) : unit =
         let p = getOrCreate plugin
@@ -270,45 +326,45 @@ type State() =
         let p = getOrCreate plugin
 
         Locking.locked p.Gate (fun () ->
-            let tail, derivedSummary, discarded, outcomeOverride =
+            let tail, derivedSummary, trim, discarded, outcomeOverride =
                 match p.Phase with
                 | Recording r ->
-                    let tail = r.ActivityLog |> List.ofSeq
-
                     // No fallback; plugins must call SetSummary explicitly
                     // (via ctx.CompleteWithSummary) or the summary is empty.
-                    let derived = r.SummaryOverride
-
-                    let d =
-                        (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
-                        + (r.ActivityLog |> Seq.sumBy stringBytes)
-                        + r.SummaryBytes
-
-                    tail, derived, d, r.OutcomeOverride
-                | Idle -> [], None, 0, None
-
-            let effectiveOutcome = outcomeOverride |> Option.defaultValue outcome
+                    List.ofSeq r.ActivityLog, r.SummaryOverride, r.Trim, recordingBytes r, r.OutcomeOverride
+                | Idle -> [], None, Untrimmed, 0, None
 
             let record =
                 { StartedAt = startedAt
                   Elapsed = at - startedAt
-                  Outcome = effectiveOutcome
+                  Outcome = outcomeOverride |> Option.defaultValue outcome
                   Summary = derivedSummary
-                  ActivityTail = tail }
+                  ActivityTail = tail
+                  ActivityTrim = trim }
 
             // Bytes held by the prior Recording state are all discarded.
-            addBytes p (-discarded)
+            addLive (-discarded)
             p.Phase <- Idle
 
-            p.History.Enqueue(record)
-            addBytes p (runRecordBytes record)
+            // Under the plugin's gate too, so a snapshot never sees the run in neither
+            // the recording nor the history.
+            Locking.locked historyGate (fun () ->
+                let bytes = runRecordBytes record
 
-            while p.History.Count > maxHistoryPerPlugin do
-                let evicted = p.History.Dequeue()
-                addBytes p (-(runRecordBytes evicted)))
+                history.AddLast(
+                    { Plugin = plugin
+                      Record = record
+                      Bytes = bytes }
+                )
+                |> ignore
 
-        if totalBytes > maxTotalBytes then
-            enforceGlobalCap ()
+                historyBytes <- historyBytes + bytes
+
+                // One entry was added, so at most one is over the per-plugin limit.
+                if history |> Seq.filter (fun e -> e.Plugin = plugin) |> Seq.length > maxHistoryPerPlugin then
+                    removeHistory (oldestOf plugin history.First)
+
+                evictOverBudget ()))
 
     member _.ResetRun(plugin: string) : unit =
         let p = getOrCreate plugin
@@ -316,12 +372,7 @@ type State() =
         Locking.locked p.Gate (fun () ->
             match p.Phase with
             | Recording r ->
-                let discarded =
-                    (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
-                    + (r.ActivityLog |> Seq.sumBy stringBytes)
-                    + r.SummaryBytes
-
-                addBytes p (-discarded)
+                addLive (-(recordingBytes r))
                 p.Phase <- Idle
             | Idle -> ())
 
@@ -340,10 +391,7 @@ type State() =
                     | Idle -> [], []
 
                 let lastRun =
-                    if p.History.Count = 0 then
-                        None
-                    else
-                        Some(p.History.ToArray().[p.History.Count - 1])
+                    Locking.locked historyGate (fun () -> historyOf plugin |> List.tryLast)
 
                 { Subtasks = subtasks
                   ActivityTail = tail
@@ -354,11 +402,8 @@ type State() =
     member this.GetActivityTail(plugin: string) : string list = this.GetSnapshot(plugin).ActivityTail
 
     member _.GetHistory(plugin: string) : RunRecord list =
-        let exists, p = Locking.locked pluginsGate (fun () -> plugins.TryGetValue plugin)
+        Locking.locked historyGate (fun () -> historyOf plugin)
 
-        if not exists then
-            []
-        else
-            Locking.locked p.Gate (fun () -> p.History |> List.ofSeq)
-
-    member _.TotalByteSize: int = totalBytes
+    member _.TotalByteSize: int =
+        System.Threading.Volatile.Read(&liveBytes)
+        + System.Threading.Volatile.Read(&historyBytes)

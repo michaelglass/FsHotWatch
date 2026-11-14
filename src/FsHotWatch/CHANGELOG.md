@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: `PluginActivity.State` no longer spins forever when live recordings hold the bytes over the 2 MB activity cap
+  and no history is left to evict (AUTOMATION-1703). Live and history bytes are counted apart: a live recording's
+  log is bounded by its own share (`maxTotalBytes / 8`) and drops its oldest lines past it, and history is evicted
+  oldest-committed first only while it exceeds what live recordings leave of the cap. History is now one list across
+  plugins in commit order, so the cap evicts by commit order where it used to evict by `StartedAt`.
+- **BREAKING (API):** `RunRecord` gains `ActivityTrim: ActivityTrim` (`Untrimmed | Trimmed of droppedLines`), the
+  lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
+  when lines were dropped.
+
 ## 0.10.0-alpha.115 - 2026-11-14
 
 - feat: the clean-recompute audit reports a kind that compared nothing as a finding of its own, not only through exit

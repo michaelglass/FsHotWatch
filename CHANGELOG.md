@@ -74,6 +74,17 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### core: a noisy run no longer livelocks the daemon on the activity cap
+
+The 2 MB activity cap freed bytes only by evicting finished runs' history. When the bytes
+over the cap sat in live recordings and no history was left, it looped forever, and every
+thread that logged activity spun with it (observed: a run that logged ~11.5k failed-test
+lines held a daemon at 300% CPU). Live recordings and history are now counted apart. Each
+live recording's log has its own share (256 KB) and drops its oldest lines past it, and
+history may only use what the live recordings leave of the cap. A run whose lines were
+dropped says so in its summary — `activity cap dropped N earlier log lines` — and its run
+record carries the count (`activityDropped` in `lastRun` over IPC) (AUTOMATION-1703).
+
 ### core: a package added to a referenced project restores the projects that reference it
 
 The deps gate's mtime probe read only a project's own `.fsproj` and the dep files above
