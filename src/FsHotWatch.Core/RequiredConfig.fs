@@ -93,7 +93,7 @@ let private fileCommandPlugins (root: JsonElement) : string list =
         [ for fc in array commands do
               match stringOf fc "name", stringOf fc "pattern" with
               | Some name, _ -> name
-              | None, Some pattern -> $"file-cmd-%s{pattern}"
+              | None, Some pattern -> $"file-cmd-{pattern}"
               | None, None -> () ]
     | None -> []
 
