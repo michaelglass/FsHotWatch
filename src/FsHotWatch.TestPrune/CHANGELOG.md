@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- fix: a covering test project the current tree no longer has owes nothing (AUTOMATION-1717). A checkout that ran a
+- fix: a covering test project the current tree no longer has owes nothing (AUTOMATION-1717, ADR-075). A checkout that ran a
   branch with test project P kept P's tests in the index after checking out a tree without P, and every run went red
   on "N symbol(s) still owed to tests in P, which this daemon does not run" though every test passed.
   `PluginSteps.absentFromTreeIn` calls P absent only when it is not configured, an available model's discovered
