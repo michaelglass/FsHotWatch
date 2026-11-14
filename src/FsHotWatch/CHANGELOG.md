@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a directory removed after its parent listed it, before the walk read it, is absent, not a hole
+  (AUTOMATION-1721). `SafeWalk` reported it as "could not be read (Could not find a part of the path …)", so any walk
+  racing a directory's deletion came back incomplete: the pin test over `tests/` failed a good run while
+  TraceFixtures removed its `bin-scratch/<guid>` scratch, and a tree hash taken during such a cleanup was unhashable.
+  This is the rule a missing walk root already followed (`unreachable`). A directory that still exists but cannot be
+  read, or that reads as missing only because its parent cannot be traversed, stays a hole.
+
 ## 0.10.0-alpha.116 - 2026-11-14
 
 - fix: `PluginActivity.State` no longer spins forever when live recordings hold the bytes over the 2 MB activity cap

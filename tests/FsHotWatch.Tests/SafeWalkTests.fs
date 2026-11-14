@@ -443,3 +443,77 @@ let ``SourceExcludedDirs is stated in terms of BuildOutputDirs`` () =
     // exactly the drift cost two releases to find.
     test <@ Set.isSubset SafeWalk.BuildOutputDirs SafeWalk.SourceExcludedDirs @>
     test <@ SafeWalk.BuildOutputDirs = set [ "bin"; "obj" ] @>
+
+// AUTOMATION-1721: a directory removed after its parent listed it, before the walk read it,
+// is ABSENT, as a missing root is. It was reported as a hole ("could not be read (Could not
+// find a part of the path …)"), so a walk racing another test's scratch cleanup — the pin
+// test over tests/ while TraceFixtures deletes `bin-scratch/<guid>` — failed a good run.
+// The walk is lazy and yields a directory's files before descending into its listed
+// subdirectories, so deleting on the parent's first file is deterministic.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a directory removed after its parent listed it is absent, not a hole`` () =
+    withTempDir "sw-vanished" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, "a.fs"), "")
+        let scratch = Path.Combine(tmpDir, "scratch")
+        Directory.CreateDirectory(Path.Combine(scratch, "nested")) |> ignore
+        File.WriteAllText(Path.Combine(scratch, "nested", "gone.fs"), "")
+
+        let entries =
+            SafeWalk.enumerateEntries Set.empty "*" tmpDir
+            |> Seq.map (fun entry ->
+                match entry with
+                | SafeWalk.Found f when f.Name = "a.fs" -> Directory.Delete(scratch, true)
+                | _ -> ()
+
+                entry)
+            |> List.ofSeq
+
+        let skipped =
+            entries
+            |> List.choose (function
+                | SafeWalk.Skipped s -> Some(SafeWalk.describeSkip s)
+                | SafeWalk.Found _ -> None)
+
+        let found =
+            entries
+            |> List.choose (function
+                | SafeWalk.Found f -> Some f.Name
+                | SafeWalk.Skipped _ -> None)
+
+        test <@ not (Directory.Exists scratch) @>
+        test <@ List.isEmpty skipped @>
+        test <@ found = [ "a.fs" ] @>)
+
+// Control for the above: a directory that reads as missing only because its parent became
+// untraversable after listing it is NOT absent — it could not be looked up, so it stays a hole.
+// Unix only: Windows has no mode bits to take away.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a directory hidden by its parent becoming untraversable mid-walk stays a hole`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "sw-sealed-midwalk" (fun tmpDir ->
+            let outer = Path.Combine(tmpDir, "outer")
+            let inner = Path.Combine(outer, "inner")
+            Directory.CreateDirectory inner |> ignore
+            File.WriteAllText(Path.Combine(outer, "a.fs"), "")
+            File.WriteAllText(Path.Combine(inner, "b.fs"), "")
+
+            let rwx =
+                UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+
+            try
+                let skipped =
+                    SafeWalk.enumerateEntries Set.empty "*" tmpDir
+                    |> Seq.map (fun entry ->
+                        match entry with
+                        | SafeWalk.Found f when f.Name = "a.fs" -> File.SetUnixFileMode(outer, UnixFileMode.None)
+                        | _ -> ()
+
+                        entry)
+                    |> Seq.choose (function
+                        | SafeWalk.Skipped s -> Some s.Path
+                        | SafeWalk.Found _ -> None)
+                    |> List.ofSeq
+
+                test <@ skipped = [ inner ] @>
+            finally
+                File.SetUnixFileMode(outer, rwx))
