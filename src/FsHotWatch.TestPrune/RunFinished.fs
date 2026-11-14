@@ -155,12 +155,12 @@ let internal onRunFinishedWith
         // what was attached to it, and what is queued. One grouped query,
         // and only if something asks.
         let covering =
-            coveringOf (
-                Seq.concat
+            coveringOf
+                ctx.ProjectGraph
+                (Seq.concat
                     [ Set.toSeq launch.Symbols
                       Map.keys state.DebtDuringFullRun
-                      Set.toSeq state.Debt.PendingQueue ]
-            )
+                      Set.toSeq state.Debt.PendingQueue ])
 
         let excluded =
             if Set.isEmpty runnableProjects then

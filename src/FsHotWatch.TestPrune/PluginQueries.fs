@@ -56,6 +56,10 @@ type internal ImpactQueries =
         /// one scan, whatever is queued. `None` when the index cannot be read this way
         /// (an in-memory index is private to the connection that made it).
         IndexedTestProjects: unit -> Set<string> option
+        /// The source files the index holds test methods of, for each named test project
+        /// (AUTOMATION-1717). A project with none is absent from the map. `None` when the
+        /// index cannot be read this way.
+        TestSourceFiles: string list -> Map<string, Set<string>> option
     }
 
 module internal ImpactQueries =
@@ -73,7 +77,30 @@ module internal ImpactQueries =
         with :? Microsoft.Data.Sqlite.SqliteException ->
             None
 
+    let private testSourceFiles (db: Database) (projects: string list) : Map<string, Set<string>> option =
+        try
+            use conn = db.OpenConnection()
+            use query = conn.CreateCommand()
+
+            query.CommandText <-
+                "SELECT DISTINCT test_project, source_file FROM test_methods WHERE test_project IN (SELECT value FROM json_each(@projects));"
+
+            query.Parameters.AddWithValue("@projects", System.Text.Json.JsonSerializer.Serialize projects)
+            |> ignore
+
+            use reader = query.ExecuteReader()
+
+            [ while reader.Read() do
+                  reader.GetString 0, reader.GetString 1 ]
+            |> List.groupBy fst
+            |> List.map (fun (project, rows) -> project, rows |> List.map snd |> Set.ofList)
+            |> Map.ofList
+            |> Some
+        with :? Microsoft.Data.Sqlite.SqliteException ->
+            None
+
     let ofDatabase (db: Database) : ImpactQueries =
         { AffectedTests = db.QueryAffectedSelection
           CoveringProjectsBySeed = db.QueryCoveringProjectsBySeed
-          IndexedTestProjects = indexedTestProjects db }
+          IndexedTestProjects = indexedTestProjects db
+          TestSourceFiles = testSourceFiles db }

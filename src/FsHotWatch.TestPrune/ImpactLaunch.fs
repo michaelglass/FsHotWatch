@@ -71,7 +71,7 @@ type internal RunConfig =
 
 /// How a run classifies the debt it launches against.
 type internal RunDebt =
-    { CoveringOf: string seq -> string -> Set<string>
+    { CoveringOf: ProjectGraphAccessor -> string seq -> string -> Set<string>
       DebtScope: (string -> Set<string>) -> string -> Set<string>
       NothingOwed: VerificationDebt -> bool
       RevisionOf: VerificationDebt -> string -> int64
@@ -398,7 +398,7 @@ let internal selectForLaunch
         if TestMode.skips LaunchCoveringCapture inputs.Mode then
             Map.empty
         else
-            let owedTo = lazyDebtScope (coveringOf launchedSymbols)
+            let owedTo = lazyDebtScope (coveringOf ctx.ProjectGraph launchedSymbols)
 
             launchedSymbols |> Set.toList |> List.map (fun s -> s, owedTo s) |> Map.ofList
 

@@ -132,7 +132,7 @@ let ``the shadow line is written for a launch that runtime coverage would add no
 
 let private stubDebt: CompletionDebt =
     { CommitPending = commitPending
-      CoveringOf = fun _ _ -> Set.empty
+      CoveringOf = fun _ _ _ -> Set.empty
       DebtScope = fun _ owed symbol -> owed symbol
       IndexNamesOnlyRunnable = fun _ -> true
       OwedElsewhere = fun _ _ -> Set.empty

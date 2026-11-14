@@ -57,7 +57,7 @@ open FsHotWatch.TestPrune.RunOutcomeReport
 /// The debt accounting a run's completion reads (`commitPending`, `debtScope` and the rest).
 type internal CompletionDebt =
     { CommitPending: Set<string> -> VerificationDebt -> VerificationDebt
-      CoveringOf: string seq -> string -> Set<string>
+      CoveringOf: ProjectGraphAccessor -> string seq -> string -> Set<string>
       DebtScope: Lazy<Map<string, string>> -> (string -> Set<string>) -> string -> Set<string>
       IndexNamesOnlyRunnable: Lazy<Map<string, string>> -> bool
       OwedElsewhere: (string -> Set<string>) -> string seq -> Set<string>

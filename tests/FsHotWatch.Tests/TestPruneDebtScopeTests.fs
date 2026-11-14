@@ -179,3 +179,102 @@ let ``a declared exclusion writes debt off on the record, naming the project`` (
             | other -> Assert.Fail($"expected a changes-uncovered scope naming the excluded project, got %A{other}")
         finally
             host.Teardown())
+
+// --- A covering project that is not in the current tree (AUTOMATION-1717) ---
+//
+// A checkout ran a branch with test project Sim, so the index holds Sim's tests and the
+// symbols they cover. It then checked out a tree without Sim. Every configured test passed,
+// yet the run went red: "7 symbol(s) still owed to tests in FsHotWatch.Simulation.Tests,
+// which this daemon does not run". An obligation names only test projects the current tree
+// has (configured, or in the model's discovered inventory). One the tree still has, even
+// unconfigured, still owes.
+
+/// A model host whose discovered inventory is `inTree`, settled after one build.
+let private settleBuildOver (tmpDir: string) (dbPath: string) (configs: TestConfig list) (inTree: string list) =
+    let host = createModelHost Unchecked.defaultof<_> tmpDir
+
+    host.SetProjectGraph
+        { FsHotWatch.PluginFramework.ProjectGraphAccessor.none with
+            GetAllProjects =
+                fun () ->
+                    inTree
+                    |> List.map (fun name -> Path.Combine(tmpDir, "tests", name, name + ".fsproj")) }
+
+    host.RegisterHandler(createWithScope (fun () -> Map.empty) dbPath tmpDir (Some configs) None None None None [])
+    let terminal = beginAwaitNextTerminal host "test-prune"
+    host.EmitBuildCompleted(BuildSucceeded)
+    Assert.True(terminal.Wait(HangWait), "test-prune never reported a terminal status")
+    waitForQuiescent host 20000
+    host
+
+/// `Lib.shared` is covered by configured P1 and by Sim, and is owed.
+let private owedToP1AndSim (tmpDir: string) (dbPath: string) =
+    let db = Database.create dbPath
+    PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "P1" "P1Tests" "sharedTest"
+    PendingQueueHelpers.seedCoveredSymbol db "Lib.shared" "Lib.fs" "Sim" "SimTests" "sharedTest"
+    seedBaseline tmpDir [ "P1" ]
+    PendingVerification.save tmpDir (Set.singleton "Lib.shared")
+    [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+
+let private failedMessage (host: PluginHost) =
+    match host.GetStatus("test-prune") with
+    | Some(PluginStatus.Failed(message, _, _)) -> Some message
+    | _ -> None
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a covering project absent from the current tree owes nothing, and a green run is green`` () =
+    withTempDir "tp-absent-coverer" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let configs = owedToP1AndSim tmpDir dbPath
+        let host = settleBuildOver tmpDir dbPath configs [ "P1" ]
+
+        try
+            Assert.DoesNotContain("Lib.shared", PendingQueueHelpers.loadQueue tmpDir)
+            Assert.Equal(None, failedMessage host)
+        finally
+            host.Teardown())
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a covering project the current tree has but does not run still owes`` () =
+    // Control: Sim is in the tree, unconfigured and undeclared, so nothing here can run it.
+    withTempDir "tp-present-coverer" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let configs = owedToP1AndSim tmpDir dbPath
+        let host = settleBuildOver tmpDir dbPath configs [ "P1"; "Sim" ]
+
+        try
+            Assert.Contains("Lib.shared", PendingQueueHelpers.loadQueue tmpDir)
+            let message = failedMessage host
+            Assert.True(message.IsSome, "a symbol owed to a project in the tree must keep the run red")
+            Assert.Contains("still owed to tests in Sim", message.Value)
+        finally
+            host.Teardown())
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``with no model to say what the tree holds, an unrunnable coverer still owes`` () =
+    // No inventory is no evidence of absence: the obligation stands.
+    withTempDir "tp-no-model-coverer" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let configs = owedToP1AndSim tmpDir dbPath
+        let host = settleBuild tmpDir dbPath configs (fun () -> Map.empty)
+
+        try
+            Assert.Contains("Lib.shared", PendingQueueHelpers.loadQueue tmpDir)
+        finally
+            host.Teardown())
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a covering project the inventory does not name but whose test sources are here still owes`` () =
+    // Control: a script's tests, or a project outside the discovery roots, are named by no
+    // `.fsproj` in the inventory. Their sources in the tree are evidence enough that they exist.
+    withTempDir "tp-unnamed-coverer" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let configs = owedToP1AndSim tmpDir dbPath
+        File.WriteAllText(Path.Combine(tmpDir, "SimTests.fs"), "module SimTests\n")
+        let host = settleBuildOver tmpDir dbPath configs [ "P1" ]
+
+        try
+            Assert.Contains("Lib.shared", PendingQueueHelpers.loadQueue tmpDir)
+            Assert.True((failedMessage host).IsSome, "a coverer whose tests are in the tree keeps the run red")
+        finally
+            host.Teardown())

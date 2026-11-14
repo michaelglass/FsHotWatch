@@ -43,7 +43,7 @@ open FsHotWatch.Tests.TestPrunePluginTestSupport
 
 let private stubDebt: CompletionDebt =
     { CommitPending = commitPending
-      CoveringOf = fun _ _ -> Set.empty
+      CoveringOf = fun _ _ _ -> Set.empty
       DebtScope = fun _ owed symbol -> owed symbol
       IndexNamesOnlyRunnable = fun _ -> true
       OwedElsewhere = fun _ _ -> Set.empty
