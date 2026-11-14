@@ -202,7 +202,7 @@ type Filer = FSharpProjectOptions -> string -> ActionKey.ActionKey -> CheckOutpu
 /// a check, and whoever files a record clears the memo.
 type Walk
     (
-        store: OutcomeStore.Store,
+        store: OutcomeRecords.IOutcomeStore,
         toolchain: string,
         repoRoot: string option,
         hashFile: string -> string,
@@ -216,7 +216,7 @@ type Walk
     let chains = Dictionary<string, FileRecord list * string * string option>()
 
     let read (key: ActionKey.ActionKey) =
-        store.LookupWithOutputs key
+        OutcomeStore.Through.lookupWithOutputs store key.Value
         |> Option.bind snd
         |> Option.bind (CheckOutputs.tryOfJson repoRoot)
 
@@ -380,23 +380,31 @@ let readOnly: Filer = fun _ _ _ -> None
 /// that is stale, torn, missing or another workspace's can only make a miss's explanation
 /// vaguer, never turn a miss into a hit. One small file per (project, file), overwritten.
 module LastKeys =
-    /// The side index's directory in `store`.
-    let directoryOf (store: OutcomeStore.Store) =
-        Path.Combine(store.Root, "last-keys", CheckKind)
+    /// The side index: a directory beside a disk store's records. Not part of `IOutcomeStore`
+    /// (it is no record), so the code that opens the store hands it over (`at`), as it hands over
+    /// collection (AUTOMATION-1695).
+    type Index = private Index of directory: string
+
+    /// The side index of the disk store `store`.
+    let at (store: OutcomeStore.Store) : Index =
+        Index(Path.Combine(store.Root, "last-keys", CheckKind))
+
+    /// The side index's directory.
+    let directoryOf (Index directory) = directory
 
     /// What an entry is filed by: the project and the file, repository-relative.
     let subjectOf (repoRoot: string option) (projectFile: string) (file: string) =
         $"%s{CachePathIdentity.keyOf repoRoot projectFile}|%s{CachePathIdentity.keyOf repoRoot file}"
 
     /// Where `subject`'s entry lives.
-    let pathOf (store: OutcomeStore.Store) (subject: string) =
+    let pathOf (index: Index) (subject: string) =
         let digest = sha256Hex subject
-        Path.Combine(directoryOf store, digest.Substring(0, 2), digest + ".json")
+        Path.Combine(directoryOf index, digest.Substring(0, 2), digest + ".json")
 
     /// Remember that `subject` was last filed under `key`. Never throws: a failed write
     /// loses only an explanation.
-    let remember (store: OutcomeStore.Store) (subject: string) (key: ActionKey.ActionKey) : unit =
-        let path = pathOf store subject
+    let remember (index: Index) (subject: string) (key: ActionKey.ActionKey) : unit =
+        let path = pathOf index subject
         let temporary = path + "." + Guid.NewGuid().ToString "N" + ".tmp"
 
         try
@@ -422,8 +430,8 @@ module LastKeys =
 
     /// The labelled inputs `subject` was last filed under; None when none is remembered or
     /// the entry cannot be read as one of `subject`'s.
-    let tryRead (store: OutcomeStore.Store) (subject: string) : (string * string) list option =
-        let path = pathOf store subject
+    let tryRead (index: Index) (subject: string) : (string * string) list option =
+        let path = pathOf index subject
 
         try
             if File.Exists path then
@@ -443,9 +451,11 @@ module LastKeys =
         | :? JsonException
         | :? InvalidOperationException -> None
 
-/// File `outputs` under `key` for `file` of `projectFile`. Returns whether it is filed.
+/// File `outputs` under `key` for `file` of `projectFile`, and remember its key in `lastKeys`.
+/// Returns whether it is filed.
 let file
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
+    (lastKeys: LastKeys.Index)
     (repoRoot: string option)
     (toolchain: string)
     (projectFile: string)
@@ -460,19 +470,19 @@ let file
             OutcomeStore.Outcome.Pass
 
     let filed =
-        store.RecordWithOutputs(
-            OutcomeStore.Record.ofAction
+        OutcomeStore.Through.file
+            store
+            (OutcomeStore.Record.ofAction
                 key
                 (CachePathIdentity.keyOf repoRoot file)
                 outcome
                 toolchain
                 (defaultArg repoRoot "")
-                DateTimeOffset.UtcNow,
-            Some(CheckOutputs.toJson repoRoot outputs)
-        )
+                DateTimeOffset.UtcNow)
+            (Some(CheckOutputs.toJson repoRoot outputs))
 
     if filed then
-        LastKeys.remember store (LastKeys.subjectOf repoRoot projectFile file) key
+        LastKeys.remember lastKeys (LastKeys.subjectOf repoRoot projectFile file) key
 
     filed
 
@@ -510,7 +520,7 @@ let shown (repoRoot: string option) (path: string) =
 /// Why `record`, of `projectFile`, has no outputs: compared with the inputs its file was
 /// last filed under (`LastKeys`), one small read. Diagnostics only.
 let explain
-    (store: OutcomeStore.Store)
+    (lastKeys: LastKeys.Index)
     (repoRoot: string option)
     (projectFile: string)
     (record: FileRecord)
@@ -518,7 +528,7 @@ let explain
     match record.Behind with
     | Some unknown -> RecordMiss.Behind(shown repoRoot unknown)
     | None ->
-        match LastKeys.tryRead store (LastKeys.subjectOf repoRoot projectFile record.File) with
+        match LastKeys.tryRead lastKeys (LastKeys.subjectOf repoRoot projectFile record.File) with
         | None -> RecordMiss.NoneRemembered
         | Some stored ->
             match ActionKey.moved stored record.Key.Inputs with
