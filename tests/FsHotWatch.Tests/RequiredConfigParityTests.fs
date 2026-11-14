@@ -37,6 +37,34 @@ let private configured (config: DaemonConfig.DaemonConfiguration) : Set<string> 
           if config.Tests.IsSome then
               PluginActivity.TestPrunePluginName ]
 
+/// What plugin `name` of the parsed `config` is a function of: the derivation the shadow used from
+/// the parsed configuration before `RequiredConfig` read it from the raw JSON (AUTOMATION-1577; the
+/// oracle, kept here only). Only a file command with a `pattern` and no `afterTests` declares its
+/// inputs, keyed by its configuration entry as the daemon parsed it.
+let private eligibilityOf (config: DaemonConfig.DaemonConfiguration) (name: string) : PluginInputs.LookupEligibility =
+    let wholeTree reason =
+        PluginInputs.LookupEligibility.NoDeclaredInputs reason
+
+    if config.Preprocessors |> List.exists (fun p -> p.Name = name) then
+        wholeTree $"preprocessor %s{name} runs over the files a check delivers"
+    else
+        match config.FileCommands |> List.tryFind (fun fc -> fc.PluginName = name) with
+        | Some fc ->
+            match fc.Pattern, fc.AfterTests with
+            | Some pattern, None ->
+                PluginInputs.LookupEligibility.DeclaredInputs(
+                    PluginInputs.InputSpec.Matching(
+                        Watcher.FilePattern.parse pattern,
+                        PluginInputs.entryDigest name pattern fc.Command fc.Args fc.TimeoutSec
+                    ),
+                    []
+                )
+            | _, Some _ -> wholeTree $"file command %s{name} runs after the tests, so its inputs are their outcomes"
+            | None, None -> wholeTree $"file command %s{name} declares no pattern"
+        | None when name = PluginActivity.TestPrunePluginName ->
+            wholeTree "test-prune runs the configured test projects over the whole tree"
+        | None -> wholeTree $"%s{name} reads the whole tree"
+
 /// The daemon's parse of `json` with the real defaults, through a `.fshw.json` in a scratch root.
 let private parsed (json: string) =
     withTempDir "required-config-parity" (fun dir ->
@@ -46,7 +74,15 @@ let private parsed (json: string) =
 let private holds (json: string) =
     let required = RequiredConfig.ofJson json
     let config = parsed json
-    test <@ Set.ofList required.Plugins = configured config @>
+    test <@ Set.ofList (required.Plugins |> List.map _.Name) = configured config @>
+
+    // And each one is keyed by what the daemon's parse says it is a function of.
+    let eligibility = required.Plugins |> List.map (fun p -> p.Name, p.Eligibility)
+
+    let expected =
+        required.Plugins |> List.map (fun p -> p.Name, eligibilityOf config p.Name)
+
+    test <@ eligibility = expected @>
 
     let projects =
         match config.Tests with
@@ -77,6 +113,12 @@ let private branches =
       """{ "fileCommands": [ { "name": "gate", "pattern": "*.md", "command": "echo" } ] }"""
       """{ "fileCommands": [ { "pattern": "*.fsx", "command": "echo" } ] }"""
       """{ "fileCommands": [ { "name": "after", "afterTests": true, "command": "echo" } ] }"""
+      """{ "fileCommands": [ { "name": "g", "pattern": "*.md", "command": "echo", "args": "-n x", "timeoutSec": 30 } ] }"""
+      """{ "fileCommands": [ { "name": "g", "pattern": "build.fsx", "command": "dotnet", "args": "fsi build.fsx" } ] }"""
+      """{ "fileCommands": [ { "name": "p", "pattern": "*.md", "afterTests": [ "P" ], "command": "echo" } ] }"""
+      """{ "fileCommands": [ { "name": "e", "pattern": "*.md", "afterTests": [], "command": "echo" } ] }"""
+      """{ "fileCommands": [ { "name": "f", "pattern": "*.md", "afterTests": false, "command": "echo" } ] }"""
+      """{ "preprocessors": [ { "name": "gate", "command": "true" } ], "fileCommands": [ { "name": "gate", "pattern": "*.md", "command": "echo" } ] }"""
       """{ "coverage": { "configPath": "c.json", "searchDir": "." } }"""
       """{ "coverage": [ { "configPath": "c.json", "searchDir": "." }, { "configPath": "d.json", "searchDir": "." } ] }"""
       """{ "preprocessors": [ { "name": "pre", "command": "true" }, { "name": "two", "command": "true" } ] }"""
