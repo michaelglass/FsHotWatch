@@ -108,6 +108,20 @@ let answer
     : LookupVerdict.Answer =
     LookupVerdict.decide (Requirements.requirements command subject configured) (lookupIn command store kpStore)
 
+/// Times the phases of a lookup and counts what each covered (experiment E5, AUTOMATION-1696).
+type PhaseTimer =
+    /// Run `work` as the phase `phase`.
+    abstract Time<'T> : phase: string * work: (unit -> 'T) -> 'T
+    /// Record that the lookup covered `count` of `name` (files, requirements).
+    abstract Count: name: string * count: int -> unit
+
+module PhaseTimer =
+    /// Times and counts nothing.
+    let untimed =
+        { new PhaseTimer with
+            member _.Time(_, work) = work ()
+            member _.Count(_, _) = () }
+
 /// What a pure lookup of a checkout concluded.
 [<RequireQualifiedAccess>]
 type Read =
@@ -139,13 +153,20 @@ let private requiredOf (repoRoot: string) : Result<RequiredConfig.Required, stri
 ///
 /// Unlike the daemon, it does not VALIDATE the configuration's plugin settings: a configuration
 /// the daemon refuses files nothing, so its keys are missing here.
-let ofRepo (repoRoot: string) (command: Requirements.Command) (log: string -> unit) : Read =
-    match requiredOf repoRoot with
+///
+/// `timer` times each phase and counts what it covered (experiment E5); `PhaseTimer.untimed`
+/// does neither.
+let ofRepoWith (timer: PhaseTimer) (repoRoot: string) (command: Requirements.Command) (log: string -> unit) : Read =
+    match timer.Time("config", fun () -> requiredOf repoRoot) with
     | Error reason -> Read.Unconfigured reason
     | Ok required ->
-        let tree = (TreeHash.compute repoRoot required.Exclude).Hash
+        // `TreeHash.compute`, in its two halves: the walk, then reading and hashing every file.
+        let walked = timer.Time("walk", fun () -> TreeHash.files repoRoot required.Exclude)
 
-        match DaemonIdentity.readRecorded repoRoot with
+        timer.Count("files", walked.Files.Length)
+        let tree = (timer.Time("hash", fun () -> TreeHash.ofWalked walked)).Hash
+
+        match timer.Time("producer", fun () -> DaemonIdentity.readRecorded repoRoot) with
         | None -> Read.NoProducer tree
         | Some identity ->
             let producer = DaemonIdentity.BinaryIdentity.render identity
@@ -154,15 +175,19 @@ let ofRepo (repoRoot: string) (command: Requirements.Command) (log: string -> un
                 { RequiredPlugins = required.Plugins
                   TestProjects = List.sort required.TestProjects }
 
-            let store = storeAt repoRoot log
+            let store = timer.Time("store-open", fun () -> storeAt repoRoot log)
 
             let subject =
-                withRecordedOutcomeKeys
-                    store
-                    configured.TestProjects
-                    { Tree = tree
-                      Producer = producer
-                      OutcomeKeys = Map.empty }
+                timer.Time(
+                    "outcome-keys",
+                    fun () ->
+                        withRecordedOutcomeKeys
+                            store
+                            configured.TestProjects
+                            { Tree = tree
+                              Producer = producer
+                              OutcomeKeys = Map.empty }
+                )
 
             let kpStore =
                 if Map.isEmpty subject.OutcomeKeys then
@@ -170,4 +195,15 @@ let ofRepo (repoRoot: string) (command: Requirements.Command) (log: string -> un
                 else
                     Some(OutcomeStore.openFor repoRoot log :> OutcomeRecords.IOutcomeStore)
 
-            Read.Answered(tree, producer, answer command store kpStore configured subject)
+            let required = Requirements.requirements command subject configured
+            timer.Count("requirements", required.Length)
+            timer.Count("keys", (required |> List.sumBy (fun r -> r.Alternatives |> List.sumBy List.length)))
+
+            let decided =
+                timer.Time("decide", fun () -> answer command store kpStore configured subject)
+
+            Read.Answered(tree, producer, decided)
+
+/// `ofRepoWith`, untimed.
+let ofRepo (repoRoot: string) (command: Requirements.Command) (log: string -> unit) : Read =
+    ofRepoWith PhaseTimer.untimed repoRoot command log
