@@ -1,0 +1,15 @@
+{
+  "codeCoverage": {
+    "Configuration": {
+      "CodeCoverage": {
+        "ModulePaths": {
+          "Exclude": [
+            ".*Tests\\.dll$",
+            ".*[/\\\\]xunit[^/\\\\]*\\.dll$",
+            ".*Unquote.*"
+          ]
+        }
+      }
+    }
+  }
+}

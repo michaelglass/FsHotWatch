@@ -127,6 +127,16 @@
         "traces": false
       },
       {
+        "project": "FsHotWatch.Simulation.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/FsHotWatch.Simulation.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "default",
+        "coverage": false,
+        "traces": false
+      },
+      {
         "project": "TestPrune.Tests",
         "runtimeSelection": "static/log-runtime",
         "command": "dotnet",
