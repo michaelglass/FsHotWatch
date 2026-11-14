@@ -6,6 +6,9 @@
   history left to evict (AUTOMATION-1703). The cap evicts history oldest-first, then drops the oldest log lines of the
   live recording with the most log bytes, rendered as one `… N earlier lines dropped (activity cap)` line at the head
   of the tail (also kept in the committed `RunRecord.ActivityTail`). It stops when nothing is left to free.
+- **BREAKING (API):** `RunRecord` gains `CapTrim: CapTrim` (`Intact | Dropped of count`), the lines the activity cap
+  dropped from the run's log. The IPC `lastRun` object carries it as `capDropped`, present only when lines were
+  dropped (AUTOMATION-1703).
 
 ## 0.10.0-alpha.115 - 2026-11-14
 

@@ -75,13 +75,6 @@ let private runRecordBytes (r: RunRecord) =
 
 let private subtaskBytes (t: Subtask) = stringBytes t.Key + stringBytes t.Label
 
-/// Whether the global cap has trimmed a live recording's log. Only `Dropped` has a
-/// count, and it is at least 1, so a recording that lost nothing renders no marker.
-[<RequireQualifiedAccess; NoComparison; NoEquality>]
-type private CapTrim =
-    | Intact
-    | Dropped of count: int
-
 let private capMarker (count: int) =
     let noun = if count = 1 then "line" else "lines"
     sprintf "… %d earlier %s dropped (activity cap)" count noun
@@ -351,13 +344,13 @@ type State() =
         let p = getOrCreate plugin
 
         Locking.locked p.Gate (fun () ->
-            let tail, derivedSummary, discarded, outcomeOverride =
+            let tail, derivedSummary, trim, discarded, outcomeOverride =
                 match p.Phase with
                 | Recording r ->
                     // No fallback; plugins must call SetSummary explicitly
                     // (via ctx.CompleteWithSummary) or the summary is empty.
-                    renderedTail r, r.SummaryOverride, recordingBytes r, r.OutcomeOverride
-                | Idle -> [], None, 0, None
+                    renderedTail r, r.SummaryOverride, r.CapTrim, recordingBytes r, r.OutcomeOverride
+                | Idle -> [], None, CapTrim.Intact, 0, None
 
             let effectiveOutcome = outcomeOverride |> Option.defaultValue outcome
 
@@ -366,7 +359,8 @@ type State() =
                   Elapsed = at - startedAt
                   Outcome = effectiveOutcome
                   Summary = derivedSummary
-                  ActivityTail = tail }
+                  ActivityTail = tail
+                  CapTrim = trim }
 
             // Bytes held by the prior Recording state are all discarded.
             addBytes p (-discarded)

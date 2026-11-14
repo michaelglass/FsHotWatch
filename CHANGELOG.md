@@ -82,7 +82,8 @@ thread that logged activity spun with it (observed: a run that logged ~11.5k fai
 lines held a daemon at 300% CPU). The cap now frees history first, then the oldest log
 lines of the live recording holding the most, and shows them as one counted line,
 `… N earlier lines dropped (activity cap)`, ahead of the tail. It stops when nothing is
-left to free (AUTOMATION-1703).
+left to free. The committed run record carries the count (`capDropped` in `lastRun` over IPC),
+and the CLI shows it after the run summary: `log capped: N lines dropped` (AUTOMATION-1703).
 
 ### core: a package added to a referenced project restores the projects that reference it
 

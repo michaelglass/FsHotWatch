@@ -471,13 +471,22 @@ module RunOutcome =
         | Some detail -> VerifiedNothing detail
         | None -> CompletedRun
 
+/// Whether the activity cap dropped lines from a run's log to keep the daemon's memory
+/// bounded. Only `Dropped` has a count, and it is at least 1. Lines that merely scrolled
+/// out of the fixed-length tail are not counted: the tail is a tail by design.
+[<RequireQualifiedAccess>]
+type CapTrim =
+    | Intact
+    | Dropped of count: int
+
 /// Record of a single completed or failed plugin run.
 type RunRecord =
     { StartedAt: System.DateTime
       Elapsed: System.TimeSpan
       Outcome: RunOutcome
       Summary: string option
-      ActivityTail: string list }
+      ActivityTail: string list
+      CapTrim: CapTrim }
 
 
 /// Result of a single test project execution. The `wasFiltered` flag indicates

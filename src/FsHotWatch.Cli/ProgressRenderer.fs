@@ -65,13 +65,25 @@ let private summariseError (error: string) : string =
         |> Option.defaultValue ""
         |> truncateTo80
 
+/// Says the activity cap dropped lines from a run's log, so a short tail is not read
+/// as all the run had to say.
+let private capNote (count: int) : string =
+    let noun = if count = 1 then "line" else "lines"
+    $"log capped: %d{count} %s{noun} dropped"
+
 let private runSummary (lastRun: RunRecord) : string =
-    match lastRun.Outcome, lastRun.Summary with
-    | _, Some s -> s
-    | CompletedRun, None -> ""
-    | FailedRun err, None -> summariseError err
-    | TimedOut reason, None -> summariseError reason
-    | VerifiedNothing detail, None -> RunSummary.nothingVerified detail
+    let summary =
+        match lastRun.Outcome, lastRun.Summary with
+        | _, Some s -> s
+        | CompletedRun, None -> ""
+        | FailedRun err, None -> summariseError err
+        | TimedOut reason, None -> summariseError reason
+        | VerifiedNothing detail, None -> RunSummary.nothingVerified detail
+
+    match lastRun.CapTrim, summary with
+    | CapTrim.Intact, _ -> summary
+    | CapTrim.Dropped n, "" -> capNote n
+    | CapTrim.Dropped n, _ -> $"%s{summary}; %s{capNote n}"
 
 let private latestActivity (tail: string list) =
     match tail |> List.tryLast with

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: a run the activity cap trimmed says so after its summary, `log capped: N lines dropped`, read from
+  `lastRun.capDropped` (AUTOMATION-1703).
+
 ## 0.14.0-alpha.148 - 2026-11-14
 
 - feat: `tests.projects[].runtimeSelection` names who decides and what is recorded: `"runtime"` (the default),

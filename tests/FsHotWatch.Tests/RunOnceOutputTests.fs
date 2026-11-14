@@ -192,7 +192,8 @@ let ``runInfoOfFileCommands describes the file commands that ran, and skips the 
                   Elapsed = TimeSpan.FromSeconds 1.0
                   Outcome = CompletedRun
                   Summary = None
-                  ActivityTail = [] }
+                  ActivityTail = []
+                  CapTrim = FsHotWatch.Events.CapTrim.Intact }
           Diagnostics = DiagnosticCounts.empty }
 
     let statuses =

@@ -803,12 +803,19 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
                     [ for item in arr.EnumerateArray() -> item.GetString() ]
                 | _ -> []
 
+            // Parsed once here: only a positive count is a trim.
+            let capTrim =
+                match Json.tryInt r "capDropped" with
+                | Some n when n > 0 -> CapTrim.Dropped n
+                | _ -> CapTrim.Intact
+
             Some
                 { StartedAt = startedAt
                   Elapsed = TimeSpan.FromMilliseconds(float elapsedMs)
                   Outcome = outcome
                   Summary = summary
-                  ActivityTail = tail }
+                  ActivityTail = tail
+                  CapTrim = capTrim }
         | _ -> None
 
     let diagnostics: DiagnosticCounts =

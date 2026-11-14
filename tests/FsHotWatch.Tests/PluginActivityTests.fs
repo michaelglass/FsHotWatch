@@ -404,3 +404,20 @@ let ``the cap evicts history before it trims a live recording`` (historyFirst: b
 
     test <@ List.isEmpty (s.GetHistory "h") @>
     test <@ s.TotalByteSize = tailBytes (s.GetActivityTail "p") @>
+
+[<Fact(Timeout = 15000)>]
+let ``a capped run's committed record carries the dropped count`` () =
+    let s = State()
+    logPastTheCap s "p"
+    let t = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    s.RecordTerminal("p", CompletedRun, t, t.AddMilliseconds(1.0))
+    let record = s.GetHistory "p" |> List.exactlyOne
+    test <@ record.CapTrim = CapTrim.Dropped 38 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a run that kept every line records Intact`` () =
+    let s = State()
+    s.Log("p", "one")
+    let t = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    s.RecordTerminal("p", CompletedRun, t, t.AddMilliseconds(1.0))
+    test <@ (s.GetHistory "p" |> List.exactlyOne).CapTrim = CapTrim.Intact @>

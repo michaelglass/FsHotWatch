@@ -29,21 +29,24 @@ let private completedRun (ago: TimeSpan) (elapsed: TimeSpan) (summary: string op
       Elapsed = elapsed
       Outcome = CompletedRun
       Summary = summary
-      ActivityTail = [] }
+      ActivityTail = []
+      CapTrim = FsHotWatch.Events.CapTrim.Intact }
 
 let private failedRun (ago: TimeSpan) (elapsed: TimeSpan) (error: string) : RunRecord =
     { StartedAt = now - ago
       Elapsed = elapsed
       Outcome = FailedRun error
       Summary = None
-      ActivityTail = [] }
+      ActivityTail = []
+      CapTrim = FsHotWatch.Events.CapTrim.Intact }
 
 let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : RunRecord =
     { StartedAt = now - ago
       Elapsed = elapsed
       Outcome = TimedOut reason
       Summary = None
-      ActivityTail = [] }
+      ActivityTail = []
+      CapTrim = FsHotWatch.Events.CapTrim.Intact }
 
 // ---------------- Compact mode ----------------
 
@@ -324,7 +327,8 @@ let ``verbose Failed shows started, error detail, and recent`` () =
                   Elapsed = TimeSpan.FromSeconds 6.4
                   Outcome = FailedRun err
                   Summary = None
-                  ActivityTail = [ "loading rules"; "linting FileA.fs" ] }
+                  ActivityTail = [ "loading rules"; "linting FileA.fs" ]
+                  CapTrim = FsHotWatch.Events.CapTrim.Intact }
           Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose true now "Lint" parsed |> stripMany
@@ -351,7 +355,8 @@ let ``verbose Completed shows header started elapsed summary`` () =
                   Elapsed = TimeSpan.FromSeconds 3.2
                   Outcome = CompletedRun
                   Summary = Some "built 4 projects"
-                  ActivityTail = [ "dotnet build sln" ] }
+                  ActivityTail = [ "dotnet build sln" ]
+                  CapTrim = FsHotWatch.Events.CapTrim.Intact }
           Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose true now "Build" parsed |> stripMany
@@ -375,7 +380,8 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
                   Elapsed = TimeSpan.FromSeconds 1.0
                   Outcome = CompletedRun
                   Summary = Some "ok"
-                  ActivityTail = [] }
+                  ActivityTail = []
+                  CapTrim = FsHotWatch.Events.CapTrim.Intact }
           Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose true now "Build" parsed |> stripMany
@@ -1097,3 +1103,29 @@ let ``agent nextStep after a verified-nothing run points at status, never done``
     // Control: the executing run still ends the loop.
     let done_ = agentAll [ "test-prune", genuinePassStatus () ] |> List.last
     test <@ done_.Contains "done" @>
+
+[<Fact(Timeout = 15000)>]
+let ``a run the activity cap trimmed says how many lines it dropped`` () =
+    let parsedWith (summary: string option) (trim: CapTrim) : ParsedPluginStatus =
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(3.2))
+          Subtasks = []
+          ActivityTail = []
+          LastRun =
+            Some
+                { completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) summary with
+                    CapTrim = trim }
+          Diagnostics = DiagnosticCounts.empty }
+
+    let line summary trim =
+        renderPlugin Compact true now "Build" (parsedWith summary trim)
+        |> stripMany
+        |> List.exactlyOne
+
+    test
+        <@
+            (line (Some "built 4 projects") (CapTrim.Dropped 38)).Contains
+                "built 4 projects; log capped: 38 lines dropped"
+        @>
+
+    test <@ (line None (CapTrim.Dropped 1)).Contains "log capped: 1 line dropped" @>
+    test <@ not ((line (Some "built 4 projects") CapTrim.Intact).Contains "log capped") @>

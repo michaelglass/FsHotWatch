@@ -241,11 +241,18 @@ let private pluginStatusPayload
                 | Some s -> box s
                 | None -> null
 
+            // Present only when the cap dropped lines; a reader takes its absence as none.
+            let capDropped =
+                match r.CapTrim with
+                | CapTrim.Dropped n -> box n
+                | CapTrim.Intact -> null
+
             {| startedAt = r.StartedAt.ToString("O")
                elapsedMs = int64 r.Elapsed.TotalMilliseconds
                outcome = outcomePayload r.Outcome
                summary = summary
-               activityTail = r.ActivityTail |}
+               activityTail = r.ActivityTail
+               capDropped = capDropped |}
             :> obj
 
     let d = Map.tryFind name counts |> Option.defaultValue DiagnosticCounts.empty
