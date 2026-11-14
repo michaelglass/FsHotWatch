@@ -35,8 +35,8 @@ type Wiring =
         /// would give every checkout its own key.
         ExcludePatterns: string list
         /// The box-wide outcome store (ADR-059) every completed project run is recorded in,
-        /// under the K_P of the inputs it ran over. `None` records nothing.
-        Outcomes: OutcomeStore.Store option
+        /// under the K_P of the inputs it ran over, with its collection. `None` records nothing.
+        Outcomes: OutcomeStore.Wired option
     }
 
 /// Where a reused project's green came from.
@@ -151,7 +151,7 @@ let testActionKey (key: TestEvidenceKey.Key) (scope: string) : ActionKey.ActionK
 /// With no outcome store wired there is nothing to consult, and the evidence store alone
 /// decides, as it did before.
 let reuseRefusal
-    (outcomes: OutcomeStore.Store option)
+    (outcomes: OutcomeRecords.IOutcomeStore option)
     (key: TestEvidenceKey.Key)
     (earnedAt: DateTimeOffset)
     : string option =
@@ -169,7 +169,7 @@ let reuseRefusal
 
         // When the full green that stands was filed, or why none stands.
         let standing =
-            match outcomes.TryHistory full.Value with
+            match OutcomeStore.Through.tryHistory outcomes full.Value with
             | Error why -> Error(unreadable "full-run record" why)
             | Ok history ->
                 match List.tryLast history with
@@ -178,7 +178,8 @@ let reuseRefusal
                 | Some fail ->
                     let clearances =
                         match fail.Producer.RunId with
-                        | Some run -> outcomes.TryHistory (TestFailureClearance.keyOf full.Value run).Value
+                        | Some run ->
+                            OutcomeStore.Through.tryHistory outcomes (TestFailureClearance.keyOf full.Value run).Value
                         | None -> Ok []
 
                     match clearances with
@@ -197,7 +198,7 @@ let reuseRefusal
         match standing with
         | Error why -> Some why
         | Ok since ->
-            match outcomes.TryHistory (testActionKey key "impact").Value with
+            match OutcomeStore.Through.tryHistory outcomes (testActionKey key "impact").Value with
             | Error why -> Some(unreadable "impact record" why)
             | Ok history ->
                 history
@@ -260,7 +261,7 @@ let plan
             project,
             match lookup with
             | Ok(key, TestEvidenceStore.Lookup.Hit entry) ->
-                match reuseRefusal wiring.Outcomes key entry.Producer.EarnedAt with
+                match reuseRefusal (wiring.Outcomes |> Option.map _.Store) key entry.Producer.EarnedAt with
                 | None -> Ok entry
                 | Some why -> Error why
             | Ok(_, TestEvidenceStore.Lookup.Miss miss) -> Error(TestEvidenceStore.describeMiss miss)
@@ -517,7 +518,7 @@ let outcomeRecordOf
 /// that fail's clearance (`TestFailureClearance`, AUTOMATION-1444). A timed-out run names
 /// nothing: what it did not finish is not among its failures.
 let fileOutcome
-    (outcomes: OutcomeStore.Store)
+    (outcomes: OutcomeRecords.IOutcomeStore)
     (fullKey: ActionKey.ActionKey)
     (run: ProducedRun)
     (record: OutcomeStore.Record)
@@ -534,19 +535,23 @@ let fileOutcome
                 Some(TestFailureClearance.outputsOf n.Failed)
             | _ -> None
 
-        outcomes.RecordWithOutputs(record, outputs) |> ignore
+        OutcomeStore.Through.file outcomes record outputs |> ignore
         [ record.Key.Value ]
     | _ ->
-        outcomes.Record record |> ignore
+        OutcomeStore.Through.file outcomes record None |> ignore
 
         let clearance =
             names
             |> Option.bind (fun n ->
-                TestFailureClearance.clearanceOf fullKey.Value (outcomes.LookupWithOutputs fullKey) n.Passed record)
+                TestFailureClearance.clearanceOf
+                    fullKey.Value
+                    (OutcomeStore.Through.lookupWithOutputs outcomes fullKey.Value)
+                    n.Passed
+                    record)
 
         match clearance with
         | Some c ->
-            outcomes.Record c |> ignore
+            OutcomeStore.Through.file outcomes c None |> ignore
             [ record.Key.Value; c.Key.Value ]
         | None -> [ record.Key.Value ]
 
@@ -680,7 +685,7 @@ let publish
             | Error _ -> None)
 
     match plan.Wiring.Outcomes with
-    | Some outcomes ->
+    | Some wired ->
         let filed =
             launched
             |> List.collect (fun (candidate, run) ->
@@ -692,21 +697,17 @@ let publish
                         (Map.tryFind candidate.Project reconciled.Keys)
                         run
                         producer
-                    |> Option.map (fileOutcome outcomes (testActionKey atLaunch "full") run)
+                    |> Option.map (fileOutcome wired.Store (testActionKey atLaunch "full") run)
                     |> Option.defaultValue []
                 | _ -> [])
 
         // The box-wide store is bounded by TTL and bytes (ADR-059 §2). GC can only turn a hit
         // into a miss, and it spares what this run just filed. It reads every record in the
         // store, so a run asks for one only when none completed within the interval
-        // (AUTOMATION-1665: 110 s of a 125 s post-run tail).
-        match
-            PostRunStep.timed producer.RunId "outcome store gc" (fun () ->
-                outcomes.GcIfDue(producer.EarnedAt, Set.ofList filed, OutcomeStore.defaultGcInterval))
-        with
-        | OutcomeStore.GcRun.Ran _ -> ()
-        | OutcomeStore.GcRun.NotDue lastRanAt ->
-            Logging.info "test-prune" $"outcome store gc: not due, the last completed at %O{lastRanAt}"
+        // (AUTOMATION-1665: 110 s of a 125 s post-run tail). The collection is the wiring's
+        // (`OutcomeStore.Wired`): the disk store's GcIfDue, which says when it was not due.
+        PostRunStep.timed producer.RunId "outcome store gc" (fun () ->
+            wired.Collect producer.EarnedAt (Set.ofList filed))
     | None -> ()
 
     let outcomes =
