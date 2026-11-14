@@ -30,10 +30,8 @@ open System.Text.Json.Nodes
 [<Literal>]
 let Schema = "fshw-outcome-v1"
 
-[<RequireQualifiedAccess>]
-type Outcome =
-    | Pass
-    | Fail
+/// What a record concluded: the lookup's own type (`LookupVerdict.Outcome`, in FsHotWatch.Core).
+type Outcome = LookupVerdict.Outcome
 
 /// Test counts, for an action that ran tests.
 type Counts =
