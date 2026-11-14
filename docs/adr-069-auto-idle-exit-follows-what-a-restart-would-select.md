@@ -89,3 +89,31 @@ What the table shows:
   baseline into a full suite: +120-310 s per check, measured.
 - **A `PluginCtx` field for the hint.** It means 45 construction sites, against one file the
   plugin already sits beside.
+
+## Addendum (2026-11-14): the resident cost on 0.14.0-alpha.147, and recycling after a cold scan
+
+Measured on intelligence c2387bda (fshw 0.14.0-alpha.147), on the same server and under the
+same heavy-job lock as above, in a fresh workspace. "Footprint" is `footprint -p`; every daemon
+had `FSHW_IDLE_EXIT_MIN=0`.
+
+| step | pass 1: the daemon that ran the cold gate | pass 2: a fresh daemon whose session began with a replayed gate |
+|---|---|---|
+| cold gate | 491 s, 919 live checks, 8.3 GB after (peak 8.7) | — |
+| replayed gate | 29 s, 0 live checks, 7.36 GB after | 72 s (its own replayed scan), 0 live checks, 2.32 GB after (peak 3.3) |
+| idle +5 min | 7.36 GB | 2.32 GB |
+| real edit (one live check, 14,774 tests run) | 327 s, 8.36 GB after (peak 9.0) | 318 s, 4.30 GB after (peak 5.2) |
+| idle +5 min after the edit | 8.35 GB | 4.30 GB |
+
+- **A daemon's idle cost depends on how its session began.** A daemon that ran a cold scan
+  keeps its compiler caches (about 5 GB more than a replay-started one). The steady-state
+  resident cost on alpha.147 is pass 2's: 2.3 GB idle after a replayed gate, 4.3 GB after one
+  real edit.
+- **Recycling after a cold scan pays for itself.** Stopping the cold daemon took about 3 s, and
+  its successor's first gate replayed in 72 s against the resident daemon's 29 s. That is +46 s
+  once, for 5.0 GB less held while idle (4.0 GB less after the next edit), with the edit itself
+  no slower (318 s against 327 s) and the same 14,774 tests. Pass 2 ran after pass 1's daemon
+  had stopped, on the same tree and records, which is the state a recycle leaves.
+- **Proposed, not built here:** a daemon whose session included a cold scan recycles itself once
+  that check completes (stop; the next command starts a successor that replays from records).
+  It matters most for the land workspace's 60-minute window, which is exactly where a cold scan
+  is followed by a long resident idle.
