@@ -346,6 +346,10 @@ type PluginHost
     /// A producer takes a place with `Hold` and publishes with `EmitFileChecked(result, place)`.
     member _.LiveResults: LiveResults.Bound = liveResults
 
+    /// EXPERIMENT ONLY (AUTOMATION-1626): a host-level command with no owning plugin.
+    member _.RegisterHostCommand(name: string, handler: CommandHandler) =
+        commands[name] <- (Plugin.ReplySchema.undeclared, handler)
+
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
         let services: PluginFramework.PluginHostServices =

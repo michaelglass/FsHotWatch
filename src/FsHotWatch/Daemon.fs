@@ -5740,6 +5740,20 @@ module Daemon =
 
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache opts.CheckCache)
 
+            // EXPERIMENT ONLY (AUTOMATION-1626 step 0).
+            host.RegisterHostCommand(
+                "diag-release",
+                DiagRelease.handler
+                    (fun () -> CheckerPartitions.membersOf checker)
+                    (fun () ->
+                        match cacheBackend with
+                        | Some b ->
+                            b.Clear()
+                            "B: cleared the check-result cache backend"
+                        | None -> "B: no check-result cache backend (OFF); nothing of fshw's to clear")
+                    (fun () -> pipeline.GetRegisteredProjects() |> List.choose pipeline.GetProjectOptions)
+            )
+
             let graph = ProjectGraph()
 
             let loader =
@@ -6224,6 +6238,8 @@ module Daemon =
                 FSharpChecker.Create(
                     keepAssemblyContents = true,
                     keepAllBackgroundResolutions = false,
+                    // EXPERIMENT ONLY (AUTOMATION-1626 sink fix): FCS defaults this to true.
+                    keepAllBackgroundSymbolUses = (Environment.GetEnvironmentVariable "FSHW_EXP_NO_BG_SYMBOL_USES" <> "1"),
                     parallelReferenceResolution = true,
                     useTransparentCompiler = true,
                     transparentCompilerCacheSizes = cacheSizes
@@ -6255,8 +6271,13 @@ module Daemon =
     /// type-check per file the daemon checks — what a full check computes anyway. The
     /// factor keeps bounding every other cache, including the superseded versions.
     let checkerCacheSizes (factor: int) : TransparentCompiler.CacheSizes =
-        { TransparentCompiler.CacheSizes.Create factor with
-            TcIntermediateKeepStrongly = Int32.MaxValue }
+        // EXPERIMENT ONLY (AUTOMATION-1626 Q1): FCS's own sizes, to test dotnet/fsharp#20643.
+        if Environment.GetEnvironmentVariable "FSHW_EXP_FCS_DEFAULT_TCI" = "1" then
+            Logging.info "config" "EXPERIMENT: TcIntermediateKeepStrongly at FCS default"
+            TransparentCompiler.CacheSizes.Create factor
+        else
+            { TransparentCompiler.CacheSizes.Create factor with
+                TcIntermediateKeepStrongly = Int32.MaxValue }
 
     /// `createCheckerWithCacheSizes` at `DefaultCheckerCacheSizeFactor`.
     let createChecker () =
