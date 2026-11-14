@@ -27,14 +27,14 @@ let FcsInternalPluginName = "fcs-internal"
 /// this literal; a second copy spelled at the asking site is a second copy that can
 /// drift, and a drifted copy answers "not about the tests" for every red there is.
 [<Literal>]
-let TestPrunePluginName = "test-prune"
+let TestPrunePluginName = RequiredConfig.TestPrunePluginName
 
 /// The analyzers plugin's registered name, and therefore its LEDGER KEY. Named here for
 /// the same reason as `TestPrunePluginName`: the verdict asks of an analyzer entry
 /// whether it was computed from a check that is itself a checker fault, and the only
 /// way to ask is by ledger source.
 [<Literal>]
-let AnalyzersPluginName = "analyzers"
+let AnalyzersPluginName = RequiredConfig.AnalyzersPluginName
 
 /// Convention: each plugin emits one long-lived "primary" subtask per run
 /// whose label is the user-facing status line. The renderer prefers this

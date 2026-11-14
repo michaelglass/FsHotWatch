@@ -711,14 +711,16 @@ let configuredTestProjects (repoRoot: string) : Result<string list, string> =
 /// What `repoRoot`'s configuration requires of a green: its non-test plugins and its test
 /// projects. An error when either cannot be read: the shadow never guesses a requirement set.
 let configuredOf (repoRoot: string) : Result<Configured, string> =
-    configuredTestProjects repoRoot
-    |> Result.bind (fun projects ->
-        try
-            Ok
-                { RequiredPlugins = DaemonConfig.configuredRequiredPlugins repoRoot
-                  TestProjects = projects }
-        with DaemonConfig.ConfigErrorException message ->
-            Error message)
+    try
+        let required = DaemonConfig.configuredRequirements repoRoot
+
+        Ok
+            { RequiredPlugins = DaemonConfig.configuredRequiredPlugins repoRoot
+              // Sorted, as the project map they were read from before (`TestEvidenceKey.configsOf`).
+              TestProjects = List.sort required.TestProjects }
+    with
+    | DaemonConfig.ConfigErrorException message -> Error message
+    | :? Text.Json.JsonException as ex -> Error ex.Message
 
 /// The plugins of `configured` that declare their inputs and have no record in `store` under
 /// the key of those inputs as they are now in `repoRoot`, graded by `producer`
