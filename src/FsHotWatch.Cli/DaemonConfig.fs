@@ -2297,50 +2297,17 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
 /// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
 
-/// The plugins a green requires of `json`, a `.fshw.json`'s text: `RequiredConfig.ofJson`, the ONE
-/// definition (AUTOMATION-1695), so the daemon and a pure lookup can never disagree on it. The test
-/// plugin is required as well as `test:<project>` because it can fail with no project carrying the
-/// failure (an index flush, an impact DB that will not open, a wedged plugin); without it, passing
-/// test records an earlier publication of the same tree filed would answer green over that failure
-/// (AUTOMATION-1568 rework). `RequiredConfigParityTests` holds it to what `registerPlugins` registers.
-let requiredPluginNames (json: string) : string list = (RequiredConfig.ofJson json).Plugins
+/// The plugins a green requires of `json`, a `.fshw.json`'s text, each with what its outcome is a
+/// function of: `RequiredConfig.ofJson`, the ONE definition (AUTOMATION-1695, AUTOMATION-1577), so
+/// the daemon and a pure lookup can never disagree on it. The test plugin is required as well as
+/// `test:<project>` because it can fail with no project carrying the failure (an index flush, an
+/// impact DB that will not open, a wedged plugin); without it, passing test records an earlier
+/// publication of the same tree filed would answer green over that failure (AUTOMATION-1568
+/// rework). `RequiredConfigParityTests` holds it to what `registerPlugins` registers.
+let requiredPlugins (json: string) : PluginInputs.RequiredPlugin list = (RequiredConfig.ofJson json).Plugins
 
-/// What required plugin `name` of `config` is a function of (AUTOMATION-1577). Only a file command
-/// with a `pattern` and no `afterTests` declares its inputs: the files the pattern matches are what
-/// run it. Every other plugin reads the whole tree, or (an `afterTests` command) the outcomes of
-/// tests, so it declares none and only a run on the tree answers.
-let eligibilityOf (config: DaemonConfiguration) (name: string) : PluginInputs.RequiredPlugin =
-    let isPreprocessor = config.Preprocessors |> List.exists (fun p -> p.Name = name)
-
-    match config.FileCommands |> List.tryFind (fun fc -> fc.PluginName = name) with
-    | _ when isPreprocessor ->
-        PluginInputs.RequiredPlugin.wholeTree name $"preprocessor %s{name} runs over the files a check delivers"
-    | Some fc ->
-        match fc.Pattern, fc.AfterTests with
-        | Some pattern, None ->
-            { PluginInputs.RequiredPlugin.Name = name
-              PluginInputs.RequiredPlugin.Eligibility =
-                PluginInputs.LookupEligibility.DeclaredInputs(
-                    PluginInputs.InputSpec.Matching(
-                        Watcher.FilePattern.parse pattern,
-                        PluginInputs.entryDigest name pattern fc.Command fc.Args fc.TimeoutSec
-                    ),
-                    []
-                ) }
-        | Some _, Some _
-        | None, Some _ ->
-            PluginInputs.RequiredPlugin.wholeTree
-                name
-                $"file command %s{name} runs after the tests, so its inputs are their outcomes"
-        | None, None -> PluginInputs.RequiredPlugin.wholeTree name $"file command %s{name} declares no pattern"
-    | None when name = FsHotWatch.PluginActivity.TestPrunePluginName ->
-        PluginInputs.RequiredPlugin.wholeTree name "test-prune runs the configured test projects over the whole tree"
-    | None -> PluginInputs.RequiredPlugin.wholeTree name $"%s{name} reads the whole tree"
-
-/// The plugins a green requires of `json` (`requiredPluginNames`), each with what its outcome is a
-/// function of in `config`, the same configuration parsed.
-let requiredPlugins (config: DaemonConfiguration) (json: string) : PluginInputs.RequiredPlugin list =
-    requiredPluginNames json |> List.map (eligibilityOf config)
+/// The names of `requiredPlugins`.
+let requiredPluginNames (json: string) : string list = requiredPlugins json |> List.map _.Name
 
 /// What `repoRoot`'s `.fshw.json` requires of a green (`RequiredConfig.ofJson`): the file is first
 /// parsed the way `loadConfig` parses it, so a configuration the daemon refuses is refused here too;
@@ -2356,21 +2323,9 @@ let configuredRequirements (repoRoot: string) : RequiredConfig.Required =
     else
         RequiredConfig.defaults
 
-/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`configuredRequirements`).
+/// The plugins `repoRoot`'s `.fshw.json` requires of a green (`configuredRequirements`), by name.
 let configuredPlugins (repoRoot: string) : string list =
-    (configuredRequirements repoRoot).Plugins
-
-/// The plugins `repoRoot`'s `.fshw.json` requires (`requiredPlugins`), each with what its outcome is
-/// a function of, read the way `configuredRequirements` reads it.
-/// Raises ConfigErrorException when the file cannot be parsed.
-let configuredRequiredPlugins (repoRoot: string) : PluginInputs.RequiredPlugin list =
-    let path = FsHwPaths.configFile repoRoot
-
-    if File.Exists path then
-        let json = File.ReadAllText path
-        requiredPlugins (parseConfig json (defaultConfig ())) json
-    else
-        requiredPlugins (defaultConfig ()) "{}"
+    (configuredRequirements repoRoot).Plugins |> List.map _.Name
 
 /// Count the plugins that would be registered for a given configuration.
 /// Used by `fshw config check` to report how many plugins are configured.

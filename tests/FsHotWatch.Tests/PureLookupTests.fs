@@ -121,3 +121,39 @@ let ``a configuration that is not JSON leaves the requirements unknown`` () =
                 | Lookup.Read.Unconfigured reason -> reason.StartsWith FsHwPaths.ConfigFileName
                 | _ -> false
             @>)
+
+/// A file command whose pattern matches `build.fsx`: the only plugin, besides the diagnostics
+/// record, a green requires.
+let private fsxGate =
+    """{ "format": "off", "lint": false, "build": false,
+         "fileCommands": [ { "name": "gate", "pattern": "*.fsx", "command": "echo" } ] }"""
+
+[<Fact>]
+let ``a file command is keyed by the files it matches, as the shadow keys it`` () =
+    // AUTOMATION-1577: a plugin that declares its inputs answers from its last outcome while they
+    // are unchanged. The pure lookup keys it the same way, or every tree it sat idle on is missing.
+    withTempDir "pure-lookup-declared" (fun dir ->
+        checkout dir fsxGate
+        File.WriteAllText(Path.Combine(dir, "build.fsx"), "printfn \"build\"")
+
+        let gate =
+            (RequiredConfig.ofJson fsxGate).Plugins |> List.find (fun p -> p.Name = "gate")
+
+        let gateKey () =
+            (PluginInputs.keyOf dir producer gate).Value
+
+        record dir (gateKey ()) LookupVerdict.Outcome.Pass
+
+        // Only an unrelated source changed: the gate's record still answers.
+        File.WriteAllText(source dir, "let a = 2")
+        let edited = subjectOf dir []
+        record dir (Requirements.diagnosticsKey edited) LookupVerdict.Outcome.Pass
+        test <@ read dir = Lookup.Read.Answered(edited.Tree, producer, LookupVerdict.Answer.Green) @>
+
+        // The positive control: the matched file changed, so the earlier pass says nothing.
+        File.WriteAllText(Path.Combine(dir, "build.fsx"), "printfn \"changed\"")
+        let changed = subjectOf dir []
+        record dir (Requirements.diagnosticsKey changed) LookupVerdict.Outcome.Pass
+
+        test
+            <@ read dir = Lookup.Read.Answered(changed.Tree, producer, LookupVerdict.Answer.Missing [ "plugin:gate" ]) @>)

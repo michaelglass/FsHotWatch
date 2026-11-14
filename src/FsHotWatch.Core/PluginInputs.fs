@@ -19,13 +19,13 @@ type InputSpec =
     /// directories and build output: the files whose change runs the plugin (its watcher's
     /// scope, `Watcher.acceptsUnderRoot`). `entry` digests the plugin's own configuration entry,
     /// so editing its command re-keys it and nothing else.
-    | Matching of pattern: Watcher.FilePattern * entry: string
+    | Matching of pattern: WatchScope.FilePattern * entry: string
 
 /// Whether a plugin's last outcome may answer for a tree it did not run on.
 [<RequireQualifiedAccess; NoComparison>]
 type LookupEligibility =
     /// Keyed by its own declared inputs: its newest outcome answers while they are unchanged.
-    /// At least one set, by construction (FsHotWatch.Core is not referenced here, so no `NonEmpty`).
+    /// At least one set, by construction.
     | DeclaredInputs of first: InputSpec * rest: InputSpec list
     /// Declares no inputs of its own, so it is keyed by the whole tree: only a run on this tree
     /// answers. `reason` says why, and is what a lookup that misses it reports.
@@ -56,15 +56,15 @@ let entryDigest (name: string) (pattern: string) (command: string) (args: string
            | None -> "none") ]
 
 /// The directories a pattern's scope never reaches, by name: those its watcher's stream drops in
-/// the kernel (`Watcher.kernelExcludedDirs`) and build output (`Watcher.acceptsUnderRoot` drops
+/// the kernel (`WatchScope.kernelExcludedDirs`) and build output (`Watcher.acceptsUnderRoot` drops
 /// generated paths). Exactly the watcher's scope, so the key covers what runs the plugin.
 let internal ScopeExcludedDirs =
-    Set.union (set Watcher.kernelExcludedDirs) SafeWalk.BuildOutputDirs
+    Set.union (set WatchScope.kernelExcludedDirs) SafeWalk.BuildOutputDirs
 
 /// The files `pattern` declares under `repoRoot`, as (repo-relative path, absolute path), sorted
 /// ordinally, and the repo-relative directories the walk could not see: each may hold a match,
 /// so each is part of every key a pattern declares.
-let matches (repoRoot: string) (pattern: Watcher.FilePattern) : (string * string) list * string list =
+let matches (repoRoot: string) (pattern: WatchScope.FilePattern) : (string * string) list * string list =
     let root = Path.GetFullPath repoRoot
 
     let relative (abs: string) =
@@ -79,7 +79,7 @@ let matches (repoRoot: string) (pattern: Watcher.FilePattern) : (string * string
     let files =
         walked.Files
         |> List.map _.FullName
-        |> List.filter (Watcher.FilePattern.matches pattern)
+        |> List.filter (WatchScope.FilePattern.matches pattern)
         |> List.map (fun abs -> relative abs, abs)
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
 
@@ -131,3 +131,22 @@ let key
               first :: rest
               |> List.mapi (fun i spec ->
                   "inputs." + i.ToString(Globalization.CultureInfo.InvariantCulture), digest repoRoot spec) ]
+
+/// Plugin `plugin`'s key over `repoRoot` as it is now, graded by `producer`, when it declares its
+/// inputs (`key`); none when it declares none and is keyed by the whole tree. Reads the files it
+/// declares.
+let keyOf (repoRoot: string) (producer: string) (plugin: RequiredPlugin) : ActionKey.ActionKey option =
+    match plugin.Eligibility with
+    | LookupEligibility.DeclaredInputs(first, rest) -> Some(key repoRoot producer plugin.Name (first, rest))
+    | LookupEligibility.NoDeclaredInputs _ -> None
+
+/// The key of each plugin in `plugins` that declares its inputs (`keyOf`): what a tree's
+/// `Requirements.Subject.DeclaredInputKeys` holds.
+let declaredInputKeys
+    (repoRoot: string)
+    (producer: string)
+    (plugins: RequiredPlugin list)
+    : Map<string, ActionKey.ActionKey> =
+    plugins
+    |> List.choose (fun p -> keyOf repoRoot producer p |> Option.map (fun k -> p.Name, k))
+    |> Map.ofList

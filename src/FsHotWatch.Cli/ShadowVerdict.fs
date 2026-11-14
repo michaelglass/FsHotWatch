@@ -235,7 +235,7 @@ let ImpactScope = Requirements.ImpactScope
 type Configured =
     {
         /// The plugins the configuration registers, each with what its outcome is a function of
-        /// (`DaemonConfig.requiredPlugins`).
+        /// (`RequiredConfig.ofJson`).
         RequiredPlugins: PluginInputs.RequiredPlugin list
         /// The configured test projects, by the name their reports carry.
         TestProjects: string list
@@ -249,18 +249,12 @@ let coreConfigured (configured: Configured) : Requirements.Configured =
 /// Plugin `p`'s declared-input key over `o`'s worktree (`PluginInputs.key`, AUTOMATION-1577), or
 /// none when it declares no inputs and is keyed by the whole tree. Reads the files it declares.
 let declaredInputKey (o: Observation) (p: PluginInputs.RequiredPlugin) : ActionKey.ActionKey option =
-    match p.Eligibility with
-    | PluginInputs.LookupEligibility.DeclaredInputs(first, rest) ->
-        Some(PluginInputs.key o.Worktree o.Producer p.Name (first, rest))
-    | PluginInputs.LookupEligibility.NoDeclaredInputs _ -> None
+    PluginInputs.keyOf o.Worktree o.Producer p
 
 /// The keys of `o`'s tree with each plugin that declares its inputs keyed by them.
 let subjectFor (o: Observation) (configured: Configured) : Requirements.Subject =
     { subjectOf o with
-        DeclaredInputKeys =
-            configured.RequiredPlugins
-            |> List.choose (fun p -> declaredInputKey o p |> Option.map (fun key -> p.Name, key))
-            |> Map.ofList }
+        DeclaredInputKeys = PluginInputs.declaredInputKeys o.Worktree o.Producer configured.RequiredPlugins }
 
 /// The key plugin `name`'s outcome is filed and looked up under for `o` (AUTOMATION-1577). A
 /// plugin that declares its inputs is keyed by them (`PluginInputs.key`), so its last outcome
@@ -677,7 +671,7 @@ let configuredOf (repoRoot: string) : Result<Configured, string> =
         let required = DaemonConfig.configuredRequirements repoRoot
 
         Ok
-            { RequiredPlugins = DaemonConfig.configuredRequiredPlugins repoRoot
+            { RequiredPlugins = required.Plugins
               // Sorted, as the project map they were read from before (`TestEvidenceKey.configsOf`).
               TestProjects = List.sort required.TestProjects }
     with
