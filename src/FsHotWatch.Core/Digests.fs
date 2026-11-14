@@ -27,8 +27,13 @@ type DigestError =
     override this.ToString() =
         match this with
         | Null -> "a digest cannot be null"
-        | WrongLength length -> $"a digest is 64 characters, not {length}"
-        | NotLowercaseHex index -> $"a digest is lowercase hex; character {index} is not"
+        | WrongLength length ->
+            "a digest is 64 characters, not "
+            + length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        | NotLowercaseHex index ->
+            "a digest is lowercase hex; character "
+            + index.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " is not"
 
 /// The validation every digest role shares.
 module internal DigestText =
