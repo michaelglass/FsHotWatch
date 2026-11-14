@@ -98,13 +98,13 @@ let encode (kind: string) (inputs: (string * string) list) : string =
 /// kind, a kind containing a line break, or a label given twice.
 let create (kind: string) (inputs: (string * string) list) : ActionKey =
     if String.IsNullOrEmpty kind || kind.Contains '\n' then
-        invalidArg (nameof kind) $"an action kind must be non-empty and on one line: \"%s{kind}\""
+        invalidArg (nameof kind) $"an action kind must be non-empty and on one line: \"{kind}\""
 
     match inputs |> List.countBy fst |> List.filter (fun (_, n) -> n > 1) with
     | [] -> ()
     | duplicated ->
         let labels = duplicated |> List.map fst |> String.concat ", "
-        invalidArg (nameof inputs) $"an input label may appear once: %s{labels}"
+        invalidArg (nameof inputs) $"an input label may appear once: {labels}"
 
     { Kind = kind
       Value = KeyValue(Prefix + sha256Hex (encode kind inputs))

@@ -22,6 +22,7 @@
 module FsHotWatch.OutcomeStore
 
 open System
+open System.Globalization
 open System.IO
 open System.Text.Json
 open System.Text.Json.Nodes
@@ -425,7 +426,7 @@ type Store(settings: Settings) =
                 Path.Combine(quarantineDir, Path.GetFileName path + "." + Guid.NewGuid().ToString "N")
 
             File.Move(path, target)
-            settings.Log $"outcome store: quarantined %s{Path.GetFileName path}: %s{why}"
+            settings.Log $"outcome store: quarantined {Path.GetFileName path}: {why}"
 
             try
                 let note = JsonObject()
@@ -447,10 +448,9 @@ type Store(settings: Settings) =
                     note.ToJsonString()
                 )
             with ex ->
-                settings.Log
-                    $"outcome store: could not note why %s{Path.GetFileName target} is quarantined: %s{ex.Message}"
+                settings.Log $"outcome store: could not note why {Path.GetFileName target} is quarantined: {ex.Message}"
         with ex ->
-            settings.Log $"outcome store: could not quarantine %s{path}: %s{ex.Message}"
+            settings.Log $"outcome store: could not quarantine {path}: {ex.Message}"
 
     /// ONE read of `keyValue` (`OutcomeRecords.KeyRead.ofFiles`, in FsHotWatch.Core): a file that
     /// is not a record of the key is quarantined; one that could not be read moves nothing.
@@ -477,8 +477,14 @@ type Store(settings: Settings) =
 
         match keyRead with
         | OutcomeRecords.KeyRead.Unreadable(file, why) ->
-            settings.Log
-                $"outcome store: %s{Path.GetFileName file} could not be read, so %s{keyValue.Text} is a miss: %s{why}"
+            settings.Log(
+                "outcome store: "
+                + (Path.GetFileName file)
+                + " could not be read, so "
+                + keyValue.Text
+                + " is a miss: "
+                + why
+            )
         | OutcomeRecords.KeyRead.NothingFiled
         | OutcomeRecords.KeyRead.OnlyRejected _
         | OutcomeRecords.KeyRead.Answered _ ->
@@ -499,7 +505,7 @@ type Store(settings: Settings) =
     /// empty key (AUTOMATION-1615).
     let tryReadKeyFiles (keyValue: ActionKey.KeyValue) : Result<(Record * (string * string option)) list, string> =
         match readOnce keyValue with
-        | OutcomeRecords.KeyRead.Unreadable(file, why) -> Error $"%s{Path.GetFileName file} could not be read: %s{why}"
+        | OutcomeRecords.KeyRead.Unreadable(file, why) -> Error $"{Path.GetFileName file} could not be read: {why}"
         | OutcomeRecords.KeyRead.Answered(newest, older, _) ->
             [ for filed in older @ [ newest ] ->
                   let record, outputs = ofStored filed.Record
@@ -552,7 +558,15 @@ type Store(settings: Settings) =
             else
                 Ok(path, OutcomeRecords.Filing.AlreadyFiled)
         with ex ->
-            settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
+            settings.Log(
+                "outcome store: could not record "
+                + record.Key.Kind
+                + " "
+                + record.Subject
+                + ": "
+                + ex.Message
+            )
+
             Error ex.Message
 
     /// Delete every record file beside `kept`, under the same key.
@@ -562,7 +576,7 @@ type Store(settings: Settings) =
                 try
                     File.Delete other
                 with ex ->
-                    settings.Log $"outcome store: could not delete the superseded %s{other}: %s{ex.Message}"
+                    settings.Log $"outcome store: could not delete the superseded {other}: {ex.Message}"
 
     let holdsKeyValue (keyValue: ActionKey.KeyValue) : bool =
         let dir = directoryOf keyValue
@@ -607,7 +621,7 @@ type Store(settings: Settings) =
                            with ex ->
                                Error ex.Message)
                       with
-                      | Error why -> file, $"could not be read: %s{why}"
+                      | Error why -> file, $"could not be read: {why}"
                       | Ok text ->
                           match OutcomeRecords.RecordCodec.decode keyValue text with
                           | Error rejected -> file, OutcomeRecords.Rejected.describe rejected
@@ -650,7 +664,15 @@ type Store(settings: Settings) =
             writeOnce path (envelope payload) |> ignore
             true
         with ex ->
-            settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
+            settings.Log(
+                "outcome store: could not record "
+                + record.Key.Kind
+                + " "
+                + record.Subject
+                + ": "
+                + ex.Message
+            )
+
             false
 
     /// File `record` with `outputs` as its key's ONLY record (AUTOMATION-1587): file it as
@@ -672,11 +694,19 @@ type Store(settings: Settings) =
                     try
                         File.Delete other
                     with ex ->
-                        settings.Log $"outcome store: could not delete the superseded %s{other}: %s{ex.Message}"
+                        settings.Log $"outcome store: could not delete the superseded {other}: {ex.Message}"
 
             Some(FileInfo(path).Length)
         with ex ->
-            settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
+            settings.Log(
+                "outcome store: could not record "
+                + record.Key.Kind
+                + " "
+                + record.Subject
+                + ": "
+                + ex.Message
+            )
+
             None
 
     /// Every record of `keyValue`, oldest first.
@@ -824,7 +854,7 @@ type Store(settings: Settings) =
                               File.Delete s.File
                               yield e.Kind, s.Size
                           with ex ->
-                              settings.Log $"outcome store: could not trim %s{s.File}: %s{ex.Message}" ]
+                              settings.Log $"outcome store: could not trim {s.File}: {ex.Message}" ]
 
         let evicted =
             [ for e in expired @ List.ofSeq overBudget |> List.sortBy _.Newest do
@@ -838,7 +868,7 @@ type Store(settings: Settings) =
                            else
                                sizeLeft e)
                   with ex ->
-                      settings.Log $"outcome store: could not evict %s{e.Key.Text}: %s{ex.Message}" ]
+                      settings.Log $"outcome store: could not evict {e.Key.Text}: {ex.Message}" ]
 
         if not (evicted.IsEmpty && trimmedRecords.IsEmpty) then
             // "; check 3, format 1", or nothing when no record of any kind went that way.
@@ -849,7 +879,7 @@ type Store(settings: Settings) =
                     kinds
                     |> List.countBy id
                     |> List.sortBy fst
-                    |> List.map (fun (kind, n) -> $"%s{kind} %d{n}")
+                    |> List.map (fun (kind, n) -> $"{kind} {n.ToString(CultureInfo.InvariantCulture)}")
                     |> String.concat ", "
                     |> fun text -> before + text + after
 
@@ -857,18 +887,22 @@ type Store(settings: Settings) =
 
             let shareText =
                 share
-                |> Option.map (fun cap -> $"; a kind's share is %d{cap} byte(s)")
+                |> Option.map (fun cap -> $"; a kind's share is {cap.ToString(CultureInfo.InvariantCulture)} byte(s)")
                 |> Option.defaultValue ""
 
             let keyKinds = evicted |> List.map (fun (e, _) -> e.Kind) |> byKind "; " ""
             let trimmedKinds = trimmedRecords |> List.map fst |> byKind " (" ")"
 
             settings.Log(
-                $"outcome store: gc evicted %d{evicted.Length} key(s) (%d{expired.Length} past the ttl, "
-                + $"%d{overBudget.Count} over the byte budget of %d{settings.MaxBytes}%s{shareText}"
-                + $"%s{keyKinds}) and "
-                + $"%d{trimmedRecords.Length} superseded record(s)%s{trimmedKinds}, "
-                + $"%d{bytes} byte(s); %d{total.Value} byte(s) remain"
+                ("outcome store: gc evicted "
+                 + (evicted.Length.ToString(CultureInfo.InvariantCulture))
+                 + " key(s) ("
+                 + (expired.Length.ToString(CultureInfo.InvariantCulture))
+                 + " past the ttl, ")
+                + $"{overBudget.Count.ToString(CultureInfo.InvariantCulture)} over the byte budget of {settings.MaxBytes.ToString(CultureInfo.InvariantCulture)}{shareText}"
+                + $"{keyKinds}) and "
+                + $"{trimmedRecords.Length.ToString(CultureInfo.InvariantCulture)} superseded record(s){trimmedKinds}, "
+                + $"{bytes.ToString(CultureInfo.InvariantCulture)} byte(s); {total.Value.ToString(CultureInfo.InvariantCulture)} byte(s) remain"
             )
 
         evicted |> List.map (fun (e, _) -> e.Key)
@@ -905,7 +939,7 @@ type Store(settings: Settings) =
             with
             | :? IOException
             | :? UnauthorizedAccessException as ex ->
-                settings.Log $"outcome store: could not record the gc time in %s{stamp}: %s{ex.Message}"
+                settings.Log $"outcome store: could not record the gc time in {stamp}: {ex.Message}"
 
             GcRun.Ran evicted
 
@@ -974,8 +1008,7 @@ module Through =
     /// "nothing on file": it matches on `KeyRead` itself, never on `lookup`'s option.
     let tryHistory (store: OutcomeRecords.IOutcomeStore) (keyValue: ActionKey.KeyValue) : Result<Record list, string> =
         match store.Read keyValue with
-        | OutcomeRecords.KeyRead.Unreadable(file, why) ->
-            Error $"%s{IO.Path.GetFileName file} could not be read: %s{why}"
+        | OutcomeRecords.KeyRead.Unreadable(file, why) -> Error $"{IO.Path.GetFileName file} could not be read: {why}"
         | OutcomeRecords.KeyRead.Answered _ as read ->
             OutcomeRecords.KeyRead.history read |> List.map (ofStored >> fst) |> Ok
         | OutcomeRecords.KeyRead.NothingFiled
