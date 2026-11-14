@@ -61,64 +61,80 @@ let entryDigest (name: string) (pattern: string) (command: string) (args: string
 let internal ScopeExcludedDirs =
     Set.union (set WatchScope.kernelExcludedDirs) SafeWalk.BuildOutputDirs
 
-/// The files `pattern` declares under `repoRoot`, as (repo-relative path, absolute path), sorted
-/// ordinally, and the repo-relative directories the walk could not see: each may hold a match,
-/// so each is part of every key a pattern declares.
-let matches (repoRoot: string) (pattern: WatchScope.FilePattern) : (string * string) list * string list =
+/// What a watcher's scope holds under one repository root, walked ONCE and shared by every
+/// pattern declared over it (E5): each file outside `ScopeExcludedDirs`, as (repo-relative path,
+/// absolute path) sorted ordinally; the repo-relative directories the walk could not see, each of
+/// which may hold a match and so is part of every key; and the toolchain every command runs under.
+[<NoComparison; NoEquality>]
+type Scope =
+    private
+        { Files: (string * string) list
+          Holes: string list
+          Toolchain: Lazy<(string * string) list> }
+
+/// The scope of `repoRoot` as it is now: one walk of the root.
+let scopeOf (repoRoot: string) : Scope =
     let root = Path.GetFullPath repoRoot
 
     let relative (abs: string) =
         Path.GetRelativePath(root, abs).Replace('\\', '/')
 
-    // Every file, matched by the daemon's own rule (`FilePattern.matches`, case-insensitive) and
-    // never by the OS glob, which is case-sensitive on Linux: a narrower glob would leave out of
+    // Every file, matched later by the daemon's own rule (`FilePattern.matches`, case-insensitive)
+    // and never by the OS glob, which is case-sensitive on Linux: a narrower glob would leave out of
     // the key a file the watcher reacts to. Build output is pruned by name (`ScopeExcludedDirs`),
     // which is exactly the `/bin/`-or-`/obj/` segment rule `PathFilter.isGeneratedUnder` applies.
     let walked = SafeWalk.walk ScopeExcludedDirs "*" root
 
-    let files =
+    { Files =
         walked.Files
-        |> List.map _.FullName
-        |> List.filter (WatchScope.FilePattern.matches pattern)
-        |> List.map (fun abs -> relative abs, abs)
+        |> List.map (fun f -> relative f.FullName, f.FullName)
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
-
-    let holes =
+      Holes =
         walked.Skipped
         |> List.map (fun s -> relative s.Path)
         |> List.sortWith (fun a b -> String.CompareOrdinal(a, b))
+      // The tool-known root files, `.fshw.json` aside: each plugin's entry stands for it.
+      Toolchain =
+        lazy
+            (let config = FsHwPaths.configFile root
 
-    files, holes
+             VerdictInputs.toolKnownInputs repoRoot
+             |> List.filter (fun abs -> abs <> config)
+             |> List.map (fun abs -> "toolchain:" + relative abs, ContentHash.ofFile abs)) }
 
-/// The digest of one declared input set in `repoRoot` as it is now: each match's content, each
-/// hole as unreadable (fail closed), the plugin's configuration entry, and the toolchain every
-/// command runs under (the tool-known root files, `.fshw.json` aside: the entry stands for it).
-let digest (repoRoot: string) (spec: InputSpec) : string =
+/// The files `pattern` declares in `scope`, as (repo-relative path, absolute path), sorted
+/// ordinally, and the directories the walk could not see.
+let matchesIn (scope: Scope) (pattern: WatchScope.FilePattern) : (string * string) list * string list =
+    scope.Files
+    |> List.filter (fun (_, abs) -> WatchScope.FilePattern.matches pattern abs),
+    scope.Holes
+
+/// `matchesIn` over `repoRoot`'s scope as it is now.
+let matches (repoRoot: string) (pattern: WatchScope.FilePattern) : (string * string) list * string list =
+    matchesIn (scopeOf repoRoot) pattern
+
+/// The digest of one declared input set over `scope`: each match's content, each hole as
+/// unreadable (fail closed), the plugin's configuration entry, and the toolchain.
+let digestIn (scope: Scope) (spec: InputSpec) : string =
     match spec with
     | InputSpec.Matching(pattern, entry) ->
-        let files, holes = matches repoRoot pattern
-        let config = FsHwPaths.configFile (Path.GetFullPath repoRoot)
-
-        let toolchain =
-            VerdictInputs.toolKnownInputs repoRoot
-            |> List.filter (fun abs -> abs <> config)
-            |> List.map (fun abs ->
-                "toolchain:"
-                + Path.GetRelativePath(Path.GetFullPath repoRoot, abs).Replace('\\', '/'),
-                ContentHash.ofFile abs)
+        let files, holes = matchesIn scope pattern
 
         (files |> List.map (fun (rel, abs) -> "match:" + rel, ContentHash.ofFile abs))
         @ (holes
            |> List.map (fun rel -> "hole:" + rel + "/", ContentHash.UnhashableContent))
         @ [ "entry", entry ]
-        @ toolchain
+        @ scope.Toolchain.Value
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
         |> TreeHash.hashEntries
 
-/// The key a plugin's outcome is filed and looked up under when it declares its inputs: the
-/// plugin, the binary that grades it, and the digest of each declared input set.
-let key
-    (repoRoot: string)
+/// `digestIn` over `repoRoot`'s scope as it is now.
+let digest (repoRoot: string) (spec: InputSpec) : string = digestIn (scopeOf repoRoot) spec
+
+/// The key a plugin's outcome is filed and looked up under when it declares its inputs, over
+/// `scope`: the plugin, the binary that grades it, and the digest of each declared input set.
+let keyIn
+    (scope: Scope)
     (producer: string)
     (name: string)
     (first: InputSpec, rest: InputSpec list)
@@ -130,7 +146,16 @@ let key
           yield!
               first :: rest
               |> List.mapi (fun i spec ->
-                  "inputs." + i.ToString(Globalization.CultureInfo.InvariantCulture), digest repoRoot spec) ]
+                  "inputs." + i.ToString(Globalization.CultureInfo.InvariantCulture), digestIn scope spec) ]
+
+/// `keyIn` over `repoRoot`'s scope as it is now.
+let key
+    (repoRoot: string)
+    (producer: string)
+    (name: string)
+    (first: InputSpec, rest: InputSpec list)
+    : ActionKey.ActionKey =
+    keyIn (scopeOf repoRoot) producer name (first, rest)
 
 /// How a required plugin's outcome is keyed over one tree.
 [<RequireQualifiedAccess; NoComparison>]
@@ -145,13 +170,17 @@ type Keying =
 [<NoComparison>]
 type Keyed = { Name: string; Keying: Keying }
 
-/// `plugin` resolved over `repoRoot` as it is now, graded by `producer`: a plugin that declares
-/// its inputs is keyed by them (`key`, which reads the files the pattern matches in the watcher's
-/// scope), every other by the whole tree. The caller's IO, as hashing the tree is.
-let keyed (repoRoot: string) (producer: string) (plugin: RequiredPlugin) : Keyed =
+/// `plugin` resolved over a scope walked at most once, however many plugins share it (E5): a
+/// plugin that declares its inputs is keyed by them (`keyIn`) and forces the walk; one keyed by
+/// the whole tree never does. The caller's IO, as hashing the tree is.
+let keyedIn (scope: Lazy<Scope>) (producer: string) (plugin: RequiredPlugin) : Keyed =
     { Name = plugin.Name
       Keying =
         match plugin.Eligibility with
         | LookupEligibility.DeclaredInputs(first, rest) ->
-            Keying.DeclaredInputs(key repoRoot producer plugin.Name (first, rest))
+            Keying.DeclaredInputs(keyIn scope.Value producer plugin.Name (first, rest))
         | LookupEligibility.NoDeclaredInputs _ -> Keying.WholeTree }
+
+/// `keyedIn` over `repoRoot`'s scope as it is now, for one plugin.
+let keyed (repoRoot: string) (producer: string) (plugin: RequiredPlugin) : Keyed =
+    keyedIn (lazy (scopeOf repoRoot)) producer plugin
