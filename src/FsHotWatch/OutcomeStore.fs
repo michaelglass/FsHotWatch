@@ -34,11 +34,7 @@ let Schema = "fshw-outcome-v1"
 type Outcome = LookupVerdict.Outcome
 
 /// Test counts, for an action that ran tests.
-type Counts =
-    { Total: int
-      Passed: int
-      Failed: int
-      Skipped: int }
+type Counts = OutcomeRecords.Counts
 
 /// Who produced a record.
 type Producer =
@@ -108,133 +104,61 @@ let defaultMaxBytes = 2048L * 1024L * 1024L
 let directoryFor (repoRoot: string) =
     Path.Combine(FsHwPaths.sharedCacheHome (), "cache", "outcomes", RepoIdentity.namespaceOf repoRoot, "v1")
 
-let private outcomeToken =
-    function
-    | Outcome.Pass -> "pass"
-    | Outcome.Fail -> "fail"
-
-let private serializePayload (r: Record) (outputs: string option) : string =
-    let o = JsonObject()
-    o["key"] <- r.Key.Value.Text
-    o["kind"] <- r.Key.Kind
-    let inputs = JsonArray()
-
-    for (label, digest) in r.Key.Inputs do
-        inputs.Add(JsonArray(JsonValue.Create label, JsonValue.Create digest))
-
-    o["inputs"] <- inputs
-    o["subject"] <- r.Subject
-    o["outcome"] <- outcomeToken r.Outcome
-
-    match r.Counts with
-    | Some c ->
-        let counts = JsonObject()
-        counts["total"] <- c.Total
-        counts["passed"] <- c.Passed
-        counts["failed"] <- c.Failed
-        counts["skipped"] <- c.Skipped
-        o["counts"] <- counts
-    | None -> ()
-
-    match r.DurationMs with
-    | Some ms -> o["durationMs"] <- ms
-    | None -> ()
-
-    let producer = JsonObject()
-    producer["binary"] <- r.Producer.Binary
-    producer["worktree"] <- r.Producer.Worktree
-
-    match r.Producer.RunId with
-    | Some run -> producer["runId"] <- run
-    | None -> ()
-
-    o["producer"] <- producer
-    o["recordedAt"] <- r.RecordedAt.ToString("o")
-
-    // ADR-059 §14: what the action produced, for a kind whose record carries outputs.
-    match outputs with
-    | Some text -> o["outputs"] <- JsonNode.Parse text
-    | None -> ()
-
-    o.ToJsonString()
-
-let private required (el: JsonElement) (name: string) : JsonElement =
-    match Json.tryProp el name with
-    | Some v -> v
-    | None -> raise (FormatException $"no %s{name}")
-
-let private parsePayload (payload: string) : Record * string option =
-    use doc = JsonDocument.Parse payload
-    let o = doc.RootElement
-    let str (el: JsonElement) name = (required el name).GetString()
-
-    let inputs =
-        (required o "inputs").EnumerateArray()
-        |> Seq.map (fun pair -> pair[0].GetString(), pair[1].GetString())
-        |> Seq.toList
-
-    let key = ActionKey.create (str o "kind") inputs
-
-    if key.Value.Text <> str o "key" then
-        raise (FormatException "the inputs do not fold to the stated key")
-
-    let outcome =
-        match str o "outcome" with
-        | "pass" -> Outcome.Pass
-        | "fail" -> Outcome.Fail
-        | other -> raise (FormatException $"unknown outcome %s{other}")
-
-    let producer = required o "producer"
-
-    let outputs =
-        Json.tryProp o "outputs"
-        |> Option.map (fun (el: JsonElement) -> el.GetRawText())
-
-    { Key = key
-      Subject = str o "subject"
-      Outcome = outcome
-      Counts =
-        Json.tryProp o "counts"
-        |> Option.map (fun c ->
-            { Total = (required c "total").GetInt32()
-              Passed = (required c "passed").GetInt32()
-              Failed = (required c "failed").GetInt32()
-              Skipped = (required c "skipped").GetInt32() })
-      DurationMs = Json.tryProp o "durationMs" |> Option.map _.GetInt64()
+/// `r` (with `outputs`) as FsHotWatch.Core's codec holds it (AUTOMATION-1695, L1). Counts and a
+/// duration belong to a test run (`OutcomeRecords.Ran.TestRun`); a run id without counts is what
+/// a run earned (`InRun`); neither is an action that ran no tests. No writer files a duration
+/// without counts, and it is not carried.
+let toStored (r: Record) (outputs: string option) : OutcomeRecords.StoredRecord =
+    { Key = r.Key
+      Subject = r.Subject
+      Outcome = r.Outcome
+      Ran =
+        match r.Counts, r.Producer.RunId with
+        | Some counts, runId ->
+            OutcomeRecords.Ran.TestRun
+                { RunId = runId
+                  Counts = counts
+                  DurationMs = r.DurationMs }
+        | None, Some runId -> OutcomeRecords.Ran.InRun runId
+        | None, None -> OutcomeRecords.Ran.NonTest
       Producer =
-        { Binary = str producer "binary"
-          Worktree = str producer "worktree"
-          RunId = Json.tryString producer "runId" }
-      RecordedAt = DateTimeOffset.Parse(str o "recordedAt", Globalization.CultureInfo.InvariantCulture) },
-    outputs
+        { Binary = r.Producer.Binary
+          Worktree = r.Producer.Worktree }
+      RecordedAt = r.RecordedAt
+      Outputs = outputs }
+
+/// A stored record as this module's `Record`, with its outputs.
+let ofStored (s: OutcomeRecords.StoredRecord) : Record * string option =
+    let counts, durationMs, runId =
+        match s.Ran with
+        | OutcomeRecords.Ran.TestRun run -> Some run.Counts, run.DurationMs, run.RunId
+        | OutcomeRecords.Ran.InRun runId -> None, None, Some runId
+        | OutcomeRecords.Ran.NonTest -> None, None, None
+
+    { Key = s.Key
+      Subject = s.Subject
+      Outcome = s.Outcome
+      Counts = counts
+      DurationMs = durationMs
+      Producer =
+        { Binary = s.Producer.Binary
+          Worktree = s.Producer.Worktree
+          RunId = runId }
+      RecordedAt = s.RecordedAt },
+    s.Outputs
+
+/// The payload text of `r`: FsHotWatch.Core's codec (`OutcomeRecords.RecordCodec`).
+let private serializePayload (r: Record) (outputs: string option) : string =
+    OutcomeRecords.RecordCodec.encodePayload (toStored r outputs)
 
 let private envelope (payload: string) : string =
-    let o = JsonObject()
-    o["schema"] <- Schema
-    o["checksum"] <- ContentHash.ofText payload
-    o["payload"] <- payload
-    o.ToJsonString()
+    OutcomeRecords.RecordCodec.envelope payload
 
 /// Read an envelope back: the record, or why it is not one.
 let private decode (text: string) : Result<Record * string option, string> =
-    try
-        use doc = JsonDocument.Parse text
-        let o = doc.RootElement
-
-        match Json.tryString o "schema" with
-        | None -> Error "no schema"
-        | Some schema when schema <> Schema -> Error $"unknown schema %s{schema}"
-        | Some _ ->
-            match Json.tryString o "checksum", Json.tryString o "payload" with
-            | Some checksum, Some payload when ContentHash.ofText payload = checksum -> Ok(parsePayload payload)
-            | Some _, Some _ -> Error "checksum mismatch"
-            | _ -> Error "no payload"
-    with
-    | :? JsonException as ex -> Error ex.Message
-    | :? FormatException as ex -> Error ex.Message
-    | :? InvalidOperationException as ex -> Error ex.Message
-    | :? ArgumentException as ex -> Error ex.Message
-    | :? IndexOutOfRangeException as ex -> Error ex.Message
+    OutcomeRecords.RecordCodec.decodeAny text
+    |> Result.map ofStored
+    |> Result.mapError OutcomeRecords.Rejected.describe
 
 /// Newest last; at the same instant a pass sorts before a fail, so the last is the fail.
 let private chronological (records: (Record * 'a) list) =
@@ -417,6 +341,41 @@ type Store(settings: Settings) =
         with ex ->
             settings.Log $"outcome store: could not quarantine %s{path}: %s{ex.Message}"
 
+    /// ONE read of `keyValue` (`OutcomeRecords.KeyRead.ofFiles`, in FsHotWatch.Core): a file that
+    /// is not a record of the key is quarantined; one that could not be read moves nothing.
+    let readOnce (keyValue: ActionKey.KeyValue) : OutcomeRecords.KeyRead =
+        let dir = directoryOf keyValue
+
+        let files =
+            if Directory.Exists dir then
+                Directory.GetFiles(dir, "*.json")
+            else
+                [||]
+
+        let read =
+            files
+            |> Array.toList
+            |> List.map (fun file ->
+                file,
+                (try
+                    Ok(File.ReadAllText file)
+                 with ex ->
+                     Error ex.Message))
+
+        let keyRead = OutcomeRecords.KeyRead.ofFiles keyValue read
+
+        match keyRead with
+        | OutcomeRecords.KeyRead.Unreadable(file, why) ->
+            settings.Log
+                $"outcome store: %s{Path.GetFileName file} could not be read, so %s{keyValue.Text} is a miss: %s{why}"
+        | OutcomeRecords.KeyRead.NothingFiled
+        | OutcomeRecords.KeyRead.OnlyRejected _
+        | OutcomeRecords.KeyRead.Answered _ ->
+            for file, why in OutcomeRecords.KeyRead.rejected keyRead do
+                quarantine file (OutcomeRecords.Rejected.describe why)
+
+        keyRead
+
     /// Every record filed under `keyValue` with its file and outputs, oldest first. A file
     /// that was read and is not a record of THAT key is quarantined and left out.
     ///
@@ -428,44 +387,15 @@ type Store(settings: Settings) =
     /// either way. `Error` names the file and why, for a reader that must not take it for an
     /// empty key (AUTOMATION-1615).
     let tryReadKeyFiles (keyValue: ActionKey.KeyValue) : Result<(Record * (string * string option)) list, string> =
-        let dir = directoryOf keyValue
-
-        let files =
-            if Directory.Exists dir then
-                Directory.GetFiles(dir, "*.json")
-            else
-                [||]
-
-        let read =
-            files
-            |> Array.map (fun file ->
-                file,
-                (try
-                    Ok(File.ReadAllText file)
-                 with ex ->
-                     Error ex.Message))
-
-        let unreadable =
-            read
-            |> Array.tryPick (fun (file, text) ->
-                match text with
-                | Error why -> Some(file, why)
-                | Ok _ -> None)
-
-        match unreadable with
-        | Some(file, why) ->
-            settings.Log
-                $"outcome store: %s{Path.GetFileName file} could not be read, so %s{keyValue.Text} is a miss: %s{why}"
-
-            Error $"%s{Path.GetFileName file} could not be read: %s{why}"
-        | None ->
-            [ for file, text in read do
-                  match text |> Result.bind decode with
-                  | Ok(record, outputs) when record.Key.Value = keyValue -> yield record, (file, outputs)
-                  | Ok _ -> quarantine file "the record is filed under another key"
-                  | Error why -> quarantine file why ]
-            |> chronological
+        match readOnce keyValue with
+        | OutcomeRecords.KeyRead.Unreadable(file, why) -> Error $"%s{Path.GetFileName file} could not be read: %s{why}"
+        | OutcomeRecords.KeyRead.Answered(newest, older, _) ->
+            [ for filed in older @ [ newest ] ->
+                  let record, outputs = ofStored filed.Record
+                  record, (filed.File, outputs) ]
             |> Ok
+        | OutcomeRecords.KeyRead.NothingFiled
+        | OutcomeRecords.KeyRead.OnlyRejected _ -> Ok []
 
     let readKeyFiles (keyValue: ActionKey.KeyValue) : (Record * (string * string option)) list =
         tryReadKeyFiles keyValue |> Result.defaultValue []
@@ -488,20 +418,42 @@ type Store(settings: Settings) =
 
             try
                 File.Move(temporary, path, false)
+                true
             with :? IOException when File.Exists path ->
                 // Filed already: the name is the digest of the content, so it holds these bytes.
-                ()
+                false
         finally
             if File.Exists temporary then
                 File.Delete temporary
 
-    member _.Root = root
+    /// File `record`'s bytes once: the path it is filed at and whether this call filed it, or why
+    /// it could not be filed. Never throws.
+    let fileOnce (record: OutcomeRecords.StoredRecord) : Result<string * OutcomeRecords.Filing, string> =
+        try
+            let payload = OutcomeRecords.RecordCodec.encodePayload record
 
-    /// Whether any record file is filed under `key`, by name alone: no payload is read,
-    /// checksummed or verified (AUTOMATION-1609). A corrupt record answers yes here; it is a
-    /// miss, and quarantined, where it is read (`History`, `LookupWithOutputs`).
-    member _.HoldsKey(key: ActionKey.ActionKey) : bool =
-        let dir = directoryOf key.Value
+            let path =
+                Path.Combine(directoryOf record.Key.Value, OutcomeRecords.RecordCodec.fileName payload)
+
+            if writeOnce path (OutcomeRecords.RecordCodec.envelope payload) then
+                Ok(path, OutcomeRecords.Filing.Filed)
+            else
+                Ok(path, OutcomeRecords.Filing.AlreadyFiled)
+        with ex ->
+            settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
+            Error ex.Message
+
+    /// Delete every record file beside `kept`, under the same key.
+    let deleteOthers (kept: string) =
+        for other in Directory.GetFiles(Path.GetDirectoryName kept, "*.json") do
+            if not (String.Equals(other, kept, StringComparison.Ordinal)) then
+                try
+                    File.Delete other
+                with ex ->
+                    settings.Log $"outcome store: could not delete the superseded %s{other}: %s{ex.Message}"
+
+    let holdsKeyValue (keyValue: ActionKey.KeyValue) : bool =
+        let dir = directoryOf keyValue
 
         try
             Directory.Exists dir
@@ -509,6 +461,13 @@ type Store(settings: Settings) =
         with :? DirectoryNotFoundException ->
             // GC removed the key between the two calls: nothing is filed.
             false
+
+    member _.Root = root
+
+    /// Whether any record file is filed under `key`, by name alone: no payload is read,
+    /// checksummed or verified (AUTOMATION-1609). A corrupt record answers yes here; it is a
+    /// miss, and quarantined, where it is read (`History`, `LookupWithOutputs`).
+    member _.HoldsKey(key: ActionKey.ActionKey) : bool = holdsKeyValue key.Value
 
     /// The directory the records of `keyValue` are filed in.
     member _.DirectoryOf(keyValue: ActionKey.KeyValue) = directoryOf keyValue
@@ -526,7 +485,7 @@ type Store(settings: Settings) =
             let path =
                 Path.Combine(directoryOf record.Key.Value, ContentHash.ofText payload + ".json")
 
-            writeOnce path (envelope payload)
+            writeOnce path (envelope payload) |> ignore
             true
         with ex ->
             settings.Log $"outcome store: could not record %s{record.Key.Kind} %s{record.Subject}: %s{ex.Message}"
@@ -544,7 +503,7 @@ type Store(settings: Settings) =
             let payload = serializePayload record outputs
             let dir = directoryOf record.Key.Value
             let path = Path.Combine(dir, ContentHash.ofText payload + ".json")
-            writeOnce path (envelope payload)
+            writeOnce path (envelope payload) |> ignore
 
             for other in Directory.GetFiles(dir, "*.json") do
                 if not (String.Equals(other, path, StringComparison.Ordinal)) then
@@ -787,6 +746,24 @@ type Store(settings: Settings) =
                 settings.Log $"outcome store: could not record the gc time in %s{stamp}: %s{ex.Message}"
 
             GcRun.Ran evicted
+
+    /// L1 (AUTOMATION-1695): this store as FsHotWatch.Core's `IOutcomeStore`.
+    interface OutcomeRecords.IOutcomeStore with
+        member _.Read keyValue = readOnce keyValue
+        member _.HoldsKey keyValue = holdsKeyValue keyValue
+
+        member _.File record =
+            match fileOnce record with
+            | Ok(_, filing) -> filing
+            | Error why -> OutcomeRecords.Filing.NotFiled why
+
+        member _.Supersede record =
+            match fileOnce record with
+            | Ok(path, filing) ->
+                deleteOthers path
+                filing
+            | Error why -> OutcomeRecords.Filing.NotFiled why
+
 
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =

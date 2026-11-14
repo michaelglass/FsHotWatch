@@ -36,6 +36,7 @@
     <Compile Include="LegacyActionKey.fs" />
     <Compile Include="LookupVerdict.fs" />
     <Compile Include="Requirements.fs" />
+    <Compile Include="OutcomeRecords.fs" />
   </ItemGroup>
 
   <ItemGroup>
