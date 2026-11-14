@@ -11,6 +11,10 @@
   lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
   when lines were dropped.
 
+- refactor: R(c, T), the requirement set a lookup verdict is decided over, moves into `FsHotWatch.Core` as module
+  `Requirements` (AUTOMATION-1695): `Configured`, `Command` (Check | Confirm), `Subject` (tree, producer, K_P keys),
+  the key functions and `requirements`. The keys and requirements are unchanged.
+
 - refactor: `ActionKey` and `LookupVerdict` (with the record outcome `Pass | Fail`) move into `FsHotWatch.Core.dll`, which
   this package carries, under the same module names (AUTOMATION-1695, re-architecture Phase 1: the correctness core
   into a project with no FCS reference). `OutcomeStore.Outcome` is now an abbreviation of `LookupVerdict.Outcome`, so
