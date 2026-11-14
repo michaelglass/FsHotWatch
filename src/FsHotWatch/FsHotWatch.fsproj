@@ -72,11 +72,8 @@
     <Compile Include="PidFile.fs" />
     <Compile Include="SnapshotEpoch.fs" />
     <Compile Include="DaemonIdentity.fs" />
-    <Compile Include="MacAttrList.fs" />
-    <Compile Include="StoredName.fs" />
     <Compile Include="FileStamp.fs" />
     <Compile Include="Interruption.fs" />
-    <Compile Include="RepositoryIdentity.fs" />
     <Compile Include="PathToken.fs" />
     <Compile Include="AttachHandshake.fs" />
     <Compile Include="WatchRouter.fs" />
@@ -96,7 +93,6 @@
     <Compile Include="FileTaskCache.fs" />
     <Compile Include="DotnetToolchain.fs" />
     <Compile Include="SdkChoice.fs" />
-    <Compile Include="RepoIdentity.fs" />
     <Compile Include="NamespaceReclaim.fs" />
     <Compile Include="CacheResidency.fs" />
     <Compile Include="PluginWorkOwner.fs" />
@@ -114,7 +110,6 @@
     <Compile Include="RunLog.fs" />
     <Compile Include="TestEvidenceKey.fs" />
     <Compile Include="TestEvidenceStore.fs" />
-    <Compile Include="OutcomeStore.fs" />
     <Compile Include="TestFailureClearance.fs" />
     <Compile Include="MetadataRows.fs" />
     <Compile Include="OutputIdentity.fs" />

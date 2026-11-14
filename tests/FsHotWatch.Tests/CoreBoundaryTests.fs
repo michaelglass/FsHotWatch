@@ -38,5 +38,45 @@ let ``FsHotWatch.Core references nothing but the runtime, FSharp.Core and Ignore
 /// something.
 [<Fact>]
 let ``the boundary check flags FCS in an assembly that references it`` () =
-    let daemon = typeof<FsHotWatch.OutcomeStore.Store>.Assembly
+    let daemon = typeof<FsHotWatch.RecordAudit.Report>.Assembly
+    test <@ daemon.GetName().Name = "FsHotWatch" @>
     test <@ forbidden daemon |> List.contains "FSharp.Compiler.Service" @>
+
+/// RepoIdentity names the outcome store's directory with a digest it took from CheckCache, which
+/// stays on the FCS side; in Core it takes ContentHash.ofText. If the two ever differed, every
+/// existing record on every machine would silently become a miss: a box-wide cold scan.
+/// The namespace of `root` as the code before the move computed it: the same label, and the
+/// digest from `CheckCache.sha256Hex`.
+let private namespaceByCheckCache (root: string) =
+    let fresh = FsHotWatch.RepoIdentity.namespaceOf root
+    let label = fresh.Substring(0, fresh.LastIndexOf '-')
+
+    let digest =
+        (FsHotWatch.CheckCache.sha256Hex (
+            FsHotWatch.RepoIdentity.identitySource (FsHotWatch.RepoIdentity.describe root)
+        ))
+            .Substring(0, 16)
+
+    $"%s{label}-%s{digest}"
+
+/// Real checkouts: this repository's, and any named in `FSHW_TEST_NAMESPACE_CHECKOUTS`
+/// (`:`-separated; a consumer's checkout, such as intelligence's, on a machine that has one).
+[<Fact>]
+let ``a real checkout's store namespace is the same by the old digest and the new`` () =
+    let extra =
+        match Environment.GetEnvironmentVariable "FSHW_TEST_NAMESPACE_CHECKOUTS" with
+        | null
+        | "" -> []
+        | paths -> paths.Split(':', StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+    for root in
+        FsHotWatch.Tests.RepoTasks.repoRoot () :: extra
+        |> List.filter IO.Directory.Exists do
+        test <@ FsHotWatch.RepoIdentity.namespaceOf root = namespaceByCheckCache root @>
+
+/// The golden: an identity source's digest, pinned as a literal (a jj common store at a fixed path).
+[<Fact>]
+let ``the store namespace digest is pinned`` () =
+    let source = "jj:/srv/fixture/repo/.jj/repo"
+    test <@ (FsHotWatch.ContentHash.ofText source).Substring(0, 16) = "8694552984cbbef6" @>
+    test <@ FsHotWatch.ContentHash.ofText source = FsHotWatch.CheckCache.sha256Hex source @>

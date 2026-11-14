@@ -11,6 +11,12 @@
   lines the cap dropped from the run's log. The IPC `lastRun` object carries it as `activityDropped`, present only
   when lines were dropped.
 
+- refactor: the outcome store (`OutcomeStore`, its disk backend of `IOutcomeStore`) and the repository identity that
+  names its directory (`RepositoryIdentity`, `RepoIdentity`, `StoredName`, `MacAttrList`) move into `FsHotWatch.Core.dll`
+  under their own module names (AUTOMATION-1695). The store's directory is unchanged: `RepoIdentity` takes Core's
+  `ContentHash.ofText`, the same SHA-256 as `CheckCache.sha256Hex`. `IdentityError.InvalidPath`'s message quotes the path
+  with `%s`, not `%A` (Core compiles with `--reflectionfree`).
+
 - refactor: the tree walk and hash move into `FsHotWatch.Core.dll` under their own module names (AUTOMATION-1695,
   experiment E5): `TreeHash`, `VerdictInputs`, `ConfiguredTestRoots`, `Discovery`, `PathFilter`, `SafeWalk`, `FsHwPaths`,
   `ContentHash`, `Json`, `Logging` and `Locking`. No caller changes. Core now references `Ignore`, its one dependency besides
