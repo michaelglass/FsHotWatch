@@ -9,10 +9,10 @@
 // Prints each reference assembly it copied, relative to the root. Exit 0: none was stale.
 // Exit 10: some were, and every one was copied. Exit 1: one could not be copied (it stays stale,
 // and a build over it is not to be believed). Exit 2: no solution to read.
-#load "../src/FsHotWatch/Locking.fs"
-#load "../src/FsHotWatch/Logging.fs"
-#load "../src/FsHotWatch/SafeWalk.fs"
-#load "../src/FsHotWatch/ContentHash.fs"
+#load "../src/FsHotWatch.Core/Locking.fs"
+#load "../src/FsHotWatch.Core/Logging.fs"
+#load "../src/FsHotWatch.Core/SafeWalk.fs"
+#load "../src/FsHotWatch.Core/ContentHash.fs"
 #load "../src/FsHotWatch/RefAssemblyFreshness.fs"
 
 open System
