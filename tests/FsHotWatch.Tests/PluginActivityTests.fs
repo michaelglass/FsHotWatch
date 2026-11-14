@@ -1,6 +1,7 @@
 module FsHotWatch.Tests.PluginActivityTests
 
 open System
+open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -314,3 +315,92 @@ let ``StartSubtask then EndSubtask sequentially leaves no open subtasks`` () =
         s.EndSubtask("p", k)
 
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
+
+// AUTOMATION-1703: live recordings past the global cap with no history left to evict.
+// Each line is 80_000 bytes (40_000 chars * 2), so 26 fit under the 2 MB cap and the
+// 64-line tail holds 5 MB.
+let private capLine i = sprintf "%05d" i + String('x', 39_995)
+
+let private logPastTheCap (s: State) (plugin: string) =
+    // Run on the pool and bound the wait, so a regression to the spinning loop fails
+    // this test instead of hanging the suite.
+    let logging =
+        Task.Run(fun () ->
+            for i in 1..64 do
+                s.Log(plugin, capLine i))
+
+    logging.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult()
+
+[<Fact(Timeout = 15000)>]
+let ``Log past the global cap with no history to evict returns`` () =
+    let s = State()
+    logPastTheCap s "p"
+    test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
+
+let private tailBytes (tail: string list) =
+    tail |> List.sumBy (fun l -> l.Length * 2)
+
+[<Fact(Timeout = 15000)>]
+let ``Log past the cap drops the oldest live lines behind one counted marker`` () =
+    let s = State()
+    logPastTheCap s "p"
+    let tail = s.GetActivityTail "p"
+    // 26 lines fit beside the marker; the other 38 were dropped, oldest first.
+    test <@ List.head tail = "… 38 earlier lines dropped (activity cap)" @>
+    test <@ List.tail tail = [ for i in 39..64 -> capLine i ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``Log past the cap keeps the byte accounting exact`` () =
+    let s = State()
+    logPastTheCap s "p"
+    // Every byte counted is a byte still visible, marker included.
+    test <@ s.TotalByteSize = tailBytes (s.GetActivityTail "p") @>
+
+    let t = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+    s.RecordTerminal("p", CompletedRun, t, t.AddMilliseconds(1.0))
+    let record = s.GetHistory "p" |> List.exactlyOne
+    test <@ List.head record.ActivityTail = "… 38 earlier lines dropped (activity cap)" @>
+    test <@ s.TotalByteSize = tailBytes record.ActivityTail @>
+
+[<Fact(Timeout = 15000)>]
+let ``ResetRun after a capped recording releases every byte, marker included`` () =
+    let s = State()
+    logPastTheCap s "p"
+    s.ResetRun "p"
+    test <@ s.TotalByteSize = 0 @>
+    // A fresh recording starts without the old marker.
+    s.Log("p", "next")
+    test <@ s.GetActivityTail "p" = [ "next" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``the cap trims the plugin holding the most live log bytes`` () =
+    let s = State()
+    s.Log("q", "quiet")
+    logPastTheCap s "p"
+    test <@ s.GetActivityTail "q" = [ "quiet" ] @>
+    test <@ s.TotalByteSize = tailBytes (s.GetActivityTail "p") + tailBytes [ "quiet" ] @>
+    test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
+
+// Both registration orders, so the cap compares a history victim with a live one
+// whichever it meets first.
+[<Theory(Timeout = 15000)>]
+[<InlineData(true)>]
+[<InlineData(false)>]
+let ``the cap evicts history before it trims a live recording`` (historyFirst: bool) =
+    let s = State()
+    let t = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+
+    let recordHistory () =
+        s.Log("h", "old")
+        s.RecordTerminal("h", CompletedRun, t, t.AddMilliseconds(1.0))
+
+    if historyFirst then
+        recordHistory ()
+        logPastTheCap s "p"
+    else
+        s.Log("p", "first")
+        recordHistory ()
+        logPastTheCap s "p"
+
+    test <@ List.isEmpty (s.GetHistory "h") @>
+    test <@ s.TotalByteSize = tailBytes (s.GetActivityTail "p") @>

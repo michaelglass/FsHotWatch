@@ -75,6 +75,22 @@ let private runRecordBytes (r: RunRecord) =
 
 let private subtaskBytes (t: Subtask) = stringBytes t.Key + stringBytes t.Label
 
+/// Whether the global cap has trimmed a live recording's log. Only `Dropped` has a
+/// count, and it is at least 1, so a recording that lost nothing renders no marker.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type private CapTrim =
+    | Intact
+    | Dropped of count: int
+
+let private capMarker (count: int) =
+    let noun = if count = 1 then "line" else "lines"
+    sprintf "… %d earlier %s dropped (activity cap)" count noun
+
+let private capTrimBytes (trim: CapTrim) =
+    match trim with
+    | CapTrim.Intact -> 0
+    | CapTrim.Dropped count -> stringBytes (capMarker count)
+
 /// State held while a plugin run is in progress. Only the `Recording` phase
 /// has these fields — once `RecordTerminal` commits the run to history, the
 /// phase flips back to `Idle` and this state is released.
@@ -83,6 +99,10 @@ type private RecordingState =
     {
         Subtasks: Dictionary<string, Subtask>
         ActivityLog: Queue<string>
+        /// Lines the global cap dropped from the front of `ActivityLog`, rendered
+        /// as one marker line ahead of the tail. Lines the 64-line ring drops are
+        /// not counted: the tail is a tail by design.
+        mutable CapTrim: CapTrim
         mutable SummaryOverride: string option
         mutable SummaryBytes: int
         /// Override applied to the next RecordTerminal call. Plugins set this
@@ -94,9 +114,25 @@ type private RecordingState =
     static member Create() =
         { Subtasks = Dictionary<string, Subtask>()
           ActivityLog = Queue<string>()
+          CapTrim = CapTrim.Intact
           SummaryOverride = None
           SummaryBytes = 0
           OutcomeOverride = None }
+
+/// The activity tail as readers see it: the cap marker, if any, then the kept lines.
+let private renderedTail (r: RecordingState) : string list =
+    let lines = List.ofSeq r.ActivityLog
+
+    match r.CapTrim with
+    | CapTrim.Intact -> lines
+    | CapTrim.Dropped count -> capMarker count :: lines
+
+/// Every byte a recording holds, as `addBytes` counted it.
+let private recordingBytes (r: RecordingState) =
+    (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
+    + (r.ActivityLog |> Seq.sumBy stringBytes)
+    + capTrimBytes r.CapTrim
+    + r.SummaryBytes
 
 /// Phase of a plugin's activity tracking. `Idle` carries no in-progress data,
 /// so calling `RecordTerminal` on an `Idle` plugin cannot accidentally splice
@@ -112,6 +148,13 @@ type private PerPlugin =
       mutable Phase: ActivityPhase
       History: Queue<RunRecord>
       mutable Bytes: int }
+
+/// What the global cap frees next: the oldest history entry across all plugins,
+/// else the oldest log line of the live recording holding the most log bytes.
+[<NoComparison; NoEquality>]
+type private CapVictim =
+    | OldestHistory of PerPlugin * startedAt: DateTime
+    | OldestLiveLine of PerPlugin * logBytes: int
 
 /// Snapshot of a plugin's current activity state — taken under one lock.
 type Snapshot =
@@ -138,37 +181,75 @@ type State() =
                 plugins.[name] <- p
                 p)
 
-    let enforceGlobalCap () =
-        // Called after additions. Evict oldest history entries across all plugins
-        // until under budget. Each plugin updates totalBytes + its own Bytes when it
-        // evicts, so we only need to find the global oldest each iteration.
-        while totalBytes > maxTotalBytes do
-            let mutable candidate: (PerPlugin * DateTime) option = None
-
-            Locking.locked pluginsGate (fun () ->
-                for KeyValue(_, p) in plugins do
-                    Locking.locked p.Gate (fun () ->
-                        if p.History.Count > 0 then
-                            let h = p.History.Peek()
-
-                            match candidate with
-                            | None -> candidate <- Some(p, h.StartedAt)
-                            | Some(_, t) when h.StartedAt < t -> candidate <- Some(p, h.StartedAt)
-                            | _ -> ()))
-
-            match candidate with
-            | Some(p, _) ->
-                Locking.locked p.Gate (fun () ->
-                    if p.History.Count > 0 then
-                        let evicted = p.History.Dequeue()
-                        let sz = runRecordBytes evicted
-                        p.Bytes <- p.Bytes - sz
-                        System.Threading.Interlocked.Add(&totalBytes, -sz) |> ignore)
-            | None -> ()
-
     let addBytes (p: PerPlugin) (n: int) =
         p.Bytes <- p.Bytes + n
         System.Threading.Interlocked.Add(&totalBytes, n) |> ignore
+
+    // Must be called while holding p.Gate.
+    let victimOf (p: PerPlugin) : CapVictim option =
+        if p.History.Count > 0 then
+            Some(OldestHistory(p, p.History.Peek().StartedAt))
+        else
+            match p.Phase with
+            | Recording r when r.ActivityLog.Count > 0 ->
+                Some(OldestLiveLine(p, r.ActivityLog |> Seq.sumBy stringBytes))
+            | Recording _
+            | Idle -> None
+
+    let preferred (a: CapVictim) (b: CapVictim) : CapVictim =
+        match a, b with
+        | OldestHistory(_, ta), OldestHistory(_, tb) -> if tb < ta then b else a
+        | OldestHistory _, OldestLiveLine _ -> a
+        | OldestLiveLine _, OldestHistory _ -> b
+        | OldestLiveLine(_, ba), OldestLiveLine(_, bb) -> if bb > ba then b else a
+
+    let findVictim () : CapVictim option =
+        Locking.locked pluginsGate (fun () ->
+            plugins.Values
+            |> Seq.choose (fun p -> Locking.locked p.Gate (fun () -> victimOf p))
+            |> Seq.fold
+                (fun best v ->
+                    match best with
+                    | None -> Some v
+                    | Some b -> Some(preferred b v))
+                None)
+
+    // Frees one victim. It may have changed since findVictim released its gate;
+    // then this frees nothing and the caller looks again.
+    let free (victim: CapVictim) =
+        match victim with
+        | OldestHistory(p, _) ->
+            Locking.locked p.Gate (fun () ->
+                if p.History.Count > 0 then
+                    let evicted = p.History.Dequeue()
+                    addBytes p (-(runRecordBytes evicted)))
+        | OldestLiveLine(p, _) ->
+            Locking.locked p.Gate (fun () ->
+                match p.Phase with
+                | Recording r when r.ActivityLog.Count > 0 ->
+                    let dropped = r.ActivityLog.Dequeue()
+
+                    let trimmed =
+                        match r.CapTrim with
+                        | CapTrim.Intact -> CapTrim.Dropped 1
+                        | CapTrim.Dropped count -> CapTrim.Dropped(count + 1)
+
+                    addBytes p (capTrimBytes trimmed - capTrimBytes r.CapTrim - stringBytes dropped)
+                    r.CapTrim <- trimmed
+                | Recording _
+                | Idle -> ())
+
+    // Called after additions. Frees history oldest-first across all plugins, then
+    // the oldest lines of live recordings, until under budget. The loop ends when
+    // nothing is left to free (AUTOMATION-1703): subtasks, summaries and cap markers
+    // stay, so the total can rest above the cap by what they hold.
+    let rec enforceGlobalCap () =
+        if totalBytes > maxTotalBytes then
+            match findVictim () with
+            | None -> ()
+            | Some victim ->
+                free victim
+                enforceGlobalCap ()
 
     // Must be called while holding p.Gate. Log/SetSummary after RecordTerminal
     // lazily start a fresh Recording so late-arriving output stays observable;
@@ -273,18 +354,9 @@ type State() =
             let tail, derivedSummary, discarded, outcomeOverride =
                 match p.Phase with
                 | Recording r ->
-                    let tail = r.ActivityLog |> List.ofSeq
-
                     // No fallback; plugins must call SetSummary explicitly
                     // (via ctx.CompleteWithSummary) or the summary is empty.
-                    let derived = r.SummaryOverride
-
-                    let d =
-                        (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
-                        + (r.ActivityLog |> Seq.sumBy stringBytes)
-                        + r.SummaryBytes
-
-                    tail, derived, d, r.OutcomeOverride
+                    renderedTail r, r.SummaryOverride, recordingBytes r, r.OutcomeOverride
                 | Idle -> [], None, 0, None
 
             let effectiveOutcome = outcomeOverride |> Option.defaultValue outcome
@@ -316,12 +388,7 @@ type State() =
         Locking.locked p.Gate (fun () ->
             match p.Phase with
             | Recording r ->
-                let discarded =
-                    (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
-                    + (r.ActivityLog |> Seq.sumBy stringBytes)
-                    + r.SummaryBytes
-
-                addBytes p (-discarded)
+                addBytes p (-(recordingBytes r))
                 p.Phase <- Idle
             | Idle -> ())
 
@@ -336,7 +403,7 @@ type State() =
             Locking.locked p.Gate (fun () ->
                 let subtasks, tail =
                     match p.Phase with
-                    | Recording r -> r.Subtasks.Values |> Seq.toList, r.ActivityLog |> List.ofSeq
+                    | Recording r -> r.Subtasks.Values |> Seq.toList, renderedTail r
                     | Idle -> [], []
 
                 let lastRun =

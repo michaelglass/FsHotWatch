@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: `PluginActivity.State` no longer spins forever when the activity cap is exceeded by live recordings with no
+  history left to evict (AUTOMATION-1703). The cap evicts history oldest-first, then drops the oldest log lines of the
+  live recording with the most log bytes, rendered as one `… N earlier lines dropped (activity cap)` line at the head
+  of the tail (also kept in the committed `RunRecord.ActivityTail`). It stops when nothing is left to free.
+
 ## 0.10.0-alpha.115 - 2026-11-14
 
 - feat: the clean-recompute audit reports a kind that compared nothing as a finding of its own, not only through exit
