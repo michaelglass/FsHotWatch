@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- refactor: `ShadowVerdict.requirements`, `Configured` and the key functions are thin wrappers over
+  `FsHotWatch.Requirements` in FsHotWatch.Core (AUTOMATION-1695). Signatures unchanged; `Configured` is an abbreviation.
+
 ## 0.14.0-alpha.148 - 2026-11-14
 
 - feat: `tests.projects[].runtimeSelection` names who decides and what is recorded: `"runtime"` (the default),

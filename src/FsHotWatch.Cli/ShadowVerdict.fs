@@ -170,24 +170,24 @@ type Observation =
 /// whatever it concluded: `observeReadWith` never asks `recordsOf`.)
 let concluded (o: Observation) = o.Today <> Class.Missing
 
+/// The keys of `o`'s tree, as `Requirements` folds them.
+let subjectOf (o: Observation) : Requirements.Subject =
+    { Tree = o.Tree
+      Producer = o.Producer
+      OutcomeKeys = o.OutcomeKeys }
+
 let pluginKey (o: Observation) (name: string) =
-    ActionKey.create "plugin" [ "tree", o.Tree; "producer", o.Producer; "plugin", name ]
+    Requirements.pluginKey (subjectOf o) name
 
 let diagnosticsKey (o: Observation) =
-    ActionKey.create "diagnostics" [ "tree", o.Tree; "producer", o.Producer ]
+    Requirements.diagnosticsKey (subjectOf o)
 
 /// A test project's run over the tree, in `scope` (`full` or `impact`).
 let testKey (o: Observation) (project: string) (scope: string) =
-    ActionKey.create "test" [ "tree", o.Tree; "producer", o.Producer; "project", project; "scope", scope ]
+    Requirements.testKey (subjectOf o) project scope
 
-/// "This project once passed in full": ADR-021's baseline, read from the store instead of
-/// `full-suite-baseline.json`. It names no producer and no tree, as that watermark does not:
-/// it vouches for the tests an impact run skips, which the binary that ran them does not
-/// change. A baseline pinned to the producer was void after every fshw upgrade while today's
-/// watermark still held, so each first check on a new binary was missing every project
-/// (AUTOMATION-1428). The impact record beside it stays pinned to the tree and producer.
-let baselineKey (project: string) =
-    ActionKey.create "test-baseline" [ "project", project ]
+/// "This project once passed in full" (`Requirements.baselineKey`).
+let baselineKey (project: string) = Requirements.baselineKey project
 
 /// The K_P key a publication named for `project` over this tree and binary (AUTOMATION-1443):
 /// a `fshw verdict` read has no daemon to name it, so it reads it back from here.
@@ -250,45 +250,22 @@ let withRecordedOutcomeKeys (store: OutcomeStore.Store) (testProjects: string li
         o
 
 [<Literal>]
-let FullScope = "full"
+let FullScope = Requirements.FullScope
 
 [<Literal>]
-let ImpactScope = "impact"
+let ImpactScope = Requirements.ImpactScope
 
-/// What R(c, T) is computed from: the configuration, never the run (ADR-059 §7 step 2).
-type Configured =
-    {
-        /// The plugins the configuration registers (`DaemonConfig.requiredPluginNames`).
-        RequiredPlugins: string list
-        /// The configured test projects, by the name their reports carry.
-        TestProjects: string list
-    }
+/// What R(c, T) is computed from: the configuration, never the run (`Requirements.Configured`).
+type Configured = Requirements.Configured
 
-/// R(c, T): what a green for this command over this tree requires (ADR-059 §3). Plugins and
-/// test projects are both the configured ones. A plugin idle with no run record is left out
-/// of today's `plugins[]` (`Verdict.pluginVerdicts`), so a requirement set read from the run
-/// could not miss a configured gate nobody ran on the tree (AUTOMATION-1568).
+/// R(c, T) for `o`'s command and tree (`Requirements.requirements`, in FsHotWatch.Core).
 let requirements (o: Observation) (configured: Configured) : LookupVerdict.Requirement list =
-    [ for name in configured.RequiredPlugins do
-          LookupVerdict.Requirement.single ("plugin:" + name) (pluginKey o name)
-      LookupVerdict.Requirement.single "diagnostics" (diagnosticsKey o)
-      for project in configured.TestProjects do
-          let full = [ (testKey o project FullScope).Value ]
+    let command =
+        match o.Command with
+        | Verdict.Check -> Requirements.Command.Check
+        | Verdict.Confirm -> Requirements.Command.Confirm
 
-          // The record the test runner filed under this project's K_P, when the daemon named
-          // the key: the K_P of the tree as it is now, so no other tree's run can answer.
-          let byKp =
-              match Map.tryFind project o.OutcomeKeys with
-              | Some value -> [ [ value ] ]
-              | None -> []
-
-          { LookupVerdict.Requirement.Name = "test:" + project
-            LookupVerdict.Requirement.Alternatives =
-              if o.Command = Verdict.Confirm then
-                  [ full ] @ byKp
-              else
-                  [ full; [ (testKey o project ImpactScope).Value; (baselineKey project).Value ] ]
-                  @ byKp } ]
+    Requirements.requirements command (subjectOf o) configured
 
 /// The failed suites of `o` that a LATER run of the same check ran again and passed.
 ///
