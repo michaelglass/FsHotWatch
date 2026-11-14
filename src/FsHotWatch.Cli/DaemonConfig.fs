@@ -366,10 +366,10 @@ type TestProjectConfig =
         CollectCoverage: bool
         /// Include this project's contribution in the consumer coverage ratchet.
         Coverage: bool
-        /// `runtimeSelection`: whether the runtime coverage collected for impact decides
-        /// what runs (`"decide"`, the default) or is only computed and logged
-        /// (`"shadow"`, AUTOMATION-1645).
-        RuntimeSelection: FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode
+        /// `runtimeSelection`: who decides what runs for the files runtime coverage reached,
+        /// and what is recorded (`"runtime"`, the default; `"runtime/record-static"`;
+        /// `"static/log-runtime"`; AUTOMATION-1645, AUTOMATION-1686).
+        RuntimeSelection: FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode
         CoverageArgsTemplate: string option
         TimeoutSec: int option
         /// How to obtain the structured test report the verdict is derived from
@@ -840,26 +840,39 @@ let private parseTestProject (p: JsonElement) : TestProjectConfig =
             collectForImpact, enabled, tmpl
         | _ -> true, true, None
 
-    // `runtimeSelection` (AUTOMATION-1645): whether the runtime coverage collected for
-    // impact decides what runs, or is only computed and logged. Refused unless it parses:
-    // read as "decide", a typo would silently put runtime coverage back in charge. Shadow
-    // on a project that collects nothing for impact is refused too: there would be nothing
-    // to compute or log, so the declaration could not be honoured.
+    // `runtimeSelection` (AUTOMATION-1645, AUTOMATION-1686, ADR-070): who decides what
+    // runs for the files runtime coverage reached, and what is recorded beside the run.
+    // Refused unless it parses: read as "runtime", a typo would silently drop the record or
+    // the log it asked for. A mode that reads runtime coverage without deciding by it, on a
+    // project that collects nothing for impact, is refused too: there would be nothing to
+    // compute, log or record, so the declaration could not be honoured. "decide" and
+    // "shadow" are the old spellings, kept as aliases for one release.
     let runtimeSelection =
         let key = $"tests.projects[%s{project}].runtimeSelection"
-        let accepted = jsonStrings [ "decide"; "shadow" ]
 
-        match p.TryGetProperty("runtimeSelection") with
-        | false, _ -> FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
-        | true, v when v.ValueKind = JsonValueKind.String ->
-            match v.GetString() with
-            | "decide" -> FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
-            | "shadow" when not collectCoverage ->
+        let accepted =
+            jsonStrings [ "runtime"; "runtime/record-static"; "static/log-runtime" ]
+
+        let needingCoverage (value: string) mode =
+            if collectCoverage then
+                mode
+            else
                 raise (
                     ConfigErrorException
-                        $"%s{key}: \"shadow\" needs runtime coverage collected for impact, and this project collects none (`coverage` is false, or `coverage.collectForImpact` is false)"
+                        $"%s{key}: \"%s{value}\" needs runtime coverage collected for impact, and this project collects none (`coverage` is false, or `coverage.collectForImpact` is false)"
                 )
-            | "shadow" -> FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Shadow
+
+        match p.TryGetProperty("runtimeSelection") with
+        | false, _ -> FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecides
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString() with
+            | "runtime"
+            | "decide" -> FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecides
+            | "runtime/record-static" as value ->
+                needingCoverage value FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecidesStaticRecorded
+            | "static/log-runtime"
+            | "shadow" as value ->
+                needingCoverage value FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.StaticDecidesRuntimeLogged
             | other -> refuseUnknown key other accepted
         | true, v -> refuseUnknown key (describeValue v) accepted
 

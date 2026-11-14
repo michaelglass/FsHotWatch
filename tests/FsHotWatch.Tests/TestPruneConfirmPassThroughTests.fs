@@ -371,7 +371,7 @@ let private runScenario (root: string) (setup: Setup) =
                   Cobertura = Path.Combine(dir, CoberturaName)
                   IncludeInRatchet = true
                   ArgsTemplate = "--coverage-output {output}"
-                  RuntimeSelection = RuntimeSelectionMode.Decide }
+                  RuntimeSelection = SelectionMode.RuntimeDecides }
 
         let recorded = Recorded()
         let cache = RecordingTaskCache()

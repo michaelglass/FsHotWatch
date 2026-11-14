@@ -1,5 +1,15 @@
 {
   "overrides": {
+    "StaticRecord.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1686, ADR-070: the StaticRecord, the static set derived from what ran, its judgement and the outcomes a completed run's reports establish). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by StaticRecordTests, RuntimeRecordStaticTests and RuntimeSelectionShadowTests with coverage: line 100%, branch 100%, no uncovered branch. No platform branch, so platform-neutral."
+    },
+    "StaticRecordStore.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1686, ADR-070: the record store, its JSON line and log line, and the launch-time capture that files a completed run's record). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by the same three classes: line 100%, branch 100%, no uncovered branch; the one I/O failure arm is covered by an unreadable (mode 000) report, which holds for any non-root runner, CI's included. Platform-neutral."
+    },
     "PostRunStep.fs": [
       {
         "line": 100,

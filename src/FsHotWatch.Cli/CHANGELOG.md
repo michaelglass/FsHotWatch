@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `tests.projects[].runtimeSelection` names who decides and what is recorded: `"runtime"` (the default),
+  `"runtime/record-static"` (runtime decides, unchanged, and each completed impact run files a record of what static
+  selection alone would have run, with outcomes) or `"static/log-runtime"` (AUTOMATION-1686, ADR-070). `"decide"` and
+  `"shadow"` still parse, as aliases of `"runtime"` and `"static/log-runtime"`, for one release; any other value is
+  refused naming the three spellings. `"runtime/record-static"`, like `"static/log-runtime"`, is refused on a project
+  that collects no coverage for impact.
+
 ## 0.14.0-alpha.147 - 2026-11-14
 
 - feat: `"analyzerRecords"` defaults to `"on"`, no longer `"shadow"` (AUTOMATION-1585, ADR-059 §39). An `analyze`

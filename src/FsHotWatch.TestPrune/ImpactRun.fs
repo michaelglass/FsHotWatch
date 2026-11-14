@@ -194,6 +194,19 @@ let internal runTestsWithImpactWith
                 let launch = priceSelection launch
                 logRuntimeShadow launch.Selection
 
+                // `"runtime/record-static"` (ADR-070): what this run's record needs, captured
+                // before any test runs. Nothing reads it but the filing once the run is over.
+                let fileStaticRecord =
+                    StaticRecordStore.prepare
+                        (Logging.info "test-prune")
+                        (Logging.warn "test-prune")
+                        repoRoot
+                        env.Config.StaticRecording
+                        { Ran = launch.Selection
+                          RuntimeOnly = selected.RuntimeOnlyProjects
+                          Outstanding = selected.QuarantinedAffectedByProject
+                          Always = AlwaysClasses.only configs }
+
                 // THE SKIP ON RECORDS (ADR-067). The only refusal is that no run has
                 // completed in this session: nothing is owed, the full-suite baseline
                 // stands, nothing is forced. That refusal stands in for "has anything
@@ -269,6 +282,8 @@ let internal runTestsWithImpactWith
                 // emits per-group TestProgress live; the synchronous handler captures
                 // Completed for cache replay.
                 ignore results
+
+                fileStaticRecord completed (boundTree |> Option.map _.Identity)
 
                 // The skip on records holds only if every runnable project's green was
                 // filed from its record over the SETTLED tree and still held at

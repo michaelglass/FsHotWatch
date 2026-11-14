@@ -226,7 +226,7 @@ let internal checkoutSetUp
                            Cobertura = Path.Combine(root, "coverage", CoberturaName)
                            IncludeInRatchet = true
                            ArgsTemplate = "--coverage-output {output}"
-                           RuntimeSelection = RuntimeSelectionMode.Decide })))
+                           RuntimeSelection = SelectionMode.RuntimeDecides })))
             []
             None
             TestMode.initial

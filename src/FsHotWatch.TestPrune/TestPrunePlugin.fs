@@ -200,19 +200,27 @@ let internal createWithEvidenceAndQueries
                     None)
         | _ -> []
 
-    // `runtimeSelection: "shadow"` (AUTOMATION-1645): still collected and selected
-    // above, but only logged — never owed.
-    let shadowRuntimeProjects =
+    let projectsIn (mode: SelectionMode) =
         match testConfigs, coveragePaths with
         | Some configs, Some pathsForProject ->
             configs
             |> List.filter (fun config ->
                 match pathsForProject config.Project with
-                | Some paths -> paths.RuntimeSelection = RuntimeSelectionMode.Shadow
+                | Some paths -> paths.RuntimeSelection = mode
                 | None -> false)
             |> List.map (fun config -> config.Project)
             |> Set.ofList
         | _ -> Set.empty
+
+    // `runtimeSelection: "static/log-runtime"` (AUTOMATION-1645): still collected and
+    // selected above, but only logged — never owed.
+    let shadowRuntimeProjects = projectsIn SelectionMode.StaticDecidesRuntimeLogged
+
+    // `runtimeSelection: "runtime/record-static"` (AUTOMATION-1686): decides exactly as
+    // `"runtime"` does, so it is told apart only here, where every completed impact run
+    // files what static selection alone would have run.
+    let staticRecording =
+        StaticRecordStore.Recording.ofProjects repoRoot (projectsIn SelectionMode.RuntimeDecidesStaticRecorded)
 
     let isRuntimeShadow project =
         Set.contains project shadowRuntimeProjects
@@ -396,6 +404,7 @@ let internal createWithEvidenceAndQueries
               AfterRun = afterRun
               CoveragePaths = coveragePaths
               RuntimeShadowProjects = shadowRuntimeProjects
+              StaticRecording = staticRecording
               Traces = traces }
           Db = db
           Queries = queries

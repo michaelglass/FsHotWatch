@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat!: `runtimeSelection: "runtime/record-static"` — runtime coverage decides what runs, and every completed impact
+  run files what static selection alone would have run, with outcomes (AUTOMATION-1686, ADR-070). The type is now
+  `CoverageArtifacts.SelectionMode = RuntimeDecides | RuntimeDecidesStaticRecorded | StaticDecidesRuntimeLogged`
+  (was `RuntimeSelectionMode = Decide | Shadow`). The new mode's run, obligations and verdict are exactly
+  `RuntimeDecides`'; `StaticRecord`/`StaticRecordStore` capture the static set at launch (`StaticRecord.staticOf`,
+  from `LaunchWidenings.StaticForceRunProjects` and `LaunchSelection.RuntimeOnlyProjects`) and, only from a
+  `CompletedRun`, append one JSON line to `<shared cache>/cache/selection-record/<repository namespace>/records.jsonl`
+  with the static and ran selections, every run test's outcome, `KnownFlaky`, and a `StaticJudgement`
+  (`StaticRanEverything | OutcomesUnknown | Green | CaughtByStatic | MissedByStatic`), plus one
+  `selection-record: {tree, staticTests, ranTests, judgement}` info line. A record that cannot be built or written is
+  one warning and no record; the run is unchanged. BREAKING (API): `RuntimeSelectionMode` is renamed
+  `SelectionMode`, `Decide` is `RuntimeDecides` and `Shadow` is `StaticDecidesRuntimeLogged`.
+
 - feat: the plugin publishes what a restarted daemon's first check would select, for idle exit's AUTO window
   (AUTOMATION-1623, ADR-069). `PluginSteps.restartBaselineIn` is `checkoutBaselineIn` without its "the tree moved"
   condition (the ledger's tree T, the index still sealed at T, T's `test-baseline` record), and `restartSelectionIn`

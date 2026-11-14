@@ -39,17 +39,24 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
-/// `tests.projects[].runtimeSelection` (AUTOMATION-1645): whether what a project's runtime
-/// coverage attributes to a changed file decides what runs.
+/// `tests.projects[].runtimeSelection` (AUTOMATION-1645, AUTOMATION-1686, ADR-070): who
+/// DECIDES what a project runs for the changed files its runtime coverage reached, and what
+/// is RECORDED beside the run.
 [<RequireQualifiedAccess>]
-type RuntimeSelectionMode =
-    /// The project runs in full for every changed file its runtime coverage reached, owed
-    /// until a run of it passes. The default.
-    | Decide
-    /// Coverage is still collected for impact, and what it would add is computed and
-    /// logged per launch (`RuntimeShadowLine`). It never enters the selection, so it is
-    /// never owed.
-    | Shadow
+type SelectionMode =
+    /// `"runtime"` (alias `"decide"`): the project runs in full for every changed file its
+    /// runtime coverage reached, owed until a run of it passes. Nothing is recorded. The
+    /// default.
+    | RuntimeDecides
+    /// `"runtime/record-static"`: what runs, what is owed and the verdict are exactly
+    /// `RuntimeDecides`'. Beside each completed run a `StaticRecord` is filed: the set
+    /// static selection alone would have run, the set that ran, and every run test's
+    /// outcome, so a miss by static selection is read off real outcomes.
+    | RuntimeDecidesStaticRecorded
+    /// `"static/log-runtime"` (alias `"shadow"`): coverage is still collected for impact,
+    /// and what it would add is computed and logged per launch (`RuntimeShadowLine`). It
+    /// never enters the selection, so it is never owed.
+    | StaticDecidesRuntimeLogged
 
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
@@ -76,8 +83,8 @@ type CoveragePaths =
         /// populate TestPrune while remaining outside the consumer's gate.
         IncludeInRatchet: bool
         ArgsTemplate: string
-        /// Whether this project's runtime coverage decides what runs, or is only logged.
-        RuntimeSelection: RuntimeSelectionMode
+        /// Who decides what this project runs for its runtime coverage, and what is recorded.
+        RuntimeSelection: SelectionMode
     }
 
 /// One raw coverage artifact produced by one test project. Keeping the project

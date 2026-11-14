@@ -187,6 +187,8 @@
     <Compile Include="TestPruneTestNameTests.fs" />
     <Compile Include="TestPruneStopOnFailReachTests.fs" />
     <Compile Include="RuntimeSelectionShadowTests.fs" />
+    <Compile Include="StaticRecordTests.fs" />
+    <Compile Include="RuntimeRecordStaticTests.fs" />
     <Compile Include="TestPruneFailedLineTests.fs" />
     <Compile Include="TestPruneDiscoveryWaitTests.fs" />
     <Compile Include="ColdDaemonDiscoveryTests.fs" />
