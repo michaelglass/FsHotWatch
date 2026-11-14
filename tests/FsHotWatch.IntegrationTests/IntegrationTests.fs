@@ -56,18 +56,50 @@ let private findRepoRoot () =
 
 /// `dir` as a repository with the formatter pinned as the real one pins it. The format check
 /// considers only a repository's own files (`RepoFiles`), so a temp file is checked as the
-/// file of the temp repository it sits in, with the real pin.
+/// file of the temp repository it sits in, with the real pin. Both pins are copied: the tool
+/// manifest, and the SDK (`global.json`). Without the SDK pin, `dotnet` in a temp directory
+/// picks the newest SDK installed, and on a machine with several (Linux CI: 10.0.404 and
+/// 11.0.100) the repository's restored Fantomas does not resolve under it.
 let private pinnedRepo (dir: string) : string =
+    let repo = findRepoRoot ()
     let config = Path.Combine(dir, ".config")
     Directory.CreateDirectory config |> ignore
 
-    File.Copy(
-        Path.Combine(findRepoRoot (), ".config", "dotnet-tools.json"),
-        Path.Combine(config, "dotnet-tools.json"),
-        true
-    )
+    File.Copy(Path.Combine(repo, ".config", "dotnet-tools.json"), Path.Combine(config, "dotnet-tools.json"), true)
 
+    File.Copy(Path.Combine(repo, "global.json"), Path.Combine(dir, "global.json"), true)
     dir
+
+/// The SDK `dotnet` selects in `dir`, as a child process started there sees it.
+let private sdkVersionIn (dir: string) : string =
+    let psi = Diagnostics.ProcessStartInfo("dotnet", "--version")
+    psi.WorkingDirectory <- dir
+    psi.RedirectStandardOutput <- true
+    psi.UseShellExecute <- false
+    use p = Diagnostics.Process.Start psi
+    let version = p.StandardOutput.ReadToEnd().Trim()
+    p.WaitForExit()
+    version
+
+[<Fact(Timeout = RealFantomasTestCapMs)>]
+let ``a pinned temp repo selects the SDK the repository pins, so its pinned tools resolve`` () =
+    // Main went red on Linux CI (run 43563214017): a temp repo with only the tool manifest
+    // had no global.json, so on a runner with SDKs 10.0.404 and 11.0.100 installed, `dotnet`
+    // there picked 11.0.100, under which the repository's restored Fantomas does not
+    // resolve ("Run dotnet tool restore"), and three format tests waited out their bound.
+    let dir = Path.Combine(Path.GetTempPath(), $"fshw-pinned-{Guid.NewGuid():N}")
+    Directory.CreateDirectory dir |> ignore
+
+    try
+        pinnedRepo dir |> ignore
+        let repo = findRepoRoot ()
+
+        test
+            <@ File.ReadAllText(Path.Combine(dir, "global.json")) = File.ReadAllText(Path.Combine(repo, "global.json")) @>
+
+        test <@ sdkVersionIn dir = sdkVersionIn repo @>
+    finally
+        Directory.Delete(dir, true)
 
 [<Fact>]
 let ``integration harness resolves checkout root`` () =
