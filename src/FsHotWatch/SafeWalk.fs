@@ -247,13 +247,22 @@ let enumerateEntriesPruning (pruned: DirectoryInfo -> bool) (searchPattern: stri
             // ONE skip per unreadable directory, however many of its two reads failed:
             // the hole is the directory, and reporting it twice would let a consumer
             // counting holes disagree with one listing them.
+            //
+            // A directory removed after its parent listed it is ABSENT, as a missing root
+            // is (`unreachable`), not a hole: there is nothing left to see (AUTOMATION-1721).
+            // A walk racing a scratch directory's cleanup reported it unreadable and failed a
+            // caller that must see the whole tree. One that still exists, or cannot be
+            // looked up, stays a hole.
             match files, subdirs with
             | Error message, _
             | _, Error message ->
-                yield
-                    Skipped
-                        { Path = dir.FullName
-                          Reason = Unreadable message }
+                if Directory.Exists dir.FullName then
+                    yield
+                        Skipped
+                            { Path = dir.FullName
+                              Reason = Unreadable message }
+                else
+                    yield! unreachable dir.FullName |> Option.map Skipped |> Option.toList
             | Ok _, Ok _ -> ()
 
             for sub in subdirs |> Result.defaultValue [||] do

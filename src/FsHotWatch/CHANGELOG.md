@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a directory removed after its parent listed it, before the walk read it, is absent, not a hole
+  (AUTOMATION-1721). `SafeWalk` reported it as "could not be read (Could not find a part of the path …)", so any walk
+  racing a directory's deletion came back incomplete: the pin test over `tests/` failed a good run while
+  TraceFixtures removed its `bin-scratch/<guid>` scratch, and a tree hash taken during such a cleanup was unhashable.
+  This is the rule a missing walk root already followed (`unreachable`). A directory that still exists but cannot be
+  read, or that reads as missing only because its parent cannot be traversed, stays a hole.
+
 - fix: a pattern plugin's declared inputs are matched by the daemon's own case-insensitive `FilePattern.matches`,
   never by the OS glob (AUTOMATION-1577, ADR-074). The glob is case-sensitive on Linux, so a file such as `X.FSX`
   would have been left out of the `*.fsx` key while the watcher reacts to it: a change to it would not have moved
