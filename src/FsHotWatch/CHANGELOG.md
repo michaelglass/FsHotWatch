@@ -2,14 +2,17 @@
 
 ## Unreleased
 
-- fix: a scan fails a preprocessor that has to rewrite a file, instead of grading the rewritten tree (AUTOMATION-1680).
-  `check` and `confirm` force a scan before they grade, and the scan ran the format-on-save formatter (`"format":
-  true`), which rewrote an unformatted file in place and reported "rewrote 1 of N" as a pass. The check then
-  certified the rewritten working copy while the commit kept the old bytes: CI's `dotnet fantomas --check` went red
-  on main three times over trees `check` had passed. A rewrite during a scan now fails that preprocessor's status,
-  naming the file, and the failure stands through later change batches (the rewrite's own watcher echo among them)
-  until a scan rewrites nothing. Applies to every preprocessor, configured generators included. A save's change batch
-  and `fshw format` still rewrite as asked. New `PluginHost.PreprocessPass` (`Apply` / `Judge`),
+- BREAKING: a scan that has to rewrite a file now FAILS the check, instead of grading the rewritten tree (AUTOMATION-1680,
+  ADR-068). `check` and `confirm` force a scan before they grade, and the scan ran the format-on-save formatter
+  (`"format": true`). It rewrote an unformatted file in place and reported "rewrote 1 of N" as a pass, so the check
+  certified the rewritten working copy while the commit kept the old bytes. CI's `dotnet fantomas --check` went red on
+  main three times over trees `check` had passed. Now a rewrite during a scan fails that preprocessor's status, which
+  names each file: "these files were rewritten: …; include them in the change and run the check again". `check` prints
+  that and `verdict.json` records it. The failure stands through later change batches (the rewrite's own watcher echo,
+  whose "rewrote 0 of 1" used to replace the scan's status, among them) until a scan rewrites nothing. The next check
+  is then green over the rewritten tree. Applies to every preprocessor, configured generators included. A save's
+  change batch and `fshw format` still rewrite as asked. Measured on a large consumer: about 1% of checks rewrite a
+  file, so about 1 check in 100 needs a second run. New `PluginHost.PreprocessPass` (`Apply` / `Judge`),
   `PluginHost.RunPreprocessorsFor` and `PluginHost.JudgePreprocessors`; `RunPreprocessors` is unchanged (`Apply`).
 
 ## 0.10.0-alpha.114 - 2026-11-14
