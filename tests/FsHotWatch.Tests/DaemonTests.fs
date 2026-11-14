@@ -3918,6 +3918,114 @@ let private withSupersededChange
                 "all change ownership must retire before fixture disposal"
             ))
 
+// AUTOMATION-1680. `.fshw.json` `"format": true` registers the format PREPROCESSOR, which
+// rewrites an unformatted file in place. A scan (what `check` forces before it grades) ran
+// it, and the check then graded the REWRITTEN tree: green, while the commit still held the
+// unformatted bytes, and CI's `dotnet fantomas --check` went red on main three times. Worse,
+// the rewrite's own watcher echo ran a change batch whose "rewrote 0 of 1" replaced the
+// scan's status, so nothing a check printed or recorded said a file had been rewritten.
+// The pass stays green (failing it is a policy decision still open); what it may not do is
+// stay SILENT. Until the next scan, the status names what the scan rewrote.
+[<Fact(Timeout = 90000)>]
+let ``a scan's rewrites stay named on the preprocessor's status until the next scan`` () =
+    withTempDir "daemon-scan-rewrite" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let projectPath = Path.Combine(srcDir, "Fmt.fsproj")
+        File.WriteAllText(projectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        let sourcePath = Path.Combine(srcDir, "Fmt.fs")
+        let unformatted = "module Fmt\nlet value = 1\n"
+        File.WriteAllText(sourcePath, unformatted)
+
+        let objDir = Path.Combine(srcDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(objDir, "project.assets.json"), "{}")
+
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".config")) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".config", "dotnet-tools.json"),
+            """{ "version": 1, "isRoot": true, "tools": { "fantomas": { "version": "7.0.5", "commands": ["fantomas"] } } }"""
+        )
+
+        let loader =
+            SequencedWorkspaceLoader(
+                [ [ { minimalLoadedProject projectPath with
+                        SourceFiles = [ sourcePath ] } ] ]
+            )
+
+        loader.Resume(0)
+        let checker = sharedChecker.Value
+
+        let fcsOptions =
+            let scriptOptions, _ =
+                scriptProjectOptions (checker, sourcePath, FSharp.Compiler.Text.SourceText.ofString unformatted)
+                |> Async.RunSynchronously
+
+            { scriptOptions with
+                ProjectFileName = projectPath
+                SourceFiles = [| sourcePath |] }
+
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                tmpDir
+                { oneShotDaemonOptions with
+                    RunMode = Daemon.RunMode.OneShot }
+                loader
+                (fun projects -> projects |> List.map (fun _ -> fcsOptions))
+                (fun _ _ _ _ _ -> failwith "no watcher runs here")
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+
+        // The pinned Fantomas, as the tool behaves: it rewrites a file that is not
+        // formatted (here: one without the trailing blank line) and leaves one that is.
+        let formatted = unformatted + "\n"
+
+        let rewritingFantomas: FsHotWatch.Fantomas.FantomasTool.Runner =
+            fun _pin args _workDir _timeout ->
+                if args.Contains sourcePath && File.ReadAllText sourcePath = unformatted then
+                    File.WriteAllText(sourcePath, formatted)
+
+                ProcessHelper.Succeeded(ProcessHelper.ProcessOutput.Drained "")
+
+        daemon.RegisterPreprocessor(
+            FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor(runner = rewritingFantomas)
+        )
+
+        // Completed, never failed (that would be the behaviour change), and its summary,
+        // which `check` prints and verdict.json records, names the scan's rewrites.
+        let namesTheRewrite () =
+            match daemon.Host.GetStatus "format" with
+            | Some(Completed(_, verdict)) ->
+                verdict.Summary.Contains "src/Fmt.fs" && verdict.Summary.Contains "REWRITTEN"
+            | _ -> false
+
+        let completedSilently () =
+            match daemon.Host.GetStatus "format" with
+            | Some(Completed(_, verdict)) -> not (verdict.Summary.Contains "REWRITTEN")
+            | _ -> false
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ File.ReadAllText sourcePath = formatted @>
+        test <@ namesTheRewrite () @>
+
+        // The rewrite's watcher echo: a change batch over the now-formatted bytes. It must
+        // not erase what the scan found, as it did in the reproduction at c12ac32f.
+        let echo = daemon.Host.RunPreprocessors [ sourcePath ]
+        test <@ List.isEmpty echo.Modified @>
+        test <@ namesTheRewrite () @>
+
+        // The next scan finds the bytes formatted: nothing to name.
+        daemon.ScanAll() |> Async.RunSynchronously
+        test <@ completedSilently () @>
+
+        // Outside a scan (a save, `fshw format`) a rewrite is what was asked for.
+        File.WriteAllText(sourcePath, unformatted)
+        let saved = daemon.Host.RunPreprocessors [ sourcePath ]
+        test <@ saved.Modified = [ sourcePath ] @>
+        test <@ completedSilently () @>)
+
 [<Fact(Timeout = 45000)>]
 let ``superseded owned change retries its admitted source against the current model`` () =
     withSupersededChange (fun daemon source results seals preprocessingAttempts ->

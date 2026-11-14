@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: what a scan's preprocessors rewrite stays named until the next scan (AUTOMATION-1680). `check` and `confirm`
+  force a scan before they grade, and the scan runs the format-on-save formatter (`"format": true`), which rewrites an
+  unformatted file in place. The verdict then covers the rewritten tree while the commit keeps the old bytes, and
+  nothing said so: the rewrite's own watcher echo ran a change batch whose "rewrote 0 of 1" replaced the scan's
+  status. A scan pass now names its rewrites in the preprocessor's summary ("this check's scan rewrote N file(s): …
+  The verdict covers the REWRITTEN tree; commit them"), which `check` prints and `verdict.json` records, and later
+  change batches keep that clause until a scan rewrites nothing. The status stays Completed: no gate changes. New
+  `PluginHost.PreprocessPass` (`Apply` / `Scan`), `RunPreprocessorsFor` and `ScanPreprocessors`; `RunPreprocessors` is
+  unchanged (`Apply`).
+
 - feat: a stopping daemon logs one line naming what stopped it, ahead of "Daemon stopped." (AUTOMATION-1675). The
   log used to read the same for every stop, so nobody could tell who stopped a measurement daemon three times in one
   afternoon. New module `DaemonStop`: `StopCause` names each way a daemon ends: a stop RPC (`Shutdown` or

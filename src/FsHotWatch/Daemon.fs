@@ -4893,8 +4893,10 @@ let private performScan
             let mutable uncoveredTotal = 0
 
             if not files.IsEmpty then
-                // Run preprocessors (e.g., formatter) before dispatching
-                let modified = host.RunPreprocessors(files).Modified
+                // Run preprocessors (e.g., formatter) before dispatching. `ScanPreprocessors`: what a
+                // scan rewrites is named on the preprocessor's status, because `check` grades the
+                // tree a scan leaves behind (AUTOMATION-1680).
+                let modified = host.ScanPreprocessors(files).Modified
 
                 if modified.Length > 0 then
                     Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"

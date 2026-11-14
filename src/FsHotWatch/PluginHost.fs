@@ -33,6 +33,25 @@ let private describeFailures (repoRoot: string) (failed: (string * string) list)
         $"%s{shown}: %s{why}")
     |> String.concat "; "
 
+/// Why a pass is running (AUTOMATION-1680).
+[<RequireQualifiedAccess>]
+type PreprocessPass =
+    /// A save's change batch, or `fshw format`: rewriting is what was asked for.
+    | Apply
+    /// A scan, which `check` forces before it grades. What it rewrites was NOT in the tree
+    /// the check was asked about, and the verdict will cover the rewritten bytes instead,
+    /// so the preprocessor's status names those files until a later scan rewrites nothing.
+    | Scan
+
+/// The clause a preprocessor's summary carries while its last scan's rewrites stand.
+let private scanRewroteClause (repoRoot: string) (files: string list) =
+    let shown =
+        files
+        |> List.map (fun file -> System.IO.Path.GetRelativePath(repoRoot, file).Replace('\\', '/'))
+        |> String.concat ", "
+
+    $"; this check's scan rewrote %d{files.Length} file(s): %s{shown}. The verdict covers the REWRITTEN tree; commit them"
+
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
     (
@@ -166,6 +185,27 @@ type PluginHost
                 }
 
             loop ())
+
+    /// preprocessor name → the files its last SCAN pass rewrote. Only a scan writes or clears
+    /// an entry: the rewrite's own watcher echo is a change batch over the rewritten bytes
+    /// that finds nothing to do, and its "rewrote 0 of 1" used to replace the scan's status,
+    /// leaving nothing a check printed or recorded to say a file had been rewritten.
+    let rewrittenByScan = ConcurrentDictionary<string, string list>()
+
+    /// Record what a pass of `name` rewrote under `kind`, and return the scan rewrites
+    /// that still stand for it. A scan replaces what the last scan found; a batch leaves it.
+    let standingScanRewrites (kind: PreprocessPass) (name: string) (modified: string list) : string list =
+        match kind, modified with
+        | PreprocessPass.Scan, [] -> rewrittenByScan.TryRemove name |> ignore
+        | PreprocessPass.Scan, rewritten ->
+            rewrittenByScan[name] <- rewritten
+            let named = String.concat ", " rewritten
+            Logging.warn name $"rewrote %d{rewritten.Length} file(s) during a scan: %s{named}"
+        | PreprocessPass.Apply, _ -> ()
+
+        match rewrittenByScan.TryGetValue name with
+        | true, rewritten -> rewritten
+        | false, _ -> []
 
     // Plugin statuses are one immutable map, replaced wholesale under `statusGate`
     // and published with a volatile write. Readers take no lock and post no message:
@@ -399,7 +439,10 @@ type PluginHost
     /// never be read as "nothing needed rewriting".
     /// A pass that ran but could not process some files (a formatter that cannot parse
     /// one) is FAILED too, naming each file repository-relative with the tool's reason.
-    member _.RunPreprocessors(files: string list) : PreprocessorsRun =
+    ///
+    /// Under `PreprocessPass.Scan`, each status names what the scan rewrote, and keeps
+    /// naming it through later `Apply` passes until a scan rewrites nothing.
+    member _.RunPreprocessorsFor(kind: PreprocessPass, files: string list) : PreprocessorsRun =
         // The pass, and each preprocessor inside it, is owned host work until its outcome
         // is published: the host is not at rest while a formatter is rewriting files.
         let pass = workStore.BeginOperation "preprocessors"
@@ -426,12 +469,17 @@ type PluginHost
                             modifiedFiles <- result.Modified @ modifiedFiles
                             let finishedAt = System.DateTime.UtcNow
 
+                            let scanRewrites =
+                                match standingScanRewrites kind preprocessor.Name result.Modified with
+                                | [] -> ""
+                                | rewritten -> scanRewroteClause repoRoot rewritten
+
                             let summary =
                                 match result.Failures with
                                 | [] ->
-                                    $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
+                                    $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}%s{scanRewrites}"
                                 | failed ->
-                                    $"%s{preprocessor.Name}: could not process %d{failed.Length} of %d{result.Considered} file(s), rewrote %d{result.Modified.Length} — %s{result.Evidence}"
+                                    $"%s{preprocessor.Name}: could not process %d{failed.Length} of %d{result.Considered} file(s), rewrote %d{result.Modified.Length} — %s{result.Evidence}%s{scanRewrites}"
 
                             lines <- summary :: lines
                             evidence <- result.Evidence :: evidence
@@ -491,6 +539,14 @@ type PluginHost
               Failures = failures }
         finally
             workStore.EndOperation pass
+
+    /// A save's change batch, or `fshw format`: rewriting is what was asked for.
+    member this.RunPreprocessors(files: string list) : PreprocessorsRun =
+        this.RunPreprocessorsFor(PreprocessPass.Apply, files)
+
+    /// A scan, which `check` forces before it grades: its rewrites are named (`PreprocessPass.Scan`).
+    member this.ScanPreprocessors(files: string list) : PreprocessorsRun =
+        this.RunPreprocessorsFor(PreprocessPass.Scan, files)
 
     /// Emit a file change event to all registered plugins.
     ///

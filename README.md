@@ -668,6 +668,11 @@ an input the compiler never reads, for instance.
   is a failed status under the entry's `name`, and `check` / `confirm` are red. A run
   is never silently skipped: an entry whose `triggers` match nothing in the batch
   reports `not triggered`.
+- **A scan's rewrites are named.** Inside the scan that `check` and `confirm` force before
+  they grade, a rewritten file was not in the tree the check was asked about, and the
+  verdict covers the rewritten bytes. The preprocessor's status (printed by `check`,
+  recorded in `verdict.json`) names those files, and keeps naming them through later change
+  batches until a scan rewrites nothing. Commit them: the commit does not hold them yet.
 - **Every mode.** The daemon, `check --run-once`, and `confirm` register the same
   entries through the same code; one-shot runs have no watcher and scan the whole
   tree, so an `always` entry runs once before that scan.
