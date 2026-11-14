@@ -28,7 +28,7 @@
              gate. Keep this equal to the FSharp.Compiler.Service in the pinned fshotwatch.cli's
              deps.json (.config/dotnet-tools.json) and move the two together;
              ToolchainPinTests fails when they diverge. -->
-        <PackageVersion Include="FSharp.Compiler.Service" Version="43.13.101.1-mg.1" />
+        <PackageVersion Include="FSharp.Compiler.Service" Version="43.13.101.1-mga1.1" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
