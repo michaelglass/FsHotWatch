@@ -1253,10 +1253,10 @@ let ``a miss whose last filed inputs are its own says the store no longer holds 
         let project = Path.Combine(dir, "P.fsproj")
         let file = Path.Combine(dir, "A.fs")
         let subject = CheckRecords.LastKeys.subjectOf root project file
-        CheckRecords.LastKeys.remember store subject (keyOf "c1")
+        CheckRecords.LastKeys.remember (CheckRecords.LastKeys.at store) subject (keyOf "c1")
 
         let explain key =
-            CheckRecords.explain store root project (unread file key)
+            CheckRecords.explain (CheckRecords.LastKeys.at store) root project (unread file key)
             |> CheckRecords.RecordMiss.describe
 
         test <@ explain (keyOf "c1") = "filed under these inputs, not held now" @>
@@ -1267,14 +1267,18 @@ let ``a miss whose last filed inputs are its own says the store no longer holds 
             { unread file (keyOf "c1") with
                 Behind = Some "/elsewhere/Z.fs" }
 
-        test <@ CheckRecords.explain store None project behind = CheckRecords.RecordMiss.Behind "/elsewhere/Z.fs" @>)
+        test
+            <@
+                CheckRecords.explain (CheckRecords.LastKeys.at store) None project behind = CheckRecords.RecordMiss.Behind
+                    "/elsewhere/Z.fs"
+            @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an unreadable or foreign side-index entry explains nothing, and a failed write never throws`` () =
     withTempDir "check-records-why-unreadable" (fun dir ->
         let store = storeIn dir
         let subject = "P.fsproj|A.fs"
-        let path = CheckRecords.LastKeys.pathOf store subject
+        let path = CheckRecords.LastKeys.pathOf (CheckRecords.LastKeys.at store) subject
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
 
         for text in
@@ -1282,11 +1286,11 @@ let ``an unreadable or foreign side-index entry explains nothing, and a failed w
               """{"subject":"another","inputs":{"content":"c"}}"""
               """{"subject":"P.fsproj|A.fs","inputs":["content"]}""" ] do
             File.WriteAllText(path, text)
-            test <@ CheckRecords.LastKeys.tryRead store subject = None @>
+            test <@ CheckRecords.LastKeys.tryRead (CheckRecords.LastKeys.at store) subject = None @>
 
         // The index's directory cannot be made: the write is lost, quietly.
         let blocked = storeIn (Path.Combine(dir, "blocked"))
         Directory.CreateDirectory blocked.Root |> ignore
         File.WriteAllText(Path.Combine(blocked.Root, "last-keys"), "a file where a directory goes")
-        CheckRecords.LastKeys.remember blocked subject (keyOf "c1")
-        test <@ CheckRecords.LastKeys.tryRead blocked subject = None @>)
+        CheckRecords.LastKeys.remember (CheckRecords.LastKeys.at blocked) subject (keyOf "c1")
+        test <@ CheckRecords.LastKeys.tryRead (CheckRecords.LastKeys.at blocked) subject = None @>)
