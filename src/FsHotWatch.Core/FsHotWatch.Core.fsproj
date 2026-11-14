@@ -18,8 +18,8 @@
     <IsAotCompatible>true</IsAotCompatible>
     <OtherFlags>$(OtherFlags) --reflectionfree</OtherFlags>
     <!-- Never its own package (AUTOMATION-1668: one library, with a CLI). A packed project
-         that uses it carries FsHotWatch.Core.dll inside its own nupkg, as
-         FsHotWatch.Analyzers does since AUTOMATION-1636. -->
+         that uses it carries FsHotWatch.Core.dll inside its own nupkg: the FsHotWatch
+         package does, and every other package depends on it. -->
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
