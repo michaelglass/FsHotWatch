@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: the clean-recompute audit reports a kind that compared nothing as a finding of its own, not only through exit
+  3 (AUTOMATION-1684). `RecordAudit.KindTally.finding` is `KindFinding.Compared | Vacuous of why` (the clean store
+  holds no key of the kind; the audited store holds none of its clean keys; no shared key holds a readable record).
+  `render` prints such a kind as `<kind> VACUOUS: clean keys N, shared M, nothing compared (<why>)` where it printed a
+  line indistinguishable from a clean kind's, and the `fshw-audit-v1` JSON gives every kind `vacuous` (with
+  `vacuousReason` when true) and lists them in a top-level `vacuousKinds`. The verdict and exit code are unchanged.
+
 - feat: preprocessors are offered only the repository's own files (AUTOMATION-1680 follow-up). New module
   `RepoFiles`: `RepoFile` is a file under the repository root with every symbolic link resolved, not ignored by the
   checkout's `.gitignore` files, and not build output (`obj/`, `bin/`); `parseAll` drops everything else and

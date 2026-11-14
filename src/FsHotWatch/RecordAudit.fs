@@ -369,6 +369,25 @@ type KindTally =
         Mismatched: int
     }
 
+/// What one kind's audit established beside its counts (AUTOMATION-1684).
+[<RequireQualifiedAccess>]
+type KindFinding =
+    /// At least one key was compared.
+    | Compared
+    /// No key was compared, so the kind answers nothing: never agreement.
+    | Vacuous of why: string
+
+module KindTally =
+    let finding (k: KindTally) : KindFinding =
+        if k.Audited > 0 then
+            KindFinding.Compared
+        elif k.CleanKeys = 0 then
+            KindFinding.Vacuous "the clean store holds no key of this kind"
+        elif k.Shared = 0 then
+            KindFinding.Vacuous "the audited store holds none of its clean keys"
+        else
+            KindFinding.Vacuous "no shared key holds a readable record"
+
 [<RequireQualifiedAccess>]
 type Verdict =
     /// Something was compared and nothing differed.
@@ -399,7 +418,10 @@ type Report =
     member this.Verdict =
         if not this.Mismatches.IsEmpty then
             Verdict.Mismatch
-        elif this.Kinds.IsEmpty || this.Kinds |> List.exists (fun k -> k.Audited = 0) then
+        elif
+            this.Kinds.IsEmpty
+            || this.Kinds |> List.exists (fun k -> KindTally.finding k <> KindFinding.Compared)
+        then
             Verdict.Vacuous
         elif not this.Unmatched.IsEmpty then
             Verdict.Vacuous
@@ -691,9 +713,26 @@ let toJson (report: Report) : string =
         e["audited"] <- k.Audited
         e["records"] <- k.Records
         e["mismatched"] <- k.Mismatched
+
+        match KindTally.finding k with
+        | KindFinding.Compared -> e["vacuous"] <- false
+        | KindFinding.Vacuous why ->
+            e["vacuous"] <- true
+            e["vacuousReason"] <- why
+
         kinds.Add e
 
     o["kinds"] <- kinds
+
+    // The kinds that compared nothing, by name: a finding a reader of `kinds` cannot miss.
+    o["vacuousKinds"] <-
+        JsonArray(
+            report.Kinds
+            |> List.filter (fun k -> KindTally.finding k <> KindFinding.Compared)
+            |> List.map (fun k -> JsonValue.Create k.Kind :> JsonNode)
+            |> Array.ofList
+        )
+
     let mismatches = JsonArray()
 
     for m in report.Mismatches do
@@ -738,7 +777,11 @@ let render (report: Report) : string list =
       $"seed %s{report.Seed}, sample %s{sample} per kind"
 
       for k in report.Kinds do
-          $"  %-20s{k.Kind} clean keys %d{k.CleanKeys}, shared %d{k.Shared}, audited %d{k.Audited} (%d{k.Records} record(s)), mismatched %d{k.Mismatched}"
+          match KindTally.finding k with
+          | KindFinding.Compared ->
+              $"  %-20s{k.Kind} clean keys %d{k.CleanKeys}, shared %d{k.Shared}, audited %d{k.Audited} (%d{k.Records} record(s)), mismatched %d{k.Mismatched}"
+          | KindFinding.Vacuous why ->
+              $"  %-20s{k.Kind} VACUOUS: clean keys %d{k.CleanKeys}, shared %d{k.Shared}, nothing compared (%s{why})"
 
       for m in report.Mismatches do
           let answer = if m.IsAnswer then "answer" else "history"

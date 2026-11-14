@@ -421,6 +421,74 @@ let ``named keys that agree, beside one that is missing, are still not agreement
         test <@ (List.last lines).StartsWith "audit: VACUOUS" @>
         test <@ (RecordAudit.toJson report).Contains "\"verdict\": \"vacuous\"" @>)
 
+// AUTOMATION-1684: a kind that compared nothing is a finding of its own, in the text and the
+// JSON, not only the exit code. Its line used to read like a clean kind's ("mismatched 0").
+[<Fact(Timeout = 10000)>]
+let ``a kind that compared nothing is marked vacuous in the text and the JSON, beside a kind that compared`` () =
+    let tally kind cleanKeys shared audited : RecordAudit.KindTally =
+        { Kind = kind
+          CleanKeys = cleanKeys
+          Shared = shared
+          Audited = audited
+          Records = audited
+          Mismatched = 0 }
+
+    let report: RecordAudit.Report =
+        { Seed = "s"
+          Sample = Some 0
+          AuditedStore = "/a"
+          CleanStore = "/c"
+          Kinds =
+            [ tally "check" 5 5 5
+              tally "options" 1 0 0
+              tally "options-inputs" 0 0 0
+              tally "analyze" 2 2 0 ]
+          Mismatches = []
+          AuditedKeys = []
+          Unmatched = []
+          UnreadableClean = 0
+          UnreadableAudited = 0 }
+
+    test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
+    test <@ RecordAudit.exitCode report.Verdict = 3 @>
+
+    let lines = RecordAudit.render report
+
+    let lineOf (kind: string) =
+        lines |> List.find (fun l -> l.StartsWith $"  %-20s{kind} ")
+
+    test <@ not ((lineOf "check").Contains "VACUOUS") @>
+    test <@ (lineOf "options").Contains "VACUOUS: clean keys 1, shared 0, nothing compared" @>
+    test <@ (lineOf "options-inputs").Contains "VACUOUS: clean keys 0, shared 0, nothing compared" @>
+
+    let json = JsonDocument.Parse(RecordAudit.toJson report).RootElement
+
+    let kinds =
+        json.GetProperty("kinds").EnumerateArray()
+        |> Seq.map (fun k -> k.GetProperty("kind").GetString(), k.GetProperty("vacuous").GetBoolean())
+        |> List.ofSeq
+
+    let vacuousKinds =
+        json.GetProperty("vacuousKinds").EnumerateArray()
+        |> Seq.map (fun k -> k.GetString())
+        |> List.ofSeq
+
+    let reasons =
+        json.GetProperty("kinds").EnumerateArray()
+        |> Seq.filter (fun k -> k.GetProperty("vacuous").GetBoolean())
+        |> Seq.map (fun k -> k.GetProperty("vacuousReason").GetString())
+        |> List.ofSeq
+
+    test <@ kinds = [ "check", false; "options", true; "options-inputs", true; "analyze", true ] @>
+    test <@ vacuousKinds = [ "options"; "options-inputs"; "analyze" ] @>
+
+    test
+        <@
+            reasons = [ "the audited store holds none of its clean keys"
+                        "the clean store holds no key of this kind"
+                        "no shared key holds a readable record" ]
+        @>
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a report with no kind at all is vacuous`` () =
     let report: RecordAudit.Report =
