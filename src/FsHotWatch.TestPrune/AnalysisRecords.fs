@@ -274,10 +274,17 @@ let file
     (key: ActionKey.ActionKey)
     (analysis: AnalysisResult)
     : bool =
-    OutcomeStore.Through.file
+    OutcomeStore.Through.fileComputed
         store
-        (OutcomeStore.Record.ofAction key relPath OutcomeStore.Outcome.Pass analyzerIdentity root DateTimeOffset.UtcNow)
-        (Some(toJson root analysis))
+        (OutcomeStore.justRan
+            (OutcomeStore.Record.ofAction
+                key
+                relPath
+                OutcomeStore.Outcome.Pass
+                analyzerIdentity
+                root
+                DateTimeOffset.UtcNow)
+            (Some(toJson root analysis)))
 
 /// The project identity an analysis is made under: the project file's name, with a
 /// script's synthesized `.fsx` dropped, so `"Lib"` names `Lib.fsproj` and `Lib.fsx` alike.

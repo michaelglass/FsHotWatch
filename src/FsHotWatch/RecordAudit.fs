@@ -564,6 +564,9 @@ type Report =
         UnreadableAudited: int
         /// What the shadow logs say about lookup agreement (ADR-074 (b)), when the audit was asked.
         Agreement: LookupAgreement
+        /// The audited store's quarantine (AUTOMATION-1701, ADR-072): every quarantined file by
+        /// kind, key and when, so none is out of sight. Reported, never a verdict.
+        Quarantine: OutcomeStore.QuarantineCensus
     }
 
     /// The records' verdict, unless lookup agreement raises an alarm (`agreementAlarm`); a record
@@ -824,7 +827,8 @@ let auditStores (stores: Stores) (options: Options) : Report =
       Unmatched = unmatched
       UnreadableClean = unreadableClean
       UnreadableAudited = unreadableAudited
-      Agreement = LookupAgreement.read options.ShadowLogs }
+      Agreement = LookupAgreement.read options.ShadowLogs
+      Quarantine = OutcomeStore.readQuarantine auditedRoot }
 
 /// Audit the records `auditedRoot` holds against the clean recompute filed in `cleanRoot`,
 /// outcome stores only.
@@ -948,6 +952,25 @@ let toJson (report: Report) : string =
 
         o["lookupAgreement"] <- a
 
+    let quarantined = JsonArray()
+
+    for note in report.Quarantine.Noted do
+        let e = JsonObject()
+        e["key"] <- note.Key
+        e["file"] <- note.File
+
+        match note.Mover with
+        | OutcomeStore.Mover.Read -> e["by"] <- "read"
+        | OutcomeStore.Mover.Writer kind ->
+            e["by"] <- "writer"
+            e["kind"] <- kind
+
+        e["why"] <- note.Why
+        e["at"] <- note.At.ToString("o")
+        quarantined.Add e
+
+    o["quarantined"] <- quarantined
+    o["quarantinedUnnoted"] <- report.Quarantine.Unnoted
     o.ToJsonString(JsonSerializerOptions(WriteIndented = true))
 
 /// The report for a person.
@@ -980,6 +1003,19 @@ let render (report: Report) : string list =
 
       if report.UnreadableClean + report.UnreadableAudited > 0 then
           $"  unreadable files: clean %d{report.UnreadableClean}, audited %d{report.UnreadableAudited}"
+
+      // AUTOMATION-1701 (ADR-072): quarantined files stay visible, by kind, key and when.
+      if not report.Quarantine.Noted.IsEmpty || report.Quarantine.Unnoted > 0 then
+          $"  quarantined files in the audited store: %d{report.Quarantine.Noted.Length + report.Quarantine.Unnoted} (%d{report.Quarantine.Unnoted} without a note)"
+
+      for note in report.Quarantine.Noted do
+          let by =
+              match note.Mover with
+              | OutcomeStore.Mover.Read -> "read"
+              | OutcomeStore.Mover.Writer kind -> $"writer of %s{kind}"
+
+          let at = note.At.ToString("o")
+          $"  QUARANTINED %s{note.Key} %s{note.File} by %s{by} at %s{at}: %s{note.Why}"
 
       match report.Agreement with
       | LookupAgreement.NotAsked -> ()

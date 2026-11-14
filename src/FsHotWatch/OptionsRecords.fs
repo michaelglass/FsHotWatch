@@ -683,16 +683,17 @@ let file
             | _ :: _ as rehashed -> Moved(List.map labelPath rehashed)
             | [] ->
                 let filedRecord (recordKey: ActionKey.ActionKey) (subject: string) (outputs: string) =
-                    OutcomeStore.Through.file
+                    OutcomeStore.Through.fileComputed
                         store
-                        (OutcomeStore.Record.ofAction
-                            recordKey
-                            subject
-                            OutcomeStore.Outcome.Pass
-                            request.Toolchain
-                            request.Root
-                            DateTimeOffset.UtcNow)
-                        (Some outputs)
+                        (OutcomeStore.justRan
+                            (OutcomeStore.Record.ofAction
+                                recordKey
+                                subject
+                                OutcomeStore.Outcome.Pass
+                                request.Toolchain
+                                request.Root
+                                DateTimeOffset.UtcNow)
+                            (Some outputs))
 
                 // The options first: an index naming a key that holds nothing is a miss, never a
                 // replay of something else.
