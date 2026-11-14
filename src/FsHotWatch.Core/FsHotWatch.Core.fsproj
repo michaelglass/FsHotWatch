@@ -35,6 +35,7 @@
          LAST, so nothing in namespace FsHotWatch.Core can resolve a name to them by accident. -->
     <Compile Include="LegacyActionKey.fs" />
     <Compile Include="LookupVerdict.fs" />
+    <Compile Include="Requirements.fs" />
   </ItemGroup>
 
   <ItemGroup>
