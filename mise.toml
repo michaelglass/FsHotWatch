@@ -380,11 +380,19 @@ description = "Run the full-suite confirm (single pass, no daemon), then the int
 # beside it: those tests assert on wall-clock behaviour, and sharing the box with a full
 # confirm makes their outcome a function of load. `check`, the inner loop, stays fast.
 #
+# scripts/ci-halves.sh runs the two halves, given verbatim as its arguments. It runs the
+# integration half ALWAYS, also after a red confirm, and ends with one line per half
+# saying what ran and what was reused (`ci: confirm …`, `ci: integration …`). A confirm
+# on an unchanged tree reuses an earlier run's verdict and runs no tests, and every
+# confirm logs "NOT RUN — tests/FsHotWatch.IntegrationTests" (the declared exclusion
+# above); read alone, those two lines made a passing spot check look like it had skipped
+# the integration suite when it had run it (AUTOMATION-1689). Read the summary lines.
+#
 # The `check-msbuild-deps` prefix is here, in the COMMAND, rather than in `depends`
-# below: `depends` is a mise concept and remote CI does not run mise — it runs this
-# string. Hung off `depends` alone the guard fired only when a human ran `mise run ci`,
-# which is not the path a package reaches NuGet by.
-run = "dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-package-floors.fsx -- pack && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once && dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build"
+# below: `depends` is a mise concept and remote CI does not run mise — it runs the
+# confirm string (ci.yml's `lint-cmd`). Hung off `depends` alone the guard fired only
+# when a human ran `mise run ci`, which is not the path a package reaches NuGet by.
+run = "bash scripts/ci-halves.sh 'dotnet fsi scripts/check-msbuild-deps.fsx && dotnet fsi scripts/check-package-floors.fsx -- pack && dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once' 'dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build'"
 # `sync-docs-check`: the examples are compiled (they are members of FsHotWatch.slnx),
 # and the README/docs code blocks are SOURCED from them via syncdocs `src=` regions.
 # Compiling the example proves the code is real; only this check proves the block a

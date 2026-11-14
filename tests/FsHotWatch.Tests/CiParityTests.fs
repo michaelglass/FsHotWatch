@@ -54,7 +54,10 @@ let ``ci runs the confirm CI runs, then the integration suite CI runs`` () =
     let root = repoRoot ()
     let yml = ciYml root
 
-    test <@ runOf (miseToml root) "ci" = lintCmd yml + " && " + integrationCommand @>
+    // Through scripts/ci-halves.sh and not `confirm && integration`: chained with `&&`, a red
+    // confirm skipped the integration half, and nothing said per half what ran or was reused
+    // (AUTOMATION-1689). The script runs both halves always; CiHalvesTests pins its contract.
+    test <@ runOf (miseToml root) "ci" = $"bash scripts/ci-halves.sh '%s{lintCmd yml}' '%s{integrationCommand}'" @>
     test <@ List.last (integrationJobRuns yml) = integrationCommand @>
 
 [<Fact>]
