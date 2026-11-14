@@ -45,7 +45,16 @@ type PreprocessPass =
 
 /// The reason a file rewritten during a scan fails its preprocessor.
 let private rewrittenDuringScan (name: string) =
-    $"%s{name} rewrote it during a scan: the tree this check was asked about did not hold these bytes. The rewrite is on disk; include it in the change and check again"
+    $"%s{name} rewrote it during this check's scan; include it in the change and run the check again"
+
+/// The clause a failed preprocessor's summary carries while its last scan's rewrites stand.
+let private scanRewroteClause (repoRoot: string) (files: string list) =
+    let shown =
+        files
+        |> List.map (fun file -> System.IO.Path.GetRelativePath(repoRoot, file).Replace('\\', '/'))
+        |> String.concat ", "
+
+    $"; these files were rewritten: %s{shown}; include them in the change and run the check again"
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
@@ -194,6 +203,8 @@ type PluginHost
         | PreprocessPass.Judge, [] -> rewrittenByScan.TryRemove name |> ignore
         | PreprocessPass.Judge, rewritten ->
             rewrittenByScan[name] <- rewritten |> List.map (fun file -> file, rewrittenDuringScan name)
+            let named = String.concat ", " rewritten
+            Logging.warn name $"rewrote %d{rewritten.Length} file(s) during a scan: %s{named}"
         | PreprocessPass.Apply, _ -> ()
 
         match rewrittenByScan.TryGetValue name with
@@ -472,8 +483,16 @@ type PluginHost
 
                             lines <- summary :: lines
                             evidence <- result.Evidence :: evidence
+                            let standing = standingRewrites kind preprocessor.Name result.Modified
 
-                            match result.Failures, standingRewrites kind preprocessor.Name result.Modified with
+                            // The status summary is what `check` prints and verdict.json records
+                            // for a failed plugin, so it names the scan's rewrites and the remedy.
+                            let summary =
+                                match standing with
+                                | [] -> summary
+                                | rewritten -> summary + scanRewroteClause repoRoot (List.map fst rewritten)
+
+                            match result.Failures, standing with
                             | [], [] ->
                                 setStatus
                                     preprocessor.Name

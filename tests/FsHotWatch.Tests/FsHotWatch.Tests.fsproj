@@ -294,6 +294,7 @@
     <Compile Include="InitConfigTests.fs" />
     <Compile Include="RunOnceOutputTests.fs" />
     <Compile Include="RunOnceBesideDaemonTests.fs" />
+    <Compile Include="ScanRewriteGateTests.fs" />
     <Compile Include="IpcParsingTests.fs" />
     <Compile Include="CheckVerdictTests.fs" />
     <Compile Include="RunClaimTests.fs" />
