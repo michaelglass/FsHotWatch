@@ -170,6 +170,93 @@ let internal rebaseIgnoreLine (dir: string) (line: string) : string option =
 
         Some((if negated then "!" else "") + rebased)
 
+/// What every path one gitignore rule matches must contain.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type private RuleIndex =
+    /// Each literal appears, ignoring ASCII case, in every path the rule matches: a path of
+    /// ASCII characters lacking one cannot match, and the rule's regex need not run.
+    | Requires of first: string * rest: string list
+    /// No text is certain to appear in a match: the rule's regex always runs.
+    | Unindexed
+
+[<NoComparison; NoEquality>]
+type private IndexedRule = { Rule: IgnoreRule; Index: RuleIndex }
+
+/// Gitignore lines, answered exactly as `Ignore` answers them: the same `IgnoreRule` per
+/// line, and the last rule that matches decides. Two things make it cheaper. A rule is
+/// compiled once per process (`Ignore` compiles every regex anew for every matcher, and a
+/// compiled regex costs far more to build than to run), and a rule whose every match must
+/// contain some literal is skipped for a path that lacks it.
+///
+/// The literal index is conservative by construction: only a line made of ASCII letters,
+/// digits, `.`, `_`, `-`, `/`, `*` and `?` (after a leading `!`) is indexed, whose
+/// non-glob runs `Ignore` emits as escaped literals; anything else (a class, an escape,
+/// text `Ignore` hands the regex unescaped) always runs. A path holding a non-ASCII
+/// character runs every rule, since a case-insensitive regex matches `k` to the Kelvin
+/// sign. `GitIgnoreEquivalenceTests` checks the whole against `Ignore` as the oracle.
+[<Sealed>]
+type IgnoreRules private (rules: IndexedRule array) =
+    static let compiled =
+        System.Collections.Concurrent.ConcurrentDictionary<string, IndexedRule>(System.StringComparer.Ordinal)
+
+    static let isLiteral (c: char) =
+        (c >= 'a' && c <= 'z')
+        || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9')
+        || c = '.'
+        || c = '_'
+        || c = '-'
+
+    static let index (line: string) : RuleIndex =
+        let body =
+            if line.StartsWith("!", System.StringComparison.Ordinal) then
+                line.Substring 1
+            else
+                line
+
+        let indexable =
+            body |> Seq.forall (fun c -> isLiteral c || c = '/' || c = '*' || c = '?')
+
+        match
+            (if indexable then
+                 body.Split([| '/'; '*'; '?' |], System.StringSplitOptions.RemoveEmptyEntries)
+                 |> List.ofArray
+             else
+                 [])
+        with
+        | first :: rest -> RuleIndex.Requires(first, rest)
+        | [] -> RuleIndex.Unindexed
+
+    static let build =
+        System.Func<string, IndexedRule>(fun line ->
+            { Rule = IgnoreRule line
+              Index = index line })
+
+    static let compile (line: string) = compiled.GetOrAdd(line, build)
+
+    static member Of(lines: string list) : IgnoreRules =
+        IgnoreRules(lines |> List.map compile |> Array.ofList)
+
+    /// Whether `path` (relative, `/`-separated) is ignored: what `Ignore.IsIgnored` answers.
+    member _.IsIgnored(path: string) : bool =
+        let ascii = path |> Seq.forall (fun c -> c < '\u0080')
+
+        let mayMatch (rule: IndexedRule) =
+            match rule.Index with
+            | RuleIndex.Requires(first, rest) when ascii ->
+                first :: rest
+                |> List.forall (fun l -> path.Contains(l, System.StringComparison.OrdinalIgnoreCase))
+            | RuleIndex.Requires _
+            | RuleIndex.Unindexed -> true
+
+        // A rule can only flip the answer: a negation while ignored, any other rule while not.
+        (false, rules)
+        ||> Array.fold (fun ignored rule ->
+            if rule.Rule.Negate = ignored && mayMatch rule && rule.Rule.IsMatch path then
+                not ignored
+            else
+                ignored)
+
 /// The repository's `.gitignore` files under `repoRoot`, read the way git reads them:
 /// each applies below its own directory, and a deeper or later rule wins over a
 /// shallower or earlier one. Files are read lazily, once per directory asked about, so a
@@ -187,10 +274,7 @@ type GitIgnores(repoRoot: string) =
     let root = Path.GetFullPath(repoRoot).TrimEnd(Path.DirectorySeparatorChar)
 
     let rulesByDir =
-        System.Collections.Generic.Dictionary<string, string list * Ignore * Ignore>()
-
-    let matcher (lines: string list) =
-        (Ignore(), lines) ||> List.fold (fun (ig: Ignore) l -> ig.Add l)
+        System.Collections.Generic.Dictionary<string, string list * IgnoreRules * IgnoreRules>()
 
     let relative (abs: string) =
         Path.GetRelativePath(root, abs).Replace('\\', '/')
@@ -208,13 +292,13 @@ type GitIgnores(repoRoot: string) =
         else
             []
 
-    let rec rulesFor (dir: string) : string list * Ignore * Ignore =
+    let rec rulesFor (dir: string) : string list * IgnoreRules * IgnoreRules =
         match rulesByDir.TryGetValue dir with
         | true, rules -> rules
         | _ ->
             let inherited =
                 if dir = root then
-                    [], Ignore(), Ignore()
+                    [], IgnoreRules.Of [], IgnoreRules.Of []
                 else
                     rulesFor (Path.GetDirectoryName dir)
 
@@ -230,7 +314,7 @@ type GitIgnores(repoRoot: string) =
                         |> List.map (fun l -> l.TrimEnd('/'))
                         |> List.filter (fun l -> l <> "" && l <> "!")
 
-                    lines, matcher lines, matcher directoryLines
+                    lines, IgnoreRules.Of lines, IgnoreRules.Of directoryLines
 
             rulesByDir[dir] <- rules
             rules
