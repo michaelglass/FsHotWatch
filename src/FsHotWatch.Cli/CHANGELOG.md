@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.147 - 2026-11-14
+
 - feat: `"analyzerRecords"` defaults to `"on"`, no longer `"shadow"` (AUTOMATION-1585, ADR-059 §39). An `analyze`
   record now answers its key in place of a live analysis, a replayed check included, so a daemon starting at a tree
   any checkout already analysed demands no live check. The shadow agreed completely: the nightly replay audits agreed

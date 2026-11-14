@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.114 - 2026-11-14
+
 - feat: a stopping daemon logs one line naming what stopped it, ahead of "Daemon stopped." (AUTOMATION-1675). The
   log used to read the same for every stop, so nobody could tell who stopped a measurement daemon three times in one
   afternoon. New module `DaemonStop`: `StopCause` names each way a daemon ends: a stop RPC (`Shutdown` or

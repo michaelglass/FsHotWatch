@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.114 - 2026-11-14
+
 - fix: a configured test project the project model does not name is named, not silently dropped (AUTOMATION-1617).
   `PluginSteps.evidenceCandidates` warns that it cannot be vouched for by test evidence, runs in full on every run, and
   is never carried as covered; `TestEvidenceRun.currentOutcomeKeys` logs each project whose K_P key failed, with the

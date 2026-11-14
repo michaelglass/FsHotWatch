@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.42 - 2026-11-14
+
+- fix: AUTOMATION-1664 (A1) a check record files only what the file's own #nowarn leaves
+
+
 ## 0.7.0-alpha.41 - 2026-11-11
 
 - AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered

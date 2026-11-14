@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.57 - 2026-11-14
+
 - feat: `AnalyzeRecords.RecordMode.Default` is `On`, no longer `Shadow` (AUTOMATION-1585, ADR-059 §39): a filed
   `analyze` record answers its key in place of a live analysis, a replayed check included. `Shadow` and `Off` are
   unchanged and still selectable; see the FsHotWatch.Cli changelog for the evidence and the config fallback.
