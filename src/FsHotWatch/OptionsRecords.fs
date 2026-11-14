@@ -544,12 +544,12 @@ type Replay =
 /// The options filed for `request` whose every input is byte-identical now, loaded at
 /// `loadTime`; otherwise why not.
 let tryReplay
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (request: Request)
     (environment: (string * string) list)
     (loadTime: DateTime)
     : Replay =
-    match store.LookupWithOutputs(requestKey request) with
+    match OutcomeStore.Through.lookupWithOutputs store (requestKey request).Value with
     | None -> Missed "no evaluation of this request is filed"
     | Some(_, outputs) ->
         match outputs |> Option.bind InputsJson.tryOfJson with
@@ -557,7 +557,7 @@ let tryReplay
         | Some(inputs, filedKey) ->
             let key = optionsKey request inputs environment
 
-            match store.LookupWithOutputs key with
+            match OutcomeStore.Through.lookupWithOutputs store key.Value with
             | Some(_, Some text) ->
                 match ProjectOptionsJson.tryOfJson loadTime text with
                 | Some projects -> Replayed projects
@@ -565,7 +565,7 @@ let tryReplay
             | Some(_, None)
             | None ->
                 match
-                    store.Lookup filedKey
+                    OutcomeStore.Through.lookup store filedKey
                     |> Option.map (fun filed -> ActionKey.moved filed.Key.Inputs key.Inputs)
                 with
                 | None
@@ -639,7 +639,7 @@ let absentOf (paths: string seq) : Set<string> =
 /// between its change time being read and its bytes being hashed filed the options evaluated
 /// from the old bytes under the new bytes' key, and every later start replayed them.
 let file
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (request: Request)
     (inputs: EvaluationInputs)
     (projects: Types.ProjectOptions list)
@@ -683,16 +683,16 @@ let file
             | _ :: _ as rehashed -> Moved(List.map labelPath rehashed)
             | [] ->
                 let filedRecord (recordKey: ActionKey.ActionKey) (subject: string) (outputs: string) =
-                    store.RecordWithOutputs(
-                        OutcomeStore.Record.ofAction
+                    OutcomeStore.Through.file
+                        store
+                        (OutcomeStore.Record.ofAction
                             recordKey
                             subject
                             OutcomeStore.Outcome.Pass
                             request.Toolchain
                             request.Root
-                            DateTimeOffset.UtcNow,
-                        Some outputs
-                    )
+                            DateTimeOffset.UtcNow)
+                        (Some outputs)
 
                 // The options first: an index naming a key that holds nothing is a miss, never a
                 // replay of something else.
@@ -742,7 +742,7 @@ type CachingLoader
     (
         inner: IWorkspaceLoader,
         listInputs: Types.ProjectOptions list -> EvaluationInputs,
-        store: OutcomeStore.Store,
+        store: OutcomeRecords.IOutcomeStore,
         request: string list -> Request,
         environment: unit -> (string * string) list,
         log: string -> unit,
@@ -763,7 +763,7 @@ type CachingLoader
 
     // The probes the last evaluation of this request listed, as its index record names them.
     let filedProbes (req: Request) =
-        store.LookupWithOutputs(requestKey req)
+        OutcomeStore.Through.lookupWithOutputs store (requestKey req).Value
         |> Option.bind snd
         |> Option.bind InputsJson.tryOfJson
         |> Option.map (fun (inputs, _) -> inputs.Probes)
