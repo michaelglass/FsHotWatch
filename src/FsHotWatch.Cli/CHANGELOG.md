@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.149 - 2026-11-14
+
 - fix: a test project an earlier checkout ran, and the current tree no longer has, no longer reds a green run with
   "symbol(s) still owed to tests in P" (AUTOMATION-1717). Leftover build output or fshw state never makes a project
   owe: it must be configured, in the discovered inventory, or have its test sources in the tree. See

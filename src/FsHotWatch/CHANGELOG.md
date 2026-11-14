@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.116 - 2026-11-14
+
 - fix: `PluginActivity.State` no longer spins forever when live recordings hold the bytes over the 2 MB activity cap
   and no history is left to evict (AUTOMATION-1703). Live and history bytes are counted apart: a live recording's
   log is bounded by its own share (`maxTotalBytes / 8`) and drops its oldest lines past it, and history is evicted
