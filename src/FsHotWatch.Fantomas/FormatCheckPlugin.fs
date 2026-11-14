@@ -114,7 +114,7 @@ let private settledKeys (repoRoot: string) (pin: FantomasPin) : string -> Action
 /// host fails the format status naming it. It goes back to the tool on EVERY later pass,
 /// whatever that pass's batch holds, until the tool processes it or the file is gone,
 /// so the failure is re-earned from the current bytes and never forgotten.
-type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.Store) =
+type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeRecords.IOutcomeStore) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
     let runner = defaultArg runner dotnetToolRunner
 
@@ -140,7 +140,7 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
         match settled.TryGetValue file with
         | true, prior when prior = key.Value -> true
         | _ ->
-            match store |> Option.bind (fun store -> store.Lookup key) with
+            match store |> Option.bind (fun store -> OutcomeStore.Through.lookup store key.Value) with
             | Some record when record.Outcome = OutcomeStore.Outcome.Pass ->
                 settled[file] <- key.Value
                 true
@@ -152,15 +152,16 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
 
         store
         |> Option.iter (fun store ->
-            store.Record(
-                OutcomeStore.Record.ofAction
+            OutcomeStore.Through.file
+                store
+                (OutcomeStore.Record.ofAction
                     key
                     (FsHotWatch.CachePathIdentity.keyOf (Some repoRoot) file)
                     OutcomeStore.Outcome.Pass
                     producer.Value
                     repoRoot
-                    DateTimeOffset.UtcNow
-            )
+                    DateTimeOffset.UtcNow)
+                None
             |> ignore)
 
     interface IFsHotWatchPreprocessor with
