@@ -262,6 +262,7 @@
     <Compile Include="PathFilterTests.fs" />
     <Compile Include="RepoFilesTests.fs" />
     <Compile Include="IgnoredInputsTests.fs" />
+    <Compile Include="GitIgnoreEquivalenceTests.fs" />
     <Compile Include="UnreadableWalkTests.fs" />
     <Compile Include="SafeWalkTests.fs" />
     <Compile Include="ProjectGraphTests.fs" />
