@@ -3261,9 +3261,9 @@
       "reason": "2026-09-29: the JSON-accessor extraction moved this file's covered property-read code into Json.fs (covered there), so its own covered count and share fell with no test lost. Floor re-set to Linux CI run 36497046365 on main c9122252."
     },
     "RepoIdentity.fs": {
-      "coveredLines": 28,
+      "coveredLines": 27,
       "coveredBranches": 6,
-      "reason": "Lowered from 56/18 (2026-09-24): the file's own layout readers (pointer reading, the `/worktrees/` git-dir cut, the checkout-kind probe) were deleted; namespaceOf now derives from RepositoryIdentity.resolveWorktree. Measured 28/28 lines, 6/6 branches on macOS by a coverage run of RepositoryIdentityTests + CrossWorkspaceCacheTests + DaemonConfigTests; every remaining line and branch is covered."
+      "reason": "Lowered from 56/18 (2026-09-24): the file's own layout readers (pointer reading, the `/worktrees/` git-dir cut, the checkout-kind probe) were deleted; namespaceOf now derives from RepositoryIdentity.resolveWorktree. Measured 28/28 lines, 6/6 branches on macOS by a coverage run of RepositoryIdentityTests + CrossWorkspaceCacheTests + DaemonConfigTests; every remaining line and branch is covered. Lowered 28 -> 27 (2026-11-14, Phase 1): the move into FsHotWatch.Core joined `let digest =` and its expression onto one line (ContentHash.ofText for CheckCache.sha256Hex); the file is still fully covered, so this is shorter code, not lost coverage."
     },
     "RunClaim.fs": {
       "coveredLines": 100,
