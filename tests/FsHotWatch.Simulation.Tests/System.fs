@@ -35,6 +35,8 @@ type Mutant =
     | FailReadAsPass
     /// A lookup reads a key with no record as a pass (a partial filing read as green).
     | MissingReadAsPass
+    /// A test project's K_P (its evidence key over the inputs its run reads) leaves this file out.
+    | KpOmitsFile of path: string
 
 /// The system the simulation drives: today's, or today's with one planted defect.
 [<RequireQualifiedAccess>]
@@ -73,6 +75,23 @@ let treeKey (subject: Subject) (tree: Tree) : string =
     | Subject.Mutated(Mutant.KeyOmitsFile path) -> digestOf (paths |> List.filter ((<>) path)) tree
     | Subject.Current
     | Subject.Mutated _ -> treeDigest tree
+
+/// The two stores a lookup reads: the publication's (the shadow store under the checkout) and the
+/// box-wide one the test runner files K_P records in.
+type Stores =
+    { Shadow: OutcomeStore.Store
+      Kp: OutcomeStore.Store }
+
+/// A test project's K_P over `tree`: a key over exactly the inputs its run reads, so a run of
+/// another tree with the same inputs answers for this one (ADR-059 step 7).
+let kpKey (subject: Subject) (testProject: string) (tree: Tree) : ActionKey.ActionKey =
+    let inputs =
+        match subject with
+        | Subject.Mutated(Mutant.KpOmitsFile path) -> inputsOf testProject |> List.filter ((<>) path)
+        | Subject.Current
+        | Subject.Mutated _ -> inputsOf testProject
+
+    ActionKey.create "test-kp" [ "project", testProject; "inputs", digestOf inputs tree ]
 
 /// Whether the engine notices that the tree moved between `started` and `ended`.
 let noticesMove (subject: Subject) (started: Tree) (ended: Tree) : bool =
@@ -198,7 +217,27 @@ let observation
       Suites = suites
       RunOrder = [ run.RunId ]
       RecordedAt = now
-      OutcomeKeys = Map.empty }
+      OutcomeKeys =
+        testProjects
+        |> List.map (fun tp -> tp, (kpKey subject tp run.Started).Value)
+        |> Map.ofList }
+
+/// What the test runner files in the K_P store for `run`: a full run of each project it ran,
+/// under the K_P of the tree the run READ. An impact-filtered run files nothing there.
+let fileKp (subject: Subject) (stores: Stores) (run: Run) (producer: string) (worktree: string) (now: DateTimeOffset) =
+    match run.Scope with
+    | ShadowVerdict.GradedScope.FullSuite ->
+        for tp in run.Selected do
+            let outcome =
+                if testFails tp run.Read then
+                    OutcomeStore.Outcome.Fail
+                else
+                    OutcomeStore.Outcome.Pass
+
+            stores.Kp.Record(OutcomeStore.Record.ofAction (kpKey subject tp run.Read) tp outcome producer worktree now)
+            |> ignore
+    | ShadowVerdict.GradedScope.ImpactFiltered
+    | ShadowVerdict.GradedScope.Unscoped -> ()
 
 /// The observation a `fshw verdict` read makes of `tree`: the requirements come from the
 /// configuration, so nothing of a run is needed.
@@ -226,14 +265,18 @@ let readObservation
       RecordedAt = now
       OutcomeKeys = Map.empty }
 
-/// The answer for one key, as today's lookup reads it for `command`.
-let currentLookup (command: Verdict.Command) (store: OutcomeStore.Store) (key: ActionKey.KeyValue) =
-    match command with
-    | Verdict.Command.Check -> TestFailureClearance.lookupForCheck store key
-    | Verdict.Command.Confirm -> store.Lookup key |> Option.map _.Outcome
+/// The answer for one key, as today's lookup reads it for `command`: the shadow store's, else
+/// the K_P store's (`ShadowVerdict.lookupIn`).
+let currentLookup (command: Verdict.Command) (stores: Stores) (key: ActionKey.KeyValue) =
+    let readIn (store: OutcomeStore.Store) =
+        match command with
+        | Verdict.Command.Check -> TestFailureClearance.lookupForCheck store key
+        | Verdict.Command.Confirm -> store.Lookup key |> Option.map _.Outcome
 
-let private mutatedLookup (subject: Subject) (command: Verdict.Command) (store: OutcomeStore.Store) =
-    let current = currentLookup command store
+    readIn stores.Shadow |> Option.orElseWith (fun () -> readIn stores.Kp)
+
+let private mutatedLookup (subject: Subject) (command: Verdict.Command) (stores: Stores) =
+    let current = currentLookup command stores
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass ->
@@ -246,28 +289,38 @@ let private mutatedLookup (subject: Subject) (command: Verdict.Command) (store: 
     | Subject.Current
     | Subject.Mutated _ -> current
 
-/// The lookup verdict of `o` against `store`, recomputed from R(c, T) with `subject`'s lookup.
-let decide (subject: Subject) (store: OutcomeStore.Store) (o: ShadowVerdict.Observation) =
-    LookupVerdict.decide (ShadowVerdict.requirements o configured) (mutatedLookup subject o.Command store)
+/// The lookup verdict of `o` against `stores`, recomputed from R(c, T) with `subject`'s lookup.
+/// A read names no K_P keys; as `observeReadWith` does, it takes those earlier publications named.
+let decide (subject: Subject) (stores: Stores) (o: ShadowVerdict.Observation) =
+    let o =
+        ShadowVerdict.withRecordedOutcomeKeys stores.Shadow configured.TestProjects o
+
+    LookupVerdict.decide (ShadowVerdict.requirements o configured) (mutatedLookup subject o.Command stores)
 
 /// A publication: today's shadow files the run and answers. A lookup mutant answers again
 /// over what today filed, with its defect.
-let publish (subject: Subject) (repoRoot: string) (store: OutcomeStore.Store) (o: ShadowVerdict.Observation) =
-    let answer = ShadowVerdict.observeWith repoRoot store None configured o
+let publish (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
+    let answer =
+        ShadowVerdict.observeWith repoRoot stores.Shadow (Some stores.Kp) configured o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass
-    | Subject.Mutated Mutant.MissingReadAsPass -> decide subject store o
+    | Subject.Mutated Mutant.MissingReadAsPass -> decide subject stores o
     | Subject.Current
     | Subject.Mutated _ -> answer
 
-/// A `fshw verdict` read, answered as `publish` answers.
-let read (subject: Subject) (repoRoot: string) (store: OutcomeStore.Store) (o: ShadowVerdict.Observation) =
-    let answer = ShadowVerdict.observeReadWith repoRoot store None configured o
+/// A `fshw verdict` read, answered as `publish` answers. As the CLI does (`observeRead`), it
+/// first takes the K_P keys earlier publications named for this tree.
+let read (subject: Subject) (repoRoot: string) (stores: Stores) (o: ShadowVerdict.Observation) =
+    let o =
+        ShadowVerdict.withRecordedOutcomeKeys stores.Shadow configured.TestProjects o
+
+    let answer =
+        ShadowVerdict.observeReadWith repoRoot stores.Shadow (Some stores.Kp) configured o
 
     match subject with
     | Subject.Mutated Mutant.FailReadAsPass
-    | Subject.Mutated Mutant.MissingReadAsPass -> decide subject store o
+    | Subject.Mutated Mutant.MissingReadAsPass -> decide subject stores o
     | Subject.Current
     | Subject.Mutated _ -> answer
 
