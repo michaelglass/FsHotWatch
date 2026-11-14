@@ -1085,7 +1085,7 @@ let internal dischargeCoveredBootScanWith
 
     // The covering run passed this very tree, under the current model.
     let coveredBy (tree: ReceiptTree) generation =
-        ReceiptInputTree.matches (Some tree.Identity) state.SealedTree
+        ReceiptInputTree.matches (Some tree.Identity) (state.SealedTree |> Option.map _.Identity)
         && inTree tree
         && observeModelGeneration ctx = generation
         && indexNamesOnlyRunnable (lazy (resolveExcludedProjects ()))

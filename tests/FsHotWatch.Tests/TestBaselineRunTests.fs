@@ -343,8 +343,10 @@ let ``an index not sealed at the receipt tree files no baseline and logs both tr
         let c = checkout stores root
         seal c
         let sealedTree = (treeOf root).Identity
-        // The tree moves after the seal: the run's receipt describes bytes no fold has seen.
-        File.AppendAllText(Path.Combine(root, "src", "X", "Lib.fs"), "let moved = 2\n")
+        // A compile input moves after the seal: the run's receipt describes bytes no fold has
+        // seen. A project file, since this model names no checkable source, and a move only in
+        // paths no build compiles leaves the seal standing for the receipt tree (AUTOMATION-1682).
+        File.AppendAllText(Path.Combine(root, "src", "X", "X.fsproj"), "<!-- moved -->\n")
         let _, completed = run c
         let receipt = (treeOf root).Identity
         test <@ receipt <> sealedTree @>
@@ -358,6 +360,25 @@ let ``an index not sealed at the receipt tree files no baseline and logs both tr
             @>
 
         test <@ stores.Outcomes.Lookup(TestBaseline.keyOf receipt) = None @>)
+
+[<Fact(Timeout = RunsTestCapMs)>]
+let ``a seal that lags the receipt tree only by paths no build compiles still files that tree's test-baseline`` () =
+    // AUTOMATION-1682, as measured on alpha.148: `beforeRun` generated a bundle after the
+    // run's seal, the receipt rebound to the tree after it, and the full pass filed nothing
+    // (reason=not-sealed). The index's rows are the same for both trees.
+    withRepo (fun stores rootNamed ->
+        let root = rootNamed "a"
+        let c = checkout stores root
+        seal c
+        let sealedTree = (treeOf root).Identity
+        write root "src/Web/wwwroot/js/app.js" "console.log('bundled');\n"
+        let _, completed = run c
+        let receipt = (treeOf root).Identity
+        test <@ receipt <> sealedTree @>
+        let lines = baselineLine c completed
+        test <@ lines.Length = 1 && lines.Head.Contains "test-baseline: written" @>
+        test <@ lines.Head.Contains $"tree=%s{receipt}" @>
+        test <@ (stores.Outcomes.Lookup(TestBaseline.keyOf receipt)).IsSome @>)
 
 [<Fact(Timeout = RunsTestCapMs)>]
 let ``a second checkout whose first full run replays a project files its own tree's test-baseline`` () =

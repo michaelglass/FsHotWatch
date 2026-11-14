@@ -183,7 +183,12 @@ let private verified (record: bool) =
     let first = daemonOver f wiring
     let sealedState = update first.F first.F.Handler.Init (BatchChecked(batch ()))
     let tree = (ReceiptInputTree.read f.Ctx.RepoRoot).Value
-    Assert.True((sealedState.SealedTree = Some tree), "positive control: the index is sealed at T")
+
+    Assert.True(
+        (sealedState.SealedTree |> Option.map _.Identity = Some tree),
+        "positive control: the index is sealed at T"
+    )
+
     Assert.True((IndexSeal.load (dbPathOf f) = Some tree), "positive control: the seal is on disk")
 
     let full =
@@ -742,7 +747,11 @@ let ``a re-seal at another tree republishes WouldRunFullSuite, so a stale Select
     let resealed = update d.F d.F.Handler.Init (BatchChecked(batch ()))
     let tree' = (ReceiptInputTree.read v.F.Ctx.RepoRoot).Value
     Assert.True((tree' <> v.Tree), "positive control: the edit moved the tree")
-    Assert.True((resealed.SealedTree = Some tree'), "positive control: the index re-sealed at T'")
+
+    Assert.True(
+        (resealed.SealedTree |> Option.map _.Identity = Some tree'),
+        "positive control: the index re-sealed at T'"
+    )
 
     test
         <@
@@ -759,7 +768,7 @@ let ``a completion republishes what a restart would select`` () =
     let d = restart v
     // The restarted daemon's scan seals its index at the unchanged tree T, as a live one does.
     let sealedState = update d.F d.F.Handler.Init (BatchChecked(batch ()))
-    Assert.True((sealedState.SealedTree = Some v.Tree), "positive control: sealed at T")
+    Assert.True((sealedState.SealedTree |> Option.map _.Identity = Some v.Tree), "positive control: sealed at T")
     Assert.True((published v <> Restart.Selection.SelectsCorrectly v.Tree), "positive control: not ready yet")
 
     fileRecord v.Outcomes v.F.Ctx.RepoRoot "another-run" AnalysisRecords.analyzerIdentity
@@ -777,3 +786,70 @@ let ``a completion republishes what a restart would select`` () =
 
     update d.F sealedState (finishedGreen full) |> ignore
     test <@ published v = Restart.Selection.SelectsCorrectly v.Tree @>
+
+// --- A seal that lags the receipt tree by run-time-only paths (AUTOMATION-1682 live) ---
+//
+// Observed on alpha.148 in every intelligence workspace: the run's `BatchChecked` sealed the
+// index at T0, then `beforeRun` (test-preflights) generated a JS bundle under a discovery root.
+// No build compiles those paths, so the receipt rebinds to T1, the tree the tests run against.
+// The full suite passed T1, but the seal still named T0: the ledger kept no tree, no record was
+// filed, and every restart ran the full suite. The re-check that would re-seal at T1 is
+// deferred until the test host completes, after the completion has already been folded.
+
+/// A checkout sealed at T0 whose full run then passed T1, the tree after `moved` wrote into it.
+let private passedAfterTheSeal (moved: string -> unit) =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    write f.Ctx.RepoRoot "src/Lib.fs" "module Lib\nlet f x = x\n"
+    write f.Ctx.RepoRoot "tests/ProjA/data.json" "{ \"v\": 1 }\n"
+    let outcomes, wiring = storesBeside f.Ctx.RepoRoot
+    let first = daemonOver f wiring
+    let sealedState = update first.F first.F.Handler.Init (BatchChecked(batch ()))
+    let sealedAt = (ReceiptInputTree.read f.Ctx.RepoRoot).Value
+    Assert.True((sealedState.SealedTree |> Option.map _.Identity = Some sealedAt), "positive control: sealed at T0")
+    moved f.Ctx.RepoRoot
+    let passedAt = (ReceiptInputTree.read f.Ctx.RepoRoot).Value
+    Assert.True((passedAt <> sealedAt), "positive control: the write moved the tree")
+
+    // The receipt binds to the tree after `beforeRun`, as `afterBeforeRun` rebinds it.
+    let full =
+        { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+            ModelGeneration = Some 1L
+            InputTree = ReceiptInputTree.readTree f.Ctx.RepoRoot }
+
+    let passed = update first.F sealedState (finishedGreen full)
+    Assert.True(passed.Debt.Baseline.IsSome, "positive control: the full run earned the baseline")
+    publish first.F sealedState passed
+    f, outcomes, wiring, passed, sealedAt, passedAt
+
+let private generateBundle (root: string) =
+    write root "src/Web/wwwroot/js/app.js" "console.log('bundled');\n"
+
+[<Fact(Timeout = 30000)>]
+let ``a full pass over a tree that moved only in run-time paths since the seal records that tree and re-seals there``
+    ()
+    =
+    let f, outcomes, wiring, passed, _, passedAt = passedAfterTheSeal generateBundle
+    test <@ passed.Debt.Baseline |> Option.bind _.Tree = Some passedAt @>
+    test <@ passed.SealedTree |> Option.map _.Identity = Some passedAt @>
+    test <@ IndexSeal.load (dbPathOf f) = Some passedAt @>
+
+    // With T1's record filed, a restart selects instead of running every project in full.
+    let runId = passed.Debt.Baseline.Value.RunId.ToString "N"
+
+    fileRecord outcomes f.Ctx.RepoRoot runId AnalysisRecords.analyzerIdentity
+    |> ignore
+
+    daemonOver f wiring |> ignore
+    test <@ Restart.read f.Ctx.RepoRoot = Restart.Selection.SelectsCorrectly passedAt @>
+
+[<Fact(Timeout = 30000)>]
+let ``a full pass over a tree whose compile inputs moved since the seal records no tree`` () =
+    // Negative control: the index's rows describe the sealed tree's sources, not the edit.
+    let edit (root: string) =
+        write root "src/Lib.fs" "module Lib\nlet f x = x + 0\n"
+
+    let f, _, _, passed, sealedAt, _ = passedAfterTheSeal edit
+    test <@ passed.Debt.Baseline |> Option.bind _.Tree = None @>
+    test <@ passed.SealedTree |> Option.map _.Identity = Some sealedAt @>
+    test <@ IndexSeal.load (dbPathOf f) = Some sealedAt @>

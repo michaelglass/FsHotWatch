@@ -74,6 +74,13 @@ type internal RunFinishedEnv =
         /// Publish what a restarted daemon would select, from the ledger this completion
         /// leaves (AUTOMATION-1623, ADR-069).
         PublishRestartSelection: FullSuiteBaseline.Baseline option -> unit
+        /// Whether a build consumes a repo-relative path, under the model as it is now.
+        CompileInputs: PluginCtx<TestPruneMsg> -> string -> bool
+        /// The tree the index is sealed at on disk (`IndexSeal`). A flush that wrote rows
+        /// cleared it there, while `TestPruneState.SealedTree` still names the last seal.
+        LoadSeal: unit -> string option
+        /// Record the tree the index is sealed at beside it (`IndexSeal`).
+        SaveSeal: string option -> unit
     }
 
 /// A run's completion (`TestsFinished`, or a requested run's `CommandTestsFinished`), folded into state.
@@ -259,6 +266,36 @@ let internal onRunFinishedWith
         let executedFullSuite = settled.ExecutedFullSuite
         let earnsBaseline = settled.EarnsBaseline
 
+        // AUTOMATION-1682: the run's `BatchChecked` sealed the index before `beforeRun`
+        // generated output no build compiles, and the receipt rebound to the tree after it.
+        // The re-check that would re-seal there waits for the test host, so it folds only
+        // after this completion: the ledger kept no tree, no record was filed, and every
+        // restart ran the full suite. The rows the seal vouches for are the same for the
+        // receipt tree, so a baseline-earning completion re-seals there, provided no flush
+        // has written rows since the seal (the seal on disk still names it).
+        let state =
+            match state.SealedTree, receipt.CurrentTree with
+            | Some sealedAt, Some current when earnsBaseline && sealedAt.Identity <> current.Identity ->
+                if env.LoadSeal() <> Some sealedAt.Identity then
+                    state
+                else
+                    match ReceiptInputTree.sealCarriesTo (env.CompileInputs ctx) sealedAt current with
+                    | Ok moved ->
+                        env.SaveSeal(Some current.Identity)
+
+                        Logging.info
+                            "test-prune"
+                            $"index re-sealed at the receipt tree %s{current.Identity}: it moved from the seal %s{sealedAt.Identity} only in paths no build compiles — %s{ReceiptInputTree.describeDelta moved}"
+
+                        { state with SealedTree = Some current }
+                    | Error why ->
+                        Logging.info
+                            "test-prune"
+                            $"index stays sealed at %s{sealedAt.Identity}, not at the receipt tree %s{current.Identity}: %s{why}"
+
+                        state
+            | _ -> state
+
         // The tree the baseline was earned on, kept only when the index was sealed at exactly
         // that tree: a restarted daemon diffs its cold scan from it (AUTOMATION-1587). The
         // trees earlier full passes earned are kept beside it, so a revert that re-seals the
@@ -269,7 +306,7 @@ let internal onRunFinishedWith
                 let sealedReceiptTree =
                     receipt.CurrentTree
                     |> Option.map _.Identity
-                    |> Option.filter (fun tree -> state.SealedTree = Some tree)
+                    |> Option.filter (fun tree -> state.SealedTree |> Option.map _.Identity = Some tree)
 
                 { debt with
                     Baseline =
@@ -335,7 +372,7 @@ let internal onRunFinishedWith
                 { RunId = completed.RunId.ToString("N")
                   EarnsBaseline = earnsBaseline
                   RunnableProjects = runnableProjects
-                  SealedTree = state.SealedTree
+                  SealedTree = state.SealedTree |> Option.map _.Identity
                   ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries) })
 
         // AUTOMATION-1623 (ADR-069): this completion may have moved the ledger's full-suite

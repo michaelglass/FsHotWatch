@@ -114,3 +114,24 @@ project in full. That is the 1587 negative control.
   sealed tree exists box-wide, and the restart still runs every project in full.
 - `TestPruneSelectionSoundnessTests`: the ledger's tree history is newest first, bounded,
   deduplicated, round-trips, and reads an older ledger.
+
+## Amendment (2026-11-14): a seal that lags the receipt tree by run-time paths
+
+Measured on alpha.148, which predates this ADR's code, in every intelligence workspace: the full
+pass kept no ledger tree, so `restart-selection` said `would-run-full-suite … records no tree it
+passed with the index sealed there`. One example is run 22f396b7 (20,917 tests, pin148-gate). Its
+`BatchChecked` sealed the index at 2d864d48 while `beforeRun` (test-preflights) was still writing
+the Fable bundle. The receipt rebound to the tree after `beforeRun` (0ec949e8, "moved only paths no
+build compiles"). The completion found the seal at 2d864d48 and the receipt at 0ec949e8, so it filed
+nothing (`reason=not-sealed`). The re-check that would re-seal at 0ec949e8 is deferred until the test
+host completes, so it folds after the completion. Decision 2 alone does not fix this, because
+`EarlierTrees` only keeps trees that were already sealed.
+
+**Decision.** A completion that earns the baseline re-seals the index at its receipt tree when two
+things hold. First, every path that moved since the seal is one no build compiles
+(`ReceiptInputTree.sealCarriesTo`, the same predicate `afterBeforeRun` rebinds on). Second, the seal
+on disk still names the sealed tree, which means no flush has written rows since. The index holds
+rows only for compiled files, so its rows are the same for both trees. The ledger then records the
+receipt tree, and the record is filed. A moved compile input leaves the seal where it is (negative
+control). Tests: `TestPruneBaselineWaitTests` (both cases, then restart → `SelectsCorrectly`) and
+`TestBaselineRunTests` (the record is filed for the receipt tree).
