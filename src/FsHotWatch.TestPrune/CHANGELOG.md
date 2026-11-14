@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- refactor: test evidence, test baselines and the reuse refusal read and file through `OutcomeRecords.IOutcomeStore`
+  (AUTOMATION-1695). `TestEvidenceRun.Wiring.Outcomes` is an `OutcomeStore.Wired option`: the store and its
+  collection, which the plugin wires as the disk store's GcIfDue with the same "not due" log line. Behaviour unchanged.
+
 ## 0.13.0-alpha.116 - 2026-11-14
 
 - fix: a covering test project the current tree no longer has owes nothing (AUTOMATION-1717, ADR-075). A checkout that ran a
