@@ -450,7 +450,7 @@ let ``server half: a green gate leaves no process running in the workspace`` () 
             let runDir, _ = serverMachine home (leaky 86391 "touch gate-ran") ""
             let code, output = runServer home runDir None
             test <@ code = 0 @>
-            test <@ survivors 86391 = [] @>
+            test <@ List.isEmpty (survivors 86391) @>
             test <@ output.Contains "leftover process" @>
         finally
             killSurvivors 86391)
@@ -466,6 +466,6 @@ let ``server half: a gate stopped because the releaser went away leaves no proce
 
             test <@ code <> 0 @>
             test <@ not (File.Exists(Path.Combine(ws, "finished"))) @>
-            test <@ survivors 86381 = [] @>
+            test <@ List.isEmpty (survivors 86381) @>
         finally
             killSurvivors 86381)
