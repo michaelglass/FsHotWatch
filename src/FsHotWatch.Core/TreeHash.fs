@@ -139,7 +139,7 @@ type Walked =
 /// and the specific statement wins over the general one.
 ///
 /// `timer` times each part of the walk (experiment E5); `files` is it untimed.
-let filesWith (timer: Timing.PhaseTimer) (repoRoot: string) (excludePatterns: string list) : Walked =
+let filesWith (timer: Timing.IPhaseTimer) (repoRoot: string) (excludePatterns: string list) : Walked =
     let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
     let isExcludedDir = PathFilter.isExcludedDirectory repoRoot excludePatterns
 
@@ -327,7 +327,7 @@ type Hashing =
 /// the invisible part.
 ///
 /// Counts the cache's trusted and read answers into `timer` (`hash.trusted`, `hash.read`).
-let ofWalkedTimed (timer: Timing.PhaseTimer) (hashing: Hashing) (walked: Walked) : Tree =
+let ofWalkedTimed (timer: Timing.IPhaseTimer) (hashing: Hashing) (walked: Walked) : Tree =
     // `ContentHash` owns the sentinel policy for an unreadable file.
     let hashedFiles =
         match hashing with

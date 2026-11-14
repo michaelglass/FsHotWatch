@@ -355,7 +355,7 @@ let internal globWalkPrefix (pattern: string) : string =
 /// directory, a restore cache or a metrics log under `infra/` is not what `infra` means,
 /// and keying it would move the hash on every build. A declared file, or a directory that
 /// is itself ignored, is taken as named.
-let resolveWith (timer: Timing.PhaseTimer) (repoRoot: string) (declaration: Declaration) : Resolution =
+let resolveWith (timer: Timing.IPhaseTimer) (repoRoot: string) (declaration: Declaration) : Resolution =
     let root = Path.GetFullPath repoRoot
 
     let ignores =
