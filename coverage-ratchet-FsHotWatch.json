@@ -1,10 +1,80 @@
 {
   "overrides": {
+    "LegacyActionKey.fs": [
+      {
+        "line": 100,
+        "branch": 87,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (ActionKeyTests, OutcomeRecordsTests, OutcomeStoreTests and 13 more); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 79,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
+    "Lookup.fs": [
+      {
+        "line": 90,
+        "branch": 61,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (PureLookupTests, ShadowVerdictTests, ShadowReadKpTests, ShadowKpSupersessionTests and more; the IO-error branch of reading the configuration is not driven); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 87,
+        "branch": 53,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
+    "OutcomeRecords.fs": [
+      {
+        "line": 89,
+        "branch": 77,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (OutcomeRecordsTests, OutcomeStoreTests and more); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 86,
+        "branch": 69,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
     "PluginInputs.fs": {
       "line": 100,
       "branch": 100,
       "reason": "new file (AUTOMATION-1577, ADR-074: a plugin's lookup eligibility, a pattern's declared inputs in its watcher's scope, their digest and the plugin-inputs key). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by PluginInputsTests, ShadowIdlePluginTests and ShadowStartRerunTests with coverage: line 100% (48/48), branch 100% (2/2). No platform branch (the pattern is matched by FilePattern.matches, not the OS glob); the hole cases use a mode-000 directory, which holds for any non-root runner, CI's included. Platform-neutral; the Linux value is confirmed by the first CI run."
     },
+    "RequiredConfig.fs": [
+      {
+        "line": 93,
+        "branch": 85,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (RequiredConfigParityTests, RequiredConfigGoldenTests, PureLookupTests); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 90,
+        "branch": 77,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
+    "Requirements.fs": [
+      {
+        "line": 100,
+        "branch": 85,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (PureLookupTests, ShadowVerdictTests and more); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 77,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
     "StaticRecord.fs": {
       "line": 100,
       "branch": 100,
@@ -49,6 +119,20 @@
       "branch": 100,
       "reason": "new file (AUTOMATION-1635 FsHotWatch.Core: IRecordKind, typed ActionKey and its canonical text). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-12 on macOS by CoreTypesTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.CoreTypesTests): line 100% (29/29), branch 100% (14/14). Pure, no I/O or platform branch, so platform-neutral."
     },
+    "Timing.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (PhaseTimer.untimed through every tree walk); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 92,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
     "VerdictAndPurity.fs": {
       "line": 100,
       "branch": 100,
@@ -1314,6 +1398,20 @@
         "line": 97,
         "branch": 77,
         "reason": "provisional Linux floor: not measured locally - the dev boxes are macOS, and this module's IO-fallback tests are guarded on `not IsWindows` but still depend on Unix file modes behaving as they do here. Set below the macOS actual by the margin this repo already sees on pure-logic files (cf. Verdict.fs), to be settled from CI artifacts. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
+    ],
+    "WatchScope.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "2026-11-14 (Phase 1 rebase onto AUTOMATION-1577): floor = the value measured from the test classes that exercise it, merged (WatcherTests, PluginInputsTests and more); a full run can only cover more. Settle from CI artifacts.",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 92,
+        "reason": "provisional Linux floor (2026-11-14): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
         "platform": "linux"
       }
     ],
