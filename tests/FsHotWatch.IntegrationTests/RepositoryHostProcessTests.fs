@@ -375,14 +375,17 @@ let ``a plugin command reaches the session of the worktree it is run in, and no 
                 test <@ (record root).HostPid = (record sibling).HostPid @>
                 test <@ (record root).Session <> (record sibling).Session @>
 
-                // Each worktree's command is recognised and answered by its own session: its file
-                // command has not run (no `.probe` file changed), which is its status's answer,
-                // no verdict (3). An unrecognised command would exit 1 naming it.
+                // Each worktree's command is recognised and answered by its own session. No `.probe`
+                // file changed, but its session ran the file command once when it started, because
+                // nothing was on record for the files its pattern declares (AUTOMATION-1577, ADR-074
+                // decision 6: a miss means run). So its status is that run: a pass (`true`), exit 0.
+                // An unrecognised command would exit 1 naming it. With the shadow off
+                // (FSHW_OUTCOME_SHADOW=0) nothing runs at start and the answer is "has not run yet" (3).
                 for worktree, command in [ root, "alpha-status"; sibling, "beta-status" ] do
                     let exitCode, output = runCli stateHome worktree [ command ]
 
                     Assert.True(
-                        (exitCode = 3 && output.Contains "the command has not run yet"),
+                        (exitCode = 0 && output.Contains "Passed"),
                         $"fshw %s{command} exited %d{exitCode}:\n%s{output}"
                     )
 
