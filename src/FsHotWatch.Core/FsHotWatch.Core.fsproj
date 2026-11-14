@@ -36,6 +36,7 @@
     <Compile Include="LegacyActionKey.fs" />
     <Compile Include="LookupVerdict.fs" />
     <Compile Include="Requirements.fs" />
+    <Compile Include="RequiredConfig.fs" />
     <Compile Include="OutcomeRecords.fs" />
     <!-- The tree walk and hash (AUTOMATION-1695, Phase 1 step C), moved unchanged under their own
          module names, so a pure-lookup verdict runs on this assembly alone (experiment E5). -->

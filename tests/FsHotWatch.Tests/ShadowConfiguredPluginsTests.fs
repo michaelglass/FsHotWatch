@@ -271,15 +271,15 @@ let ``the required plugins are exactly the ones the daemon registers`` () =
     withTempDir "shadow-plugins-register" (fun repo ->
         Directory.CreateDirectory(Path.Combine(repo, "src")) |> ignore
 
-        let config =
-            DaemonConfig.parseConfig
-                """{ "preprocessors": [ { "name": "pre", "command": "true" } ],
+        let json =
+            """{ "preprocessors": [ { "name": "pre", "command": "true" } ],
                      "format": "check",
                      "lint": true,
                      "fileCommands": [ { "name": "gate", "pattern": "*.md", "command": "echo" } ],
                      "coverage": { "configPath": "coverage-ratchet.json", "searchDir": "." },
                      "tests": { "projects": [ { "project": "P", "command": "true", "args": "", "coverage": false, "timeoutSec": 10 } ] } }"""
-                (defaultTestConfig ())
+
+        let config = DaemonConfig.parseConfig json (defaultTestConfig ())
 
         let daemon =
             FsHotWatch.Daemon.Daemon.createWith (Unchecked.defaultof<_>) repo oneShotDaemonOptions
@@ -288,20 +288,14 @@ let ``the required plugins are exactly the ones the daemon registers`` () =
 
         let registered = daemon.Host.GetAllStatuses() |> Map.keys |> Set.ofSeq
 
-        test <@ registered = Set.ofList (DaemonConfig.requiredPluginNames config) @>
+        test <@ registered = Set.ofList (DaemonConfig.requiredPluginNames json) @>
         test <@ registered.Contains FsHotWatch.PluginActivity.TestPrunePluginName @>
         test <@ registered.Count = 7 @>)
 
 [<Fact>]
 let ``the formatter, analyzers and coverage are named as their plugins name themselves`` () =
-    let config =
-        { DaemonConfig.parseConfig """{ "lint": false, "format": "auto", "build": [] }""" (defaultTestConfig ()) with
-            Analyzers =
-                Some
-                    {| Paths = [ "analyzers/" ]
-                       FailOnSeverity = FsHotWatch.ErrorLedger.DiagnosticSeverity.Warning
-                       BootstrapHints = Map.empty
-                       Scopes = Map.empty |} }
+    let json =
+        """{ "lint": false, "format": "auto", "build": [], "analyzers": { "paths": [ "analyzers/" ] } }"""
 
     // An empty build list registers no build plugin, so none is required.
-    test <@ DaemonConfig.nonTestPluginNames config = [ "format"; FsHotWatch.PluginActivity.AnalyzersPluginName ] @>
+    test <@ DaemonConfig.requiredPluginNames json = [ "format"; FsHotWatch.PluginActivity.AnalyzersPluginName ] @>
