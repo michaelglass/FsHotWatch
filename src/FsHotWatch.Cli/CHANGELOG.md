@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a test project an earlier checkout ran, and the current tree no longer has, no longer reds a green run with
+  "symbol(s) still owed to tests in P" (AUTOMATION-1717). Leftover build output or fshw state never makes a project
+  owe: it must be configured, in the discovered inventory, or have its test sources in the tree. See
+  FsHotWatch.TestPrune.
+
 - fix: a restarted daemon diffs from this checkout's own full pass instead of running the full suite again (AUTOMATION-1682,
   ADR-071; not in alpha.148). A replayed full pass files the `test-baseline` record; a restart diffs from the tree the
   index is sealed at when this checkout's full suite passed it (the ledger keeps 20); and a full pass whose index seal

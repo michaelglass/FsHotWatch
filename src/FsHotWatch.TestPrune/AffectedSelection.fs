@@ -59,7 +59,7 @@ type internal SelectionEnv =
         Queries: ImpactQueries
         RunnableProjects: Set<string>
         /// The test projects covering each of `symbols`.
-        CoveringOf: string seq -> string -> Set<string>
+        CoveringOf: ProjectGraphAccessor -> string seq -> string -> Set<string>
         /// The projects a symbol is owed to, under the declared exclusions.
         DebtScope: (string -> Set<string>) -> string -> Set<string>
         /// Retire `symbols` from the debt.
@@ -246,6 +246,7 @@ let internal affectedTestsFor (env: SelectionEnv) (symbols: string list) =
 
 let internal selectAffectedWith
     (env: SelectionEnv)
+    (graph: ProjectGraphAccessor)
     (flushedState: TestPruneState)
     (runtimeObligations: RuntimeCoverageObligations)
     =
@@ -280,7 +281,7 @@ let internal selectAffectedWith
     //    declares excluded. Nothing here can discharge it, and dropping it would let a
     //    configured-suite green retire tests that never ran. It STAYS owed; the verdict
     //    stays red and names the project until the config lists or excludes it.
-    let covering = coveringOf symbols
+    let covering = coveringOf graph symbols
     let owedTo = lazyDebtScope covering
     let owing = symbols |> List.map (fun s -> s, owedTo s) |> Map.ofList
 

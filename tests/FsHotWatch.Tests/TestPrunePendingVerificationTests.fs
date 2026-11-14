@@ -1763,6 +1763,8 @@ let ``a symbol covered only by an unconfigured project stays owed`` () =
 
         // Lib.orphan's ONLY covering test lives in P2, which is not in `configs`.
         PendingQueueHelpers.seedCoveredSymbol db "Lib.orphan" "Orphan.fs" "P2" "P2Tests" "orphanTest"
+        // P2 is in this tree: its test source is here, so it can still owe (AUTOMATION-1717).
+        File.WriteAllText(Path.Combine(tmpDir, "P2Tests.fs"), "module P2Tests\n")
 
         FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.orphan" ])
 

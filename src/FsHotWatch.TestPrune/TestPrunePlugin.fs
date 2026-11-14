@@ -270,7 +270,24 @@ let internal createWithEvidenceAndQueries
     let lazyDebtScope (covering: string -> Set<string>) =
         debtScope (lazy (resolveExcludedProjects ())) covering
 
-    let coveringOf = coveringOfIn queries
+    // AUTOMATION-1717: a covering project the current tree no longer has is dropped from
+    // every obligation, and named once per daemon, so a leftover cannot pass unremarked.
+    let absentCoverersLogged =
+        System.Collections.Concurrent.ConcurrentDictionary<string, unit>()
+
+    let logAbsentCoverers (projects: Set<string>) =
+        let fresh =
+            projects |> Set.filter (fun project -> absentCoverersLogged.TryAdd(project, ()))
+
+        if not (Set.isEmpty fresh) then
+            let names = fresh |> String.concat ", "
+
+            Logging.info
+                "test-prune"
+                $"the index holds tests of %s{names}, which this tree does not have (not configured, not in the discovered project inventory, and none of their test sources exist) — they cover nothing here, and nothing is owed to them"
+
+    let coveringOf graph =
+        coveringOfIn queries (absentFromTreeIn repoRoot queries runnableProjects graph) logAbsentCoverers
 
     let owedElsewhere = owedElsewhereIn runnableProjects
 
@@ -335,8 +352,8 @@ let internal createWithEvidenceAndQueries
           CommitPending = commitPending
           SeedAges = fun () -> Volatile.Read(&pendingAgeRef) }
 
-    let selectAffected (flushedState: TestPruneState) (runtimeObligations: RuntimeCoverageObligations) =
-        selectAffectedWith selectionEnv flushedState runtimeObligations
+    let selectAffected graph (flushedState: TestPruneState) (runtimeObligations: RuntimeCoverageObligations) =
+        selectAffectedWith selectionEnv graph flushedState runtimeObligations
 
     let flushAndQueryAffected =
         flushAndQueryAffectedWith flushPending joinRefresh selectAffected

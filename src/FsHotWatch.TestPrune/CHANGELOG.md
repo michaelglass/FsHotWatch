@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a covering test project the current tree no longer has owes nothing (AUTOMATION-1717). A checkout that ran a
+  branch with test project P kept P's tests in the index after checking out a tree without P, and every run went red
+  on "N symbol(s) still owed to tests in P, which this daemon does not run" though every test passed.
+  `PluginSteps.absentFromTreeIn` calls P absent only when it is not configured, an available model's discovered
+  inventory does not name it, and none of the source files the index holds its test methods from exists; with no
+  available model, or an index that cannot say, nothing is absent. `coveringOfIn` drops absent projects from every
+  obligation and the plugin logs each one once (`the index holds tests of P, which this tree does not have …`).
+  `ImpactQueries` gains `TestSourceFiles`; the `CoveringOf` env fields and `selectAffectedWith` take the project graph.
+
 - fix: a full-suite run that replays a project's pass at its current K_P files the `test-baseline` record, and a
   restart diffs from the tree the index is sealed at when this checkout's own full suite passed it (AUTOMATION-1682,
   ADR-071; not in alpha.115). `TestBaseline.fullPasses` counts `FullPass.EarnedHere` and `FullPass.Replayed`, and the

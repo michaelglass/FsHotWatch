@@ -307,21 +307,83 @@ let internal debtScopeIn
             projects
             |> Set.filter (fun project -> Set.contains project runnableProjects || not (declaredExcluded project))
 
+/// Which of the covering projects `candidates` the current tree no longer has
+/// (AUTOMATION-1717). A project is absent only on three pieces of evidence together:
+///   * it is not configured (`runnableProjects`);
+///   * an available model's discovered inventory does not name it, by the file name the
+///     index keys tests by;
+///   * not one source file the index holds its test methods from exists under `repoRoot`.
+/// Any of them missing is not evidence: with no available model, or an index that cannot
+/// say where the tests live, nothing is absent, and the obligation stands. Leftover build
+/// output never makes a project present or absent: the evidence is project and source files.
+let internal absentFromTreeIn
+    (repoRoot: string)
+    (queries: ImpactQueries)
+    (runnableProjects: Set<string>)
+    (graph: ProjectGraphAccessor)
+    (candidates: Set<string>)
+    : Set<string> =
+    match ObservedModel.generation graph with
+    | None -> Set.empty
+    | Some _ ->
+        let inventory = ObservedModel.projectFiles graph |> Map.keys |> Set.ofSeq
+
+        let unnamed = Set.difference candidates (Set.union runnableProjects inventory)
+
+        if Set.isEmpty unnamed then
+            Set.empty
+        else
+            match queries.TestSourceFiles(Set.toList unnamed) with
+            | None -> Set.empty
+            | Some sources ->
+                let gone (project: string) =
+                    Map.tryFind project sources
+                    |> Option.defaultValue Set.empty
+                    |> Set.forall (fun file -> not (File.Exists(Path.Combine(repoRoot, file))))
+
+                Set.filter gone unnamed
+
 /// The test projects covering each symbol a classification pass is about: what its
 /// single-seed `QueryAffectedTests` would select from. One grouped query answers all
 /// of `symbols`, run the first time any symbol is asked about and never when none is.
 /// A symbol outside `symbols` is answered by a grouped query of its own.
-let internal coveringOfIn (queries: ImpactQueries) (symbols: string seq) : string -> Set<string> =
+///
+/// A project the current tree no longer has covers nothing (`absentOf`, AUTOMATION-1717):
+/// the index keeps the tests of a project an earlier checkout ran after a later checkout
+/// drops it, and such a project cannot owe anything here. Each one dropped is passed to
+/// `logAbsent`. Absence is decided once per project per pass.
+let internal coveringOfIn
+    (queries: ImpactQueries)
+    (absentOf: Set<string> -> Set<string>)
+    (logAbsent: Set<string> -> unit)
+    (symbols: string seq)
+    : string -> Set<string> =
     let known = symbols |> Seq.distinct |> List.ofSeq
     let grouped = lazy (queries.CoveringProjectsBySeed known)
+    let decided = Collections.Generic.Dictionary<string, bool>()
+
+    let present (projects: Set<string>) =
+        let undecided = projects |> Set.filter (decided.ContainsKey >> not)
+
+        if not (Set.isEmpty undecided) then
+            let absent = absentOf undecided
+
+            for project in undecided do
+                decided[project] <- Set.contains project absent
+
+            if not (Set.isEmpty absent) then
+                logAbsent absent
+
+        projects |> Set.filter (fun project -> not decided[project])
 
     fun symbol ->
         match Map.tryFind symbol grouped.Value with
-        | Some projects -> projects
+        | Some projects -> present projects
         | None ->
             queries.CoveringProjectsBySeed [ symbol ]
             |> Map.tryFind symbol
             |> Option.defaultValue Set.empty
+            |> present
 
 /// Whether a `FileChecked` cache hit may stand in for analysing `result`
 /// (`IndexedAnalysis`): the index holds exactly this analysis, and no other is pending
@@ -805,7 +867,7 @@ let internal compileInputsOfIn (repoRoot: string) (ctx: PluginCtx<TestPruneMsg>)
 let internal flushAndQueryAffectedWith
     (flushPending: PluginCtx<TestPruneMsg> -> TestPruneState -> TestPruneState * RuntimeCoverageObligations)
     (joinRefresh: StateStep)
-    (selectAffected: TestPruneState -> RuntimeCoverageObligations -> TestPruneState)
+    (selectAffected: ProjectGraphAccessor -> TestPruneState -> RuntimeCoverageObligations -> TestPruneState)
     (ctx: PluginCtx<TestPruneMsg>)
     (state: TestPruneState)
     =
@@ -829,7 +891,7 @@ let internal flushAndQueryAffectedWith
             AffectedTests = Analyzed AffectedSelection.none
             ChangedSymbolsAllUncovered = UncoveredChanges.No }
     else
-        selectAffected flushedState runtimeObligations
+        selectAffected ctx.ProjectGraph flushedState runtimeObligations
 
 /// `flushAndQueryAffected` under the bound it declares over itself
 /// (`ImpactSelectionDeadline`). Every caller goes through this: the fold is the same
