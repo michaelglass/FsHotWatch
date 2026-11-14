@@ -77,7 +77,6 @@
     <Compile Include="Restart.fs" />
     <Compile Include="PidFile.fs" />
     <Compile Include="ContentHash.fs" />
-    <Compile Include="ActionKey.fs" />
     <Compile Include="SnapshotEpoch.fs" />
     <Compile Include="DaemonIdentity.fs" />
     <Compile Include="MacAttrList.fs" />
@@ -135,7 +134,6 @@
     <Compile Include="RecordAudit.fs" />
     <Compile Include="OptionsInputs.fs" />
     <Compile Include="OptionsPortable.fs" />
-    <Compile Include="LookupVerdict.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="CommandPreprocessor.fs" />
     <Compile Include="SharedWatchPool.fs" />
