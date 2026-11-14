@@ -360,6 +360,7 @@ let internal createWithEvidenceAndQueries
     let analysisRecords =
         evidence
         |> Option.bind (fun (wiring: TestEvidenceRun.Wiring) -> wiring.Outcomes)
+        |> Option.map (fun store -> store :> FsHotWatch.OutcomeRecords.IOutcomeStore)
 
     let initialState =
         { initialStateOf initialMode mayReplay loadedDebt restored with
