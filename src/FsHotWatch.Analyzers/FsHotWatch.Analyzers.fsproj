@@ -42,25 +42,10 @@
   <ItemGroup>
     <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
     <!-- FsHotWatch.Core is not a package (AUTOMATION-1668). PrivateAssets keeps it out of
-         this nupkg's dependencies; `PackFsHotWatchCore` below carries its assembly in lib/. -->
+         this nupkg's dependencies; its assembly ships in the FsHotWatch package's lib/, which
+         this one depends on. -->
     <ProjectReference Include="../FsHotWatch.Core/FsHotWatch.Core.fsproj" PrivateAssets="all" />
   </ItemGroup>
-
-  <PropertyGroup>
-    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);PackFsHotWatchCore</TargetsForTfmSpecificBuildOutput>
-  </PropertyGroup>
-
-  <!-- Packs FsHotWatch.Core's built assembly beside this one, in lib/. It asks Core for its output
-       path (GetTargetPath builds nothing) instead of resolving references, which would build and
-       breaks a no-build pack with NETSDK1085 (the package-floor check in mise run ci). -->
-  <Target Name="PackFsHotWatchCore">
-    <MSBuild Projects="../FsHotWatch.Core/FsHotWatch.Core.fsproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework)">
-      <Output TaskParameter="TargetOutputs" ItemName="_FsHotWatchCoreAssembly" />
-    </MSBuild>
-    <ItemGroup>
-      <BuildOutputInPackage Include="@(_FsHotWatchCoreAssembly)" />
-    </ItemGroup>
-  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
