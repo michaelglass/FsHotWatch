@@ -8,6 +8,10 @@
   TraceFixtures removed its `bin-scratch/<guid>` scratch, and a tree hash taken during such a cleanup was unhashable.
   This is the rule a missing walk root already followed (`unreachable`). A directory that still exists but cannot be
   read, or that reads as missing only because its parent cannot be traversed, stays a hole.
+  Behaviour change: when a directory vanishes mid-walk, the tree hash (`TreeHash`, the receipt input tree) is now
+  COMPUTED, without that directory's contents, where it used to be `None` (no hash, the tree unreadable). A hash now
+  exists in that case. It is no less sound than before: any edit concurrent with a walk already yields a mixed
+  snapshot, and the next read of the tree hashes what is there.
 
 - fix: a pattern plugin's declared inputs are matched by the daemon's own case-insensitive `FilePattern.matches`,
   never by the OS glob (AUTOMATION-1577, ADR-074). The glob is case-sensitive on Linux, so a file such as `X.FSX`
