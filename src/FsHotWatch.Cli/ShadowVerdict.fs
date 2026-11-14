@@ -476,7 +476,7 @@ let private lookupIn
     =
     let read (s: OutcomeRecords.IOutcomeStore) =
         match command with
-        | Verdict.Check -> TestFailureClearance.lookupForCheckIn s key
+        | Verdict.Check -> TestFailureClearance.lookupForCheck s key
         | Verdict.Confirm -> OutcomeStore.Through.lookup s key |> Option.map _.Outcome
 
     match read store with
@@ -540,13 +540,31 @@ let private fileRecords
 
     List.length filed
 
-/// File `o`'s records, look the tree up, and append the comparison to the shadow log, through
-/// any `IOutcomeStore` (AUTOMATION-1695). Returns the lookup's answer and every key it required,
-/// which a collection must keep. `configured` is what the configuration requires.
-let observeIn
+/// Collecting the store after a publication, keeping the keys it required. GC belongs to the
+/// disk store, not to `IOutcomeStore`, so the code that opens a store wires its collection in:
+/// the disk store's `GcIfDue` (`collectDue`), or nothing for a store with no collection
+/// (`collectNothing`, the simulation's in-memory store). The code that observes cannot tell
+/// which it was given.
+type Collect = DateTimeOffset -> Set<ActionKey.KeyValue> -> unit
+
+/// The disk store's own collection, when it is due.
+let collectDue (store: OutcomeStore.Store) : Collect =
+    fun now keep ->
+        match store.GcIfDue(now, keep, OutcomeStore.defaultGcInterval) with
+        | OutcomeStore.GcRun.Ran _
+        | OutcomeStore.GcRun.NotDue _ -> ()
+
+/// No collection.
+let collectNothing: Collect = fun _ _ -> ()
+
+/// File `o`'s records, look the tree up, append the comparison to the shadow log, then
+/// `collect`, keeping every key the lookup required. Through any `IOutcomeStore`
+/// (AUTOMATION-1695). Returns the lookup's answer. `configured` is what the configuration requires.
+let observeWith
     (repoRoot: string)
     (store: OutcomeRecords.IOutcomeStore)
     (kpStore: OutcomeRecords.IOutcomeStore option)
+    (collect: Collect)
     (configured: Configured)
     (o: Observation)
     =
@@ -571,29 +589,13 @@ let observeIn
         |> Set.ofList
         |> Set.union (named |> List.map (fun (r, _) -> r.Key.Value) |> Set.ofList)
 
-    answer, keep
-
-/// `observeIn` over the disk store, which then collects what is due, keeping every required key.
-let observeWith
-    (repoRoot: string)
-    (store: OutcomeStore.Store)
-    (kpStore: OutcomeStore.Store option)
-    (configured: Configured)
-    (o: Observation)
-    =
-    let answer, keep =
-        observeIn repoRoot store (kpStore |> Option.map (fun kp -> kp :> OutcomeRecords.IOutcomeStore)) configured o
-
-    match store.GcIfDue(o.RecordedAt, keep, OutcomeStore.defaultGcInterval) with
-    | OutcomeStore.GcRun.Ran _
-    | OutcomeStore.GcRun.NotDue _ -> ()
-
+    collect o.RecordedAt keep
     answer
 
 /// The shadow of a `fshw verdict` READ: look the CURRENT tree up and log the comparison with
 /// what the read reported, labelled `verdict`. A read files no record and evicts nothing —
 /// reading cannot perturb.
-let observeReadIn
+let observeReadWith
     (repoRoot: string)
     (store: OutcomeRecords.IOutcomeStore)
     (kpStore: OutcomeRecords.IOutcomeStore option)
@@ -608,16 +610,6 @@ let observeReadIn
     appendLine repoRoot (lineAs "verdict" o answer 0)
     answer
 
-/// `observeReadIn` over the disk store.
-let observeReadWith
-    (repoRoot: string)
-    (store: OutcomeStore.Store)
-    (kpStore: OutcomeStore.Store option)
-    (configured: Configured)
-    (o: Observation)
-    =
-    observeReadIn repoRoot store (kpStore |> Option.map (fun kp -> kp :> OutcomeRecords.IOutcomeStore)) configured o
-
 /// The shadow store of `repoRoot`, with the default TTL and byte budget.
 let storeAt (repoRoot: string) =
     OutcomeStore.Store(
@@ -629,7 +621,7 @@ let storeAt (repoRoot: string) =
 
 /// The box-wide store the test runner files K_P records in, opened only when the daemon named
 /// keys to look up: a publication with none has nothing to read there.
-let kpStoreFor (repoRoot: string) (o: Observation) : OutcomeStore.Store option =
+let kpStoreFor (repoRoot: string) (o: Observation) : OutcomeRecords.IOutcomeStore option =
     if Map.isEmpty o.OutcomeKeys then
         None
     else
@@ -661,7 +653,9 @@ let observe (repoRoot: string) (o: Observation) : unit =
                 Logging.warn "shadow" $"lookup verdict not computed: %s{reason}"
                 appendLine repoRoot (notComparedLineAs (Verdict.Command.token o.Command) o reason)
             | Ok configured ->
-                observeWith repoRoot (storeAt repoRoot) (kpStoreFor repoRoot o) configured o
+                let store = storeAt repoRoot
+
+                observeWith repoRoot store (kpStoreFor repoRoot o) (collectDue store) configured o
                 |> ignore
         with ex ->
             Logging.warn "shadow" $"lookup verdict not computed: %s{ex.GetType().Name}: %s{ex.Message}"
