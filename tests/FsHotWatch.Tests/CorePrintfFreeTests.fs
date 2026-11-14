@@ -11,7 +11,7 @@
 /// `String.Concat`. So Core builds such text with `+` (numbers through
 /// `ToString(CultureInfo.InvariantCulture)`, as printf's `%d` printed them) and writes with
 /// `Console`. This reads the compiled assembly's metadata, so any of those forms anywhere in Core
-/// fails here, not in a later AOT publish.
+/// fails here, not in a later AOT publish. The rule is recorded in ADR-073.
 module FsHotWatch.Tests.CorePrintfFreeTests
 
 open System
