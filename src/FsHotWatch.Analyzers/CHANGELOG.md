@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- build: `FsHotWatch.Core.dll` is no longer in this package's `lib/`: it ships in the FsHotWatch package, which this
+  one depends on (AUTOMATION-1695). Consumers see no change.
+
 ## 0.7.0-alpha.57 - 2026-11-14
 
 - feat: `AnalyzeRecords.RecordMode.Default` is `On`, no longer `Shadow` (AUTOMATION-1585, ADR-059 §39): a filed
