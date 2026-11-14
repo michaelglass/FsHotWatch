@@ -574,17 +574,14 @@ let internal currentOutcomeKeyResultsIn
     | None, _ -> refuseAll "no test-evidence store is wired"
     | Some _, None -> refuseAll "the project model publishes no compile-input identities"
 
-/// This checkout's own last full pass, when a restarted daemon may diff from it
-/// (AUTOMATION-1587): the ledger records the tree T that pass was earned on, the current
-/// tree MOVED from T, the impact index beside `dbPath` is still sealed at T, and the
-/// box-wide `test-baseline` record for exactly T is a pass from this analyser build whose
-/// manifest hashes to T. Otherwise why not: every failure is a miss, and a miss is today's
-/// launch. An unchanged tree is a miss on purpose: the skip on records answers it at once.
-let internal checkoutBaselineIn
+/// The full pass a restarted daemon would diff from, whatever the tree is when it restarts:
+/// the ledger records the tree T that pass was earned on, the impact index beside `dbPath` is
+/// still sealed at T, and the box-wide `test-baseline` record for exactly T is a pass from
+/// this analyser build whose manifest hashes to T. Otherwise why not.
+let internal restartBaselineIn
     (evidence: TestEvidenceRun.Wiring option)
     (dbPath: string)
     (ledger: FullSuiteBaseline.Baseline option)
-    (current: string)
     : Result<CheckoutBaseline, string> =
     match ledger with
     | None -> Error "this checkout's ledger records no full-suite baseline"
@@ -595,8 +592,6 @@ let internal checkoutBaselineIn
 
             Error
                 $"the ledger's full-suite baseline (run %s{runId}) records no tree it passed with the index sealed there"
-        | Some tree when String.Equals(tree, current, StringComparison.Ordinal) ->
-            Error "the tree has not moved from the ledger's full-suite baseline (the skip on records answers it)"
         | Some tree ->
             match IndexSeal.load dbPath with
             | sealedAt when sealedAt <> Some tree ->
@@ -618,6 +613,44 @@ let internal checkoutBaselineIn
                                   Manifest =
                                     { Identity = tree
                                       Entries = record.Entries } })
+
+/// This checkout's own last full pass, when a restarted daemon may diff from it
+/// (AUTOMATION-1587): `restartBaselineIn`'s conditions, and the current tree MOVED from T.
+/// Every failure is a miss, and a miss is today's launch. An unchanged tree is a miss on
+/// purpose: the skip on records answers it at once.
+let internal checkoutBaselineIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (dbPath: string)
+    (ledger: FullSuiteBaseline.Baseline option)
+    (current: string)
+    : Result<CheckoutBaseline, string> =
+    match ledger |> Option.bind (fun baseline -> baseline.Tree) with
+    | Some tree when String.Equals(tree, current, StringComparison.Ordinal) ->
+        Error "the tree has not moved from the ledger's full-suite baseline (the skip on records answers it)"
+    | _ -> restartBaselineIn evidence dbPath ledger
+
+/// What a restarted daemon's first check would select (AUTOMATION-1623, ADR-069): it diffs
+/// from the full pass `restartBaselineIn` finds and selects from the diff, or it finds none
+/// and runs every project in full.
+let internal restartSelectionIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (dbPath: string)
+    (ledger: FullSuiteBaseline.Baseline option)
+    : Restart.Selection =
+    match restartBaselineIn evidence dbPath ledger with
+    | Ok baseline -> Restart.Selection.SelectsCorrectly baseline.Tree
+    | Error why -> Restart.Selection.WouldRunFullSuite why
+
+/// Publish what a restarted daemon's first check would select, for idle-exit's AUTO window.
+/// Called whenever one of the facts it rests on can change: at start, after every completion
+/// (the ledger), and after every write or clear of the index seal.
+let internal publishRestartSelectionIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (dbPath: string)
+    (ledger: FullSuiteBaseline.Baseline option)
+    : unit =
+    Restart.publish (Logging.warn "test-prune") repoRoot (restartSelectionIn evidence dbPath ledger)
 
 /// File the shadow `test-baseline` record a completion may earn (AUTOMATION-1587 step 2) and
 /// log one line saying whether it did, and if not, which conditions refused it. The K_P keys

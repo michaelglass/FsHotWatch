@@ -31,9 +31,35 @@ type IdleExitConfig =
     /// `idleExitMin: N` (positive). Explicit opt-in everywhere, N-minute window.
     | Minutes of PositiveMinutes
 
-/// The threshold AUTO mode applies to non-default workspaces.
+/// The threshold AUTO mode applies to non-default workspaces whose restart would run the full
+/// suite (`Restart.Selection.WouldRunFullSuite`): a restart there costs a whole-suite run.
 [<Literal>]
 let AutoThresholdMin = 30
+
+/// The threshold AUTO mode applies to non-default workspaces whose restart would select its
+/// tests correctly (`Restart.Selection.SelectsCorrectly`), AUTOMATION-1623 / ADR-069. Measured
+/// on intelligence: such a restart answered a 14,730-test edit in 372 s against a resident
+/// daemon's 368-369 s, and a test-less edit in 235 s against 177 s, while the resident daemon
+/// held 9-11.5 GB idle.
+[<Literal>]
+let AutoRestartSelectsMin = 5
+
+/// How long an idle daemon may stay, once eligibility is decided.
+[<RequireQualifiedAccess>]
+type IdleWindow =
+    /// A configured window (`idleExitMin: N` or `FSHW_IDLE_EXIT_MIN=N`), whatever a restart
+    /// would select.
+    | Fixed of PositiveMinutes
+    /// AUTO in a `/.workspaces/` checkout: `AutoRestartSelectsMin` while a restart would select
+    /// its tests correctly, `AutoThresholdMin` while it would run the full suite. Chosen on
+    /// every tick from the selection the test plugin last published.
+    | AutoByRestartSelection
+
+/// AUTO's window for what a restart would select.
+let autoWindowFor (selection: Restart.Selection) : PositiveMinutes =
+    match selection with
+    | Restart.Selection.SelectsCorrectly _ -> PositiveMinutes AutoRestartSelectsMin
+    | Restart.Selection.WouldRunFullSuite _ -> PositiveMinutes AutoThresholdMin
 
 /// The default pressure floor (minutes). When an idle-exit-eligible daemon is on a
 /// machine under memory pressure, the effective idle window shortens to
@@ -237,18 +263,18 @@ let isNonDefaultWorkspace (repoRoot: string) : bool =
 
 /// Resolve the effective idle-exit threshold (in minutes) for this daemon.
 ///
-/// - `Absent`  → `Some 30` iff `repoRoot` is a non-default workspace, else `None`
+/// - `Absent`  → `Some AutoByRestartSelection` iff `repoRoot` is a non-default workspace, else `None`
 /// - `Disabled`→ `None` everywhere (explicit opt-out beats AUTO)
-/// - `Minutes N` → `Some N` everywhere (explicit opt-in, path-agnostic)
-let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : PositiveMinutes option =
+/// - `Minutes N` → `Some (Fixed N)` everywhere (explicit opt-in, path-agnostic)
+let resolveThreshold (config: IdleExitConfig) (repoRoot: string) : IdleWindow option =
     match config with
     | IdleExitConfig.Absent ->
         if isNonDefaultWorkspace repoRoot then
-            Some(PositiveMinutes AutoThresholdMin)
+            Some IdleWindow.AutoByRestartSelection
         else
             None
     | IdleExitConfig.Disabled -> None
-    | IdleExitConfig.Minutes n -> Some n
+    | IdleExitConfig.Minutes n -> Some(IdleWindow.Fixed n)
 
 /// The environment variable that overrides `.fshw.json`'s `idleExitMin` for the one
 /// daemon started with it. `.fshw.json` is shared and tracked, and an edit to it stops
@@ -311,14 +337,15 @@ module ThresholdSource =
     /// The name a user sets to change this source's answer.
     let describe (source: ThresholdSource) : string =
         match source with
-        | ThresholdSource.Auto -> "AUTO (idleExitMin absent: 30min in /.workspaces/ checkouts, else off)"
+        | ThresholdSource.Auto ->
+            "AUTO (idleExitMin absent: in /.workspaces/ checkouts 5min while a restart would select its tests correctly, else 30min; off in the default checkout)"
         | ThresholdSource.ConfigFile -> ".fshw.json idleExitMin"
         | ThresholdSource.Environment -> OverrideEnvVar
 
 /// A daemon's resolved idle-exit window, where it came from, and the warning for an
 /// override that could not be read.
 type ResolvedIdleExit =
-    { ThresholdMin: PositiveMinutes option
+    { ThresholdMin: IdleWindow option
       Source: ThresholdSource
       Warning: string option }
 
@@ -465,11 +492,14 @@ let decide
 [<NoComparison; NoEquality>]
 type IdleExitDeps =
     {
-        /// Base idle window (minutes) before exit is eligible — the resolved
-        /// `idleExitMin` threshold (`IdleExit.resolveThreshold`). Memory pressure
-        /// can SHORTEN this per tick to `min(BaseThresholdMin, PressureFloorMin)`.
-        BaseThresholdMin: PositiveMinutes
-        /// Where `BaseThresholdMin` came from (`resolveIdleExit`), named on the
+        /// The resolved idle window (`IdleExit.resolveThreshold`): fixed, or AUTO chosen per tick
+        /// by `RestartSelection`. Memory pressure can SHORTEN the tick's window to
+        /// `min(window, PressureFloorMin)`.
+        Window: IdleWindow
+        /// What a restarted daemon's first check would select, as the test plugin last
+        /// published it (`Restart.read`). Read on every tick, and only for an AUTO window.
+        RestartSelection: unit -> Restart.Selection
+        /// Where `Window` came from (`resolveIdleExit`), named on the
         /// enable line.
         Source: ThresholdSource
         /// Resolved pressure floor (minutes), or `None` when pressure-shortening
@@ -507,6 +537,21 @@ type IdleExitDeps =
 /// An `Inhibited` tick LOGS: the window had elapsed and the daemon stayed up
 /// only because work was in flight. That line is the audit trail the mid-scan
 /// shutdown incident could not produce — a cold scan that outlives the (pressure-shortened) window says so
+/// The tick's base window, and what chose it (named on the exit line): a fixed window as
+/// configured, or AUTO from what a restart would select, read now.
+let private tickWindow (deps: IdleExitDeps) : PositiveMinutes * string =
+    match deps.Window with
+    | IdleWindow.Fixed window -> window, ""
+    | IdleWindow.AutoByRestartSelection ->
+        let selection = deps.RestartSelection()
+
+        let note =
+            match selection with
+            | Restart.Selection.SelectsCorrectly tree -> $"; AUTO: a restart selects its tests correctly from %s{tree}"
+            | Restart.Selection.WouldRunFullSuite reason -> $"; AUTO: a restart would run the full suite (%s{reason})"
+
+        autoWindowFor selection, note
+
 /// every 30s instead of being terminated in silence.
 let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
     try
@@ -514,10 +559,11 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
         let inhibitors = deps.Inhibitors()
         let reading = deps.Pressure()
         let pressure = PressureReading.isPressure reading
-        let baseMin = PositiveMinutes.value deps.BaseThresholdMin
+        let window, windowNote = tickWindow deps
+        let baseMin = PositiveMinutes.value window
 
         let effectiveMin =
-            effectiveThreshold deps.BaseThresholdMin pressure deps.PressureFloorMin
+            effectiveThreshold window pressure deps.PressureFloorMin
             |> PositiveMinutes.value
 
         let threshold = TimeSpan.FromMinutes(float effectiveMin)
@@ -538,7 +584,7 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
                 // window: an exit taken at the full window under a "normal" reading is
                 // as much an answer as one the pressure floor brought forward.
                 deps.Log
-                    $"[idle-exit] idle for %d{effectiveMin}min — shutting down (next fshw command auto-restarts)%s{pressureNote}; memory: %s{PressureReading.describe reading}"
+                    $"[idle-exit] idle for %d{effectiveMin}min — shutting down (next fshw command auto-restarts)%s{pressureNote}%s{windowNote}; memory: %s{PressureReading.describe reading}"
 
                 deps.Shutdown()
                 TickOutcome.Fired
@@ -563,7 +609,13 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : TickOutcome =
 let createTimerWith (period: TimeSpan) (deps: IdleExitDeps) : IDisposable =
     let latch = FireLatch.create ()
 
-    let baseMin = PositiveMinutes.value deps.BaseThresholdMin
+    // AUTO's longest window bounds the floor note and leads the enable line, so a reader of
+    // "will shut down after Nmin" never sees a window shorter than the daemon may keep.
+    let baseMin, autoNote =
+        match deps.Window with
+        | IdleWindow.Fixed window -> PositiveMinutes.value window, ""
+        | IdleWindow.AutoByRestartSelection ->
+            AutoThresholdMin, $" (%d{AutoRestartSelectsMin}min while a restart would select its tests correctly)"
 
     let floorNote =
         match deps.PressureFloorMin |> Option.map PositiveMinutes.value with
@@ -571,7 +623,7 @@ let createTimerWith (period: TimeSpan) (deps: IdleExitDeps) : IDisposable =
         | _ -> ""
 
     deps.Log
-        $"[idle-exit] enabled: will shut down after %d{baseMin}min idle (checked every 30s)%s{floorNote} — from %s{ThresholdSource.describe deps.Source}"
+        $"[idle-exit] enabled: will shut down after %d{baseMin}min idle%s{autoNote} (checked every 30s)%s{floorNote} — from %s{ThresholdSource.describe deps.Source}"
 
     DrainedTimer.every period (fun () -> runTick deps latch |> ignore)
 

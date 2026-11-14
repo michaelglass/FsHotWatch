@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- feat: AUTO idle exit follows what a restart would select (AUTOMATION-1623, ADR-069). A `/.workspaces/` checkout
+  with no `idleExitMin` now exits after 5 minutes idle when a restarted daemon's first check would select its tests
+  correctly, and keeps 30 when it would run the full suite. Measured on intelligence: where a restart selects
+  correctly, fresh and resident daemons answered a 14,730-test edit in 372 s and 368-369 s, while the resident one
+  held 9-11.5 GB idle; a test-less edit costs +58 s after an exit. New module `Restart`: `Restart.Selection`
+  (`SelectsCorrectly tree` | `WouldRunFullSuite reason`), `publish`, `read` and `pathOf` (`.fshw/restart-selection`;
+  absent or unreadable reads as `WouldRunFullSuite`). New `IdleExit.IdleWindow` (`Fixed` | `AutoByRestartSelection`),
+  `autoWindowFor` and `AutoRestartSelectsMin`. The default checkout stays exempt, and an explicit `idleExitMin` or
+  `FSHW_IDLE_EXIT_MIN` is `Fixed` and ignores the selection; the pressure floor still applies. Breaking:
+  `resolveThreshold`, `ResolvedIdleExit.ThresholdMin` and `DaemonOptions.IdleExitMin` are `IdleWindow option`;
+  `IdleExitDeps.BaseThresholdMin` is replaced by `Window` and `RestartSelection`.
+
 ## 0.10.0-alpha.114 - 2026-11-14
 
 - feat: a stopping daemon logs one line naming what stopped it, ahead of "Daemon stopped." (AUTOMATION-1675). The

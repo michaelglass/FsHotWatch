@@ -92,12 +92,13 @@ checkouts can otherwise waste several gigabytes between bursts of work.
 
 Configure it with `idleExitMin`:
 
-- **Key absent → AUTO mode.** Enabled with a 30-minute threshold **if and only if** the repo root path contains a `/.workspaces/` segment (the convention for secondary checkouts in this ecosystem). A primary/default checkout's daemon never auto-quits.
+- **Key absent → AUTO mode.** Enabled **if and only if** the repo root path contains a `/.workspaces/` segment (the convention for secondary checkouts in this ecosystem). A primary/default checkout's daemon never auto-quits. The window follows what a restart would cost ([ADR-069](adr-069-auto-idle-exit-follows-what-a-restart-would-select.md)): **5 minutes** while a restarted daemon's first check would select its tests correctly (the test plugin finds this checkout's full pass to diff from), **30 minutes** while it would run the full suite instead. The test plugin publishes which in `.fshw/restart-selection`, and idle exit re-reads it on every check.
 - **`0` or `false` → disabled everywhere** (explicit opt-out, overrides AUTO).
 - **Positive integer `N` → enabled with an `N`-minute threshold regardless of path** (explicit opt-in, even for a primary checkout).
 
 ```jsonc
-// AUTO (the default): omit the key. Auto-on at 30min only for /.workspaces/ checkouts.
+// AUTO (the default): omit the key. Auto-on only for /.workspaces/ checkouts:
+// 5min while a restart would select its tests correctly, else 30min.
 {}
 ```
 

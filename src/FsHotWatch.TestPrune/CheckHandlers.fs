@@ -85,6 +85,9 @@ type internal BatchCheckedEnv =
         OnlyRetriesRed: TestPruneState -> bool
         /// Record the tree the index is now sealed at beside it (`IndexSeal`), or clear it.
         SaveSeal: string option -> unit
+        /// Publish what a restarted daemon would select, once the seal is saved
+        /// (AUTOMATION-1623, ADR-069): a re-seal at another tree can end a usable baseline.
+        PublishRestartSelection: FullSuiteBaseline.Baseline option -> unit
     }
 
 /// A sealed batch of check results under the current model.
@@ -195,6 +198,7 @@ let internal onBatchCheckedWith
             // The index now describes exactly this tree, until a flush writes rows again: a
             // restarted daemon reads it to know its cold scan diffs from this tree.
             env.SaveSeal flushedState.SealedTree
+            env.PublishRestartSelection flushedState.Debt.Baseline
 
             // A held launch takes its inputs from this fold, whichever branch launches it.
             match flushedState.AwaitingDiff with

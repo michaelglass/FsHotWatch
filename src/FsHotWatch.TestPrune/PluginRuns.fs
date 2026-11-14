@@ -458,6 +458,9 @@ type internal FlushEnv =
         /// Whether a project's `runtimeSelection` is shadow.
         IsRuntimeShadow: string -> bool
         Refresh: ExtensionRefreshSteps
+        /// Publish what a restarted daemon would select, once the seal is cleared
+        /// (AUTOMATION-1623, ADR-069): an unsealed index is no restart baseline.
+        PublishRestartSelection: FullSuiteBaseline.Baseline option -> unit
     }
 
 let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) =
@@ -516,6 +519,7 @@ let internal flushPendingWith (env: FlushEnv) (ctx: PluginCtx<TestPruneMsg>) (st
     // the next `BatchChecked` seals it again (`IndexSeal`).
     if indexedSomething then
         IndexSeal.save (Logging.warn "test-prune") dbPath None
+        env.PublishRestartSelection state.Debt.Baseline
 
     // A refresh still running beside the fold reads the index this flush would write.
     let state = joinRefresh ctx state

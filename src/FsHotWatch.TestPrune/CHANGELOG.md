@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: the plugin publishes what a restarted daemon's first check would select, for idle exit's AUTO window
+  (AUTOMATION-1623, ADR-069). `PluginSteps.restartBaselineIn` is `checkoutBaselineIn` without its "the tree moved"
+  condition (the ledger's tree T, the index still sealed at T, T's `test-baseline` record), and `restartSelectionIn`
+  maps it to `Restart.Selection`. It is published at start, after every completion and after every write or clear of
+  the index seal, so a stale `SelectsCorrectly` does not survive a re-seal at another tree. `checkoutBaselineIn`'s
+  answers are unchanged. `RunFinishedEnv`, `BatchCheckedEnv` and `FlushEnv` gain `PublishRestartSelection`.
+
 ## 0.13.0-alpha.114 - 2026-11-14
 
 - fix: a configured test project the project model does not name is named, not silently dropped (AUTOMATION-1617).
