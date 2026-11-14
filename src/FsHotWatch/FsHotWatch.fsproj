@@ -71,7 +71,6 @@
     <Compile Include="Restart.fs" />
     <Compile Include="PidFile.fs" />
     <Compile Include="SnapshotEpoch.fs" />
-    <Compile Include="DaemonIdentity.fs" />
     <Compile Include="FileStamp.fs" />
     <Compile Include="Interruption.fs" />
     <Compile Include="PathToken.fs" />
@@ -110,7 +109,6 @@
     <Compile Include="RunLog.fs" />
     <Compile Include="TestEvidenceKey.fs" />
     <Compile Include="TestEvidenceStore.fs" />
-    <Compile Include="TestFailureClearance.fs" />
     <Compile Include="MetadataRows.fs" />
     <Compile Include="OutputIdentity.fs" />
     <Compile Include="CheckRecords.fs" />
