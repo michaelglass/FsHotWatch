@@ -199,8 +199,21 @@ let ``a declared-input plugin with no record for its current inputs is the one a
         observeWith repo store None configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
         |> ignore
 
-        test <@ unrecordedDeclared repo "fshw 1" store configured = [] @>
+        test <@ List.isEmpty (unrecordedDeclared repo "fshw 1" store configured) @>
         // Another binary has recorded nothing, and neither has the new content of a match.
         test <@ unrecordedDeclared repo "fshw 2" store configured = [ fsx ] @>
         write repo "build.fsx" "printfn \"changed\""
+        test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>)
+
+[<Fact>]
+let ``only a missing answer names plugins without declared inputs`` () =
+    withCheckout """{ "format": "auto", "lint": false, "build": false }""" (fun _ _ configured ->
+        test <@ List.isEmpty (noDeclaredInputs configured LookupVerdict.Answer.Green) @>
+        test <@ List.isEmpty (noDeclaredInputs configured (LookupVerdict.Answer.Red [ "plugin:format" ])) @>
+        test <@ List.isEmpty (noDeclaredInputs configured (LookupVerdict.Answer.Missing [ "diagnostics" ])) @>)
+
+[<Fact>]
+let ``a start runs only the plugins that declare inputs, never one keyed by the whole tree`` () =
+    withCheckout """{ "format": "auto", "lint": false, "build": false,
+             "fileCommands": [ { "pattern": "*.fsx", "command": "true" } ] }""" (fun repo store configured ->
         test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>)

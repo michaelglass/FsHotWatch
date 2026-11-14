@@ -44,17 +44,18 @@ let ``a pattern declares the files its watcher reacts to, and no others`` () =
         let watcherScope (pattern: Watcher.FilePattern) =
             let excluded = Watcher.kernelExclusions root
 
-            Directory.GetFiles(root, "*", SearchOption.AllDirectories)
-            |> Array.filter (fun abs ->
+            // Every file in the fixture (SafeWalk, excluding nothing), then the watcher's own rules.
+            (SafeWalk.walk Set.empty "*" root).Files
+            |> List.map _.FullName
+            |> List.filter (fun abs ->
                 Watcher.acceptsUnderRoot root [ pattern ] abs
                 && Watcher.FilePattern.matches pattern abs
                 && not (
                     excluded
                     |> List.exists (fun dir -> abs.StartsWith(dir + string Path.DirectorySeparatorChar))
                 ))
-            |> Array.map (fun abs -> Path.GetRelativePath(root, abs).Replace('\\', '/'))
-            |> Array.sort
-            |> List.ofArray
+            |> List.map (fun abs -> Path.GetRelativePath(root, abs).Replace('\\', '/'))
+            |> List.sort
 
         test <@ matched root fsx = [ "build.fsx"; "scripts/tool.fsx"; "src/A/gen.fsx" ] @>
         test <@ matched root fsx = watcherScope fsx @>
@@ -116,3 +117,54 @@ let ``a directory the walk cannot see is part of every pattern's key`` () =
             test <@ digest () <> before @>
         finally
             File.SetUnixFileMode(hidden, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute))
+
+[<Fact>]
+let ``a command's own entry digest moves with its timeout`` () =
+    let entry timeout =
+        PluginInputs.entryDigest "file-cmd-*.fsx" "*.fsx" "sh" "check.sh" timeout
+
+    test <@ entry None <> entry (Some 30) @>
+    test <@ entry (Some 30) <> entry (Some 60) @>
+    test <@ entry (Some 30) = entry (Some 30) @>
+
+[<Fact>]
+let ``the toolchain the command runs under is part of the key`` () =
+    withTempDir "plugin-inputs-toolchain" (fun root ->
+        fixture root
+        let digest () = PluginInputs.digest root (spec "e")
+        let before = digest ()
+        write root "global.json" """{ "sdk": { "version": "10.0.100" } }"""
+        let pinned = digest ()
+        test <@ pinned <> before @>
+        write root "global.json" """{ "sdk": { "version": "10.0.200" } }"""
+        test <@ digest () <> pinned @>)
+
+[<Fact>]
+let ``a pattern matches as the daemon does, whatever the case of the name`` () =
+    withTempDir "plugin-inputs-case" (fun root ->
+        fixture root
+        write root "scripts/LOUD.FSX" "loud"
+        test <@ matched root fsx |> List.contains "scripts/LOUD.FSX" @>
+        test <@ Watcher.FilePattern.matches fsx (Path.Combine(root, "scripts/LOUD.FSX")) @>)
+
+[<Fact>]
+let ``every unreadable directory is in the key, in a stable order`` () =
+    withTempDir "plugin-inputs-holes" (fun root ->
+        fixture root
+
+        let hide (rel: string) =
+            let dir = Path.Combine(root, rel)
+            Directory.CreateDirectory dir |> ignore
+            File.SetUnixFileMode(dir, UnixFileMode.None)
+            dir
+
+        let dirs = [ hide "src/Zeta"; hide "src/Alpha" ]
+
+        try
+            test <@ snd (PluginInputs.matches root fsx) = [ "src/Alpha"; "src/Zeta" ] @>
+        finally
+            for dir in dirs do
+                File.SetUnixFileMode(
+                    dir,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                ))
