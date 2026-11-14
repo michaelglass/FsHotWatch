@@ -456,7 +456,8 @@ let ``a kind that compared nothing is marked vacuous in the text and the JSON, b
           Unmatched = []
           UnreadableClean = 0
           UnreadableAudited = 0
-          Agreement = RecordAudit.LookupAgreement.NotAsked }
+          Agreement = RecordAudit.LookupAgreement.NotAsked
+          Quarantine = { Noted = []; Unnoted = 0 } }
 
     test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
     test <@ RecordAudit.exitCode report.Verdict = 3 @>
@@ -511,7 +512,8 @@ let ``a report with no kind at all is vacuous`` () =
           Unmatched = []
           UnreadableClean = 0
           UnreadableAudited = 0
-          Agreement = RecordAudit.LookupAgreement.NotAsked }
+          Agreement = RecordAudit.LookupAgreement.NotAsked
+          Quarantine = { Noted = []; Unnoted = 0 } }
 
     test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>
     test <@ (List.last (RecordAudit.render report)).StartsWith "audit: VACUOUS" @>
@@ -995,7 +997,8 @@ let private reportWith (agreement: RecordAudit.LookupAgreement) : RecordAudit.Re
       Unmatched = []
       UnreadableClean = 0
       UnreadableAudited = 0
-      Agreement = agreement }
+      Agreement = agreement
+      Quarantine = { Noted = []; Unnoted = 0 } }
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``no agreement asked for leaves the verdict alone; some agreement does too`` () =
@@ -1146,3 +1149,61 @@ let ``a shadow log that is absent or unreadable contributes no line, and is stil
             | RecordAudit.LookupAgreement.NotAsked -> failwith "named logs are read"
         finally
             File.SetUnixFileMode(unreadable, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+/// AUTOMATION-1701 (ADR-072): a quarantined file stays visible. The audit reads the audited store's
+/// quarantine and names every file by key, by whom (a read, or a writer of which kind) and when,
+/// in the person's report and the JSON the nightly reads; and a moved file with no note still counts.
+[<Fact>]
+let ``the audit names every quarantined file by kind, key and when`` () =
+    let at = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
+
+    let report: RecordAudit.Report =
+        { Seed = "s"
+          Sample = Some 0
+          AuditedStore = "/a"
+          CleanStore = "/c"
+          Kinds = []
+          Mismatches = []
+          AuditedKeys = []
+          Unmatched = []
+          UnreadableClean = 0
+          UnreadableAudited = 0
+          Agreement = RecordAudit.LookupAgreement.NotAsked
+          Quarantine =
+            { Noted =
+                [ { File = "f1.json"
+                    Key = "ak1:k1"
+                    Mover = OutcomeStore.Mover.Writer "check"
+                    Why = "could not be read: denied"
+                    At = at }
+                  { File = "f2.json"
+                    Key = "ak1:k2"
+                    Mover = OutcomeStore.Mover.Read
+                    Why = "checksum mismatch"
+                    At = at } ]
+              Unnoted = 1 } }
+
+    let lines = RecordAudit.render report
+
+    test
+        <@
+            lines
+            |> List.contains "  quarantined files in the audited store: 3 (1 without a note)"
+        @>
+
+    test
+        <@
+            lines
+            |> List.exists (fun l ->
+                l.StartsWith "  QUARANTINED ak1:k1 f1.json by writer of check at 2026-11-14T12:00:00")
+        @>
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l.StartsWith "  QUARANTINED ak1:k2 f2.json by read at")
+        @>
+
+    let json = RecordAudit.toJson report
+    test <@ json.Contains "\"quarantinedUnnoted\": 1" @>
+    test <@ json.Contains "\"kind\": \"check\"" && json.Contains "\"by\": \"writer\"" @>
