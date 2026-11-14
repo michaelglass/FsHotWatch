@@ -765,6 +765,32 @@ type Store(settings: Settings) =
             | Error why -> OutcomeRecords.Filing.NotFiled why
 
 
+/// This module's `Record`, filed and read through any `IOutcomeStore` (AUTOMATION-1695, L1): the
+/// disk store above, or FsHotWatch.Core's in-memory one in the simulation.
+module Through =
+    /// File `record` with `outputs`; whether it is filed (now or already). Never throws.
+    let file (store: OutcomeRecords.IOutcomeStore) (record: Record) (outputs: string option) : bool =
+        match store.File(toStored record outputs) with
+        | OutcomeRecords.Filing.Filed
+        | OutcomeRecords.Filing.AlreadyFiled -> true
+        | OutcomeRecords.Filing.NotFiled _ -> false
+
+    /// The newest record of `keyValue` with its outputs; `None` for a miss of any kind (the
+    /// lookup's view, `KeyRead.outcome`).
+    let lookupWithOutputs
+        (store: OutcomeRecords.IOutcomeStore)
+        (keyValue: ActionKey.KeyValue)
+        : (Record * string option) option =
+        match store.Read keyValue with
+        | OutcomeRecords.KeyRead.Answered(newest, _, _) -> Some(ofStored newest.Record)
+        | OutcomeRecords.KeyRead.NothingFiled
+        | OutcomeRecords.KeyRead.OnlyRejected _
+        | OutcomeRecords.KeyRead.Unreadable _ -> None
+
+    /// The newest record of `keyValue`; `None` for a miss of any kind.
+    let lookup (store: OutcomeRecords.IOutcomeStore) (keyValue: ActionKey.KeyValue) : Record option =
+        lookupWithOutputs store keyValue |> Option.map fst
+
 /// The store of `repoRoot`'s repository with the default TTL and byte budget.
 let openFor (repoRoot: string) (log: string -> unit) =
     Store(
