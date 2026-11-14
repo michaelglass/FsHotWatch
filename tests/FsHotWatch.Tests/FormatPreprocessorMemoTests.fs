@@ -46,7 +46,7 @@ let private recorder (outcome: ProcessOutcome) (rewrite: string -> unit) =
 let private clean = Succeeded(ProcessOutput.Drained "")
 
 let private run (preprocessor: IFsHotWatchPreprocessor) (files: string list) (dir: string) =
-    match preprocessor.Process files dir with
+    match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir files) dir with
     | Ok result -> result
     | Error e -> failwith $"expected a run, got a refusal: %s{e}"
 
@@ -235,3 +235,47 @@ let ``a timed-out pass fails every file it was handed, and hands them back next 
         // `b` was never formatted, so the next pass re-earns it though its batch held only `a`.
         test <@ calls[1] = $"\"%s{a}\" \"%s{b}\"" @>
         test <@ List.isEmpty later.Failures @>)
+
+// A project can compile in a source file from OUTSIDE the repository: a package's
+// `_content` item in the shared NuGet cache (xunit.v3.core.mtp-v2's
+// `_content/DefaultResultWriters.fs`). The format preprocessor rewrote such a file in
+// place, in every checkout's shared cache, and a land-check failed the scan on it.
+// Only files under the repository root are the repository's to format.
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a source outside the repository root is never handed to the formatter or rewritten`` () =
+    withRepo (fun dir a _ ->
+        withTempDir "fmt-outside" (fun outside ->
+            let package = Path.Combine(outside, "_content", "DefaultResultWriters.fs")
+            Directory.CreateDirectory(Path.GetDirectoryName package) |> ignore
+            let pristine = "module Pkg\nlet  x=1\n"
+            File.WriteAllText(package, pristine)
+
+            let runner, calls =
+                recorder clean (fun file -> File.WriteAllText(file, File.ReadAllText file + "\n"))
+
+            let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+            let result = run preprocessor [ a; package ] dir
+
+            test <@ calls () = [ [ a ] ] @>
+            test <@ File.ReadAllText package = pristine @>
+            test <@ result.Considered = 1 @>))
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a source reached through a symlink to outside the repository root is not rewritten`` () =
+    withRepo (fun dir a _ ->
+        withTempDir "fmt-outside-link" (fun outside ->
+            let target = Path.Combine(outside, "Shared.fs")
+            let pristine = "module Shared\nlet  x=1\n"
+            File.WriteAllText(target, pristine)
+            let linked = Path.Combine(dir, "Linked.fs")
+            File.CreateSymbolicLink(linked, target) |> ignore
+
+            let runner, calls =
+                recorder clean (fun file -> File.WriteAllText(file, File.ReadAllText file + "\n"))
+
+            let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
+            run preprocessor [ a; linked ] dir |> ignore
+
+            test <@ calls () = [ [ a ] ] @>
+            test <@ File.ReadAllText target = pristine @>))

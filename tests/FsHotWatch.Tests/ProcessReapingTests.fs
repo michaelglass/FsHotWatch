@@ -39,7 +39,10 @@ type private ChildSpawningPreprocessor
     interface FsHotWatch.Plugin.IFsHotWatchPreprocessor with
         member _.Name = "child-spawner"
 
-        member _.Process (changedFiles: string list) (_repoRoot: string) =
+        member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+            let changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
             let first =
                 lock spawned (fun () ->
                     let first = not claimed

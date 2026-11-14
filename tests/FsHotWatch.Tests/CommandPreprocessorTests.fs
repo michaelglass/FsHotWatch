@@ -24,7 +24,7 @@ let private run (spec: Spec) (batch: string list) =
     test <@ preprocessor.Name = spec.Name @>
 
     try
-        preprocessor.Process batch spec.WorkDir
+        preprocessor.Process (FsHotWatch.RepoFiles.parseAll spec.WorkDir batch) spec.WorkDir
     finally
         preprocessor.Dispose()
 

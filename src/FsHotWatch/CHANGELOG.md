@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: preprocessors are offered only the repository's own files (AUTOMATION-1680 follow-up). New module
+  `RepoFiles`: `RepoFile` is a file under the repository root with every symbolic link resolved, not ignored by the
+  checkout's `.gitignore` files, and not build output (`obj/`, `bin/`); `parseAll` drops everything else and
+  `parseWith` names why (`Excluded.OutsideRoot` | `Ignored` | `BuildOutput`). `PluginHost.RunPreprocessorsFor` parses
+  each batch once, at its boundary, so a package's `_content` source in the shared NuGet cache, a file behind a link
+  out of the tree (`.devenv` into the nix store), an ignored file or build output never reaches a preprocessor. New
+  `PathFilter.realPath` and `PathFilter.resolvesOutsideRepo`. Breaking: `IFsHotWatchPreprocessor.Process` takes
+  `RepoFiles.RepoFile list` instead of `string list` (`RepoFiles.path` gives a file's path as the batch spelled it).
+
 - feat: AUTO idle exit follows what a restart would select (AUTOMATION-1623, ADR-069). A `/.workspaces/` checkout
   with no `idleExitMin` now exits after 5 minutes idle when a restarted daemon's first check would select its tests
   correctly, and keeps 30 when it would run the full suite. Measured on intelligence: where a restart selects

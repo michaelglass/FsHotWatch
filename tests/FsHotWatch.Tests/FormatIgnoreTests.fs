@@ -122,7 +122,7 @@ let ``FormatPreprocessor skips files matched by fantomasignore`` () =
         let runner, offered = everythingUnformatted ()
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] tmpDir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll tmpDir [ file ]) tmpDir with
         | Ok result ->
             test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 0 @>
@@ -142,7 +142,7 @@ let ``FormatPreprocessor skips files matched by gitignore`` () =
         let runner, offered = everythingUnformatted ()
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] tmpDir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll tmpDir [ file ]) tmpDir with
         | Ok result -> test <@ result.Considered = 0 @>
         | Error e -> failwith e
 
@@ -164,7 +164,7 @@ let ``FormatPreprocessor offers files not in any ignore file`` () =
 
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] tmpDir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll tmpDir [ file ]) tmpDir with
         | Ok result ->
             test <@ result.Modified = [ file ] @>
             test <@ result.Considered = 1 @>

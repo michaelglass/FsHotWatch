@@ -54,6 +54,21 @@ let private findRepoRoot () =
     FsHotWatch.Cli.Program.findRepoRoot assemblyDir
     |> Option.defaultWith (fun () -> failwith "Could not find repo root")
 
+/// `dir` as a repository with the formatter pinned as the real one pins it. The format check
+/// considers only a repository's own files (`RepoFiles`), so a temp file is checked as the
+/// file of the temp repository it sits in, with the real pin.
+let private pinnedRepo (dir: string) : string =
+    let config = Path.Combine(dir, ".config")
+    Directory.CreateDirectory config |> ignore
+
+    File.Copy(
+        Path.Combine(findRepoRoot (), ".config", "dotnet-tools.json"),
+        Path.Combine(config, "dotnet-tools.json"),
+        true
+    )
+
+    dir
+
 [<Fact>]
 let ``integration harness resolves checkout root`` () =
     let expected = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
@@ -471,7 +486,7 @@ let ``lint plugin detects warnings on bad code`` () =
 let isNone (x: int list) = x = []
 """
 
-    withTempFsFile badCode (fun _dir filePath ->
+    withTempFsFile badCode (fun dir filePath ->
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
@@ -514,10 +529,10 @@ let private pinnedFantomasVersion =
 let ``format check plugin detects unformatted code`` () =
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
-    withTempFsFile badlyFormatted (fun _dir filePath ->
+    withTempFsFile badlyFormatted (fun dir filePath ->
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let repoRoot = findRepoRoot ()
+        let repoRoot = pinnedRepo dir
         let host = PluginHost.create checker repoRoot
         let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
@@ -541,10 +556,10 @@ let ``format check plugin detects unformatted code`` () =
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``format check plugin passes on well-formatted code`` () =
-    withTempFsFile "module Temp\n\nlet x = 5\n" (fun _dir filePath ->
+    withTempFsFile "module Temp\n\nlet x = 5\n" (fun dir filePath ->
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let repoRoot = findRepoRoot ()
+        let repoRoot = pinnedRepo dir
         let host = PluginHost.create checker repoRoot
         let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
@@ -618,7 +633,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let repoRoot = findRepoRoot ()
+        let repoRoot = pinnedRepo dir
         let host = PluginHost.create checker repoRoot
         let fantomas = createFormatCheck repoRoot None
         host.RegisterHandler(fantomas)
@@ -647,10 +662,10 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``FormatPreprocessor succeeds on well-formatted file`` () =
-    withTempFsFile "module Temp\n\nlet x = 5\n" (fun _dir filePath ->
+    withTempFsFile "module Temp\n\nlet x = 5\n" (fun dir filePath ->
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ filePath ] (findRepoRoot ()) with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ filePath ]) (findRepoRoot ()) with
         | Result.Ok result ->
             test <@ result.Modified |> List.isEmpty @>
             test <@ result.Considered = 1 @>
@@ -663,10 +678,13 @@ let ``FormatPreprocessor succeeds on well-formatted file`` () =
 let ``FormatPreprocessor reformats badly formatted file`` () =
     let badCode = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
-    withTempFsFile badCode (fun _dir filePath ->
+    withTempFsFile badCode (fun dir filePath ->
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
         let contentBefore = File.ReadAllText(filePath)
-        let result = preprocessor.Process [ filePath ] (findRepoRoot ())
+
+        let result =
+            preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ filePath ]) (findRepoRoot ())
+
         let contentAfter = File.ReadAllText(filePath)
         test <@ result |> Result.map (fun r -> r.Modified) = Ok [ filePath ] @>
         test <@ contentAfter <> contentBefore @>)
@@ -728,7 +746,7 @@ let ``LintPlugin reports warnings on code with issues`` () =
 let isNone (x: int list) = x = []
 """
 
-    withTempFsFile badCode (fun _dir filePath ->
+    withTempFsFile badCode (fun dir filePath ->
         match checkTempFile checker filePath with
         | Some checkResult ->
             host.EmitFileChecked(stampFixture checkResult)

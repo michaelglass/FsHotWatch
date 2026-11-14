@@ -379,7 +379,10 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "test-formatter"
 
-                member _.Process (changedFiles: string list) (_repoRoot: string) =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                    let changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                     Ok
                         { Modified = changedFiles
                           Considered = changedFiles.Length
@@ -438,7 +441,9 @@ let ``a file a preprocessor rewrites joins the batch the plugins receive`` () =
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "generator"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                     File.WriteAllText(genFile, $"module Gen // {Guid.NewGuid():N}")
 
                     Ok
@@ -2136,7 +2141,9 @@ let ``scan waits for discovery and re-scans when its captured model is invalidat
                 { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                     member _.Name = "capture-barrier"
 
-                    member _.Process files _ =
+                    member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                        let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                         preprocessorEntered.Set()
                         preprocessorResume.Wait()
 
@@ -2374,7 +2381,9 @@ let ``a scan re-evaluates a project whose restore changed its package graph afte
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "restore"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                     // Once: a re-captured attempt runs the preprocessors again, and a
                     // restore of an unchanged project writes nothing new.
                     if not restored.Value then
@@ -3722,7 +3731,9 @@ let ``a scan whose model changes on every attempt fails by name instead of loopi
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "scan-model-storm"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                     Interlocked.Increment(&attempts.contents) |> ignore
                     daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
 
@@ -3860,7 +3871,10 @@ let private withSupersededChange
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "admitted-change-barrier"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                     if Threading.Interlocked.Increment(&preprocessingAttempts) = 1 then
                         admitted.Set()
 
@@ -4107,7 +4121,9 @@ let ``an accepted change cohort advances the snapshot epoch, hashing only the co
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "generator"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                     File.WriteAllText(generated, $"module Gen // {Guid.NewGuid():N}")
 
                     Ok
@@ -4252,7 +4268,10 @@ let ``a scan's result about a file a later save re-checked is refused, and no st
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "scan-barrier"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                     if Threading.Interlocked.Exchange(&holdNext, 0) = 1 then
                         scanHeld.Set()
                         Assert.True(release.Wait(TimeSpan.FromSeconds 30.0), "the save must release the scan")
@@ -5922,7 +5941,10 @@ let ``a change batch whose model changes on every attempt fails by name and keep
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "model-storm"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                     if storming.Value then
                         Interlocked.Increment(&attempts.contents) |> ignore
                         daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
@@ -6884,7 +6906,10 @@ let private withHeldFirstScan
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "mid-scan-barrier"
 
-                member _.Process files _ =
+                member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                    let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                     if Interlocked.Increment calls = 1 then
                         entered.TrySetResult(()) |> ignore
                         resume.Wait(TimeSpan.FromSeconds 30.0) |> ignore

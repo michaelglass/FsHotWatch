@@ -59,7 +59,7 @@ let private daemonWith (store: OutcomeStore.Store) (runner: Runner) =
     FormatPreprocessor(runner = runner, store = store) :> IFsHotWatchPreprocessor
 
 let private run (preprocessor: IFsHotWatchPreprocessor) (files: string list) (dir: string) =
-    match preprocessor.Process files dir with
+    match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir files) dir with
     | Ok result -> result
     | Error e -> failwith $"expected a run, got a refusal: %s{e}"
 

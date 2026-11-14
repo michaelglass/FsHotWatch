@@ -51,6 +51,8 @@ type IFsHotWatchPreprocessor =
     /// were modified (so the daemon can suppress re-triggers) and the evidence of what
     /// ran; `Error reason` means the pass could not run at all — its tool is not pinned
     /// or not restored — and NO file was examined. The host reports that as a failure,
-    /// never as "none rewritten".
-    abstract Process: changedFiles: string list -> repoRoot: string -> Result<PreprocessResult, string>
+    /// never as "none rewritten". `changedFiles` holds only the repository's own files
+    /// (`RepoFiles.RepoFile`): the host parses every batch at its boundary, so a file outside
+    /// the root, behind a link out of it, ignored, or build output is never offered.
+    abstract Process: changedFiles: RepoFiles.RepoFile list -> repoRoot: string -> Result<PreprocessResult, string>
     abstract Dispose: unit -> unit

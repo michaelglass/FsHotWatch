@@ -15,10 +15,13 @@ open FsHotWatch.Fantomas.FantomasTool
 [<Literal>]
 let FormatTimeoutDefaultSec = 60
 
-/// The files a batch holds for the formatter: existing F# sources the repository's
-/// ignore files (`.gitignore`, `.fantomasignore`) do not exclude.
-let private formattable (isIgnored: string -> bool) (files: string list) : string list =
+/// The files a batch holds for the formatter: the repository's own files (`RepoFiles`: under
+/// the root with links resolved, not ignored by git, not build output) that are existing F#
+/// sources `.fantomasignore` does not exclude. A package's `_content` source in the shared
+/// NuGet cache never reaches here: the preprocessor used to rewrite it in place.
+let private formattable (isIgnored: string -> bool) (files: RepoFiles.RepoFile list) : string list =
     files
+    |> List.map RepoFiles.path
     |> List.filter (fun file ->
         File.Exists(file)
         && (file.EndsWith(".fs") || file.EndsWith(".fsx") || file.EndsWith(".fsi"))
@@ -163,14 +166,17 @@ type FormatPreprocessor(?timeoutSec: int, ?runner: Runner, ?store: OutcomeStore.
     interface IFsHotWatchPreprocessor with
         member _.Name = "format"
 
-        member _.Process (changedFiles: string list) (repoRoot: string) =
+        member _.Process (changedFiles: RepoFiles.RepoFile list) (repoRoot: string) =
             match readPin repoRoot with
             | Error pinError -> Error(PinError.render pinError)
             | Ok pin ->
                 let evidence = describe repoRoot pin
 
                 let files =
-                    formattable (ignoreCache.Get(repoRoot)) (List.distinct (changedFiles @ List.ofSeq failing.Keys))
+                    formattable
+                        (ignoreCache.Get(repoRoot))
+                        (changedFiles @ RepoFiles.parseAll repoRoot (List.ofSeq failing.Keys)
+                         |> List.distinctBy RepoFiles.path)
 
                 // A remembered failure whose file is gone or now ignored has nothing left to re-earn.
                 for file in List.ofSeq failing.Keys |> List.except files do
@@ -302,7 +308,8 @@ let internal createFormatCheckWith
                     let elapsed = PluginCtxHelpers.beginRun ctx
                     ctx.StartSubtask PrimarySubtaskKey $"checking format of %d{files.Length} files"
 
-                    let files = formattable (ignoreCache.Get(ctx.RepoRoot)) files
+                    let files =
+                        formattable (ignoreCache.Get(ctx.RepoRoot)) (RepoFiles.parseAll ctx.RepoRoot files)
 
                     // What THIS run compared, and what it found. The terminal summary
                     // is built from these and never from the whole-session set.

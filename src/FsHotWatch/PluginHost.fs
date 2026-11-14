@@ -465,7 +465,11 @@ type PluginHost
                 try
                     let startedAt = System.DateTime.UtcNow
                     setStatus preprocessor.Name (Running(since = startedAt))
-                    let offered = (files @ modifiedFiles) |> List.distinct
+                    // Parsed here, once: a preprocessor is offered only the repository's own
+                    // files (`RepoFiles`), never a package source a project compiles in from
+                    // the shared NuGet cache, a file behind a link out of the tree, an ignored
+                    // file or build output.
+                    let offered = RepoFiles.parseAll repoRoot (files @ modifiedFiles)
 
                     // MGA-ERROR-REPORT-001:ok — a throwing preprocessor becomes a Failed status and a `Refused` entry
                     try

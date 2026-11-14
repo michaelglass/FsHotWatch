@@ -2461,6 +2461,11 @@
       "line": 90,
       "branch": 92,
       "reason": "new file (AUTOMATION-1623, ADR-069: the restart selection the test plugin publishes and idle exit reads). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by RestartTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.RestartTests): line 90.3%, branch 92.9%. The uncovered lines are publish failing to clear the old file after failing to write it, which needs a file that can be neither written nor deleted. No platform branch (a text file under .fshw, read and written the same way on both), so platform-neutral."
+    },
+    "RepoFiles.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1685: the repository files a rewriting preprocessor may be handed). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by the confirm run of the full suite (RepoFilesTests, PluginHostTests, CommandPreprocessorTests): line 100%, branch 100%. No platform branch (path parsing and the checkout's .gitignore rules read the same way on both), so platform-neutral."
     }
   },
   "countFloors": {

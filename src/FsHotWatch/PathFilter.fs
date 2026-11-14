@@ -43,6 +43,36 @@ let isOutsideRepo (repoRoot: string) (path: string) : bool =
     let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
     Path.IsPathRooted(rel) || rel.StartsWith("..", System.StringComparison.Ordinal)
 
+/// `path` with every symbolic link along it resolved, component by component from the
+/// filesystem root, so a link anywhere (the file itself, or a directory above it) is
+/// followed to where it really points. A component that does not exist is kept as written.
+let realPath (path: string) : string =
+    // `hops` bounds the links followed in total, so a link cycle cannot loop for ever. A
+    // link's target is itself resolved from its root, because its own components may be
+    // links too (`/tmp` is a link to `/private/tmp` on macOS).
+    let rec resolveFrom (path: string) (hops: int) : string * int =
+        let full = Path.GetFullPath path
+        let root = Path.GetPathRoot full
+
+        full.Substring(root.Length).Split(Path.DirectorySeparatorChar, System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.fold
+            (fun (soFar: string, hops: int) part ->
+                let next = Path.Combine(soFar, part)
+
+                match (if hops >= 40 then null else (FileInfo next).LinkTarget) with
+                | null -> next, hops
+                | target -> resolveFrom (Path.Combine(Path.GetDirectoryName next, target)) (hops + 1))
+            (root, hops)
+
+    fst (resolveFrom path 0)
+
+/// True if `path`, with symbolic links resolved, lies outside `repoRoot` (also resolved):
+/// a file a tool writing through `path` would change outside the repository. A link inside
+/// the repository that points out of it is outside; `isOutsideRepo` alone compares the
+/// path as written and would let a writer follow such a link out.
+let resolvesOutsideRepo (repoRoot: string) (path: string) : bool =
+    isOutsideRepo (realPath repoRoot) (realPath path)
+
 /// `isOutsideRepo` lifted over an optional repo root: `Some root` → true when
 /// `path` is outside `root`; `None` → false (no repo scope, so nothing is
 /// "outside" — everything is included). The report-producing plugins (analyzers,

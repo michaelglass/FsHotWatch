@@ -352,3 +352,35 @@ let ``a repository checked out under a bin directory is not generated output`` (
     // The repo's own build output still is.
     test <@ isExcludedPath root [] "/home/dev/bin/repo/src/bin/Debug/Lib.fs" @>
     test <@ isExcludedPath root [] "/home/dev/bin/repo/src/obj/Lib.AssemblyInfo.fs" @>
+
+// --- resolvesOutsideRepo: where a writer through the path would land (AUTOMATION-1680 follow-up) ---
+
+[<Fact>]
+let ``a file under the root resolves inside it, a directory link out of the root resolves outside`` () =
+    withTempDir "pf-real" (fun repo ->
+        withTempDir "pf-real-out" (fun outside ->
+            let own = Path.Combine(repo, "src", "A.fs")
+            Directory.CreateDirectory(Path.GetDirectoryName own) |> ignore
+            File.WriteAllText(own, "module A")
+            let shared = Path.Combine(outside, "Shared.fs")
+            File.WriteAllText(shared, "module Shared")
+            Directory.CreateSymbolicLink(Path.Combine(repo, "vendor"), outside) |> ignore
+            let throughLink = Path.Combine(repo, "vendor", "Shared.fs")
+
+            test <@ not (resolvesOutsideRepo repo own) @>
+            test <@ not (isOutsideRepo repo throughLink) @>
+            test <@ resolvesOutsideRepo repo throughLink @>
+            test <@ resolvesOutsideRepo repo shared @>))
+
+[<Fact>]
+let ``realPath keeps a component that does not exist and stops on a link cycle`` () =
+    withTempDir "pf-cycle" (fun dir ->
+        let a = Path.Combine(dir, "a")
+        let b = Path.Combine(dir, "b")
+        File.CreateSymbolicLink(a, b) |> ignore
+        File.CreateSymbolicLink(b, a) |> ignore
+        let missing = Path.Combine(dir, "no", "such.fs")
+
+        test <@ (realPath missing).EndsWith(Path.Combine("no", "such.fs")) @>
+        // A cycle returns a path rather than looping.
+        test <@ not (isNull (realPath a)) @>)

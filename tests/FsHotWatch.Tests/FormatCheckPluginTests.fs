@@ -366,7 +366,7 @@ let ``FormatPreprocessor hands the manifest's version to the runner and reports 
         let preprocessor =
             FormatPreprocessor(timeoutSec = 9, runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result ->
             test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 1 @>
@@ -398,7 +398,7 @@ let ``FormatPreprocessor refuses, naming dotnet tool restore, when the pinned ve
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
         test <@ preprocessor.Name = "format" @>
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Error reason ->
             test <@ reason.Contains "1.2.3-nowhere" @>
             test <@ reason.Contains "dotnet tool restore" @>
@@ -414,7 +414,7 @@ let ``FormatPreprocessor refuses when the repository pins no fantomas`` () =
 
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Error reason ->
             test <@ reason.Contains "dotnet-tools.json" @>
             test <@ reason.Contains "fantomas" @>
@@ -444,7 +444,7 @@ let ``FormatPreprocessor leaves a file alone when the tool exceeds its timeout``
         let preprocessor =
             FormatPreprocessor(timeoutSec = 1, runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result ->
             test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 1 @>
@@ -461,7 +461,7 @@ let ``FormatPreprocessor skips non-fs files without consulting the tool`` () =
 
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result ->
             test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 0 @>
@@ -475,7 +475,11 @@ let ``FormatPreprocessor handles a non-existent file as nothing to consider`` ()
         let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
         let preprocessor = FormatPreprocessor(runner = runner) :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ Path.Combine(dir, "nonexistent-file-xyz.fs") ] dir with
+        match
+            preprocessor.Process
+                (FsHotWatch.RepoFiles.parseAll dir [ Path.Combine(dir, "nonexistent-file-xyz.fs") ])
+                dir
+        with
         | Ok result -> test <@ result.Considered = 0 @>
         | Error e -> failwith e
 
@@ -515,7 +519,7 @@ let ``format-check and the preprocessor agree with a direct pinned fantomas --ch
         // The preprocessor rewrites it with the same tool …
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result ->
             test <@ result.Modified = [ file ] @>
             test <@ result.Evidence = evidenceFor dir thisRepoPin.Version @>
@@ -560,7 +564,7 @@ let ``FormatPreprocessor formats unformatted file`` () =
 
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result -> test <@ result.Modified = [ file ] @>
         | Error e -> failwith e
 
@@ -574,7 +578,7 @@ let ``FormatPreprocessor skips already formatted file`` () =
 
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result ->
             test <@ List.isEmpty result.Modified @>
             test <@ result.Considered = 1 @>
@@ -589,7 +593,7 @@ let ``FormatPreprocessor reports a file the tool cannot parse and leaves it alon
 
         let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
 
-        match preprocessor.Process [ file ] dir with
+        match preprocessor.Process (FsHotWatch.RepoFiles.parseAll dir [ file ]) dir with
         | Ok result ->
             test <@ List.isEmpty result.Modified @>
             test <@ result.Failures |> List.map fst = [ file ] @>
@@ -1066,3 +1070,29 @@ let ``a batch whose format check timed out stays red after the next batch comple
             test <@ entries |> List.exists (fun e -> e.Severity = FsHotWatch.ErrorLedger.Error) @>
             test <@ entries |> List.exists (fun e -> e.Message.Contains "timed out") @>
         | None -> Assert.Fail "the timed-out batch's file must keep a failing ledger entry")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``format check never checks a source outside the repository root`` () =
+    // A package `_content` source the project compiles in lives in the shared NuGet cache,
+    // outside the repository: it is not the repository's to format, so not to check either.
+    withFakePin "fmt-check-outside" "7.0.5" (fun dir ->
+        withTempDir "fmt-check-pkg" (fun outside ->
+            let package = Path.Combine(outside, "_content", "DefaultResultWriters.fs")
+            Directory.CreateDirectory(Path.GetDirectoryName package) |> ignore
+            File.WriteAllText(package, "module Pkg\nlet  x=1\n")
+            let runner, calls = recorder (Succeeded(ProcessOutput.Drained ""))
+            let host = PluginHost.create (Unchecked.defaultof<_>) dir
+            host.RegisterHandler(createFormatCheckWith runner dir None)
+
+            host.EmitFileChanged(SourceChanged [ package ])
+
+            waitUntil
+                (fun () ->
+                    (not (host.AnyPluginBusy()))
+                    && (match host.GetStatus("format-check") with
+                        | Some(PluginStatus.Completed _) -> true
+                        | _ -> false))
+                17000
+
+            test <@ List.isEmpty (calls ()) @>
+            test <@ summaryOf host = "no files to check" @>))

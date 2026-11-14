@@ -240,7 +240,9 @@ let ``host owns preprocessor work until its outcome is published`` (refuse: bool
         { new IFsHotWatchPreprocessor with
             member _.Name = "owned-preprocessor"
 
-            member _.Process files _ =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                 entered.Set()
                 Assert.True(release.Wait(10000), "fixture must release the preprocessor")
 
@@ -287,7 +289,9 @@ let ``preprocessor runs before events are dispatched`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "tracker"
 
-            member _.Process (changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
                 preprocessorCalled <- true
 
                 Ok
@@ -310,7 +314,10 @@ let ``preprocessor modified files are returned`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "modifier"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let _changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                 Ok
                     { Modified = [ "src/Formatted.fs"; "src/Other.fs" ]
                       Considered = 1
@@ -338,7 +345,9 @@ let ``a preprocessor that cannot run is a Failed status and a refusal, never "no
         { new IFsHotWatchPreprocessor with
             member _.Name = "unpinned"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let _changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
                 Result.Error "no fantomas pin in the manifest"
 
             member _.Dispose() = () }
@@ -368,7 +377,10 @@ let ``preprocessor status is tracked`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "status-pp"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let _changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                 Ok
                     { Modified = [ "a.fs" ]
                       Considered = 1
@@ -701,7 +713,8 @@ let ``preprocessor exception sets Failed status`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "boom-pp"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) = failwith "preprocessor kaboom"
+            member _.Process (_changedFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+                failwith "preprocessor kaboom"
 
             member _.Dispose() = () }
 
@@ -731,7 +744,9 @@ let ``preprocessor exception sets Failed with ex.ToString() (type+stack), not ju
         { new IFsHotWatchPreprocessor with
             member _.Name = "boom-detail-pp"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let _changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
                 raise (System.InvalidOperationException("pp-kaboom-distinctive"))
 
             member _.Dispose() = () }
@@ -1753,7 +1768,10 @@ let ``RerunPlugin names a preprocessor as such and points at fshw format`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "format"
 
-            member _.Process (changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                 Ok
                     { Modified = []
                       Considered = changedFiles.Length
@@ -2052,7 +2070,9 @@ let ``a preprocessor pass is recorded on the host's phase ledger under the prepr
         { new IFsHotWatchPreprocessor with
             member _.Name = "format"
 
-            member _.Process (changedFiles: string list) (_repoRoot: string) =
+            member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+
+                let changedFiles = repoFiles |> List.map FsHotWatch.RepoFiles.path
                 Threading.Thread.Sleep 60
 
                 Ok
@@ -2085,7 +2105,9 @@ let private recordingPreprocessor (name: string) (writes: string list) (seen: Re
     { new IFsHotWatchPreprocessor with
         member _.Name = name
 
-        member _.Process files _ =
+        member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+            let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
             lock seen (fun () -> seen.Add((name, files)))
 
             Ok
@@ -2115,20 +2137,20 @@ let ``a later preprocessor sees the files an earlier one rewrote`` () =
     // offered `Gen.fs` even though the batch never held it.
     let host = PluginHost.create nullChecker "/tmp/test"
     let seen = ResizeArray()
-    host.RegisterPreprocessor(recordingPreprocessor "generator" [ "/repo/src/Gen.fs" ] seen)
+    host.RegisterPreprocessor(recordingPreprocessor "generator" [ "/tmp/test/src/Gen.fs" ] seen)
     host.RegisterPreprocessor(recordingPreprocessor "formatter" [] seen)
 
-    let run = host.RunPreprocessors([ "/repo/src/Lib.fs" ])
+    let run = host.RunPreprocessors([ "/tmp/test/src/Lib.fs" ])
 
     let batches = seen |> Seq.map (fun (n, files) -> n, List.sort files) |> List.ofSeq
 
     test
         <@
-            batches = [ "generator", [ "/repo/src/Lib.fs" ]
-                        "formatter", [ "/repo/src/Gen.fs"; "/repo/src/Lib.fs" ] ]
+            batches = [ "generator", [ "/tmp/test/src/Lib.fs" ]
+                        "formatter", [ "/tmp/test/src/Gen.fs"; "/tmp/test/src/Lib.fs" ] ]
         @>
 
-    test <@ run.Modified = [ "/repo/src/Gen.fs" ] @>
+    test <@ run.Modified = [ "/tmp/test/src/Gen.fs" ] @>
 
 let private idleHandler (name: string) =
     { Name = PluginName.create name
@@ -2169,7 +2191,10 @@ let ``a status write is visible to the next read with every pool thread held`` (
                 { new IFsHotWatchPreprocessor with
                     member _.Name = "starved-pre"
 
-                    member _.Process _ _ =
+                    member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                        let _ = repoFiles |> List.map FsHotWatch.RepoFiles.path
+
                         Result.Ok
                             { Modified = []
                               Considered = 0

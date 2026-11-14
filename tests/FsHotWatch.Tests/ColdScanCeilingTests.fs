@@ -269,7 +269,9 @@ let private runGenerations (scenario: Scenario) : Outcome =
                 { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                     member _.Name = "newer-edit"
 
-                    member _.Process files _ =
+                    member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) _ =
+
+                        let files = repoFiles |> List.map FsHotWatch.RepoFiles.path
                         let generation = Interlocked.Exchange(&armed.contents, 0)
 
                         if generation > 0 then

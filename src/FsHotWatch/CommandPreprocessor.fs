@@ -128,7 +128,9 @@ let create (spec: Spec) : IFsHotWatchPreprocessor =
     { new IFsHotWatchPreprocessor with
         member _.Name = spec.Name
 
-        member _.Process (changedFiles: string list) (repoRoot: string) =
+        member _.Process (repoFiles: RepoFiles.RepoFile list) (repoRoot: string) =
+            let changedFiles = repoFiles |> List.map RepoFiles.path
+
             if changedFiles.IsEmpty || not (Trigger.fires spec.Trigger changedFiles) then
                 Ok
                     { Modified = []

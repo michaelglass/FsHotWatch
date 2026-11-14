@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the format preprocessor and the format check consider only the repository's own sources (AUTOMATION-1680
+  follow-up). A project compiles in files from outside the repository: a package's `_content` source in the shared
+  NuGet cache (xunit.v3.core.mtp-v2's `_content/DefaultResultWriters.fs`), or a file behind a symbolic link that points
+  out of the tree. The preprocessor rewrote such files in place, in the cache every checkout on the machine shares
+  (measured 2026-11-14: `DefaultResultWriters.fs` reformatted in three package versions on each of two machines), and
+  since AUTOMATION-1680 a scan that rewrites a file fails the check, so a land-check went red on the package's own
+  source. The preprocessor now receives `RepoFiles.RepoFile`s only, and the check parses its batch the same way.
+
 ## 0.7.0-alpha.36 - 2026-11-11
 
 - AUTOMATION-1556: a timed-out run leaves a failing ledger entry on every file it covered
