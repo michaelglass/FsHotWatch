@@ -266,10 +266,11 @@ let file
         else
             OutcomeStore.Outcome.Pass
 
-    OutcomeStore.Through.file
+    OutcomeStore.Through.fileComputed
         store
-        (OutcomeStore.Record.ofAction key relPath outcome CheckCache.producerIdentity root DateTimeOffset.UtcNow)
-        (Some(toJson root entries))
+        (OutcomeStore.justRan
+            (OutcomeStore.Record.ofAction key relPath outcome CheckCache.producerIdentity root DateTimeOffset.UtcNow)
+            (Some(toJson root entries)))
 
 let private readable (root: string) (store: OutcomeRecords.IOutcomeStore) (key: ActionKey.ActionKey) =
     lookup store root key |> Option.isSome

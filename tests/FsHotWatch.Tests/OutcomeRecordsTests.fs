@@ -57,6 +57,68 @@ let ``an unreadable file makes the whole key a miss and moves nothing`` () =
     test <@ s.FileNames key.Value = before @>
     test <@ s.Quarantined = [] @>
 
+/// AUTOMATION-1701 (ADR-072), in memory as on disk: a record a deterministic action has just
+/// COMPUTED moves the unreadable or torn files under its key aside (its own name included) and
+/// answers; a test run's record, or one filed without being computed, moves nothing.
+let private computed (s: InMemoryOutcomeStore) (r: StoredRecord) =
+    (s :> IOutcomeStore).FileComputed(Computed.justRan r)
+
+[<Fact>]
+let ``a computed deterministic record moves unreadable and torn files aside, its own name included`` () =
+    let s = store ()
+    let r = recordOf LookupVerdict.Outcome.Pass Ran.NonTest at
+    test <@ file s r = Filing.Filed @>
+    let name = s.FileNames key.Value |> List.exactlyOne
+
+    s.Replace(key.Value, name, Error "permission denied")
+    test <@ KeyRead.outcome (read s) = None @>
+    test <@ file s r = Filing.AlreadyFiled @>
+    test <@ KeyRead.outcome (read s) = None @>
+    test <@ computed s r = Filing.Filed @>
+    test <@ KeyRead.outcome (read s) = Some LookupVerdict.Outcome.Pass @>
+
+    s.PlantUnreadable(key.Value, "sibling.json", "permission denied")
+    s.Replace(key.Value, name, Ok "{\"schema\":\"fshw-outc")
+
+    test
+        <@
+            computed
+                s
+                { r with
+                    RecordedAt = at.AddMinutes 1.0 } = Filing.Filed
+        @>
+
+    test <@ KeyRead.outcome (read s) = Some LookupVerdict.Outcome.Pass @>
+
+    test
+        <@
+            s.Quarantined
+            |> List.map (fun (n, why) ->
+                n,
+                match why with
+                | QuarantineReason.Unreadable _ -> "unreadable"
+                | QuarantineReason.Rejected _ -> "rejected") = [ name, "unreadable"
+                                                                 name, "rejected"
+                                                                 "sibling.json", "unreadable" ]
+        @>
+
+[<Fact>]
+let ``a computed test-run record never moves an unreadable sibling, and the key stays a miss`` () =
+    let s = store ()
+    file s (recordOf LookupVerdict.Outcome.Fail testRun at) |> ignore
+    let fail = s.FileNames key.Value |> List.exactlyOne
+    s.Replace(key.Value, fail, Error "permission denied")
+
+    test <@ computed s (recordOf LookupVerdict.Outcome.Pass testRun (at.AddMinutes 1.0)) = Filing.Filed @>
+    test <@ KeyRead.outcome (read s) = None @>
+    test <@ s.Quarantined = [] @>
+
+[<Fact>]
+let ``a policy is the run's: a deterministic action quarantines, a test run keeps`` () =
+    test <@ SiblingPolicy.ofRan Ran.NonTest = SiblingPolicy.QuarantineUnreadable @>
+    test <@ SiblingPolicy.ofRan testRun = SiblingPolicy.KeepUnreadable @>
+    test <@ SiblingPolicy.ofRan (Ran.InRun "run-7") = SiblingPolicy.KeepUnreadable @>
+
 [<Fact>]
 let ``a torn file is quarantined and the records beside it still answer`` () =
     let s = store ()
