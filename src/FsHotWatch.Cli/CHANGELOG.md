@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw audit` marks a kind that compared nothing `VACUOUS` on its own line, and its `--json` report gives each
+  kind `vacuous` (with `vacuousReason`) and a top-level `vacuousKinds` (AUTOMATION-1684). A vacuous kind's line and
+  JSON entry used to look like a clean kind's; only the trailing `audit: VACUOUS` line and exit 3 said otherwise. Exit
+  codes are unchanged.
+
 ## 0.14.0-alpha.147 - 2026-11-14
 
 - feat: `"analyzerRecords"` defaults to `"on"`, no longer `"shadow"` (AUTOMATION-1585, ADR-059 §39). An `analyze`
