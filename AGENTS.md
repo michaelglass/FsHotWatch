@@ -121,6 +121,11 @@ waiting to land.
     rely on the tagger alone.
   - Once the consumer canary runs in CI, it must pass on that commit as well.
   - When `main` is red, the train waits for the fix. Do not release around a red.
+- **Where the consumer canary runs:** a consumer's full gate is too heavy for a
+  releaser's working machine. Make `scripts/remote-canary.sh` the consumer's `gate` in
+  `~/.fssemantictagger.json` and give it a `remote` object; the gate then runs on that
+  build server with the same pin and the same refuse-on-any-red contract. The script's
+  header documents the fields.
 - **Out-of-train releases:** only when a published release is broken for a consumer,
   and only by the maintainer or on their explicit instruction. It still needs green
   CI, and it counts as that day's train.

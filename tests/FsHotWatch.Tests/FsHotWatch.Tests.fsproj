@@ -364,6 +364,7 @@
     <Compile Include="ToolchainPinTests.fs" />
     <Compile Include="WarnOnAlignmentTests.fs" />
     <Compile Include="CommitMessageGuardTests.fs" />
+    <Compile Include="RemoteCanaryTests.fs" />
     <Compile Include="PackagingInputsGateTests.fs" />
     <Compile Include="CoverageFloorCompletenessTests.fs" />
     <Compile Include="BenchmarkPlacementTests.fs" />
