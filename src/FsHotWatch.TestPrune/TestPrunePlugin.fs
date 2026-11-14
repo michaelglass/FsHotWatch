@@ -293,8 +293,14 @@ let internal createWithEvidenceAndQueries
     // against current symbols, and before QueryAffectedTests, so their edges
     // participate in impact traversal. They re-run only when this flush indexed
     // something or a refresh is owed: their answer is a function of the tree.
+    // AUTOMATION-1623 (ADR-069): what a restarted daemon's first check would select, published
+    // for idle-exit's AUTO window at start and whenever the ledger or the seal can change.
+    let publishRestartSelection = publishRestartSelectionIn evidence repoRoot dbPath
+    publishRestartSelection loadedDebt.Baseline
+
     let flushEnv: FlushEnv =
-        { Db = db
+        { PublishRestartSelection = publishRestartSelection
+          Db = db
           DbPath = dbPath
           BusyTimeout = busyTimeout
           EnqueuePending = enqueuePending
@@ -489,7 +495,8 @@ let internal createWithEvidenceAndQueries
     let prepareCommit = prepareCommitIn repoRoot debtPublicationPath
 
     let runFinishedEnv: RunFinishedEnv =
-        { RepoRoot = repoRoot
+        { PublishRestartSelection = publishRestartSelection
+          RepoRoot = repoRoot
           RunnableProjects = runnableProjects
           Traces = traces
           ResolveExcludedProjects = resolveExcludedProjects
@@ -531,7 +538,8 @@ let internal createWithEvidenceAndQueries
         onBuildCompletedWith buildCompletedEnv ctx state buildResult
 
     let batchCheckedEnv: BatchCheckedEnv =
-        { RepoRoot = repoRoot
+        { PublishRestartSelection = publishRestartSelection
+          RepoRoot = repoRoot
           TestConfigs = testConfigs
           RunnableProjects = runnableProjects
           Launch = launchSteps

@@ -873,5 +873,18 @@ let ``a legacy daemon, a hosted session, and one sharing its checker observe the
         test <@ besideASibling.TestRuns = legacy.TestRuns @>
         test <@ besideASibling.Coverage = legacy.Coverage @>
         test <@ List.isEmpty (divergentKeyInputs legacy.CacheKeyInputs besideASibling.CacheKeyInputs) @>
-        test <@ besideASibling.StateFiles = legacy.StateFiles @>
+        // The scenario runs this mode with test evidence off (above), so its plugin has no
+        // outcome store and publishes that a restart would run the full suite (AUTOMATION-1623,
+        // ADR-069); the modes with evidence publish that it selects correctly. Pinned exactly,
+        // and every other state file is compared as it is.
+        let isRestartSelection (name: string, _: string) = name = "restart-selection"
+        let siblingSelection = besideASibling.StateFiles |> List.tryFind isRestartSelection
+
+        let siblingRest =
+            besideASibling.StateFiles |> List.filter (isRestartSelection >> not)
+
+        let legacyRest = legacy.StateFiles |> List.filter (isRestartSelection >> not)
+
+        test <@ siblingSelection = Some("restart-selection", "would-run-full-suite no outcome store is wired") @>
+        test <@ siblingRest = legacyRest @>
         test <@ besideASibling.ScanMetrics = legacy.ScanMetrics @>)

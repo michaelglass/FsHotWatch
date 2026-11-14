@@ -3695,7 +3695,7 @@ type Daemon
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list,
-        idleExitMin: IdleExit.PositiveMinutes option,
+        idleExitMin: IdleExit.IdleWindow option,
         idleExitSource: IdleExit.ThresholdSource,
         pressureIdleFloorMin: IdleExit.PositiveMinutes option,
         // How often a running daemon checks that its root still exists (`VanishedRoot`).
@@ -4316,9 +4316,12 @@ type Daemon
                 // window.
                 use _idleExitTimer: IDisposable =
                     match idleExitMin with
-                    | Some minutes ->
+                    | Some window ->
                         let deps: IdleExit.IdleExitDeps =
-                            { BaseThresholdMin = minutes
+                            { Window = window
+                              // AUTO's window follows what a restart would select, as the
+                              // test plugin last published it (AUTOMATION-1623, ADR-069).
+                              RestartSelection = fun () -> Restart.read repoRoot
                               Source = idleExitSource
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readPressure
@@ -5407,7 +5410,7 @@ module Daemon =
             /// auto-restarts. `None` (the default) disables it — no timer is
             /// created. Resolution from the `idleExitMin` config + repo path is
             /// done by the caller (`IdleExit.resolveThreshold`).
-            IdleExitMin: IdleExit.PositiveMinutes option
+            IdleExitMin: IdleExit.IdleWindow option
             /// Where `IdleExitMin` came from (`IdleExit.resolveIdleExit`): named on the
             /// `[idle-exit] enabled:` line, and an `Environment` source that disables
             /// idle-exit logs that it did.

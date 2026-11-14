@@ -2456,6 +2456,11 @@
       "line": 95,
       "branch": 72,
       "reason": "new file (AUTOMATION-1602 (b): portable options records in shadow, and the shadow log). Explicit so that a report which drops this file fails coverage-check. Floor = the measured value rounded down. Measured 2026-11-13 on macOS by OptionsPortableTests + OptionsRecordsTests + RecordKeyGoldenTests + DaemonConfigTests with coverage (a subset of the suite, so a lower bound): line 95.3%, branch 72.1% (215/298). Uncovered: unreadable index and options records, the store refusing a write, a key that moves between its two readings, and compiler-generated edges of the JSON and option matches. Platform-neutral: file IO, hashing and JSON only."
+    },
+    "Restart.fs": {
+      "line": 90,
+      "branch": 92,
+      "reason": "new file (AUTOMATION-1623, ADR-069: the restart selection the test plugin publishes and idle exit reads). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by RestartTests with coverage (tests/FsHotWatch.Tests, --filter-class FsHotWatch.Tests.RestartTests): line 90.3%, branch 92.9%. The uncovered lines are publish failing to clear the old file after failing to write it, which needs a file that can be neither written nor deleted. No platform branch (a text file under .fshw, read and written the same way on both), so platform-neutral."
     }
   },
   "countFloors": {

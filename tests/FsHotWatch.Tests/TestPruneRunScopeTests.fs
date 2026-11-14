@@ -4513,6 +4513,7 @@ let ``every step after the last test host exits logs its start and end in order`
               "fold: settle debt"
               "fold: earned evidence"
               "fold: file baseline"
+              "fold: publish restart selection"
               "fold: report outcome" ]
             |> List.collect around
 

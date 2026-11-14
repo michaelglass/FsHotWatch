@@ -576,3 +576,72 @@ let ``a restart whose diff finds only uncovered symbols runs rather than skip wi
     let launch = scheduledLaunch d.F
     test <@ launch.ZeroSelection = ZeroSelection.NotAZero @>
     test <@ not (Map.isEmpty launch.Selection) @>
+
+// --- What a restart would select, published for idle-exit (AUTOMATION-1623, ADR-069) ---
+//
+// The test plugin publishes, from the same three facts `checkoutBaselineIn` reads, whether a
+// restarted daemon's first check would select its tests correctly: the ledger's full-suite
+// tree T, the index still sealed at T, and T's `test-baseline` record. idle-exit's AUTO window
+// is 5 minutes only while it says so. A stale "selects correctly" must not survive anything
+// that changes one of the three facts.
+
+let private published (v: Verified) = Restart.read v.F.Ctx.RepoRoot
+
+[<Fact(Timeout = 30000)>]
+let ``a daemon starting over a usable checkout baseline publishes that its restart selects correctly`` () =
+    let v = verified true
+    restart v |> ignore
+    test <@ published v = Restart.Selection.SelectsCorrectly v.Tree @>
+
+[<Fact(Timeout = 30000)>]
+let ``without T's test-baseline record a daemon publishes that its restart would run the full suite`` () =
+    let v = verified false
+    restart v |> ignore
+    test <@ published v = Restart.Selection.WouldRunFullSuite "no test-baseline record for that tree" @>
+
+[<Fact(Timeout = 30000)>]
+let ``a re-seal at another tree republishes WouldRunFullSuite, so a stale SelectsCorrectly does not survive`` () =
+    // m-1623-la: the ledger's tree was an edited tree, and every later check re-sealed the
+    // index elsewhere; a restart there ran the full suite (461-651 s).
+    let v = verified true
+    let d = restart v
+    Assert.True((published v = Restart.Selection.SelectsCorrectly v.Tree), "positive control: ready at start")
+    editLib v
+    let resealed = update d.F d.F.Handler.Init (BatchChecked(batch ()))
+    let tree' = (ReceiptInputTree.read v.F.Ctx.RepoRoot).Value
+    Assert.True((tree' <> v.Tree), "positive control: the edit moved the tree")
+    Assert.True((resealed.SealedTree = Some tree'), "positive control: the index re-sealed at T'")
+
+    test
+        <@
+            published v = Restart.Selection.WouldRunFullSuite
+                $"the index is sealed at %s{tree'}, not at the baseline's tree %s{v.Tree}"
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``a completion republishes what a restart would select`` () =
+    // No record when the daemon starts, so it publishes WouldRunFullSuite. The record is then
+    // filed (as another checkout's full pass of T would). Nothing reads the store until the
+    // next completion, which must republish from the current facts.
+    let v = verified false
+    let d = restart v
+    // The restarted daemon's scan seals its index at the unchanged tree T, as a live one does.
+    let sealedState = update d.F d.F.Handler.Init (BatchChecked(batch ()))
+    Assert.True((sealedState.SealedTree = Some v.Tree), "positive control: sealed at T")
+    Assert.True((published v <> Restart.Selection.SelectsCorrectly v.Tree), "positive control: not ready yet")
+
+    fileRecord v.Outcomes v.F.Ctx.RepoRoot "another-run" AnalysisRecords.analyzerIdentity
+    |> ignore
+
+    Assert.True(
+        (published v <> Restart.Selection.SelectsCorrectly v.Tree),
+        "positive control: filing alone republishes nothing"
+    )
+
+    let full =
+        { fullSuiteLaunch [ "ProjA"; "ProjB" ] with
+            ModelGeneration = Some 1L
+            InputTree = ReceiptInputTree.readTree v.F.Ctx.RepoRoot }
+
+    update d.F sealedState (finishedGreen full) |> ignore
+    test <@ published v = Restart.Selection.SelectsCorrectly v.Tree @>

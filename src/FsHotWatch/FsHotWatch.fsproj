@@ -73,6 +73,7 @@
     <Compile Include="InProcessProcessTable.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
+    <Compile Include="Restart.fs" />
     <Compile Include="PidFile.fs" />
     <Compile Include="ContentHash.fs" />
     <Compile Include="ActionKey.fs" />

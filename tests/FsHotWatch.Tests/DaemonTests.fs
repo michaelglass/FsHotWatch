@@ -876,7 +876,9 @@ let ``daemon RunWithIpc with idle-exit threshold arms the timer and stops cleanl
                 nullChecker
                 tmpDir
                 { oneShotDaemonOptions with
-                    IdleExitMin = FsHotWatch.IdleExit.PositiveMinutes.tryCreate 30
+                    IdleExitMin =
+                        FsHotWatch.IdleExit.PositiveMinutes.tryCreate 30
+                        |> Option.map FsHotWatch.IdleExit.IdleWindow.Fixed
                     PressureIdleFloorMin = FsHotWatch.IdleExit.PositiveMinutes.tryCreate 2 }
 
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
@@ -905,7 +907,9 @@ let ``daemon RunWithIpc idle-exit with pressure floor disabled arms the timer an
                 nullChecker
                 tmpDir
                 { oneShotDaemonOptions with
-                    IdleExitMin = FsHotWatch.IdleExit.PositiveMinutes.tryCreate 30
+                    IdleExitMin =
+                        FsHotWatch.IdleExit.PositiveMinutes.tryCreate 30
+                        |> Option.map FsHotWatch.IdleExit.IdleWindow.Fixed
                     PressureIdleFloorMin = None }
 
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))

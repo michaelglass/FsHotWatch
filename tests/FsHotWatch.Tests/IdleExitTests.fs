@@ -182,8 +182,8 @@ let ``empty path does not match`` () =
 // --- resolveThreshold ---
 
 [<Fact>]
-let ``absent + workspaces path resolves to auto 30`` () =
-    test <@ resolveThreshold IdleExitConfig.Absent "/dev/repo/.workspaces/x" = Some(minutes 30) @>
+let ``absent + workspaces path resolves to AUTO, chosen by the restart selection`` () =
+    test <@ resolveThreshold IdleExitConfig.Absent "/dev/repo/.workspaces/x" = Some IdleWindow.AutoByRestartSelection @>
 
 [<Fact>]
 let ``absent + normal path resolves to None`` () =
@@ -199,11 +199,16 @@ let ``disabled resolves to None in default repo`` () =
 
 [<Fact>]
 let ``positive N resolves to Some N in default repo`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo" = Some(minutes 5) @>
+    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo" = Some(IdleWindow.Fixed(minutes 5)) @>
 
 [<Fact>]
 let ``positive N resolves to Some N in workspace`` () =
-    test <@ resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo/.workspaces/x" = Some(minutes 5) @>
+    test
+        <@
+            resolveThreshold (IdleExitConfig.Minutes(minutes 5)) "/dev/repo/.workspaces/x" = Some(
+                IdleWindow.Fixed(minutes 5)
+            )
+        @>
 
 [<Fact>]
 let ``a window is only ever positive: zero and negative minutes cannot be built`` () =
@@ -258,7 +263,7 @@ let ``without the override the default workspace keeps its AUTO exemption`` () =
 [<Fact>]
 let ``without the override a workspace keeps AUTO 30`` () =
     let resolved = resolveIdleExit noEnv IdleExitConfig.Absent "/dev/repo/.workspaces/x"
-    test <@ resolved.ThresholdMin = Some(minutes 30) @>
+    test <@ resolved.ThresholdMin = Some IdleWindow.AutoByRestartSelection @>
     test <@ resolved.Source = ThresholdSource.Auto @>
 
 [<Fact>]
@@ -266,7 +271,7 @@ let ``without the override an explicit file value is sourced from the file`` () 
     let resolved =
         resolveIdleExit noEnv (IdleExitConfig.Minutes(minutes 15)) "/dev/repo/.workspaces/x"
 
-    test <@ resolved.ThresholdMin = Some(minutes 15) @>
+    test <@ resolved.ThresholdMin = Some(IdleWindow.Fixed(minutes 15)) @>
     test <@ resolved.Source = ThresholdSource.ConfigFile @>
 
 [<Fact>]
@@ -283,13 +288,13 @@ let ``the override beats an explicit file value`` () =
     let resolved =
         resolveIdleExit (envOf "240") (IdleExitConfig.Minutes(minutes 15)) "/dev/repo/.workspaces/land"
 
-    test <@ resolved.ThresholdMin = Some(minutes 240) @>
+    test <@ resolved.ThresholdMin = Some(IdleWindow.Fixed(minutes 240)) @>
     test <@ resolved.Source = ThresholdSource.Environment @>
 
 [<Fact>]
 let ``the override can arm the default workspace too`` () =
     let resolved = resolveIdleExit (envOf "60") IdleExitConfig.Absent "/dev/repo"
-    test <@ resolved.ThresholdMin = Some(minutes 60) @>
+    test <@ resolved.ThresholdMin = Some(IdleWindow.Fixed(minutes 60)) @>
     test <@ resolved.Source = ThresholdSource.Environment @>
 
 [<Fact>]
@@ -297,7 +302,7 @@ let ``an invalid override falls back to the file and says so`` () =
     let resolved =
         resolveIdleExit (envOf "soon") IdleExitConfig.Absent "/dev/repo/.workspaces/x"
 
-    test <@ resolved.ThresholdMin = Some(minutes 30) @>
+    test <@ resolved.ThresholdMin = Some IdleWindow.AutoByRestartSelection @>
     test <@ resolved.Source = ThresholdSource.Auto @>
     test <@ resolved.Warning.IsSome @>
     test <@ resolved.Warning.Value.Contains "FSHW_IDLE_EXIT_MIN" @>
@@ -360,7 +365,8 @@ let private makeDeps (idleMinutes: float) (busy: bool) =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 30
+        { Window = IdleWindow.Fixed(minutes 30)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Auto
           PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
@@ -401,7 +407,8 @@ let ``runTick defers when busy then fires when free`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 30
+        { Window = IdleWindow.Fixed(minutes 30)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Auto
           PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
@@ -428,7 +435,8 @@ let private makePressureDeps (idleMinutes: float) (pressure: bool ref) (floor: i
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 30
+        { Window = IdleWindow.Fixed(minutes 30)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Auto
           PressureFloorMin = floor |> Option.map minutes
           Pressure = fun () -> PressureReading.KernelLevel(if pressure.Value then 2 else 1)
@@ -552,7 +560,8 @@ let ``runTick swallows a throwing shutdown without escaping`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 30
+        { Window = IdleWindow.Fixed(minutes 30)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Auto
           PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
@@ -577,7 +586,8 @@ let ``createTimer logs the enable line and is disposable`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 30
+        { Window = IdleWindow.Fixed(minutes 30)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Auto
           PressureFloorMin = Some(minutes 2)
           Pressure = fun () -> PressureReading.GcHighLoad false
@@ -599,7 +609,8 @@ let ``the enable line names where its window came from`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 240
+        { Window = IdleWindow.Fixed(minutes 240)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Environment
           PressureFloorMin = None
           Pressure = fun () -> PressureReading.GcHighLoad false
@@ -630,7 +641,8 @@ let private makeScanDeps (leases: ScanActivity.ScanLeases) (idleMinutes: float) 
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { BaseThresholdMin = minutes 30
+        { Window = IdleWindow.Fixed(minutes 30)
+          RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
           Source = ThresholdSource.Auto
           PressureFloorMin = Some(minutes 2)
           // Pressure ON: this is the shortened-window case that actually fired.
@@ -701,7 +713,8 @@ let ``a tick in flight when the timer is disposed shuts down before the daemon's
         TestHelpers.cancelAcrossTeardown (fun hold shutdown ->
             createTimerWith
                 (TimeSpan.FromMilliseconds 100.0)
-                { BaseThresholdMin = minutes 1
+                { Window = IdleWindow.Fixed(minutes 1)
+                  RestartSelection = fun () -> Restart.Selection.WouldRunFullSuite "not under test"
                   Source = ThresholdSource.Auto
                   PressureFloorMin = None
                   Pressure = fun () -> PressureReading.GcHighLoad false
@@ -816,3 +829,141 @@ let ``the live GC reading is the pure decision over the GC's own numbers`` () =
         gcPressureFrom before.HighMemoryLoadThresholdBytes before.MemoryLoadBytes
 
     test <@ live = expected @>
+
+// --- AUTO chosen by the restart selection (AUTOMATION-1623, ADR-069) ---
+//
+// A /.workspaces/ checkout with no `idleExitMin` exits after 5 minutes when a restarted
+// daemon's first check would select its tests correctly, and keeps the 30-minute window when
+// it would run the full suite instead. Measured on intelligence: a fresh daemon in a workspace
+// with a usable checkout baseline answered a 14,730-test edit in 372 s against a resident
+// daemon's 368-369 s, while one without ran all 20,856 tests (461-651 s).
+
+let private autoDeps (idleMinutes: float) (selection: Restart.Selection ref) (pressure: bool) =
+    let shutdownCalls = ref 0
+    let logs = ResizeArray<string>()
+    let now = DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc)
+
+    let deps: IdleExitDeps =
+        { Window = IdleWindow.AutoByRestartSelection
+          RestartSelection = fun () -> selection.Value
+          Source = ThresholdSource.Auto
+          PressureFloorMin = Some(minutes 2)
+          Pressure = fun () -> PressureReading.KernelLevel(if pressure then 2 else 1)
+          Now = fun () -> now
+          Inhibitors = fun () -> []
+          LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
+          Shutdown = fun () -> Interlocked.Increment(shutdownCalls) |> ignore
+          Log = fun msg -> lock logs (fun () -> logs.Add msg) }
+
+    deps, shutdownCalls, logs
+
+[<Fact>]
+let ``AUTO's window is 5 minutes when a restart selects correctly and 30 when it would run the full suite`` () =
+    test <@ autoWindowFor (Restart.Selection.SelectsCorrectly "sha256:t") = minutes 5 @>
+    test <@ autoWindowFor (Restart.Selection.WouldRunFullSuite "no checkout baseline") = minutes 30 @>
+
+[<Fact>]
+let ``AUTO exits after 5 idle minutes when a restart would select its tests correctly`` () =
+    let deps, shutdownCalls, logs =
+        autoDeps 6.0 (ref (Restart.Selection.SelectsCorrectly "sha256:t")) false
+
+    test <@ runTick deps (FireLatch.create ()) = TickOutcome.Fired @>
+    test <@ shutdownCalls.Value = 1 @>
+
+    test
+        <@
+            logs
+            |> Seq.exists (fun l -> l.Contains "idle for 5min" && l.Contains "sha256:t")
+        @>
+
+[<Fact>]
+let ``AUTO keeps the 30-minute window when a restart would run the full suite`` () =
+    let selection =
+        ref (Restart.Selection.WouldRunFullSuite "no test-baseline record for that tree")
+
+    let early, earlyCalls, _ = autoDeps 6.0 selection false
+
+    test
+        <@
+            runTick early (FireLatch.create ()) = TickOutcome.WithinWindow(
+                TimeSpan.FromMinutes 6.0,
+                TimeSpan.FromMinutes 30.0
+            )
+        @>
+
+    test <@ earlyCalls.Value = 0 @>
+
+    let late, lateCalls, logs = autoDeps 31.0 selection false
+    test <@ runTick late (FireLatch.create ()) = TickOutcome.Fired @>
+    test <@ lateCalls.Value = 1 @>
+    test <@ logs |> Seq.exists (fun l -> l.Contains "no test-baseline record for that tree") @>
+
+[<Fact>]
+let ``AUTO reads the selection on every tick, so a stale SelectsCorrectly does not survive a re-seal`` () =
+    // The index re-sealed at another tree after the publication said "selects correctly": the
+    // plugin republishes WouldRunFullSuite, and the very next tick must use 30, not 5.
+    let selection = ref (Restart.Selection.SelectsCorrectly "sha256:t")
+    let deps, shutdownCalls, _ = autoDeps 6.0 selection false
+
+    selection.Value <-
+        Restart.Selection.WouldRunFullSuite "the index is sealed at sha256:u, not at the baseline's tree sha256:t"
+
+    test
+        <@
+            runTick deps (FireLatch.create ()) = TickOutcome.WithinWindow(
+                TimeSpan.FromMinutes 6.0,
+                TimeSpan.FromMinutes 30.0
+            )
+        @>
+
+    test <@ shutdownCalls.Value = 0 @>
+
+[<Fact>]
+let ``memory pressure still shortens AUTO's restart-selected window to the floor`` () =
+    let deps, shutdownCalls, _ =
+        autoDeps 3.0 (ref (Restart.Selection.SelectsCorrectly "sha256:t")) true
+
+    test <@ runTick deps (FireLatch.create ()) = TickOutcome.Fired @>
+    test <@ shutdownCalls.Value = 1 @>
+
+[<Fact>]
+let ``a fixed window ignores the restart selection`` () =
+    let deps, _, _ =
+        autoDeps 6.0 (ref (Restart.Selection.SelectsCorrectly "sha256:t")) false
+
+    let fixedDeps =
+        { deps with
+            Window = IdleWindow.Fixed(minutes 30) }
+
+    test
+        <@
+            runTick fixedDeps (FireLatch.create ()) = TickOutcome.WithinWindow(
+                TimeSpan.FromMinutes 6.0,
+                TimeSpan.FromMinutes 30.0
+            )
+        @>
+
+[<Fact>]
+let ``the default checkout stays exempt from AUTO whatever a restart would select`` () =
+    // resolveIdleExit never consults the selection: the default checkout gets no window at all.
+    test <@ (resolveIdleExit noEnv IdleExitConfig.Absent "/dev/repo").ThresholdMin = None @>
+
+[<Fact>]
+let ``FSHW_IDLE_EXIT_MIN wins over the restart-selected AUTO window`` () =
+    test
+        <@
+            (resolveIdleExit (envOf "60") IdleExitConfig.Absent "/dev/repo/.workspaces/x").ThresholdMin = Some(
+                IdleWindow.Fixed(minutes 60)
+            )
+        @>
+
+    test <@ (resolveIdleExit (envOf "0") IdleExitConfig.Absent "/dev/repo/.workspaces/x").ThresholdMin = None @>
+
+[<Fact>]
+let ``the enable line names both AUTO windows and what chooses between them`` () =
+    let deps, _, logs =
+        autoDeps 0.0 (ref (Restart.Selection.SelectsCorrectly "sha256:t")) false
+
+    use _timer = createTimerWith (TimeSpan.FromHours 1.0) deps
+    let line = logs |> Seq.find (fun l -> l.Contains "[idle-exit] enabled")
+    test <@ line.Contains "30min" && line.Contains "5min" @>

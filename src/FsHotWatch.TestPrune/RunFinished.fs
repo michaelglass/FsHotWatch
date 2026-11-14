@@ -71,6 +71,9 @@ type internal RunFinishedEnv =
         /// File the shadow `test-baseline` record this completion may earn, and log the
         /// outcome either way (AUTOMATION-1587 step 2). Nothing reads what it files.
         FileBaseline: PluginCtx<TestPruneMsg> -> TestBaseline.Facts -> unit
+        /// Publish what a restarted daemon would select, from the ledger this completion
+        /// leaves (AUTOMATION-1623, ADR-069).
+        PublishRestartSelection: FullSuiteBaseline.Baseline option -> unit
     }
 
 /// A run's completion (`TestsFinished`, or a requested run's `CommandTestsFinished`), folded into state.
@@ -329,6 +332,11 @@ let internal onRunFinishedWith
                   RunnableProjects = runnableProjects
                   SealedTree = state.SealedTree
                   ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries) })
+
+        // AUTOMATION-1623 (ADR-069): this completion may have moved the ledger's full-suite
+        // tree or filed T's record, so what a restart would select is published again now.
+        PostRunStep.timed postRun "fold: publish restart selection" (fun () ->
+            env.PublishRestartSelection debt.Baseline)
 
         // The in-memory hot view must shed ONLY the committed symbols,
         // never the whole list — symbols left in the queue (mid-run
