@@ -42,8 +42,10 @@ let private fullKeyOf (project: string) =
 let private fullKeys () =
     projects |> Seq.map (fun p -> p, Ok (fullKeyOf p).Value.Text) |> Map.ofSeq
 
-/// File `project`'s full-scope `outcome` at its K_P, as run `runId` would have.
-let private fileFullAt
+/// File `project`'s full-scope `outcome` under `key`, as run `runId` in `worktree` would have.
+let private fileFullUnder
+    (key: ActionKey.ActionKey)
+    (worktree: string)
     (at: DateTimeOffset)
     (store: OutcomeStore.Store)
     (runId: string)
@@ -51,20 +53,29 @@ let private fileFullAt
     (project: string)
     =
     let record: OutcomeStore.Record =
-        { Key = fullKeyOf project
+        { Key = key
           Subject = project
           Outcome = outcome
           Counts = None
           DurationMs = None
           Producer =
             { Binary = "fshw-test"
-              Worktree = "/ws/a"
+              Worktree = worktree
               RunId = Some runId }
           RecordedAt = at }
 
     test <@ store.Record record @>
 
+/// File `project`'s full-scope `outcome` at its K_P, as run `runId` would have.
+let private fileFullAt (at: DateTimeOffset) (store: OutcomeStore.Store) (runId: string) outcome project =
+    fileFullUnder (fullKeyOf project) "/ws/a" at store runId outcome project
+
 let private fileFull = fileFullAt t0
+
+/// File `project`'s full-scope `outcome` at its K_P as another checkout's run would have:
+/// the pass a run here replays (AUTOMATION-1682).
+let private fileFullElsewhere (store: OutcomeStore.Store) (runId: string) outcome project =
+    fileFullUnder (fullKeyOf project) "/ws/other" t0 store runId outcome project
 
 let private tree =
     "sha256:tree-1",
@@ -184,17 +195,15 @@ let ``an index not sealed at the receipt tree files nothing and names both trees
         test <@ (TestBaseline.describe "run-1" 3L unsealed).Contains "sealed=none" @>)
 
 [<Fact>]
-let ``a project whose full pass is not this run's, or is a fail, or is missing, files nothing and is named`` () =
+let ``a project whose full pass is a fail, or is missing, files nothing and is named`` () =
     withTempDir "baseline" (fun dir ->
         let store = storeIn dir
-        fileFull store "run-0" OutcomeStore.Outcome.Pass "TA"
+        fileFull store "run-1" OutcomeStore.Outcome.Pass "TA"
 
         let earlier = TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts
 
         match earlier with
-        | Error [ TestBaseline.Refusal.LacksFullPass("TA", whyA); TestBaseline.Refusal.LacksFullPass("TB", whyB) ] ->
-            test <@ whyA.Contains "run-0" @>
-            test <@ whyB.Contains "no full-scope record" @>
+        | Error [ TestBaseline.Refusal.LacksFullPass("TB", whyB) ] -> test <@ whyB.Contains "no full-scope record" @>
         | other -> failwith $"unexpected: %A{other}"
 
         fileFull store "run-1" OutcomeStore.Outcome.Fail "TB"
@@ -245,12 +254,101 @@ let ``a project whose full pass is not this run's, or is a fail, or is missing, 
         test <@ store.Lookup(TestBaseline.keyOf (fst tree)) = None @>
         let line = TestBaseline.describe "run-1" 3L earlier
 
+        test <@ line.Contains "reason=lacks-full-pass" && line.Contains "TB" @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1682: a run that REPLAYS a project's full pass from another checkout's run
+// filed it at the project's K_P over the inputs as they are now. That record says what a
+// pass of this run there would say, so it is a full pass for the baseline. A record at
+// another K_P, or a newer fail at this one, is not.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``a full pass replayed at the project's current K_P from another checkout's run files the baseline`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        fileFullElsewhere store "run-0" OutcomeStore.Outcome.Pass "TA"
+        fileFull store "run-1" OutcomeStore.Outcome.Pass "TB"
+
+        let written = TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts
+
+        match written with
+        | Ok w ->
+            test <@ w.Tree = fst tree && w.Projects = 2 @>
+
+            let expected: TestBaseline.ReplayedFrom =
+                { RunId = "run-0"
+                  Worktree = "/ws/other" }
+
+            test <@ w.Replayed = Map.ofList [ "TA", expected ] @>
+        | Error refusals -> failwith $"refused a baseline every project passed at its K_P: %A{refusals}"
+
+        let line = TestBaseline.describe "run-1" 3L written
+        test <@ line.Contains "test-baseline: written" && line.Contains "replayed=1" @>
+
+        let _, outputs = (store.LookupWithOutputs(TestBaseline.keyOf (fst tree))).Value
+        use doc = JsonDocument.Parse(outputs.Value)
+        let replayed = doc.RootElement.GetProperty("replayed").GetProperty("TA")
+        let runId = replayed.GetProperty("runId").GetString()
+        let worktree = replayed.GetProperty("worktree").GetString()
+        test <@ runId = "run-0" && worktree = "/ws/other" @>)
+
+[<Fact>]
+let ``negative control: a replayed pass at another K_P, under a newer fail, or naming no run, files nothing`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        // TA passed elsewhere over OTHER inputs (another tree): its key is not TA's K_P now.
+        let elsewhere =
+            TestEvidenceRun.testActionKey
+                { Value = "kp-TA-other-tree"
+                  Labels = [ "closure", "c-TA-other" ] }
+                "full"
+
+        fileFullUnder elsewhere "/ws/other" t0 store "run-0" OutcomeStore.Outcome.Pass "TA"
+        fileFull store "run-1" OutcomeStore.Outcome.Pass "TB"
+
+        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        | Error [ TestBaseline.Refusal.LacksFullPass("TA", why) ] -> test <@ why.Contains "no full-scope record" @>
+        | other -> failwith $"filed or refused wrongly over a pass at another K_P: %A{other}"
+
+        // A pass at TA's K_P from elsewhere, and then a newer fail there from elsewhere.
+        fileFullElsewhere store "run-0" OutcomeStore.Outcome.Pass "TA"
+
+        fileFullUnder (fullKeyOf "TA") "/ws/other" (t0.AddSeconds 1.0) store "run-2" OutcomeStore.Outcome.Fail "TA"
+
+        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        | Error [ TestBaseline.Refusal.LacksFullPass("TA", why) ] -> test <@ why.Contains "fail" @>
+        | other -> failwith $"filed or refused wrongly under a newer fail: %A{other}"
+
+        // A newer pass there that names no run is no run's pass: refused, not replayed.
+        let unnamed: OutcomeStore.Record =
+            { Key = fullKeyOf "TA"
+              Subject = "TA"
+              Outcome = OutcomeStore.Outcome.Pass
+              Counts = None
+              DurationMs = None
+              Producer =
+                { Binary = "fshw-test"
+                  Worktree = "/ws/other"
+                  RunId = None }
+              RecordedAt = t0.AddSeconds 1.5 }
+
+        test <@ store.Record unnamed @>
+
+        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        | Error [ TestBaseline.Refusal.LacksFullPass("TA", why) ] -> test <@ why.Contains "names no run" @>
+        | other -> failwith $"filed or refused wrongly over a pass naming no run: %A{other}"
+
+        // Nor does a run that did not earn the baseline file one from replays.
+        fileFullUnder (fullKeyOf "TA") "/ws/other" (t0.AddSeconds 2.0) store "run-3" OutcomeStore.Outcome.Pass "TA"
+
         test
             <@
-                line.Contains "reason=lacks-full-pass"
-                && line.Contains "TA"
-                && line.Contains "TB"
-            @>)
+                TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) { facts with EarnsBaseline = false } = Error
+                    [ TestBaseline.Refusal.NotEarned ]
+            @>
+
+        test <@ store.Lookup(TestBaseline.keyOf (fst tree)) = None @>)
 
 [<Fact>]
 let ``with no store or no receipt tree nothing is filed, and the reason is named`` () =
@@ -278,7 +376,8 @@ let ``a written baseline's log line carries its byte size and the index size, co
           Identified = 2700
           Bytes = 612345L
           IndexEntries = 20
-          IndexBytes = 4096L }
+          IndexBytes = 4096L
+          Replayed = Map.empty }
 
     let line = TestBaseline.describe "run-9" 42L (Ok written)
     test <@ line.StartsWith "test-baseline: written run=run-9 tree=sha256:t" @>
@@ -291,6 +390,7 @@ let ``a written baseline's log line carries its byte size and the index size, co
               "bytes=612345"
               "index=20/20"
               "index-bytes=4096"
+              "replayed=0"
               "ms=42" ]
             |> List.forall line.Contains
         @>

@@ -4,19 +4,21 @@
 ///
 /// Step 2 wrote these records in shadow, to be counted and measured (records per land,
 /// bytes). Their one reader is `checkoutRecordFor` (steps 4-5): a restarted daemon whose
-/// own checkout last passed in full at T, with its index still sealed at T, holds its first
+/// index is sealed at a tree T its own checkout passed in full (ADR-071) holds its first
 /// launch for the cold scan's diff T to T' and selects from it, with T's manifest as the
 /// evidence the tree moved from. No skip, cache or verdict consults them.
 ///
 /// A record is filed only when all of these hold at a run's completion:
 ///   * the completion EARNED the full-suite baseline (`earnsBaseline`: a full run that passed
 ///     every runnable project — never a red or stop-on-fail run, AUTOMATION-1581);
-///   * every runnable project's newest full-scope record at its CURRENT K_P is a pass filed
-///     by THIS run (a reuse earned elsewhere is not this run's, so it does not count);
+///   * every runnable project's newest full-scope record at its CURRENT K_P is a pass, filed
+///     by this run or REPLAYED by it from another run: K_P names the project's inputs as
+///     they are now, so either says the same (AUTOMATION-1682, ADR-071);
 ///   * the impact index is sealed at the receipt tree (`SealedTree` = T): the per-file
 ///     analysis identities read from it describe T's bytes, not an earlier tree's.
 ///
-/// Its outputs name the run, the K_P full-run key each project rests on, the analyser build,
+/// Its outputs name the run, the K_P full-run key each project rests on (and, for a replayed
+/// pass, the run and checkout that filed it), the analyser build,
 /// and T's manifest: per file, its content hash and the analysis identity the index held for
 /// it (`file_keys`), which is what finds the file's analysis record at T (`AnalysisRecords`).
 ///
@@ -83,7 +85,7 @@ type Refusal =
     | NoReceiptTree
     /// The index was sealed at another tree, or never sealed.
     | NotSealed of sealedTree: string option * receiptTree: string
-    /// A runnable project has no full-scope pass from this run at its current K_P.
+    /// A runnable project's newest full-scope record at its current K_P is missing or a fail.
     | LacksFullPass of project: string * why: string
     /// The store did not file the record.
     | NotFiled of why: string
@@ -94,6 +96,26 @@ type IndexEntry =
       Baseline: string
       RunId: string
       At: DateTimeOffset }
+
+/// The run and checkout a replayed full pass was earned in (AUTOMATION-1682). Every K_P
+/// full-scope record a test run files names that run; one that names none is no run's pass
+/// and is refused before it gets here (`fullPasses`).
+type ReplayedFrom = { RunId: string; Worktree: string }
+
+/// What a project's newest full-scope record at its current K_P is, when it is a pass.
+[<RequireQualifiedAccess>]
+type FullPass =
+    /// Filed by the run that completed.
+    | EarnedHere of key: string
+    /// Filed by another run, which this one replayed: the record is keyed to the project's
+    /// inputs as they are now, so it says what a pass of this run would (AUTOMATION-1682).
+    | Replayed of key: string * from: ReplayedFrom
+
+module FullPass =
+    let key (pass: FullPass) =
+        match pass with
+        | FullPass.EarnedHere key
+        | FullPass.Replayed(key, _) -> key
 
 /// What a filed baseline amounted to, for the log.
 type Written =
@@ -107,6 +129,8 @@ type Written =
         Bytes: int64
         IndexEntries: int
         IndexBytes: int64
+        /// The projects whose full pass this run replayed from another run, and whose.
+        Replayed: Map<string, ReplayedFrom>
     }
 
 /// Who files, and when.
@@ -253,13 +277,18 @@ let appendIndex (store: OutcomeStore.Store) (producer: Producer) (entry: IndexEn
     store.Supersede(recordOf indexKey "index" None producer, Some(indexOutputs entries))
     |> Option.map (fun bytes -> entries.Length, bytes)
 
-/// Each runnable project's full-scope key, or why it does not rest on a pass from `runId`.
+/// Each runnable project's full pass at its current K_P, or why it has none. The newest
+/// full-scope record at K_P decides, whichever run filed it. K_P names the project's inputs
+/// as they are now (its closure, packages, toolchain, loaded environment and scope), so a
+/// pass another run filed there says what a pass of this run would, and it is the very
+/// record this run's own green replayed (AUTOMATION-1682, ADR-071). A newer fail there
+/// refuses; a record at another K_P is no record.
 let private fullPasses
     (store: OutcomeStore.Store)
     (runId: string)
     (runnable: Set<string>)
     (fullKeys: Map<string, Result<string, string>>)
-    : Result<Map<string, string>, Refusal list> =
+    : Result<Map<string, FullPass>, Refusal list> =
     let judged =
         [ for project in runnable ->
               project,
@@ -276,10 +305,20 @@ let private fullPasses
                       | None -> Error "no full-scope record at its current K_P"
                       | Some r when r.Outcome = OutcomeStore.Outcome.Fail ->
                           Error "its newest full-scope record is a fail"
-                      | Some r when r.Producer.RunId <> Some runId ->
-                          let earner = r.Producer.RunId |> Option.defaultValue "an unnamed run"
-                          Error $"its full-scope pass is from run %s{earner} in %s{r.Producer.Worktree}, not this run"
-                      | Some _ -> Ok key.Text ]
+                      | Some r ->
+                          match r.Producer.RunId with
+                          | None ->
+                              Error
+                                  $"its full-scope pass, filed in %s{r.Producer.Worktree}, names no run (every test run names itself)"
+                          | Some earner when earner = runId -> Ok(FullPass.EarnedHere key.Text)
+                          | Some earner ->
+                              Ok(
+                                  FullPass.Replayed(
+                                      key.Text,
+                                      { RunId = earner
+                                        Worktree = r.Producer.Worktree }
+                                  )
+                              ) ]
 
     match
         judged
@@ -299,7 +338,7 @@ let private baselineOutputs
     (facts: Facts)
     (tree: string)
     (entries: (string * string) list)
-    (projects: Map<string, string>)
+    (projects: Map<string, FullPass>)
     (fileKeys: Map<string, string>)
     : string =
     let o = JsonObject()
@@ -308,11 +347,21 @@ let private baselineOutputs
     o["tree"] <- tree
     o["analyzer"] <- AnalysisRecords.analyzerIdentity
     let p = JsonObject()
+    let replayed = JsonObject()
 
-    for KeyValue(project, key) in projects do
-        p[project] <- key
+    for KeyValue(project, pass) in projects do
+        p[project] <- FullPass.key pass
+
+        match pass with
+        | FullPass.EarnedHere _ -> ()
+        | FullPass.Replayed(_, from) ->
+            let r = JsonObject()
+            r["runId"] <- from.RunId
+            r["worktree"] <- from.Worktree
+            replayed[project] <- r
 
     o["projects"] <- p
+    o["replayed"] <- replayed
     let manifest = JsonArray()
 
     for path, hash in entries do
@@ -375,7 +424,15 @@ let file
                       Identified = entries |> List.filter (fun (path, _) -> keys.ContainsKey path) |> List.length
                       Bytes = bytes
                       IndexEntries = indexEntries
-                      IndexBytes = indexBytes })
+                      IndexBytes = indexBytes
+                      Replayed =
+                        projects
+                        |> Map.toList
+                        |> List.choose (fun (project, pass) ->
+                            match pass with
+                            | FullPass.EarnedHere _ -> None
+                            | FullPass.Replayed(_, from) -> Some(project, from))
+                        |> Map.ofList })
     | refusals, _, _ -> Error refusals
 
 let private token (refusal: Refusal) =
@@ -395,7 +452,7 @@ let private detail (refusal: Refusal) =
     | Refusal.NotSealed(sealedTree, receipt) ->
         let sealedText = sealedTree |> Option.defaultValue "none"
         $"index not sealed at the receipt tree: sealed=%s{sealedText}, receipt=%s{receipt}"
-    | Refusal.LacksFullPass(project, why) -> $"project %s{project} lacks a full-pass K_P record from this run: %s{why}"
+    | Refusal.LacksFullPass(project, why) -> $"project %s{project} lacks a full-pass K_P record: %s{why}"
     | Refusal.NotFiled why -> why
 
 /// The completion's one log line. Every line starts `test-baseline: written` or
@@ -406,7 +463,7 @@ let describe (runId: string) (elapsedMs: int64) (outcome: Result<Written, Refusa
     | Ok w ->
         $"test-baseline: written run=%s{runId} tree=%s{w.Tree} projects=%d{w.Projects} files=%d{w.Files} "
         + $"identities=%d{w.Identified} bytes=%d{w.Bytes} index=%d{w.IndexEntries}/%d{IndexCapacity} "
-        + $"index-bytes=%d{w.IndexBytes} ms=%d{elapsedMs} (shadow: nothing reads it)"
+        + $"index-bytes=%d{w.IndexBytes} replayed=%d{w.Replayed.Count} ms=%d{elapsedMs}"
     | Error refusals ->
         let tokens = refusals |> List.map token |> List.distinct |> String.concat ","
         let details = refusals |> List.map detail |> String.concat "; "
