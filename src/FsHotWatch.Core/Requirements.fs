@@ -9,7 +9,7 @@ module FsHotWatch.Requirements
 /// What the configuration requires of a green: its non-test plugins and its test projects.
 type Configured =
     {
-        /// The plugins the configuration registers (`DaemonConfig.requiredPluginNames`).
+        /// The plugins the configuration requires (`RequiredConfig.ofJson`, the one definition).
         RequiredPlugins: string list
         /// The configured test projects, by the name their reports carry.
         TestProjects: string list
