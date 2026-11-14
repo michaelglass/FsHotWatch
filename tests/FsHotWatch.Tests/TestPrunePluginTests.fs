@@ -258,7 +258,7 @@ let ``a zero-symbol FileChecked forces its runtime-covered project in full`` () 
                   Cobertura = Path.Combine(tmpDir, CoberturaName)
                   IncludeInRatchet = false
                   ArgsTemplate = "--coverage-output {output}"
-                  RuntimeSelection = RuntimeSelectionMode.Decide }
+                  RuntimeSelection = SelectionMode.RuntimeDecides }
 
         let dbPath = Path.Combine(tmpDir, "test.db")
         let db = Database.create dbPath
@@ -4244,7 +4244,7 @@ let ``buildCoverageArgs picks baseline on full run and partial on filtered run``
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
           IncludeInRatchet = true
           ArgsTemplate = DefaultCoverageArgsTemplate
-          RuntimeSelection = RuntimeSelectionMode.Decide }
+          RuntimeSelection = SelectionMode.RuntimeDecides }
 
     let full = buildCoverageArgs paths false
     test <@ full.Contains("baseline.cobertura.xml") @>
@@ -4265,7 +4265,7 @@ let ``default template uses an MTP-accepted output format`` () =
           Cobertura = "/tmp/cov/coverage.cobertura.xml"
           IncludeInRatchet = true
           ArgsTemplate = DefaultCoverageArgsTemplate
-          RuntimeSelection = RuntimeSelectionMode.Decide }
+          RuntimeSelection = SelectionMode.RuntimeDecides }
 
     let args = buildCoverageArgs paths false
     let mtpAccepts = [ "coverage"; "xml"; "cobertura" ]
@@ -4288,7 +4288,7 @@ let ``buildCoverageArgs honors a custom ArgsTemplate with {output} substitution`
           Cobertura = "/tmp/cov/C.xml"
           IncludeInRatchet = true
           ArgsTemplate = "--custom-collector --out \"{output}\" --extra"
-          RuntimeSelection = RuntimeSelectionMode.Decide }
+          RuntimeSelection = SelectionMode.RuntimeDecides }
 
     let full = buildCoverageArgs paths false
     test <@ full = "--custom-collector --out \"/tmp/cov/B.xml\" --extra" @>
@@ -4305,7 +4305,7 @@ let ``buildCoverageArgs treats a template missing {output} as invalid`` () =
           Cobertura = "/tmp/cov/C.xml"
           IncludeInRatchet = true
           ArgsTemplate = "--broken-template-no-placeholder"
-          RuntimeSelection = RuntimeSelectionMode.Decide }
+          RuntimeSelection = SelectionMode.RuntimeDecides }
 
     let ex = Assert.ThrowsAny(fun () -> buildCoverageArgs paths false |> ignore)
 
@@ -4956,7 +4956,7 @@ cp "%s{source}" "$output"
                   Cobertura = sharedOut
                   IncludeInRatchet = project = "UnitTests" || integrationEnabled
                   ArgsTemplate = "--coverage-output {output}"
-                  RuntimeSelection = RuntimeSelectionMode.Decide }
+                  RuntimeSelection = SelectionMode.RuntimeDecides }
 
         let host = createModelHost (Unchecked.defaultof<_>) dir
 

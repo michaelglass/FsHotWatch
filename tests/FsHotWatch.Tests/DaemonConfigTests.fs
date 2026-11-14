@@ -1466,53 +1466,73 @@ let ``parseConfig tests nameHungTests is off when absent, read when a boolean, a
 
     test <@ ex.message.Contains "tests.projects[T].nameHungTests" @>
 
-// AUTOMATION-1645: runtime coverage may be shadowed (computed and logged, never selected).
+// AUTOMATION-1645, AUTOMATION-1686: one value names who decides what runs and what is recorded.
 [<Fact(Timeout = 15000)>]
-let ``parseConfig tests runtimeSelection decides when absent, reads decide or shadow, and refuses anything else`` () =
+let ``parseConfig tests runtimeSelection reads each spelling and each old alias, runtime when absent, and refuses anything else``
+    ()
+    =
     let parse json =
         (parseConfig json defaults).Tests.Value.Projects.[0].RuntimeSelection
 
+    let parseValue (value: string) =
+        parse $"""{{"tests": {{"projects": [{{"project": "T", "runtimeSelection": "%s{value}"}}]}}}}"""
+
     test
         <@
-            parse """{"tests": {"projects": [{"project": "T"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
+            parse """{"tests": {"projects": [{"project": "T"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecides
+        @>
+
+    test <@ parseValue "runtime" = FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecides @>
+
+    test
+        <@
+            parseValue "runtime/record-static" = FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecidesStaticRecorded
         @>
 
     test
         <@
-            parse """{"tests": {"projects": [{"project": "T", "runtimeSelection": "decide"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Decide
+            parseValue "static/log-runtime" = FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.StaticDecidesRuntimeLogged
         @>
+    // The old spellings, kept as aliases for one release.
+    test <@ parseValue "decide" = FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.RuntimeDecides @>
+    test <@ parseValue "shadow" = FsHotWatch.TestPrune.CoverageArtifacts.SelectionMode.StaticDecidesRuntimeLogged @>
 
-    test
-        <@
-            parse """{"tests": {"projects": [{"project": "T", "runtimeSelection": "shadow"}]}}""" = FsHotWatch.TestPrune.CoverageArtifacts.RuntimeSelectionMode.Shadow
-        @>
-
-    // Read as "decide", a typo would silently put runtime coverage back in charge.
+    // Read as "runtime", a typo would silently drop the record it asked for.
     let refused json =
         Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
 
     let typo =
-        refused """{"tests": {"projects": [{"project": "T", "runtimeSelection": "shadwo"}]}}"""
+        refused """{"tests": {"projects": [{"project": "T", "runtimeSelection": "runtime/record-statc"}]}}"""
 
     test <@ typo.message.Contains "tests.projects[T].runtimeSelection" @>
+    // The refusal names the accepted spellings, not the aliases.
+    test <@ typo.message.Contains "\"runtime/record-static\"" @>
+    test <@ typo.message.Contains "\"static/log-runtime\"" @>
+    test <@ not (typo.message.Contains "\"shadow\"") @>
 
     let notAString =
         refused """{"tests": {"projects": [{"project": "T", "runtimeSelection": true}]}}"""
 
     test <@ notAString.message.Contains "tests.projects[T].runtimeSelection" @>
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig refuses a shadow runtimeSelection on a project that collects no coverage for impact`` () =
-    // Nothing is collected, so nothing could be computed or logged: the declaration
-    // would be inert, and an inert declaration is refused rather than ignored.
+[<Theory(Timeout = 15000)>]
+[<InlineData("shadow")>]
+[<InlineData("static/log-runtime")>]
+[<InlineData("runtime/record-static")>]
+let ``parseConfig refuses a runtimeSelection that reads runtime coverage on a project that collects none for impact``
+    (value: string)
+    =
+    // Nothing is collected, so nothing could be computed, logged or recorded: the
+    // declaration would be inert, and an inert declaration is refused rather than ignored.
     let ex =
         Assert.Throws<ConfigErrorException>(fun () ->
             parseConfig
-                """{"tests": {"projects": [{"project": "T", "coverage": false, "runtimeSelection": "shadow"}]}}"""
+                $"""{{"tests": {{"projects": [{{"project": "T", "coverage": false, "runtimeSelection": "%s{value}"}}]}}}}"""
                 defaults
             |> ignore)
 
     test <@ ex.message.Contains "tests.projects[T].runtimeSelection" @>
+    test <@ ex.message.Contains $"\"%s{value}\"" @>
     test <@ ex.message.Contains "collectForImpact" @>
 
 [<Fact(Timeout = 15000)>]

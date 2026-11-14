@@ -211,7 +211,7 @@ let ``a red shadow run keeps what runtime coverage would add for the run that re
 /// runtime selection set to `mode`. The host writes the coverage it is asked for, so every
 /// run ingests. Returns the runtime obligation ledger the daemon persisted once the edit
 /// was flushed, and the log lines written from the edit on.
-let private runtimeOnlyEdit (mode: RuntimeSelectionMode) =
+let private runtimeOnlyEdit (mode: SelectionMode) =
     withTempDir "tp-runtime-shadow" (fun tmpDir ->
         let lines = System.Collections.Concurrent.ConcurrentQueue<string>()
 
@@ -324,7 +324,7 @@ let private selectedBy (lines: string list) =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``control - a deciding project is owed, and run, for the file its runtime coverage reached`` () =
-    let _, lines = runtimeOnlyEdit RuntimeSelectionMode.Decide
+    let _, lines = runtimeOnlyEdit SelectionMode.RuntimeDecides
 
     test
         <@
@@ -339,7 +339,7 @@ let ``control - a deciding project is owed, and run, for the file its runtime co
 let ``a shadow project owes nothing for the file its runtime coverage reached, and the launch logs what it would add``
     ()
     =
-    let ledger, lines = runtimeOnlyEdit RuntimeSelectionMode.Shadow
+    let ledger, lines = runtimeOnlyEdit SelectionMode.StaticDecidesRuntimeLogged
 
     test <@ Map.isEmpty ledger @>
     test <@ not (lines |> List.exists (fun line -> line.Contains "runtime-coverage debt")) @>

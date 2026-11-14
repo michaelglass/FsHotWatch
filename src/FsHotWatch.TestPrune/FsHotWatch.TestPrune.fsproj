@@ -90,6 +90,8 @@
     <Compile Include="RunExecution.fs" />
     <Compile Include="AffectedSelection.fs" />
     <Compile Include="RecordedSkip.fs" />
+    <Compile Include="StaticRecord.fs" />
+    <Compile Include="StaticRecordStore.fs" />
     <Compile Include="ImpactLaunch.fs" />
     <Compile Include="ImpactRun.fs" />
     <Compile Include="FileCheckedHandler.fs" />

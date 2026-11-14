@@ -63,6 +63,9 @@ type internal RunConfig =
         /// The projects whose `runtimeSelection` is shadow. While any is configured, every
         /// impact launch logs a `RuntimeShadowLine`.
         RuntimeShadowProjects: Set<string>
+        /// The projects whose `runtimeSelection` is `"runtime/record-static"`, and the store
+        /// every completed impact run's `StaticRecord` is filed to (ADR-070).
+        StaticRecording: StaticRecordStore.Recording
         Traces: TraceWiring option
     }
 
@@ -112,17 +115,22 @@ type internal RunEnv =
 
 /// What an impact run widens to before it selects anything (`widenLaunch`).
 type internal LaunchWidenings =
-    { ScopeIsFullSuite: bool
-      LedgerUnreadable: bool
-      BaselineInvalid: string option
-      CoarseGaps: Set<string>
-      LaunchedRuntimeObligations: RuntimeCoverageObligations
-      RuntimeForceProjects: Set<string>
-      EvidenceGap: Set<string>
-      FullSuiteCause: FullSuiteCause
-      ForceRunProjects: Set<string>
-      LaunchedSymbols: Set<string>
-      LaunchedRevisions: Map<string, int64> }
+    {
+        ScopeIsFullSuite: bool
+        LedgerUnreadable: bool
+        BaselineInvalid: string option
+        CoarseGaps: Set<string>
+        LaunchedRuntimeObligations: RuntimeCoverageObligations
+        RuntimeForceProjects: Set<string>
+        EvidenceGap: Set<string>
+        FullSuiteCause: FullSuiteCause
+        ForceRunProjects: Set<string>
+        /// `ForceRunProjects` as it would be with no runtime obligation: what the launch forces
+        /// whole for every cause but runtime coverage's selection (`StaticRecord.staticOf`).
+        StaticForceRunProjects: Set<string>
+        LaunchedSymbols: Set<string>
+        LaunchedRevisions: Map<string, int64>
+    }
 
 /// The widenings every impact launch applies, logged, and the symbols and revisions it launches against.
 /// The fanout left once projects that hold evidence at these inputs are taken out. A
@@ -208,17 +216,18 @@ let internal widenLaunch
 
     // A project whose runtime coverage did not ingest runs in full too: what its tests
     // reach is not known, so no runtime selection of it can be trusted.
+    let coverageNotIngested =
+        inputs.Debt.CoverageNotIngested
+        |> Map.keys
+        |> Set.ofSeq
+        |> Set.intersect (fullSuiteProjects configs)
+
     let runtimeForceProjects =
         launchedRuntimeObligations
         |> Map.values
         |> Seq.collect Map.keys
         |> Set.ofSeq
-        |> Set.union (
-            inputs.Debt.CoverageNotIngested
-            |> Map.keys
-            |> Set.ofSeq
-            |> Set.intersect (fullSuiteProjects configs)
-        )
+        |> Set.union coverageNotIngested
 
     // A project with no whole-project run under the current model can only be
     // vouched for by running it in full: filtered or skipped, it is a refusal in
@@ -240,15 +249,21 @@ let internal widenLaunch
             (not (Set.isEmpty coarseGaps))
             (Set.isSubset (fullSuiteProjects configs) evidenceGap)
 
-    let forceRunProjects =
+    let forcedWith (runtime: Set<string>) =
         let widened = coarseFallbackProjects configs coarseGaps fanoutProjects
-        let widened = Set.union widened runtimeForceProjects
+        let widened = Set.union widened runtime
         let widened = Set.union widened evidenceGap
 
         if scopeIsFullSuite || ledgerUnreadable || Option.isSome baselineInvalid then
             Set.union widened (fullSuiteProjects configs)
         else
             widened
+
+    let forceRunProjects = forcedWith runtimeForceProjects
+
+    // The same widenings with no runtime obligation. A coverage that did not ingest still
+    // forces its project, as it does under `"static/log-runtime"`.
+    let staticForceRunProjects = forcedWith coverageNotIngested
 
     if scopeIsFullSuite then
         Logging.info
@@ -316,6 +331,7 @@ let internal widenLaunch
       EvidenceGap = evidenceGap
       FullSuiteCause = fullSuiteCause
       ForceRunProjects = forceRunProjects
+      StaticForceRunProjects = staticForceRunProjects
       LaunchedSymbols = launchedSymbols
       LaunchedRevisions = launchedRevisions }
 
@@ -334,6 +350,9 @@ type internal LaunchSelection =
         SymbolFreeEdit: SymbolFreeEdit option
         NarrowedSeeds: string list option
         AlwaysOnly: bool
+        /// The projects in `AffectedByProject` only runtime coverage's selection took whole
+        /// (`StaticRecord.staticOf`).
+        RuntimeOnlyProjects: Set<string>
     }
 
 /// Select what an impact run launches: the projects covering each launched symbol, the
@@ -556,7 +575,11 @@ let internal selectForLaunch
     // nobody: the run executed the symbol's classes, and the evidence it earned spoke
     // for the whole new tree, including the tests that read what moved. Such a move
     // costs what it costs alone, every project in full.
-    let affectedByProject =
+    // The projects only runtime coverage's selection takes whole. A move beside symbols
+    // takes every project whole for static selection too, and leaves none.
+    let affectedByProject, runtimeOnlyProjects =
+        let runtimeOnly = Set.difference forceRunProjects widenings.StaticForceRunProjects
+
         let moved =
             if
                 Option.isNone symbolFreeEdit
@@ -573,13 +596,13 @@ let internal selectForLaunch
                 []
 
         match moved with
-        | [] -> affectedByProject
+        | [] -> affectedByProject, runtimeOnly
         | moved ->
             Logging.info
                 "test-prune"
                 $"The tree also moved by %d{List.length moved} path(s) no symbol selection answers for (%s{describeAll moved}); running every project in full"
 
-            fullSuiteProjects configs |> Seq.map (fun project -> project, []) |> Map.ofSeq
+            fullSuiteProjects configs |> Seq.map (fun project -> project, []) |> Map.ofSeq, Set.empty
 
     // ALWAYS-CLASSES. Every filtered launch carries each project's declared
     // `alwaysClasses`: tests that read the source tree as data, which no
@@ -625,7 +648,8 @@ let internal selectForLaunch
       InputTree = inputTree
       SymbolFreeEdit = symbolFreeEdit
       NarrowedSeeds = narrowedSeeds
-      AlwaysOnly = alwaysOnly }
+      AlwaysOnly = alwaysOnly
+      RuntimeOnlyProjects = runtimeOnlyProjects }
 
 /// The run an impact launch assembled (`assembleLaunch`).
 type internal LaunchAssembly =
