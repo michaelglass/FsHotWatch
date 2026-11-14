@@ -56,6 +56,30 @@ let ``an ignored file and build output are not the repository's to rewrite`` () 
         test <@ classify repo ignoredName = Error RepoFiles.Excluded.Ignored @>
         test <@ classify repo output = Error RepoFiles.Excluded.BuildOutput @>)
 
+[<Fact>]
+let ``with no VCS and no .gitignore, a file under the root is the repository's, and only output and outside files are not``
+    ()
+    =
+    // `RepoFile` asks no VCS: ignores come only from the tree's own `.gitignore` files. A root
+    // with no `.git`, no `.jj` and no `.gitignore` therefore keeps every file under it except
+    // build output, and never falls back to anything outside it.
+    withTempDir "repofile" (fun repo ->
+        withTempDir "repofile-outside" (fun outside ->
+            let own = Path.Combine(repo, "src", "A.fs")
+            let output = Path.Combine(repo, "src", "bin", "Debug", "A.fs")
+            let elsewhere = Path.Combine(outside, "B.fs")
+            write own "module A"
+            write output "module A"
+            write elsewhere "module B"
+
+            test <@ not (Directory.Exists(Path.Combine(repo, ".git"))) @>
+            test <@ not (Directory.Exists(Path.Combine(repo, ".jj"))) @>
+            test <@ not (File.Exists(Path.Combine(repo, ".gitignore"))) @>
+            test <@ classify repo own |> Result.map RepoFiles.path = Ok own @>
+            test <@ classify repo output = Error RepoFiles.Excluded.BuildOutput @>
+            test <@ classify repo elsewhere = Error RepoFiles.Excluded.OutsideRoot @>
+            test <@ RepoFiles.parseAll repo [ own; output; elsewhere ] |> List.map RepoFiles.path = [ own ] @>))
+
 /// A formatter double: rewrites every file it is handed whose bytes it would change.
 let private rewriter (handed: ResizeArray<string>) =
     { new IFsHotWatchPreprocessor with
