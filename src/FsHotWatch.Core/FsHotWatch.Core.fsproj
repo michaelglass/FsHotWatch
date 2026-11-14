@@ -51,6 +51,7 @@
     <Compile Include="VerdictInputs.fs" />
     <Compile Include="ConfiguredTestRoots.fs" />
     <Compile Include="TreeHash.fs" />
+    <Compile Include="DaemonIdentity.fs" />
     <!-- The outcome store and where it lives (AUTOMATION-1695, Phase 1 step C): the disk backend of
          `IOutcomeStore`, with the repository identity that names its directory. -->
     <Compile Include="MacAttrList.fs" />
@@ -58,6 +59,7 @@
     <Compile Include="RepositoryIdentity.fs" />
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="OutcomeStore.fs" />
+    <Compile Include="TestFailureClearance.fs" />
   </ItemGroup>
 
   <ItemGroup>
