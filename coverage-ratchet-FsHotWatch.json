@@ -1,5 +1,10 @@
 {
   "overrides": {
+    "PluginInputs.fs": {
+      "line": 100,
+      "branch": 100,
+      "reason": "new file (AUTOMATION-1577, ADR-074: a plugin's lookup eligibility, a pattern's declared inputs in its watcher's scope, their digest and the plugin-inputs key). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by PluginInputsTests, ShadowIdlePluginTests and ShadowStartRerunTests with coverage: line 100% (48/48), branch 100% (2/2). No platform branch (the pattern is matched by FilePattern.matches, not the OS glob); the hole cases use a mode-000 directory, which holds for any non-root runner, CI's included. Platform-neutral; the Linux value is confirmed by the first CI run."
+    },
     "StaticRecord.fs": {
       "line": 100,
       "branch": 100,

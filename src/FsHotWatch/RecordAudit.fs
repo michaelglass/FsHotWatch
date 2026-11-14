@@ -525,6 +525,27 @@ type Verdict =
     /// A kind (or a named key) compared nothing: no answer, never agreement.
     | Vacuous
 
+/// What lookup agreement adds to an audit: nothing when it was not asked or agrees; otherwise the
+/// verdict it imposes and the line that says why. The one place both the verdict and the text read.
+let agreementAlarm (agreement: LookupAgreement) : (Verdict * string) option =
+    match agreement with
+    | LookupAgreement.NotAsked -> None
+    | LookupAgreement.Tallied t ->
+        match AgreementTally.finding t with
+        | AgreementFinding.Agreeing -> None
+        | AgreementFinding.NoDaemonGreen ->
+            Some(Verdict.Vacuous, "LOOKUP AGREEMENT VACUOUS: no publication was graded green, so nothing was compared")
+        | AgreementFinding.NoAgreement ->
+            Some(
+                Verdict.Vacuous,
+                $"LOOKUP AGREEMENT 0%%: the lookup answered none of %d{t.DaemonGreen} daemon-green publication(s) green"
+            )
+        | AgreementFinding.GreenOnRed n ->
+            Some(
+                Verdict.Mismatch,
+                $"LOOKUP GREEN ON RED: %d{n} publication(s) the daemon graded red were answered green by the lookup"
+            )
+
 type Report =
     {
         Seed: string
@@ -545,18 +566,13 @@ type Report =
         Agreement: LookupAgreement
     }
 
+    /// The records' verdict, unless lookup agreement raises an alarm (`agreementAlarm`); a record
+    /// mismatch outranks it.
     member this.Verdict =
-        if not this.Mismatches.IsEmpty then
-            Verdict.Mismatch
-        else
-            match this.Agreement with
-            | LookupAgreement.Tallied t ->
-                match AgreementTally.finding t with
-                | AgreementFinding.GreenOnRed _ -> Verdict.Mismatch
-                | AgreementFinding.NoDaemonGreen
-                | AgreementFinding.NoAgreement -> Verdict.Vacuous
-                | AgreementFinding.Agreeing -> this.RecordsVerdict
-            | LookupAgreement.NotAsked -> this.RecordsVerdict
+        match this.RecordsVerdict, agreementAlarm this.Agreement with
+        | Verdict.Mismatch, _ -> Verdict.Mismatch
+        | records, None -> records
+        | _, Some(alarm, _) -> alarm
 
     /// The verdict of the record comparison alone, whatever lookup agreement says: ADR-074's night
     /// count (a), RECORD CORRECTNESS, which counts on this and never on the overall `Verdict`.
@@ -973,14 +989,9 @@ let render (report: Report) : string list =
 
           $"  lookup agreement: %d{t.LookupGreen} of %d{t.DaemonGreen} daemon-green publication(s) answered green by the lookup (%s{rate}%%), lookup green on daemon red %d{t.LookupGreenOnRed}, %d{t.Publications} publication(s) in %d{t.Logs.Length} log(s)"
 
-          match AgreementTally.finding t with
-          | AgreementFinding.Agreeing -> ()
-          | AgreementFinding.NoDaemonGreen ->
-              "  LOOKUP AGREEMENT VACUOUS: no publication was graded green, so nothing was compared"
-          | AgreementFinding.NoAgreement ->
-              $"  LOOKUP AGREEMENT 0%%: the lookup answered none of %d{t.DaemonGreen} daemon-green publication(s) green"
-          | AgreementFinding.GreenOnRed n ->
-              $"  LOOKUP GREEN ON RED: %d{n} publication(s) the daemon graded red were answered green by the lookup"
+      match agreementAlarm report.Agreement with
+      | Some(_, alarm) -> "  " + alarm
+      | None -> ()
 
       // The records' own verdict, ADR-074's night count (a), whatever lookup agreement says.
       let records =
@@ -992,12 +1003,13 @@ let render (report: Report) : string list =
 
       $"records: %s{records}"
 
+      // The overall line names what decided `Verdict`: a record mismatch, else the agreement alarm,
+      // else the records' verdict.
       let verdict =
-          match report.Verdict, report.Agreement with
-          | v, _ when v = report.RecordsVerdict -> records
-          | Verdict.Mismatch, _ -> "MISMATCH: the lookup answered green on a publication the daemon graded red"
-          | Verdict.Vacuous, _ -> "VACUOUS: lookup agreement compared nothing or was 0%"
-          | Verdict.Agree, _ -> records
+          match report.RecordsVerdict, agreementAlarm report.Agreement with
+          | Verdict.Mismatch, _
+          | _, None -> records
+          | _, Some(_, alarm) -> alarm
 
       $"audit: %s{verdict}" ]
 

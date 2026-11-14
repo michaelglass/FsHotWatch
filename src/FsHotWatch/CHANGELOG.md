@@ -6,7 +6,8 @@
   `RecordAudit.Options.ShadowLogs` / `Request.ShadowLogs`; `Report.Agreement : LookupAgreement = NotAsked | Tallied of
   AgreementTally` (publications, daemon greens, the lookup greens among them, lookup greens on daemon reds); a lookup
   green on a red makes the audit a mismatch, and 0% agreement or no daemon green makes it vacuous. `render` prints the
-  rate and `LOOKUP AGREEMENT 0%` / `LOOKUP GREEN ON RED`; the JSON carries `lookupAgreement` with an `alarm`. `Report.RecordsVerdict`
+  rate and `LOOKUP AGREEMENT 0%` / `LOOKUP GREEN ON RED`; the JSON carries `lookupAgreement` with an `alarm`. `RecordAudit.agreementAlarm` is the one place
+  the verdict and the text read the alarm from. `Report.RecordsVerdict`
   (JSON `recordsVerdict`, and the `records:` line) is the record comparison alone, ADR-074's night count (a), so an
   agreement alarm never reads as a records verdict.
 

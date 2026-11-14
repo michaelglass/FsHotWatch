@@ -70,17 +70,16 @@ let matches (repoRoot: string) (pattern: Watcher.FilePattern) : (string * string
     let relative (abs: string) =
         Path.GetRelativePath(root, abs).Replace('\\', '/')
 
-    // The OS narrows by the pattern's own glob; `FilePattern.matches` then applies the daemon's
-    // exact rule, so the two can only ever agree on less, never more.
-    let walked =
-        SafeWalk.walk ScopeExcludedDirs (Watcher.FilePattern.toString pattern) root
+    // Every file, matched by the daemon's own rule (`FilePattern.matches`, case-insensitive) and
+    // never by the OS glob, which is case-sensitive on Linux: a narrower glob would leave out of
+    // the key a file the watcher reacts to. Build output is pruned by name (`ScopeExcludedDirs`),
+    // which is exactly the `/bin/`-or-`/obj/` segment rule `PathFilter.isGeneratedUnder` applies.
+    let walked = SafeWalk.walk ScopeExcludedDirs "*" root
 
     let files =
         walked.Files
         |> List.map _.FullName
-        |> List.filter (fun abs ->
-            Watcher.FilePattern.matches pattern abs
-            && not (PathFilter.isGeneratedUnder root abs))
+        |> List.filter (Watcher.FilePattern.matches pattern)
         |> List.map (fun abs -> relative abs, abs)
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
 
@@ -108,12 +107,11 @@ let digest (repoRoot: string) (spec: InputSpec) : string =
                 + Path.GetRelativePath(Path.GetFullPath repoRoot, abs).Replace('\\', '/'),
                 ContentHash.ofFile abs)
 
-        [ for rel, abs in files do
-              yield "match:" + rel, ContentHash.ofFile abs
-          for rel in holes do
-              yield "hole:" + rel + "/", ContentHash.UnhashableContent
-          yield "entry", entry
-          yield! toolchain ]
+        (files |> List.map (fun (rel, abs) -> "match:" + rel, ContentHash.ofFile abs))
+        @ (holes
+           |> List.map (fun rel -> "hole:" + rel + "/", ContentHash.UnhashableContent))
+        @ [ "entry", entry ]
+        @ toolchain
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
         |> TreeHash.hashEntries
 
