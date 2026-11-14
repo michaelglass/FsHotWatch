@@ -535,10 +535,13 @@ let fileOutcome
                 Some(TestFailureClearance.outputsOf n.Failed)
             | _ -> None
 
-        OutcomeStore.Through.file outcomes record outputs |> ignore
+        OutcomeStore.Through.fileComputed outcomes (OutcomeStore.justRan record outputs)
+        |> ignore
+
         [ record.Key.Value ]
     | _ ->
-        OutcomeStore.Through.file outcomes record None |> ignore
+        OutcomeStore.Through.fileComputed outcomes (OutcomeStore.justRan record None)
+        |> ignore
 
         let clearance =
             names
@@ -551,7 +554,9 @@ let fileOutcome
 
         match clearance with
         | Some c ->
-            OutcomeStore.Through.file outcomes c None |> ignore
+            OutcomeStore.Through.fileComputed outcomes (OutcomeStore.justRan c None)
+            |> ignore
+
             [ record.Key.Value; c.Key.Value ]
         | None -> [ record.Key.Value ]
 

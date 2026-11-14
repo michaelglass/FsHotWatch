@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: a record a deterministic action has just COMPUTED moves the unreadable or foreign files under its key into
+  quarantine, by rename, and the key answers again (AUTOMATION-1701, ADR-072). Before, one unreadable file left its
+  key a miss for as long as it stayed. New: `IOutcomeStore.FileComputed` taking `OutcomeRecords.Computed`
+  (`OutcomeStore.justRan`, `Through.fileComputed`), `SiblingPolicy` (from `Ran`: `NonTest` quarantines, `TestRun` and
+  `InRun` keep), `QuarantineReason`. Reads and plain `File` move nothing unreadable (AUTOMATION-1568); test keys keep
+  1568 exactly. Every quarantine leaves a note in `quarantine-why/`; `readQuarantine` and `fshw audit`
+  (`quarantined`, `quarantinedUnnoted`) report them by kind, key and when. `InMemoryOutcomeStore.Quarantined` carries a
+  `QuarantineReason`.
+
 - feat: `OutcomeStore.Collect`, `collectDue`, `collectNothing` and `Wired` (a store with the collection the code
   that opened it hands over), plus `Through.tryHistory` (tells an unreadable key from an empty one, AUTOMATION-1615)
   and `Through.supersede` (AUTOMATION-1695). `ShadowVerdict.Collect` is now an abbreviation of `OutcomeStore.Collect`.

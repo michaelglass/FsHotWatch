@@ -231,16 +231,17 @@ module Receipt =
             else
                 OutcomeStore.Outcome.Fail
 
-        OutcomeStore.Through.file
+        OutcomeStore.Through.fileComputed
             store
-            (OutcomeStore.Record.ofAction
-                (keyOf receipt.Tree)
-                "suspect-recheck"
-                outcome
-                binary
-                repoRoot
-                DateTimeOffset.UtcNow)
-            (Some((toJson stored).ToJsonString()))
+            (OutcomeStore.justRan
+                (OutcomeStore.Record.ofAction
+                    (keyOf receipt.Tree)
+                    "suspect-recheck"
+                    outcome
+                    binary
+                    repoRoot
+                    DateTimeOffset.UtcNow)
+                (Some((toJson stored).ToJsonString())))
         |> ignore
 
     /// The newest receipt filed for `tree`, from any process.

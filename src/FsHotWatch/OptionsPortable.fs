@@ -393,16 +393,17 @@ let file
             Error "an input moved while it was read"
         else
             let filed (recordKey: ActionKey.ActionKey) (subject: string) (text: string) =
-                OutcomeStore.Through.file
+                OutcomeStore.Through.fileComputed
                     store
-                    (OutcomeStore.Record.ofAction
-                        recordKey
-                        subject
-                        OutcomeStore.Outcome.Pass
-                        request.Toolchain
-                        root
-                        DateTimeOffset.UtcNow)
-                    (Some text)
+                    (OutcomeStore.justRan
+                        (OutcomeStore.Record.ofAction
+                            recordKey
+                            subject
+                            OutcomeStore.Outcome.Pass
+                            request.Toolchain
+                            root
+                            DateTimeOffset.UtcNow)
+                        (Some text))
 
             // The options first, and only where no checkout filed them already: the record a
             // later lookup compares against stays the first checkout's.

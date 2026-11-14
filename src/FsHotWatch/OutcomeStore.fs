@@ -316,10 +316,94 @@ type GcRun =
     | Ran of evicted: ActionKey.KeyValue list
     | NotDue of lastRanAt: DateTimeOffset
 
+/// Who moved a file into quarantine.
+[<RequireQualifiedAccess>]
+type Mover =
+    /// A read, which found the file is not a record of its key.
+    | Read
+    /// A writer that had just computed a deterministic record of this kind (AUTOMATION-1701).
+    | Writer of kind: string
+
+/// Where the notes on quarantined files live, beside `quarantine/` (`Store.quarantine`).
+[<Literal>]
+let QuarantineWhyDirectory = "quarantine-why"
+
+/// One quarantined file, as the note filed beside it names it (`Store.quarantine`).
+type QuarantineNote =
+    {
+        /// The quarantined file's name as it was under its key.
+        File: string
+        /// The key it was filed under.
+        Key: string
+        Mover: Mover
+        Why: string
+        At: DateTimeOffset
+    }
+
+/// What `quarantine/` holds under `root`, read without changing it (AUTOMATION-1701, ADR-072):
+/// every noted file, and how many carry no note (moved before notes existed, or whose note could
+/// not be written). What `fshw audit` reports, so a quarantined file is never out of sight.
+type QuarantineCensus =
+    { Noted: QuarantineNote list
+      Unnoted: int }
+
+/// `root`'s quarantine census.
+let readQuarantine (root: string) : QuarantineCensus =
+    let quarantine = Path.Combine(root, "quarantine")
+    let notes = Path.Combine(root, QuarantineWhyDirectory)
+
+    let files =
+        if Directory.Exists quarantine then
+            Directory.GetFiles quarantine |> Array.map Path.GetFileName |> Set.ofArray
+        else
+            Set.empty
+
+    let noteOf (path: string) : (string * QuarantineNote) option =
+        try
+            use doc = JsonDocument.Parse(File.ReadAllText path)
+            let o = doc.RootElement
+
+            match Json.tryString o "key", Json.tryString o "file", Json.tryString o "by", Json.tryString o "at" with
+            | Some key, Some file, Some by, Some at ->
+                let mover =
+                    match by, Json.tryString o "kind" with
+                    | "writer", Some kind -> Some(Mover.Writer kind)
+                    | "read", _ -> Some Mover.Read
+                    | _ -> None
+
+                mover
+                |> Option.map (fun mover ->
+                    Path.GetFileNameWithoutExtension path,
+                    { File = file
+                      Key = key
+                      Mover = mover
+                      Why = Json.tryString o "why" |> Option.defaultValue ""
+                      At = DateTimeOffset.Parse(at, Globalization.CultureInfo.InvariantCulture) })
+            | _ -> None
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException
+        | :? JsonException
+        | :? FormatException -> None
+
+    let noted =
+        if Directory.Exists notes then
+            Directory.GetFiles(notes, "*.json")
+            |> Array.choose noteOf
+            |> Array.filter (fun (target, _) -> files.Contains target)
+            |> Array.sortBy (fun (_, note) -> note.At)
+            |> List.ofArray
+        else
+            []
+
+    { Noted = noted |> List.map snd
+      Unnoted = files.Count - noted.Length }
+
 type Store(settings: Settings) =
     let root = settings.Root
     let recordsDir = Path.Combine(root, "records")
     let quarantineDir = Path.Combine(root, "quarantine")
+    let quarantineWhyDir = Path.Combine(root, QuarantineWhyDirectory)
     let tmpDir = Path.Combine(root, "tmp")
 
     let hexOf (keyValue: ActionKey.KeyValue) =
@@ -329,7 +413,11 @@ type Store(settings: Settings) =
         let hex = hexOf keyValue
         Path.Combine(recordsDir, hex.Substring(0, 2), hex)
 
-    let quarantine (path: string) (why: string) =
+    /// Move `path`, a file under `keyValue`, into `quarantine/` by rename, never deleting it, and
+    /// note beside it in `quarantine-why/` the key, who moved it (a read, or a writer that had just
+    /// computed a record of `kind`), why and when: what `fshw audit` counts, so a quarantined file
+    /// stays visible (AUTOMATION-1701, ADR-072). GC never touches either directory.
+    let quarantine (keyValue: ActionKey.KeyValue) (mover: Mover) (path: string) (why: string) =
         try
             Directory.CreateDirectory quarantineDir |> ignore
 
@@ -338,6 +426,29 @@ type Store(settings: Settings) =
 
             File.Move(path, target)
             settings.Log $"outcome store: quarantined %s{Path.GetFileName path}: %s{why}"
+
+            try
+                let note = JsonObject()
+                note["key"] <- keyValue.Text
+                note["file"] <- Path.GetFileName path
+
+                match mover with
+                | Mover.Read -> note["by"] <- "read"
+                | Mover.Writer kind ->
+                    note["by"] <- "writer"
+                    note["kind"] <- kind
+
+                note["why"] <- why
+                note["at"] <- DateTimeOffset.UtcNow.ToString("o", Globalization.CultureInfo.InvariantCulture)
+                Directory.CreateDirectory quarantineWhyDir |> ignore
+
+                File.WriteAllText(
+                    Path.Combine(quarantineWhyDir, Path.GetFileName target + ".json"),
+                    note.ToJsonString()
+                )
+            with ex ->
+                settings.Log
+                    $"outcome store: could not note why %s{Path.GetFileName target} is quarantined: %s{ex.Message}"
         with ex ->
             settings.Log $"outcome store: could not quarantine %s{path}: %s{ex.Message}"
 
@@ -372,7 +483,7 @@ type Store(settings: Settings) =
         | OutcomeRecords.KeyRead.OnlyRejected _
         | OutcomeRecords.KeyRead.Answered _ ->
             for file, why in OutcomeRecords.KeyRead.rejected keyRead do
-                quarantine file (OutcomeRecords.Rejected.describe why)
+                quarantine keyValue Mover.Read file (OutcomeRecords.Rejected.describe why)
 
         keyRead
 
@@ -420,7 +531,8 @@ type Store(settings: Settings) =
                 File.Move(temporary, path, false)
                 true
             with :? IOException when File.Exists path ->
-                // Filed already: the name is the digest of the content, so it holds these bytes.
+                // Filed already: write-once. A file of this name that cannot be read, or is torn, is
+                // left for `fileComputed` to move aside (AUTOMATION-1701); a plain write never moves one.
                 false
         finally
             if File.Exists temporary then
@@ -461,6 +573,56 @@ type Store(settings: Settings) =
         with :? DirectoryNotFoundException ->
             // GC removed the key between the two calls: nothing is filed.
             false
+
+    /// `IOutcomeStore.FileComputed` (AUTOMATION-1701, ADR-072): file the record write-once; then,
+    /// only when it is filed and its action is deterministic (`SiblingPolicy.ofRan`), move every
+    /// file under its key that cannot be read, or is not a record of it, into quarantine, and file
+    /// again if its own name was one of them.
+    ///
+    /// "Cannot be read" is never another writer mid-write: the only writer of record files is
+    /// `writeOnce`, which writes a temporary file in `tmp/` on the same file system and renames it
+    /// into place, atomically, so a reader sees a whole file or none. What a read of a file under a
+    /// key can fail on is a file it may not open (a mode, an owner), an I/O error, or one that
+    /// vanished under a supersede or a GC; moving the last fails harmlessly.
+    let fileComputed (computed: OutcomeRecords.Computed) : OutcomeRecords.Filing =
+        let record = OutcomeRecords.Computed.record computed
+
+        let fileAgain () =
+            match fileOnce record with
+            | Ok(_, filing) -> filing
+            | Error why -> OutcomeRecords.Filing.NotFiled why
+
+        match fileOnce record, OutcomeRecords.SiblingPolicy.ofRan record.Ran with
+        | Error why, _ -> OutcomeRecords.Filing.NotFiled why
+        | Ok(_, filing), OutcomeRecords.SiblingPolicy.KeepUnreadable -> filing
+        | Ok(path, filing), OutcomeRecords.SiblingPolicy.QuarantineUnreadable ->
+            let keyValue = record.Key.Value
+            let dir = directoryOf keyValue
+
+            let unanswering =
+                [ for file in Directory.GetFiles(dir, "*.json") do
+                      match
+                          (try
+                              Ok(File.ReadAllText file)
+                           with ex ->
+                               Error ex.Message)
+                      with
+                      | Error why -> file, $"could not be read: %s{why}"
+                      | Ok text ->
+                          match OutcomeRecords.RecordCodec.decode keyValue text with
+                          | Error rejected -> file, OutcomeRecords.Rejected.describe rejected
+                          | Ok _ -> () ]
+
+            for file, why in unanswering do
+                quarantine keyValue (Mover.Writer record.Key.Kind) file why
+
+            if
+                unanswering
+                |> List.exists (fun (file, _) -> String.Equals(file, path, StringComparison.Ordinal))
+            then
+                fileAgain ()
+            else
+                filing
 
     member _.Root = root
 
@@ -757,6 +919,8 @@ type Store(settings: Settings) =
             | Ok(_, filing) -> filing
             | Error why -> OutcomeRecords.Filing.NotFiled why
 
+        member _.FileComputed computed = fileComputed computed
+
         member _.Supersede record =
             match fileOnce record with
             | Ok(path, filing) ->
@@ -765,12 +929,26 @@ type Store(settings: Settings) =
             | Error why -> OutcomeRecords.Filing.NotFiled why
 
 
+/// `record` with `outputs`, which an action has just COMPUTED in this process: call only where the
+/// action ran (AUTOMATION-1701, ADR-072). A replayed or copied record is filed with `Through.file`.
+let justRan (record: Record) (outputs: string option) : OutcomeRecords.Computed =
+    OutcomeRecords.Computed.justRan (toStored record outputs)
+
 /// This module's `Record`, filed and read through any `IOutcomeStore` (AUTOMATION-1695, L1): the
 /// disk store above, or FsHotWatch.Core's in-memory one in the simulation.
 module Through =
     /// File `record` with `outputs`; whether it is filed (now or already). Never throws.
     let file (store: OutcomeRecords.IOutcomeStore) (record: Record) (outputs: string option) : bool =
         match store.File(toStored record outputs) with
+        | OutcomeRecords.Filing.Filed
+        | OutcomeRecords.Filing.AlreadyFiled -> true
+        | OutcomeRecords.Filing.NotFiled _ -> false
+
+    /// File a record an action has just COMPUTED (`IOutcomeStore.FileComputed`, AUTOMATION-1701,
+    /// ADR-072): a deterministic one moves unreadable files under its key aside. Whether it is
+    /// filed (now or already). Never throws.
+    let fileComputed (store: OutcomeRecords.IOutcomeStore) (computed: OutcomeRecords.Computed) : bool =
+        match store.FileComputed computed with
         | OutcomeRecords.Filing.Filed
         | OutcomeRecords.Filing.AlreadyFiled -> true
         | OutcomeRecords.Filing.NotFiled _ -> false
