@@ -188,3 +188,19 @@ let ``a plugin's declared inputs come from its configuration`` () =
             test <@ name = fsx @>
             test <@ Watcher.FilePattern.toString pattern = "*.fsx" @>
         | other -> failwith $"expected one plugin declaring *.fsx, got %A{other}")
+
+[<Fact>]
+let ``a declared-input plugin with no record for its current inputs is the one a start runs`` () =
+    // ADR-059 §2: a miss means run. A fresh checkout's store holds nothing, and an idle file
+    // command never runs by itself, so without this it would stay missing until a match changed.
+    withCheckout fsxOnly (fun repo store configured ->
+        test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>
+
+        observeWith repo store None configured (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
+        |> ignore
+
+        test <@ unrecordedDeclared repo "fshw 1" store configured = [] @>
+        // Another binary has recorded nothing, and neither has the new content of a match.
+        test <@ unrecordedDeclared repo "fshw 2" store configured = [ fsx ] @>
+        write repo "build.fsx" "printfn \"changed\""
+        test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>)

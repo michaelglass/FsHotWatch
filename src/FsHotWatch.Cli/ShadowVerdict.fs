@@ -702,6 +702,45 @@ let configuredOf (repoRoot: string) : Result<Configured, string> =
         with DaemonConfig.ConfigErrorException message ->
             Error message)
 
+/// The plugins of `configured` that declare their inputs and have no record in `store` under
+/// the key of those inputs as they are now in `repoRoot`, graded by `producer`
+/// (AUTOMATION-1577). Such a plugin answers nothing until it runs, and an idle one never runs
+/// by itself: a file command waits for a change to a match.
+let unrecordedDeclared
+    (repoRoot: string)
+    (producer: string)
+    (store: OutcomeStore.Store)
+    (configured: Configured)
+    : string list =
+    [ for p in configured.RequiredPlugins do
+          match p.Eligibility with
+          | PluginInputs.LookupEligibility.DeclaredInputs(first, rest) ->
+              match store.Lookup(PluginInputs.key repoRoot producer p.Name (first, rest)) with
+              | None -> p.Name
+              | Some _ -> ()
+          | PluginInputs.LookupEligibility.NoDeclaredInputs _ -> () ]
+
+/// ADR-059 §2, a miss means run: at a daemon's start, `rerun` each plugin `unrecordedDeclared`
+/// names, so its outcome is on record for the inputs it declares. Once a plugin has run on
+/// them, a later start finds the record and runs nothing. Never throws; a plugin that cannot be
+/// re-run is logged and left missing.
+let runUnrecordedDeclared (repoRoot: string) (rerun: string -> Result<unit, string>) : unit =
+    if enabledBy (Environment.GetEnvironmentVariable KillSwitchEnvVar) then
+        try
+            match configuredOf repoRoot with
+            | Error reason -> Logging.warn "shadow" $"declared inputs not checked: %s{reason}"
+            | Ok configured ->
+                let producer =
+                    DaemonIdentity.BinaryIdentity.render (DaemonIdentity.currentIdentity ())
+
+                for name in unrecordedDeclared repoRoot producer (storeAt repoRoot) configured do
+                    match rerun name with
+                    | Ok() -> Logging.info "shadow" $"%s{name}: no record for its declared inputs; running it"
+                    | Error reason ->
+                        Logging.warn "shadow" $"%s{name}: no record for its declared inputs, and %s{reason}"
+        with ex ->
+            Logging.warn "shadow" $"declared inputs not checked: %s{ex.GetType().Name}: %s{ex.Message}"
+
 /// The shadow for one publication. Never throws and never changes anything a gate reads:
 /// a failure is logged and the publication goes on exactly as it would have.
 let observe (repoRoot: string) (o: Observation) : unit =

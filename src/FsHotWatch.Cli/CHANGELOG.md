@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: a daemon start runs each declared-input plugin that has no record for its inputs as they are now (AUTOMATION-1577,
+  ADR-074; ADR-059 §2, a miss means run). `ShadowVerdict.unrecordedDeclared` names them and `runUnrecordedDeclared`
+  re-runs each through `PluginHost.RerunPlugin`, so a fresh checkout's idle file commands get on record once instead
+  of staying missing until a match changes. Behaviour change: such a command now runs at start even when nothing it
+  matches changed, so one that would fail (a broken `build.fsx` type-check) turns that first check red where it
+  stayed green before. Off with the shadow (`FSHW_OUTCOME_SHADOW=0`).
+
 - fix: the shadow lookup answers an idle file command from its last outcome while the files its pattern matches are
   unchanged, instead of reporting it missing on every tree it did not run on (AUTOMATION-1577, ADR-074; every
   intelligence check since 1568 read missing on `plugin:file-cmd-*.fsx`). `DaemonConfig.requiredPlugins` and

@@ -3617,6 +3617,8 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
             let daemon = daemonWith opts config Daemon.RunMode.Watching hosting worktreeRoot
 
             registerPlugins daemon worktreeRoot config
+            // A declared-input plugin with nothing on record for its inputs runs once (AUTOMATION-1577).
+            ShadowVerdict.runUnrecordedDeclared worktreeRoot (fun name -> daemon.Host.RerunPlugin(name, fun () -> []))
             daemon
 
         // A session's TestPrune database connections are pooled per path, and the pool
@@ -4119,6 +4121,10 @@ let private executeCommandRendered
                             try
                                 let daemon = createDaemon repoRoot
                                 registerPlugins daemon repoRoot config
+                                // A declared-input plugin with nothing on record for its inputs runs once
+                                // (AUTOMATION-1577).
+                                ShadowVerdict.runUnrecordedDeclared repoRoot (fun name ->
+                                    daemon.Host.RerunPlugin(name, fun () -> []))
                                 // Registered: any refusal a previous launch recorded no longer
                                 // describes this daemon.
                                 DaemonStartupFailure.clear repoRoot
