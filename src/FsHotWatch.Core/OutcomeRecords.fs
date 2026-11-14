@@ -426,6 +426,29 @@ type InMemoryOutcomeStore() =
         | true, list -> list |> Seq.map fst |> List.ofSeq
         | false, _ -> []
 
+    /// Every key anything is filed under.
+    member _.Keys: ActionKey.KeyValue list = files.Keys |> List.ofSeq
+
+    /// The text of file `name` under `key`, when it is there and readable.
+    member _.TextOf(key: ActionKey.KeyValue, name: string) : string option =
+        match files.TryGetValue key with
+        | true, list ->
+            list
+            |> Seq.tryPick (fun (n, text) ->
+                match text with
+                | Ok text when n = name -> Some text
+                | Ok _
+                | Error _ -> None)
+        | false, _ -> None
+
+    /// Replace file `name` under `key` with `text` (a torn rewrite), or make it unreadable.
+    member _.Replace(key: ActionKey.KeyValue, name: string, text: Result<string, string>) =
+        let list = filesOf key
+
+        match Seq.tryFindIndex (fun (n, _) -> n = name) list with
+        | Some i -> list[i] <- (name, text)
+        | None -> list.Add(name, text)
+
     /// The files a read moved out, with why.
     member _.Quarantined: (string * Rejected) list = List.ofSeq quarantined
 
