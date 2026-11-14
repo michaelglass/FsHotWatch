@@ -32,6 +32,7 @@
 ///     be reached.
 module FsHotWatch.SafeWalk
 
+open System.Globalization
 open System.IO
 
 /// Directories nested deeper than this are skipped (and reported). 64 levels
@@ -124,9 +125,9 @@ let isBuildOutput (projectDir: string) (path: string) : bool =
 /// refusal says the same thing about the same hole.
 let describeSkip (skipped: SkippedDir) : string =
     match skipped.Reason with
-    | Unreadable message -> $"%s{skipped.Path} could not be read (%s{message}) — its contents were never seen"
+    | Unreadable message -> $"{skipped.Path} could not be read ({message}) — its contents were never seen"
     | DepthCapped ->
-        $"%s{skipped.Path} is nested deeper than the depth cap (%d{MaxDepth}) — its subtree was never walked"
+        $"{skipped.Path} is nested deeper than the depth cap ({MaxDepth.ToString(CultureInfo.InvariantCulture)}) — its subtree was never walked"
 
 /// One directory read, with the two "I could not look" exceptions turned into
 /// `Error`. Anything else is a bug in this walker or a broken runtime, and must
@@ -260,7 +261,11 @@ let enumerateEntriesPruning (pruned: DirectoryInfo -> bool) (searchPattern: stri
                 if depth >= MaxDepth then
                     Logging.warn
                         "safewalk"
-                        $"depth cap (%d{MaxDepth}) reached at %s{sub.FullName} — subtree skipped (filesystem cycle?)"
+                        ("depth cap ("
+                         + (MaxDepth.ToString(CultureInfo.InvariantCulture))
+                         + ") reached at "
+                         + sub.FullName
+                         + " — subtree skipped (filesystem cycle?)")
 
                     yield
                         Skipped

@@ -23,7 +23,7 @@ type BinaryIdentity =
 module BinaryIdentity =
     /// One-line disk format: `<version> <contentHash>`. The version is
     /// sanitized at construction so it can never contain the separator.
-    let render (id: BinaryIdentity) : string = $"%s{id.Version} %s{id.ContentHash}"
+    let render (id: BinaryIdentity) : string = $"{id.Version} {id.ContentHash}"
 
     /// Strict parse of `render`'s format. Anything unrecognizable is `None` —
     /// an unreadable identity must read as "unknown", never as a match.
@@ -110,7 +110,7 @@ let internal hashFile (path: string) : string option =
     if ContentHash.isReadable hash then
         Some(hash.Substring(0, 16))
     else
-        debug "identity" $"could not hash %s{path}"
+        debug "identity" $"could not hash {path}"
         None
 
 /// Pure assembly-independent core of `currentIdentity`, split out so the
@@ -177,7 +177,7 @@ let readRecordedWith
         try
             BinaryIdentity.parse (readAllText path)
         with ex ->
-            debug "identity" $"could not read %s{path}: %s{ex.GetType().Name}: %s{ex.Message}"
+            debug "identity" ("could not read " + path + ": " + (ex.GetType().Name) + ": " + ex.Message)
             None
 
 let readRecorded (repoRoot: string) : BinaryIdentity option =

@@ -147,8 +147,8 @@ type NeedError =
 
     override this.ToString() =
         match this with
-        | NotProduced label -> $"no output '%s{label.Text}' was produced"
-        | Inconsistent subject -> $"'%s{subject}' answered differently within one run"
+        | NotProduced label -> $"no output '{label.Text}' was produced"
+        | Inconsistent subject -> $"'{subject}' answered differently within one run"
 
 /// What an action needed: one answer per subject.
 type NeedTrace = private { Needs: Map<string, Needed> }

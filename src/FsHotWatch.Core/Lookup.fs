@@ -127,8 +127,8 @@ let private requiredOf (repoRoot: string) : Result<RequiredConfig.Required, stri
         try
             Ok(RequiredConfig.ofJson (File.ReadAllText path))
         with
-        | :? JsonException as ex -> Error $"%s{FsHwPaths.ConfigFileName}: %s{ex.Message}"
-        | :? IOException as ex -> Error $"%s{FsHwPaths.ConfigFileName}: %s{ex.Message}"
+        | :? JsonException as ex -> Error $"{FsHwPaths.ConfigFileName}: {ex.Message}"
+        | :? IOException as ex -> Error $"{FsHwPaths.ConfigFileName}: {ex.Message}"
     else
         Ok RequiredConfig.defaults
 

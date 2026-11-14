@@ -96,7 +96,7 @@ module Rejected =
     let describe (rejected: Rejected) : string =
         match rejected with
         | Rejected.Torn why -> why
-        | Rejected.UnknownSchema schema -> $"unknown schema %s{schema}"
+        | Rejected.UnknownSchema schema -> $"unknown schema {schema}"
         | Rejected.OtherKey _ -> "the record is filed under another key"
 
 /// What ONE read of one key found.
@@ -267,7 +267,7 @@ module RecordCodec =
     let private required (el: JsonElement) (name: string) : JsonElement =
         match property el name with
         | Some v -> v
-        | None -> raise (FormatException $"no %s{name}")
+        | None -> raise (FormatException $"no {name}")
 
     let private stringOf (el: JsonElement) (name: string) : string option =
         property el name
@@ -295,7 +295,7 @@ module RecordCodec =
             match str o "outcome" with
             | "pass" -> LookupVerdict.Outcome.Pass
             | "fail" -> LookupVerdict.Outcome.Fail
-            | other -> raise (FormatException $"unknown outcome %s{other}")
+            | other -> raise (FormatException $"unknown outcome {other}")
 
         let producer = required o "producer"
         let runId = stringOf producer "runId"

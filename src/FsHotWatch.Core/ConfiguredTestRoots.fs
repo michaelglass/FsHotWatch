@@ -104,7 +104,7 @@ let private references (fsproj: string) : Result<string list, string> =
         |> List.ofSeq
         |> Ok
     with ex ->
-        Error $"its project file could not be read: %s{ex.Message}"
+        Error $"its project file could not be read: {ex.Message}"
 
 /// Locate the configured test projects of `repoRoot` that the discovery walk does not
 /// reach, with their `ProjectReference` closures. `fsprojsUnderRoots` is every `.fsproj`
@@ -141,15 +141,15 @@ let locate (repoRoot: string) (fsprojsUnderRoots: string list) : Located =
 
                 match found.Length with
                 | 1 -> Ok found[0]
-                | 0 -> Error $"its --project path %s{given} holds no .fsproj"
-                | _ -> Error $"its --project path %s{given} holds more than one .fsproj"
+                | 0 -> Error $"its --project path {given} holds no .fsproj"
+                | _ -> Error $"its --project path {given} holds more than one .fsproj"
             else
-                Error $"its --project path %s{given} does not exist"
+                Error $"its --project path {given} does not exist"
         | None ->
             match byName |> List.filter (fun (name, _) -> name = project) with
             | [ _, one ] -> Ok one
-            | [] -> Error $"its args name no --project path, and no %s{project}.fsproj lies under the discovery roots"
-            | _ -> Error $"its args name no --project path, and %s{project}.fsproj is ambiguous under the roots"
+            | [] -> Error $"its args name no --project path, and no {project}.fsproj lies under the discovery roots"
+            | _ -> Error $"its args name no --project path, and {project}.fsproj is ambiguous under the roots"
 
     let rec visit (seen: Set<string>) (unlocated: (string * string) list) (pending: (string * string) list) =
         match pending with
@@ -157,13 +157,9 @@ let locate (repoRoot: string) (fsprojsUnderRoots: string list) : Located =
         | (_, fsproj) :: rest when seen.Contains fsproj -> visit seen unlocated rest
         | (name, fsproj) :: rest ->
             if not (within root fsproj) then
-                visit
-                    seen
-                    ((name, $"%s{fsproj} is outside the repository and is never followed")
-                     :: unlocated)
-                    rest
+                visit seen ((name, $"{fsproj} is outside the repository and is never followed") :: unlocated) rest
             elif not (File.Exists fsproj) then
-                visit seen ((name, $"the referenced project %s{fsproj} does not exist") :: unlocated) rest
+                visit seen ((name, $"the referenced project {fsproj} does not exist") :: unlocated) rest
             else
                 match references fsproj with
                 | Error why -> visit (seen.Add fsproj) ((name, why) :: unlocated) rest
@@ -199,7 +195,7 @@ let locate (repoRoot: string) (fsprojsUnderRoots: string list) : Located =
         unlocatedRefs
         @ (atRoot
            |> List.map (fun f ->
-               Path.GetFileNameWithoutExtension f, $"%s{f} lies at the repository root, which is not walked as a root"))
+               Path.GetFileNameWithoutExtension f, $"{f} lies at the repository root, which is not walked as a root"))
 
     // A directory inside another is covered by the outer walk.
     let directories =

@@ -60,7 +60,10 @@ type OutputLabelError =
     override this.ToString() =
         match this with
         | Empty -> "an output label cannot be empty"
-        | InvalidCharacter index -> $"an output label is a-z, 0-9, '-' and '/'; character {index} is not"
+        | InvalidCharacter index ->
+            "an output label is a-z, 0-9, '-' and '/'; character "
+            + index.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " is not"
 
 /// The name of an output another action produced, which this one consumes: for example
 /// `check/fcs-signature`. Lowercase letters, digits, '-' and '/' only, so it is one spelling

@@ -29,6 +29,7 @@
 module FsHotWatch.TreeHash
 
 open System
+open System.Globalization
 open System.IO
 open System.Text
 
@@ -208,7 +209,7 @@ let files (repoRoot: string) (excludePatterns: string list) : Walked =
             else
                 hole
                     link
-                    $"a symlink to %s{target}, outside the repository, is not followed — its contents were never seen")
+                    $"a symlink to {target}, outside the repository, is not followed — its contents were never seen")
 
     // CONFIGURED TEST PROJECTS outside the roots, and their closures (AUTOMATION-1617).
     let located =
@@ -415,21 +416,39 @@ let describeCoverage (c: Coverage) : string list =
     let declared =
         match c.DeclaredCount, c.Absent with
         | 0, [] -> ""
-        | n, [] -> $", %d{n} declared input(s)"
+        | n, [] -> $", {n.ToString(CultureInfo.InvariantCulture)} declared input(s)"
         | n, absent ->
             let listed = String.concat ", " absent
-            $", %d{n} declared input(s) (%d{List.length absent} declared path(s) match nothing: %s{listed})"
+
+            (", "
+             + (n.ToString(CultureInfo.InvariantCulture))
+             + " declared input(s) ("
+             + ((List.length absent).ToString(CultureInfo.InvariantCulture))
+             + " declared path(s) match nothing: "
+             + listed
+             + ")")
 
     let outside =
         (c.DeclaredOnly
-         |> List.map (fun (d, n) -> $"%s{d}/ (%d{n} declared file(s) only)"))
+         |> List.map (fun (d, n) -> $"{d}/ ({n.ToString(CultureInfo.InvariantCulture)} declared file(s) only)"))
         @ (c.Outside |> List.map (fun d -> d + "/"))
 
-    [ $"key: %d{c.FileCount} file(s) — everything under %s{roots}, %d{c.ToolKnownCount} toolchain file(s)%s{declared}"
+    [ ("key: "
+       + (c.FileCount.ToString(CultureInfo.InvariantCulture))
+       + " file(s) — everything under "
+       + roots
+       + ", "
+       + (c.ToolKnownCount.ToString(CultureInfo.InvariantCulture))
+       + " toolchain file(s)"
+       + declared)
       if not (List.isEmpty outside) then
           let listed = String.concat ", " outside
-          $"not in the key: %s{listed} — a change there does not make this verdict stale"
+          $"not in the key: {listed} — a change there does not make this verdict stale"
       yield!
           c.Unlocated
           |> List.map (fun (project, why) ->
-              $"configured test project %s{project} could not be located (%s{why}) — it is an entry of the key by name, but its sources are not") ]
+              ("configured test project "
+               + project
+               + " could not be located ("
+               + why
+               + ") — it is an entry of the key by name, but its sources are not")) ]

@@ -379,6 +379,7 @@
     <Compile Include="RequiredConfigGoldenTests.fs" />
     <Compile Include="RequiredConfigParityTests.fs" />
     <Compile Include="PureLookupTests.fs" />
+    <Compile Include="CorePrintfFreeTests.fs" />
     <Compile Include="NeedActionTests.fs" />
   </ItemGroup>
 

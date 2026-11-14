@@ -59,12 +59,12 @@ module IdentityError =
     /// One human-readable line.
     let describe (error: IdentityError) : string =
         match error with
-        | IdentityError.PathNotFound path -> $"no such file or directory: %s{path}"
-        | IdentityError.NotADirectory path -> $"not a directory: %s{path}"
-        | IdentityError.SymlinkLoop path -> $"too many levels of symbolic links resolving %s{path}"
-        | IdentityError.InvalidPath(path, reason) -> $"not a usable path (%s{reason}): \"%s{path}\""
-        | IdentityError.MalformedMetadata(file, reason) -> $"malformed VCS metadata in %s{file}: %s{reason}"
-        | IdentityError.DanglingPointer(file, target) -> $"%s{file} points at %s{target}, which is not a directory"
+        | IdentityError.PathNotFound path -> $"no such file or directory: {path}"
+        | IdentityError.NotADirectory path -> $"not a directory: {path}"
+        | IdentityError.SymlinkLoop path -> $"too many levels of symbolic links resolving {path}"
+        | IdentityError.InvalidPath(path, reason) -> ("not a usable path (" + reason + "): \"" + path + "\"")
+        | IdentityError.MalformedMetadata(file, reason) -> $"malformed VCS metadata in {file}: {reason}"
+        | IdentityError.DanglingPointer(file, target) -> $"{file} points at {target}, which is not a directory"
 
 /// An absolute path in the ONE spelling the filesystem itself uses: every symlink on
 /// the way resolved, `.`/`..` applied physically, and each component spelled as it is
@@ -309,7 +309,7 @@ module SessionId =
     /// `<repository>.<worktree>.<incarnation>` — all three are hex, so `.` never
     /// appears inside a part.
     let render (id: SessionId) : string =
-        $"%s{id.Repository.Value}.%s{id.Worktree.Value}.%s{id.Incarnation.Value}"
+        (id.Repository.Value + "." + id.Worktree.Value + "." + id.Incarnation.Value)
 
     let tryParse (s: string) : SessionId option =
         match (if isNull s then [||] else s.Split '.') with
@@ -380,7 +380,7 @@ let private readFirstLine (file: string) : Result<string, IdentityError> =
         else
             Ok firstLine
     with ex ->
-        Error(IdentityError.MalformedMetadata(file, $"unreadable: %s{ex.GetType().Name}: %s{ex.Message}"))
+        Error(IdentityError.MalformedMetadata(file, $"unreadable: {ex.GetType().Name}: {ex.Message}"))
 
 /// Read a one-line pointer file (the first line, trimmed).
 let private readPointer (file: string) : Result<string, IdentityError> =
@@ -559,7 +559,7 @@ let repositoryControlPaths (stateHome: string) (repository: RepositoryId) : Repo
       PidFile = Path.Combine(dir, "host.pid")
       IdentityFile = Path.Combine(dir, "host.identity")
       HostLog = Path.Combine(dir, "host.log")
-      Endpoint = $"fshw-repo-%s{repository.Value.Substring(0, EndpointIdLength)}"
+      Endpoint = $"fshw-repo-{repository.Value.Substring(0, EndpointIdLength)}"
       VirtualRoot = Path.Combine(dir, "virtual") }
 
 /// The repository's slice of the box-wide shared cache (immutable, content-keyed

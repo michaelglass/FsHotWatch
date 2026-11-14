@@ -69,14 +69,14 @@ let teeSink (path: string) (level: LogLevel) : LogSink =
     { file with
         Write =
             fun line ->
-                eprintfn "%s" line
+                System.Console.Error.WriteLine(line: string)
                 file.Write line }
 
 /// A sink writing to stderr, for a process whose launcher redirected stderr into
 /// `path`. Its lines already land in that file, so writing it as well would double
 /// every line; the sink exists to NAME the file.
 let stderrInto (path: string) (level: LogLevel) : LogSink =
-    { Write = fun line -> eprintfn "%s" line
+    { Write = fun line -> System.Console.Error.WriteLine(line: string)
       Level = level
       File = Some path }
 
@@ -105,11 +105,11 @@ let log (level: LogLevel) (tag: string) (msg: string) =
         // reading one as the other has produced both a phantom wedge and an empty
         // `find -newermt` window that looked like a refutation.
         let ts = System.DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
-        let line = $"  [%s{tag}] %s{ts} %s{msg}"
+        let line = ("  [" + tag + "] " + ts + " " + msg)
 
         match currentSink.Value with
         | Some sink -> sink.Write line
-        | None -> eprintfn "%s" line
+        | None -> System.Console.Error.WriteLine(line: string)
 
 /// Log at Debug level (verbose only).
 let debug tag msg = log LogLevel.Debug tag msg

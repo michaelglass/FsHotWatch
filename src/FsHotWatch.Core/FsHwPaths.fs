@@ -37,7 +37,7 @@ let atomicWriteAllText (path: string) (contents: string) : unit =
     // Distinct temp files make the rename the only contended step, and a rename is
     // atomic — last writer wins, and both wrote the same content anyway.
     let unique = System.Guid.NewGuid().ToString("N")
-    let tmp = $"%s{path}.%s{unique}.tmp"
+    let tmp = $"{path}.{unique}.tmp"
     File.WriteAllText(tmp, contents)
     File.Move(tmp, path, overwrite = true)
 
