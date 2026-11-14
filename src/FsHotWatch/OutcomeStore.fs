@@ -815,8 +815,8 @@ module FiledWork =
     /// when nothing would be filed (no store, or work with no key), otherwise only once
     /// `store` holds it.
     let mayAnswerLocally
-        (holds: Store -> ActionKey.ActionKey -> bool)
-        (store: Store option)
+        (holds: 'Store -> ActionKey.ActionKey -> bool)
+        (store: 'Store option)
         (key: ActionKey.ActionKey option)
         : bool =
         match store, key with
@@ -826,8 +826,8 @@ module FiledWork =
     /// File through `file` only when `store` holds nothing under `key`. Returns whether
     /// it filed.
     let fileIfAbsent
-        (holds: Store -> ActionKey.ActionKey -> bool)
-        (store: Store)
+        (holds: 'Store -> ActionKey.ActionKey -> bool)
+        (store: 'Store)
         (key: ActionKey.ActionKey)
         (file: unit -> bool)
         : bool =

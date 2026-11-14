@@ -77,7 +77,7 @@ module RecordMode =
 [<NoComparison; NoEquality>]
 type Wiring =
     {
-        Store: OutcomeStore.Store
+        Store: OutcomeRecords.IOutcomeStore
         RecordMode: RecordMode
         /// The .NET toolchain the daemon resolves (`DotnetToolchain.identity`).
         Toolchain: string
@@ -245,14 +245,16 @@ let tryOfJson (root: string) (text: string) : ErrorEntry list option =
 
 /// The analysis filed under `key`, read under `root`; None for no record or one that does
 /// not read (a corrupt record file is quarantined by the store).
-let lookup (store: OutcomeStore.Store) (root: string) (key: ActionKey.ActionKey) : ErrorEntry list option =
-    store.LookupWithOutputs key |> Option.bind snd |> Option.bind (tryOfJson root)
+let lookup (store: OutcomeRecords.IOutcomeStore) (root: string) (key: ActionKey.ActionKey) : ErrorEntry list option =
+    OutcomeStore.Through.lookupWithOutputs store key.Value
+    |> Option.bind snd
+    |> Option.bind (tryOfJson root)
 
 /// File `entries` under `key`, for `relPath`, paths named relative to `root`. A finding at
 /// Error severity files a fail, so a cached red is never read as a pass. Returns whether
 /// it is filed.
 let file
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (root: string)
     (relPath: string)
     (key: ActionKey.ActionKey)
@@ -264,18 +266,18 @@ let file
         else
             OutcomeStore.Outcome.Pass
 
-    store.RecordWithOutputs(
-        OutcomeStore.Record.ofAction key relPath outcome CheckCache.producerIdentity root DateTimeOffset.UtcNow,
-        Some(toJson root entries)
-    )
+    OutcomeStore.Through.file
+        store
+        (OutcomeStore.Record.ofAction key relPath outcome CheckCache.producerIdentity root DateTimeOffset.UtcNow)
+        (Some(toJson root entries))
 
-let private readable (root: string) (store: OutcomeStore.Store) (key: ActionKey.ActionKey) =
+let private readable (root: string) (store: OutcomeRecords.IOutcomeStore) (key: ActionKey.ActionKey) =
     lookup store root key |> Option.isSome
 
 /// `file`, only when `store` holds no readable analysis under `key` (AUTOMATION-1596).
 /// Returns whether it filed.
 let fileIfAbsent
-    (store: OutcomeStore.Store)
+    (store: OutcomeRecords.IOutcomeStore)
     (root: string)
     (relPath: string)
     (key: ActionKey.ActionKey)
@@ -286,8 +288,11 @@ let fileIfAbsent
 /// Whether the task cache may answer the analysis keyed `key`: only once `store` holds its
 /// record, or when none would be filed (AUTOMATION-1609). A key-only probe (`HoldsKey`),
 /// asked on every warm read: a corrupt record is a miss where it is read.
-let mayAnswerLocally (store: OutcomeStore.Store option) (key: ActionKey.ActionKey option) : bool =
-    OutcomeStore.FiledWork.mayAnswerLocally (fun store key -> store.HoldsKey key) store key
+let mayAnswerLocally (store: OutcomeRecords.IOutcomeStore option) (key: ActionKey.ActionKey option) : bool =
+    OutcomeStore.FiledWork.mayAnswerLocally
+        (fun (store: OutcomeRecords.IOutcomeStore) key -> store.HoldsKey key.Value)
+        store
+        key
 
 /// The first field in which the `recorded` analysis and the `live` one differ, named; None
 /// when they agree entry for entry.
