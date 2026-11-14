@@ -246,6 +246,73 @@ module internal ReceiptInputTree =
             launch, Some "the input tree could not be read after beforeRun, so the receipt keeps its launch binding"
         | _ -> launch, None
 
+    /// Extensions of files a compilation can read that neither `feedsCompile` nor the
+    /// watcher's source filter names: other languages' sources and project files (their
+    /// assemblies are references), MSBuild imports (`<project>.user`, `.proj`, shared
+    /// `.projitems`), response files, and checked-in assemblies or packages.
+    let private otherIndexInputExtensions =
+        set
+            [ ".cs"
+              ".vb"
+              ".csproj"
+              ".vbproj"
+              ".proj"
+              ".projitems"
+              ".shproj"
+              ".user"
+              ".rsp"
+              ".dll"
+              ".exe"
+              ".winmd"
+              ".nupkg" ]
+
+    /// Whether a repo-relative path of a receipt manifest is an INPUT of the impact index,
+    /// so that its moving can make a row stale (AUTOMATION-1682). True for the union of:
+    ///
+    ///   1. every source the index recorded an analysis of (`indexed`: its `file_keys`);
+    ///   2. `feedsCompile`: declaration sentinels, `.fsproj`/`.props`/`.targets`/`.sln`/
+    ///      `.slnx`, `project.assets.json`, the tool-known root files (`Directory.Build.*`,
+    ///      `global.json`, `nuget.config`, lock files), `.fshw.json`, and the current model's
+    ///      compile items (every source the watcher treats as one when no model is published);
+    ///   3. `Watcher.isRelevantFile`: every F# source, signature and script and every MSBuild
+    ///      project file outside `bin/`/`obj/`, whatever the model says, so a source the model
+    ///      compiles but does not check, or does not name yet, still counts;
+    ///   4. `otherIndexInputExtensions`.
+    ///
+    /// Why this cannot be narrower than what an ordinary seal already vouches for: a
+    /// `BatchChecked` seals at the WHOLE tree read after folding the check results of the
+    /// files the watcher reported, and the watcher reports only (3) plus file-command
+    /// patterns, which feed no row. So every seal already binds the index to paths outside
+    /// (3) that moved without a re-analysis. (1), (2) and (4) are margin beyond that. The
+    /// analysis reads nothing else inside the tree: a row is the file's source and the used
+    /// signatures of its project's references (`IndexedAnalysis.identityOf`), and those come
+    /// from (1)-(4) or from build output and the package cache, which sit outside the tree and
+    /// are pinned by (2). An MSBuild import or a type-provider input under any other name is
+    /// outside it, as it is outside every seal.
+    let indexInput (feedsCompile: string -> bool) (indexed: Set<string>) (rel: string) : bool =
+        indexed.Contains rel
+        || feedsCompile rel
+        || FsHotWatch.Watcher.isRelevantFile rel
+        || otherIndexInputExtensions.Contains(Path.GetExtension(rel).ToLowerInvariant())
+
+    /// Whether an index sealed at `sealedAt`, with no rows written since, describes `current`
+    /// too: what moved between them, or why it does not (AUTOMATION-1682). The moved paths are
+    /// every manifest entry whose content hash (`ContentHash.ofFile`) differs between the two
+    /// receipt manifests, plus every entry only one of them holds. The manifests are the walk
+    /// both identities hash (`readTree`: the discovery roots, the configured test projects'
+    /// closures, the tool-known root files and the declared inputs, config excludes NOT
+    /// applied). The seal carries only when no moved path is an `indexInput`.
+    let sealCarriesTo
+        (indexInput: string -> bool)
+        (sealedAt: ReceiptTree)
+        (current: ReceiptTree)
+        : Result<TreeDelta, string> =
+        let moved = delta sealedAt.Entries current.Entries
+
+        match moved.Changed @ moved.Added @ moved.Removed |> List.filter indexInput with
+        | [] -> Ok moved
+        | inputs -> Error $"%d{List.length inputs} index input(s) moved since the seal; %s{describeDelta moved}"
+
     let matches expected current =
         match expected, current with
         | Some before, Some after -> String.Equals(before, after, StringComparison.Ordinal)

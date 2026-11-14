@@ -193,11 +193,11 @@ let internal onBatchCheckedWith
             // checkout baseline the tree moved from (AUTOMATION-1587).
             let flushedState =
                 { flushedState with
-                    SealedTree = ReceiptInputTree.read repoRoot }
+                    SealedTree = ReceiptInputTree.readTree repoRoot }
 
             // The index now describes exactly this tree, until a flush writes rows again: a
             // restarted daemon reads it to know its cold scan diffs from this tree.
-            env.SaveSeal flushedState.SealedTree
+            env.SaveSeal(flushedState.SealedTree |> Option.map _.Identity)
             env.PublishRestartSelection flushedState.Debt.Baseline
 
             // A held launch takes its inputs from this fold, whichever branch launches it.
@@ -534,7 +534,7 @@ let internal onBuildCompletedWith
                                   Scope = launchScopeOf launchInputs
                                   EvidenceTree = launchInputs.EvidenceTree
                                   CurrentTree = currentTree
-                                  SealedTree = launchState.SealedTree }
+                                  SealedTree = launchState.SealedTree |> Option.map _.Identity }
 
                         if awaitsDiff then
                             let launchState =

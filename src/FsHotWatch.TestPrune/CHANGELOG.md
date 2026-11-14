@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix: a full-suite run that replays a project's pass at its current K_P files the `test-baseline` record, and a
+  restart diffs from the tree the index is sealed at when this checkout's own full suite passed it (AUTOMATION-1682,
+  ADR-071; not in alpha.115). `TestBaseline.fullPasses` counts `FullPass.EarnedHere` and `FullPass.Replayed`, and the
+  record gains a `replayed` object and the log line `replayed=N`. `FullSuiteBaseline.Baseline` gains `EarlierTrees`
+  (with `Tree`, at most 20, newest first, carried by `FullSuiteBaseline.succeed`; `earlierTrees` on disk, absent reads
+  as none), and `PluginSteps.restartBaselineIn` diffs from the sealed tree when it is one of `passedTrees`.
+- fix: a full pass whose index seal lags its receipt tree only in paths that are no input of the index records that
+  tree and re-seals the index there (AUTOMATION-1682, ADR-071 amendment). In every intelligence workspace the run's
+  `BatchChecked` sealed the index while `beforeRun` was writing the Fable bundle; the receipt rebound to the tree after
+  it, so the full pass kept no ledger tree (`reason=not-sealed`), filed no `test-baseline` record, and every restart
+  ran the full suite. A baseline-earning completion now re-seals at the receipt tree when no moved manifest entry is a
+  `ReceiptInputTree.indexInput` (a source the index recorded in `file_keys`, `feedsCompile`, `Watcher.isRelevantFile`,
+  or a `.cs`/`.vb`/`.csproj`/`.vbproj`/`.proj`/`.projitems`/`.shproj`/`.user`/`.rsp`/`.dll`/`.exe`/`.winmd`/`.nupkg`)
+  and the seal on disk still names the sealed tree (no flush has written rows since). It logs `index re-sealed at the
+  receipt tree …` or `index stays sealed at …` with the moved inputs. `ReceiptInputTree.sealCarriesTo` takes that
+  predicate; `TestPruneState.SealedTree` is now the `ReceiptTree` (identity and entries); `RunFinishedEnv` gains
+  `IndexInputs`, `LoadSeal` and `SaveSeal`.
+
 ## 0.13.0-alpha.115 - 2026-11-14
 
 - feat!: `runtimeSelection: "runtime/record-static"` — runtime coverage decides what runs, and every completed impact

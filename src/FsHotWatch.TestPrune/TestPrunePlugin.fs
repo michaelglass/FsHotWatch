@@ -519,7 +519,11 @@ let internal createWithEvidenceAndQueries
           EndRun = endRun
           ObserveModelGeneration = observeModelGeneration
           FileBaseline =
-            fileBaselineIn evidence repoRoot (currentOutcomeKeyResultsIn evidence repoRoot testConfigs) db.GetFileKeys }
+            fileBaselineIn evidence repoRoot (currentOutcomeKeyResultsIn evidence repoRoot testConfigs) db.GetFileKeys
+          IndexInputs =
+            fun ctx -> ReceiptInputTree.indexInput (compileInputsOf ctx ()) (db.GetFileKeys() |> Map.keys |> Set.ofSeq)
+          LoadSeal = fun () -> IndexSeal.load dbPath
+          SaveSeal = IndexSeal.save (Logging.warn "test-prune") dbPath }
 
     let onRunFinished ctx state message started launchedCompletion launchedAs =
         onRunFinishedWith runFinishedEnv ctx state message started launchedCompletion launchedAs

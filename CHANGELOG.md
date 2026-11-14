@@ -74,6 +74,23 @@ All notable changes to FsHotWatch packages are documented here.
 > state that used to be a lie is now **unrepresentable**, so the migration is the
 > compiler telling you where you were guessing.
 
+### test-prune: a restarted daemon diffs from a full pass instead of running the full suite again
+
+Before this, a restarted daemon ran the full suite in nearly every workspace. Two changes fix
+that (AUTOMATION-1682, ADR-071). alpha.148 shipped without either.
+
+- A full-suite run that replays a project another workspace passed at the same inputs now files
+  the `test-baseline` record. A restart can now diff from the tree the index is sealed at,
+  provided this checkout's own full suite passed that tree. The ledger keeps the last 20 such trees.
+- A full pass whose index seal lags its receipt tree now re-seals there, provided the lag is only
+  in paths that are no input of the index. In every intelligence workspace, the run's seal was
+  taken while `beforeRun` was still writing the Fable bundle. The full pass then kept no ledger
+  tree and filed no record (`reason=not-sealed`), so every restart ran the full suite. A path
+  counts as an index input when the index recorded an analysis of it, when a build compiles it,
+  when the watcher re-checks it, or when it is a project, import, reference or package file of
+  another language. A moved index input, or a flush that wrote rows since the seal, leaves the
+  seal where it was.
+
 ### core: a noisy run no longer livelocks the daemon on the activity cap
 
 The 2 MB activity cap freed bytes only by evicting finished runs' history. When the bytes

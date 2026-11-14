@@ -275,10 +275,12 @@ type TestPruneState =
         /// nothing owed that this run did not launch against would only retry it, so it is
         /// not made (`onlyRetriesRed`). In memory only: a restart may retry once.
         LastRed: RedConclusion option
-        /// The receipt identity of the input tree when the last `BatchChecked` folded its
+        /// The receipt tree (identity and entries) when the last `BatchChecked` folded its
         /// check results, on every seal. `DiffWait` asks for it only once a session baseline
-        /// exists; a `test-baseline` record asks whether it is the receipt tree.
-        SealedTree: string option
+        /// exists; a `test-baseline` record asks whether it is the receipt tree. The entries
+        /// say what moved since, so a completion can tell a seal that lags its receipt tree
+        /// only by paths no build compiles (AUTOMATION-1682).
+        SealedTree: ReceiptTree option
         /// A build's launch held back for its tree's check results (`DiffWait`). Cleared
         /// by the next `BatchChecked`, by any launch, or by its expiry.
         AwaitingDiff: AwaitedDiff option
@@ -635,5 +637,5 @@ module TestRunInputs =
                     ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity))
             | HeldReceipt.NoneYet
             | HeldReceipt.Revoked _ -> state.CheckoutBaseline |> Option.map _.Manifest
-          SealedTree = state.SealedTree
+          SealedTree = state.SealedTree |> Option.map _.Identity
           OnCheckoutBaselineOnly = state.LastResults.IsNone && state.CheckoutBaseline.IsSome }

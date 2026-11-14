@@ -101,7 +101,7 @@ let private launchAfterCommentEdit (f: Fixture) (state: TestPruneState) =
 
     let sealedAtEdit =
         { state with
-            SealedTree = ReceiptInputTree.read f.Ctx.RepoRoot }
+            SealedTree = ReceiptInputTree.readTree f.Ctx.RepoRoot }
 
     let _, launch = buildAndLaunch f sealedAtEdit
     Map.tryFind "ProjA" launch.Selection
