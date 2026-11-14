@@ -157,6 +157,16 @@ let ``the nightly replay installs jj with the same script`` () =
 
     test <@ nightly.Contains "run: bash scripts/install-jj.sh" @>
 
+// AUTOMATION-1577 (ADR-074 (b)): the nightly audit reports LOOKUP AGREEMENT from the nightly
+// workspace's shadow log, so 0% agreement or a lookup green on a red fails the night.
+[<Fact>]
+let ``the nightly audit reads lookup agreement from the nightly workspace's shadow log`` () =
+    let nightly =
+        File.ReadAllText(Path.Combine(repoRoot (), ".github", "workflows", "nightly-replay.yml"))
+
+    test
+        <@ nightly.Contains "--shadow-log \"$GITHUB_WORKSPACE/.workspaces/nightly/.fshw/shadow/lookup-verdict.jsonl\"" @>
+
 // AUTOMATION-1680. CI's build job runs `dotnet fantomas <fantomas-paths> --check`, and main went
 // red on it three times (c12ac32f, d6457cae, 05d7e16c) over trees both local gates had passed:
 // the daemon's `format: true` pass REWRITES an unformatted file during the check rather than

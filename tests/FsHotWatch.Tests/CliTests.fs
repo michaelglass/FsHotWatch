@@ -4355,3 +4355,17 @@ let ``check-reach names the graded run it asks about, and asks for the newest wi
 
     let seen = List.ofSeq asked
     test <@ seen = expected @>
+
+[<Fact(Timeout = 15000)>]
+let ``audit reads lookup agreement from each --shadow-log it is given`` () =
+    test
+        <@
+            CommandTree.parse tree [| "audit"; "--shadow-log"; "/a.jsonl"; "--shadow-log"; "/b.jsonl" |] = Ok(
+                Audit [ AuditFlag.ShadowLog "/a.jsonl"; AuditFlag.ShadowLog "/b.jsonl" ]
+            )
+        @>
+
+    let setup =
+        auditSetup "/repo" [ AuditFlag.CleanHome "/clean"; AuditFlag.ShadowLog "/a.jsonl" ]
+
+    test <@ setup |> Result.map _.Options.ShadowLogs = Ok [ "/a.jsonl" ] @>

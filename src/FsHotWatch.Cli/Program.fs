@@ -297,6 +297,10 @@ type AuditFlag =
         string
     | [<CmdFlag(Description = "Print the report as one fshw-audit-v1 JSON object")>] Json
     | [<CmdFlag(Description = "Also write the fshw-audit-v1 JSON report to this file")>] Out of string
+    | [<CmdFlag(Description =
+                    "Also report LOOKUP AGREEMENT from this shadow log (a checkout's .fshw/shadow/lookup-verdict.jsonl; repeatable): daemon-green publications the lookup answered green, and lookup greens on daemon reds",
+                Name = "shadow-log",
+                Repeatable = true)>] ShadowLog of string
 
 /// `--repository`: act on the repository host and every worktree it serves.
 type RepositoryFlag =
@@ -595,6 +599,10 @@ let internal auditRequest (flags: AuditFlag list) : FsHotWatch.RecordAudit.Reque
       PreferInput =
         pick (function
             | AuditFlag.PreferInput l -> Some l
+            | _ -> None)
+      ShadowLogs =
+        all (function
+            | AuditFlag.ShadowLog l -> Some l
             | _ -> None) }
 
 /// `fshw audit`'s flags, resolved against `repoRoot`; Error names what is wrong with them.
