@@ -53,9 +53,9 @@ let ``an unreadable file makes the whole key a miss and moves nothing`` () =
 
     test <@ r = KeyRead.Unreadable("newer.json", "permission denied") @>
     test <@ KeyRead.outcome r = None @>
-    test <@ KeyRead.history r = [] @>
+    test <@ List.isEmpty (KeyRead.history r) @>
     test <@ s.FileNames key.Value = before @>
-    test <@ s.Quarantined = [] @>
+    test <@ List.isEmpty s.Quarantined @>
 
 /// AUTOMATION-1701 (ADR-072), in memory as on disk: a record a deterministic action has just
 /// COMPUTED moves the unreadable or torn files under its key aside (its own name included) and
@@ -111,7 +111,7 @@ let ``a computed test-run record never moves an unreadable sibling, and the key 
 
     test <@ computed s (recordOf LookupVerdict.Outcome.Pass testRun (at.AddMinutes 1.0)) = Filing.Filed @>
     test <@ KeyRead.outcome (read s) = None @>
-    test <@ s.Quarantined = [] @>
+    test <@ List.isEmpty s.Quarantined @>
 
 [<Fact>]
 let ``a policy is the run's: a deterministic action quarantines, a test run keeps`` () =

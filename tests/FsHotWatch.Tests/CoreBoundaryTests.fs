@@ -32,7 +32,7 @@ let private forbidden (assembly: Assembly) : string list =
 let ``FsHotWatch.Core references nothing but the runtime, FSharp.Core and Ignore`` () =
     let core = typeof<FsHotWatch.Core.NonEmpty<int>>.Assembly
     test <@ core.GetName().Name = "FsHotWatch.Core" @>
-    test <@ forbidden core = [] @>
+    test <@ List.isEmpty (forbidden core) @>
 
 /// The control: the same check flags FCS where it is referenced, so a green above means
 /// something.

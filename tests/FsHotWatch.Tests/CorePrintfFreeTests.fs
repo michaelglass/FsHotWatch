@@ -81,7 +81,7 @@ let private printfReferences (assembly: Assembly) : string list =
 let ``FsHotWatch.Core references neither the printf engine nor F# reflection`` () =
     let core = typeof<FsHotWatch.Core.NonEmpty<int>>.Assembly
     test <@ core.GetName().Name = "FsHotWatch.Core" @>
-    test <@ printfReferences core = [] @>
+    test <@ List.isEmpty (printfReferences core) @>
 
 /// The control: the same scan finds printf where it is used, so a green above means something.
 [<Fact>]
