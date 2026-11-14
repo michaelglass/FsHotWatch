@@ -53,7 +53,7 @@ let private recording () =
     let lines = Collections.Generic.List<string>()
 
     let timer =
-        { new Lookup.PhaseTimer with
+        { new Timing.PhaseTimer with
             member _.Time(phase, work) =
                 let start = Diagnostics.Stopwatch.GetTimestamp()
                 let result = work ()
@@ -72,7 +72,7 @@ let private recording () =
 
 /// What AUTOMATION-1577 adds to a lookup: a walk of the whole repository root (the scope of a file
 /// command's pattern), timed alone so its cost can be read beside the tree walk's.
-let private rootWalk (timer: Lookup.PhaseTimer) (repoRoot: string) =
+let private rootWalk (timer: Timing.PhaseTimer) (repoRoot: string) =
     let walked =
         timer.Time("root-walk-1577", fun () -> SafeWalk.walk SafeWalk.SourceExcludedDirs "*" repoRoot)
 
