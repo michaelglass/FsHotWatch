@@ -45,6 +45,7 @@
     <Compile Include="Json.fs" />
     <Compile Include="ContentHash.fs" />
     <Compile Include="FsHwPaths.fs" />
+    <Compile Include="Timing.fs" />
     <Compile Include="SafeWalk.fs" />
     <Compile Include="PathFilter.fs" />
     <Compile Include="Discovery.fs" />

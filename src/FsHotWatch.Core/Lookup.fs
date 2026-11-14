@@ -9,6 +9,7 @@ module FsHotWatch.Lookup
 open System.IO
 open System.Text.Json
 open System.Text.Json.Nodes
+open FsHotWatch.Timing
 
 /// The shadow's directory under `.fshw/`.
 let directory (repoRoot: string) =
@@ -108,20 +109,6 @@ let answer
     : LookupVerdict.Answer =
     LookupVerdict.decide (Requirements.requirements command subject configured) (lookupIn command store kpStore)
 
-/// Times the phases of a lookup and counts what each covered (experiment E5, AUTOMATION-1696).
-type PhaseTimer =
-    /// Run `work` as the phase `phase`.
-    abstract Time<'T> : phase: string * work: (unit -> 'T) -> 'T
-    /// Record that the lookup covered `count` of `name` (files, requirements).
-    abstract Count: name: string * count: int -> unit
-
-module PhaseTimer =
-    /// Times and counts nothing.
-    let untimed =
-        { new PhaseTimer with
-            member _.Time(_, work) = work ()
-            member _.Count(_, _) = () }
-
 /// What a pure lookup of a checkout concluded.
 [<RequireQualifiedAccess>]
 type Read =
@@ -161,7 +148,8 @@ let ofRepoWith (timer: PhaseTimer) (repoRoot: string) (command: Requirements.Com
     | Error reason -> Read.Unconfigured reason
     | Ok required ->
         // `TreeHash.compute`, in its two halves: the walk, then reading and hashing every file.
-        let walked = timer.Time("walk", fun () -> TreeHash.files repoRoot required.Exclude)
+        let walked =
+            timer.Time("walk", fun () -> TreeHash.filesWith timer repoRoot required.Exclude)
 
         timer.Count("files", walked.Files.Length)
         let tree = (timer.Time("hash", fun () -> TreeHash.ofWalked walked)).Hash
