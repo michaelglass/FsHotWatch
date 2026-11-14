@@ -245,7 +245,7 @@ let RefusalDrainBound = TimeSpan.FromSeconds 1.0
 
 /// Read and discard what the client has still to send, until it stops (end of stream)
 /// or `bound` passes.
-let private drainUnread (stream: Stream) (bound: TimeSpan) : Task =
+let internal drainUnread (stream: Stream) (bound: TimeSpan) : Task =
     task {
         use timeout = new CancellationTokenSource(bound)
         let buffer = Array.zeroCreate<byte> 4096
