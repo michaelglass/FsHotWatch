@@ -55,7 +55,9 @@ let private projects = [ "A.Tests"; "B.Tests" ]
 
 /// What the configuration requires: the plugins the observation reports, and both projects.
 let private configured: Configured =
-    { RequiredPlugins = [ "build"; "lint" ]
+    { RequiredPlugins =
+        [ PluginInputs.RequiredPlugin.wholeTree "build" "build reads the whole tree"
+          PluginInputs.RequiredPlugin.wholeTree "lint" "lint reads the whole tree" ]
       TestProjects = projects }
 
 let private withStore (body: string -> OutcomeStore.Store -> unit) =

@@ -19,7 +19,7 @@ let private projects = [ "A.Tests"; "B.Tests" ]
 
 /// What the configuration requires: the build the observation reports, and both projects.
 let private configured: Configured =
-    { RequiredPlugins = [ "build" ]
+    { RequiredPlugins = [ PluginInputs.RequiredPlugin.wholeTree "build" "build reads the whole tree" ]
       TestProjects = projects }
 
 let private suite run project (failed: string list) (passed: string list) : Suite =

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: a plugin that declares its own inputs is answered by its last outcome while they are unchanged
+  (AUTOMATION-1577, ADR-074). New module `PluginInputs`: `LookupEligibility = DeclaredInputs of first: InputSpec *
+  rest: InputSpec list | NoDeclaredInputs of reason`, `InputSpec.Matching of FilePattern * entry` (a file command's
+  pattern, and the digest of its own configuration entry, `entryDigest`), `matches` (the files the pattern declares:
+  its watcher's scope, `ScopeExcludedDirs`), `digest` (each match's content, each unreadable directory as a hole,
+  the entry and the toolchain) and `key` (kind `plugin-inputs`). `Watcher.kernelExcludedDirs` is internal, not
+  private.
+
 - fix: `PluginActivity.State` no longer spins forever when live recordings hold the bytes over the 2 MB activity cap
   and no history is left to evict (AUTOMATION-1703). Live and history bytes are counted apart: a live recording's
   log is bounded by its own share (`maxTotalBytes / 8`) and drops its oldest lines past it, and history is evicted
