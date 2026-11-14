@@ -125,7 +125,17 @@ waiting to land.
   releaser's working machine. Make `scripts/remote-canary.sh` the consumer's `gate` in
   `~/.fssemantictagger.json` and give it a `remote` object; the gate then runs on that
   build server with the same pin and the same refuse-on-any-red contract. The script's
-  header documents the fields.
+  header documents the fields. Two settings are deliberate:
+  - The `gate` names the script in the checkout being RELEASED:
+    `"${MISE_PROJECT_ROOT:?…}/scripts/remote-canary.sh" FsHotWatch.Cli`. A fixed path
+    such as the default checkout runs whatever script that working copy holds at the
+    time, which may be unreviewed or from a different commit. The tagger gives the gate
+    no releasing-repo root (its cwd is the consumer workspace), but `mise run release`
+    exports `MISE_PROJECT_ROOT` to its whole process tree. A release started without
+    mise therefore fails the gate with that message and is refused. Once the tagger
+    exposes the root itself, the gate should use that instead (AUTOMATION-1715).
+  - The `wrap` queues the canary at heavy-run priority 2, the release-line class: a
+    release waits on it, so it goes ahead of ordinary work on the build server.
 - **Out-of-train releases:** only when a published release is broken for a consumer,
   and only by the maintainer or on their explicit instruction. It still needs green
   CI, and it counts as that day's train.
