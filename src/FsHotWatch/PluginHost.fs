@@ -792,6 +792,12 @@ type PluginHost
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> = readStatuses ()
 
+    /// Each registered plugin's event subscriptions, by name: what can make it run.
+    member internal _.RegisteredSubscriptions() : Map<string, PluginFramework.PluginSubscriptions> =
+        registeredPlugins
+        |> Seq.map (fun p -> PluginFramework.PluginName.value p.Name, p.Subscriptions)
+        |> Map.ofSeq
+
     /// How long the `Running since` interval of `pluginName` has run in awake time: time
     /// the box slept is not counted (AUTOMATION-1489). `None` when `since` is not the
     /// plugin's current interval.
