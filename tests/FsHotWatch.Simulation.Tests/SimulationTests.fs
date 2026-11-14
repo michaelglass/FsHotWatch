@@ -42,6 +42,7 @@ let ``a history is a function of its seed`` () =
 [<InlineData("selector-forgets-failures")>]
 [<InlineData("fail-read-as-pass")>]
 [<InlineData("missing-read-as-pass")>]
+[<InlineData("kp-omits-file")>]
 let ``every planted defect is caught`` (name: string) =
     let mutant =
         match name with
@@ -50,6 +51,7 @@ let ``every planted defect is caught`` (name: string) =
         | "selector-forgets-failures" -> Mutant.SelectorForgetsFailures
         | "fail-read-as-pass" -> Mutant.FailReadAsPass
         | "missing-read-as-pass" -> Mutant.MissingReadAsPass
+        | "kp-omits-file" -> Mutant.KpOmitsFile "B/Two.fs"
         | other -> failwith $"no mutant named %s{other}"
 
     let violations = explore (Subject.Mutated mutant) firstSeed histories

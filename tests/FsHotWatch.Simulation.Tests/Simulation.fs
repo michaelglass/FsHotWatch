@@ -166,7 +166,7 @@ let generate (seed: int) (length: int) : Event list =
 type private State =
     { Tree: Tree
       Snapshots: Tree list
-      Store: OutcomeStore.Store
+      Stores: Stores
       Selector: SelectorState
       Producer: int
       Now: DateTimeOffset
@@ -180,6 +180,12 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
 
     Directory.CreateDirectory repoRoot |> ignore
     let storeRoot = ShadowVerdict.storeRoot repoRoot
+    let kpRoot = Path.Combine(repoRoot, "box-wide-outcomes")
+
+    let openStores () =
+        { Shadow = openStore storeRoot OutcomeStore.defaultMaxBytes
+          Kp = openStore kpRoot OutcomeStore.defaultMaxBytes }
+
     let violations = ResizeArray<Violation>()
 
     let violation (step: int) (property: Property) (detail: string) =
@@ -222,7 +228,8 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
 
     let publishRun (step: int) (s: State) (run: Run) (endedAt: Tree) (unfaulted: bool) =
         let o = observation subject run endedAt (producerText s) repoRoot s.Now
-        let answer = publish subject repoRoot s.Store o
+        fileKp subject s.Stores run (producerText s) repoRoot s.Now
+        let answer = publish subject repoRoot s.Stores o
         checkSound step run.Started answer
 
         match run.Command, o.Today, unfaulted, answer with
@@ -253,7 +260,12 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
             let run = runOnce s command s.Tree s.Tree
             let o = observation subject run s.Tree (producerText s) repoRoot s.Now
             let total = (ShadowVerdict.recordsOf o configured.TestProjects).Length
-            fileKilled s.Store o (count % (total + 1))
+            // The runner files K_P as its tests finish, before the publication: a kill may land
+            // after it or before it.
+            if count % 2 = 1 then
+                fileKp subject s.Stores run (producerText s) repoRoot s.Now
+
+            fileKilled s.Stores.Shadow o (count % (total + 1))
             { s with Runs = s.Runs + 1 }
         | Event.Run(command, RunFault.EditedMidRun(path, content)) ->
             let edited = Map.add path content s.Tree
@@ -270,9 +282,9 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
             let o =
                 readObservation s.LastCommand (treeKey subject s.Tree) (producerText s) repoRoot s.Now
 
-            let answer = read subject repoRoot s.Store o
+            let answer = read subject repoRoot s.Stores o
             checkSound index s.Tree answer
-            let fresh = decide subject (openStore storeRoot OutcomeStore.defaultMaxBytes) o
+            let fresh = decide subject (openStores ()) o
 
             if fresh <> answer then
                 violation
@@ -281,9 +293,7 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
                     $"open store answered %s{answerText answer}, a fresh one %s{answerText fresh}"
 
             s
-        | Event.Restart ->
-            { s with
-                Store = openStore storeRoot OutcomeStore.defaultMaxBytes }
+        | Event.Restart -> { s with Stores = openStores () }
         | Event.LedgerLost -> { s with Selector = SelectorState.cold }
         | Event.TornRecord n ->
             match recordFiles storeRoot with
@@ -316,7 +326,7 @@ let execute (subject: Subject) (seed: int) (events: Event list) : Violation list
         let initial =
             { Tree = initialTree
               Snapshots = []
-              Store = openStore storeRoot OutcomeStore.defaultMaxBytes
+              Stores = openStores ()
               Selector = SelectorState.cold
               Producer = 1
               Now = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
