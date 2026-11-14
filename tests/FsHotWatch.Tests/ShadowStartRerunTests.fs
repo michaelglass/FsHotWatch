@@ -95,7 +95,8 @@ let ``a declared-input plugin with a record for its inputs does not run at start
                   RecordedAt = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
                   OutcomeKeys = Map.empty }
 
-            observeWith repo (storeAt repo) None configured publication |> ignore
+            let store = storeAt repo
+            observeWith repo store None (collectDue store) configured publication |> ignore
 
         let daemon = started repo
         test <@ List.isEmpty (rerunUnrecordedDeclaredIn true repo daemon) @>
