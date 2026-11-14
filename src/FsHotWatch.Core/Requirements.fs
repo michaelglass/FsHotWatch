@@ -7,13 +7,36 @@
 module FsHotWatch.Requirements
 
 /// What the configuration requires of a green: its non-test plugins and its test projects.
+[<NoComparison>]
 type Configured =
     {
-        /// The plugins the configuration requires (`RequiredConfig.ofJson`, the one definition).
-        RequiredPlugins: string list
+        /// The plugins the configuration requires (`RequiredConfig.ofJson`, the one definition), each
+        /// with what its outcome is a function of (AUTOMATION-1577).
+        RequiredPlugins: PluginInputs.RequiredPlugin list
         /// The configured test projects, by the name their reports carry.
         TestProjects: string list
     }
+
+/// What a green requires over one tree: the configured plugins, each resolved to what its outcome
+/// is keyed by there, and the test projects. Made only by `resolve`, so every configured plugin is
+/// in it, and a plugin that declares its inputs carries their key.
+[<NoComparison>]
+type Resolved =
+    private
+        { Plugins: PluginInputs.Keyed list
+          TestProjects: string list }
+
+    /// The configured plugins, resolved.
+    member resolved.RequiredPlugins = resolved.Plugins
+
+    /// The configured test projects.
+    member resolved.ConfiguredTestProjects = resolved.TestProjects
+
+/// `configured` over one tree, each plugin resolved by `keyed` (`PluginInputs.keyed` over the
+/// checkout and the producer: the caller's IO, as hashing the tree is).
+let resolve (keyed: PluginInputs.RequiredPlugin -> PluginInputs.Keyed) (configured: Configured) : Resolved =
+    { Plugins = configured.RequiredPlugins |> List.map keyed
+      TestProjects = configured.TestProjects }
 
 /// The command a requirement set is for. `Confirm` requires every test project in full;
 /// `Check` also accepts an impact run over this tree on top of an earlier full pass.
@@ -32,10 +55,6 @@ type Subject =
         /// Each test project's full-run outcome key over this tree, as the daemon computed it
         /// (ADR-059 step 7b). Empty when nobody said.
         OutcomeKeys: Map<string, ActionKey.KeyValue>
-        /// The required plugins keyed by their OWN declared inputs over this tree, each with that
-        /// key (AUTOMATION-1577, ADR-074): the caller digests the inputs, as it hashes the tree.
-        /// Every other required plugin is keyed by the whole tree (`pluginKey`).
-        DeclaredInputKeys: Map<string, ActionKey.ActionKey>
     }
 
 [<Literal>]
@@ -47,12 +66,12 @@ let ImpactScope = "impact"
 let pluginKey (subject: Subject) (name: string) =
     ActionKey.create "plugin" [ "tree", subject.Tree; "producer", subject.Producer; "plugin", name ]
 
-/// The key required plugin `name`'s outcome is looked up under over `subject`: its declared-input
-/// key when it has one, else the whole-tree `pluginKey`.
-let pluginKeyIn (subject: Subject) (name: string) =
-    match Map.tryFind name subject.DeclaredInputKeys with
-    | Some key -> key
-    | None -> pluginKey subject name
+/// The key resolved plugin `plugin`'s outcome is looked up under over `subject`: its declared-input
+/// key when it declares its inputs, else the whole-tree `pluginKey`.
+let keyOf (subject: Subject) (plugin: PluginInputs.Keyed) =
+    match plugin.Keying with
+    | PluginInputs.Keying.DeclaredInputs key -> key
+    | PluginInputs.Keying.WholeTree -> pluginKey subject plugin.Name
 
 let diagnosticsKey (subject: Subject) =
     ActionKey.create "diagnostics" [ "tree", subject.Tree; "producer", subject.Producer ]
@@ -78,12 +97,13 @@ let baselineKey (project: string) =
 /// R(c, T) for `command` over `subject`. Plugins and test projects are both the configured
 /// ones. A plugin idle with no run record is left out of today's `plugins[]`, so a
 /// requirement set read from the run could not miss a configured gate nobody ran on the tree
-/// (AUTOMATION-1568). Each plugin is keyed as `pluginKeyIn` says.
-let requirements (command: Command) (subject: Subject) (configured: Configured) : LookupVerdict.Requirement list =
-    [ for name in configured.RequiredPlugins do
-          LookupVerdict.Requirement.single ("plugin:" + name) (pluginKeyIn subject name)
+/// (AUTOMATION-1568). Each plugin is keyed as it was resolved (`keyOf`). Pure: the IO that
+/// resolved the plugins was the caller's.
+let requirements (command: Command) (subject: Subject) (resolved: Resolved) : LookupVerdict.Requirement list =
+    [ for plugin in resolved.RequiredPlugins do
+          LookupVerdict.Requirement.single ("plugin:" + plugin.Name) (keyOf subject plugin)
       LookupVerdict.Requirement.single "diagnostics" (diagnosticsKey subject)
-      for project in configured.TestProjects do
+      for project in resolved.ConfiguredTestProjects do
           let full = [ (testKey subject project FullScope).Value ]
 
           // The record the test runner filed under this project's K_P, when the daemon named

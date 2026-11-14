@@ -132,21 +132,26 @@ let key
               |> List.mapi (fun i spec ->
                   "inputs." + i.ToString(Globalization.CultureInfo.InvariantCulture), digest repoRoot spec) ]
 
-/// Plugin `plugin`'s key over `repoRoot` as it is now, graded by `producer`, when it declares its
-/// inputs (`key`); none when it declares none and is keyed by the whole tree. Reads the files it
-/// declares.
-let keyOf (repoRoot: string) (producer: string) (plugin: RequiredPlugin) : ActionKey.ActionKey option =
-    match plugin.Eligibility with
-    | LookupEligibility.DeclaredInputs(first, rest) -> Some(key repoRoot producer plugin.Name (first, rest))
-    | LookupEligibility.NoDeclaredInputs _ -> None
+/// How a required plugin's outcome is keyed over one tree.
+[<RequireQualifiedAccess; NoComparison>]
+type Keying =
+    /// By the whole tree: only a run on this tree answers for it.
+    | WholeTree
+    /// By its own declared inputs as they are now (`key`): its last outcome answers while they
+    /// are unchanged.
+    | DeclaredInputs of key: ActionKey.ActionKey
 
-/// The key of each plugin in `plugins` that declares its inputs (`keyOf`): what a tree's
-/// `Requirements.Subject.DeclaredInputKeys` holds.
-let declaredInputKeys
-    (repoRoot: string)
-    (producer: string)
-    (plugins: RequiredPlugin list)
-    : Map<string, ActionKey.ActionKey> =
-    plugins
-    |> List.choose (fun p -> keyOf repoRoot producer p |> Option.map (fun k -> p.Name, k))
-    |> Map.ofList
+/// A required plugin resolved over one tree: what its outcome is keyed by there.
+[<NoComparison>]
+type Keyed = { Name: string; Keying: Keying }
+
+/// `plugin` resolved over `repoRoot` as it is now, graded by `producer`: a plugin that declares
+/// its inputs is keyed by them (`key`, which reads the files the pattern matches in the watcher's
+/// scope), every other by the whole tree. The caller's IO, as hashing the tree is.
+let keyed (repoRoot: string) (producer: string) (plugin: RequiredPlugin) : Keyed =
+    { Name = plugin.Name
+      Keying =
+        match plugin.Eligibility with
+        | LookupEligibility.DeclaredInputs(first, rest) ->
+            Keying.DeclaredInputs(key repoRoot producer plugin.Name (first, rest))
+        | LookupEligibility.NoDeclaredInputs _ -> Keying.WholeTree }
