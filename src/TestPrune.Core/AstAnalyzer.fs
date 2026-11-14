@@ -1343,8 +1343,8 @@ let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
 let private visitTypeDefnRanges (results: ResizeArray<string * range>) (decl: SynModuleDecl) =
     match decl with
     | SynModuleDecl.Types(typeDefns = typeDefns) ->
-        for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids); range = fullRange) in typeDefns do
-            let name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+        for SynTypeDefn(typeInfo = typeInfo; range = fullRange) in typeDefns do
+            let name = typeInfo.LongIdent |> List.map (fun id -> id.idText) |> String.concat "."
             results.Add(name, fullRange)
     | SynModuleDecl.Exception(exnDefn = exceptionDefinition; range = fullRange) ->
         results.Add(exceptionName exceptionDefinition, fullRange)
@@ -1419,7 +1419,7 @@ let private visitTypeDefnShapes (results: ResizeArray<TypeDefnShape>) (decl: Syn
     match decl with
     | SynModuleDecl.Types(typeDefns = typeDefns) ->
         for SynTypeDefn(
-            typeInfo = SynComponentInfo(attributes = attributes; longId = ids)
+            typeInfo = SynComponentInfo(attributes = attributes) as typeInfo
             typeRepr = typeRepr
             members = extraMembers
             range = fullRange) in typeDefns do
@@ -1442,7 +1442,7 @@ let private visitTypeDefnShapes (results: ResizeArray<TypeDefnShape>) (decl: Syn
                 walkMember m
 
             results.Add
-                { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+                { Name = typeInfo.LongIdent |> List.map (fun id -> id.idText) |> String.concat "."
                   Range = rangeWithAttributes attributes fullRange
                   IsStruct = isStructAttribute attributes
                   Children = sortedChildren children }
@@ -1472,9 +1472,10 @@ let private collectSignatureRanges (tree: ParsedInput) =
                 match node with
                 | SyntaxNode.SynValSig(SynValSig(ident = SynIdent(id, _); range = declarationRange)) ->
                     (id.idText, declarationRange) :: bindings, types
-                | SyntaxNode.SynTypeDefnSig(SynTypeDefnSig(
-                    typeInfo = SynComponentInfo(longId = ids); range = declarationRange)) ->
-                    bindings, (ids |> List.map _.idText |> String.concat ".", declarationRange) :: types
+                | SyntaxNode.SynTypeDefnSig(SynTypeDefnSig(typeInfo = typeInfo; range = declarationRange)) ->
+                    bindings,
+                    (typeInfo.LongIdent |> List.map _.idText |> String.concat ".", declarationRange)
+                    :: types
                 | SyntaxNode.SynModuleSigDecl(SynModuleSigDecl.Exception(
                     exnSig = SynExceptionSig(exnRepr = SynExceptionDefnRepr(caseName = caseName))
                     range = declarationRange)) ->

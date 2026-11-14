@@ -165,7 +165,9 @@ module UnionRouteLinks =
             for decl in decls do
                 match decl with
                 | SynModuleDecl.Types(typeDefns, _) ->
-                    for SynTypeDefn(typeInfo = SynComponentInfo(longId = ci); typeRepr = repr) in typeDefns do
+                    for SynTypeDefn(typeInfo = typeInfo; typeRepr = repr) in typeDefns do
+                        let ci = typeInfo.LongIdent
+
                         match repr with
                         | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(_, cases, _), _) ->
                             match lastIdent ci with

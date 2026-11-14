@@ -110,8 +110,10 @@ let collectAnonRecordRanges (input: ParsedInput) : range list =
             | Some(e, _) -> walkExpr e
             | None -> ()
 
-            for (_, _, fieldExpr) in fields do
-                walkExpr fieldExpr
+            for field in fields do
+                match field with
+                | SynExprAnonRecordFieldOrSpread.Field(field = SynExprAnonRecordField(expr = fieldExpr))
+                | SynExprAnonRecordFieldOrSpread.Spread(spread = SynExprSpread(expr = fieldExpr)) -> walkExpr fieldExpr
         | SynExpr.Typed(expr = e; targetType = t) ->
             walkExpr e
             walkType t
@@ -148,8 +150,10 @@ let collectAnonRecordRanges (input: ParsedInput) : range list =
             | Some(e, _) -> walkExpr e
             | None -> ()
 
-            for SynExprRecordField(expr = e) in fields do
-                Option.iter walkExpr e
+            for field in fields do
+                match field with
+                | SynExprRecordFieldOrSpread.Field(field = SynExprRecordField(expr = e)) -> Option.iter walkExpr e
+                | SynExprRecordFieldOrSpread.Spread(spread = SynExprSpread(expr = e)) -> walkExpr e
         | SynExpr.ArrayOrListComputed(expr = e)
         | SynExpr.ComputationExpr(expr = e)
         | SynExpr.Do(expr = e)
@@ -236,9 +240,11 @@ let collectAnonRecordRanges (input: ParsedInput) : range list =
         | SynTypeDefnRepr.ObjectModel(members = objMembers) -> List.iter walkMemberDefn objMembers
         | SynTypeDefnRepr.Simple(simpleRepr = simple) ->
             match simple with
-            | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
-                for SynField(fieldType = t) in fields do
-                    walkType t
+            | SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = fields) ->
+                for field in fields do
+                    match field with
+                    | SynFieldOrSpread.Field(SynField(fieldType = t))
+                    | SynFieldOrSpread.Spread(SynTypeSpread(ty = t)) -> walkType t
             | SynTypeDefnSimpleRepr.TypeAbbrev(rhsType = t) -> walkType t
             | _ -> ()
         | _ -> ()

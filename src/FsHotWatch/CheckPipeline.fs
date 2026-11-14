@@ -11,6 +11,35 @@ open FsHotWatch.Logging
 open FsHotWatch.CheckCache
 open FsHotWatch.CheckCacheTally
 
+/// The F# language version FCS checks a project with. MSBuild passes the project's own
+/// `--langversion` (or none, and FCS uses its default), and an FCS from a newer SDK band than
+/// the build's reads `latest` as its own newest version. `FSHW_FCS_LANGVERSION` (e.g. `10.0`)
+/// pins every project to one version so the check matches what the build's fsc accepts.
+/// EXPERIMENT (AUTOMATION-1622): toggled by the environment, read once.
+type LangVersionOverride =
+    | AsProject
+    | Pinned of version: string
+
+module LangVersionOverride =
+    let private flag = "--langversion:"
+
+    let fromEnvironment: LangVersionOverride =
+        match Environment.GetEnvironmentVariable "FSHW_FCS_LANGVERSION" with
+        | null
+        | "" -> AsProject
+        | version -> Pinned(version.Trim())
+
+    let apply (setting: LangVersionOverride) (options: FSharpProjectOptions) : FSharpProjectOptions =
+        match setting with
+        | AsProject -> options
+        | Pinned version ->
+            let others =
+                options.OtherOptions
+                |> Array.filter (fun o -> not (o.StartsWith(flag, StringComparison.OrdinalIgnoreCase)))
+
+            { options with
+                OtherOptions = Array.append others [| flag + version |] }
+
 let private cancelAndDispose (cts: CancellationTokenSource) =
     try
         cts.Cancel()
@@ -1186,6 +1215,8 @@ type CheckPipeline
     /// from the project survived in the per-file map with the project's OLD options, and
     /// every later check and scan of the registered set kept reaching for it.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
+        let options = LangVersionOverride.apply LangVersionOverride.fromEnvironment options
+
         let checkable (o: FSharpProjectOptions) =
             o.SourceFiles
             |> Array.filter (fun f -> not (PathFilter.isGeneratedFor o.ProjectFileName f))

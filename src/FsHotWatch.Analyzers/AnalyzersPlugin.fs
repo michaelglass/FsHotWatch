@@ -312,7 +312,7 @@ let internal foldResults
         results
         |> List.collect (fun r ->
             match r.Output with
-            | Result.Ok messages -> List.map toEntry messages
+            | Result.Ok messages -> messages |> List.map (fun m -> toEntry m.Message)
             | Result.Error _ -> [])
 
     let crashes =
@@ -664,7 +664,7 @@ let runsOn (repoRoot: string option) (scopes: Map<string, AnalyzerScope>) : stri
         | None -> true
 
 /// Runs the loaded analyzer set — one Client per configured path — over one file's
-/// context. Production uses the SDK's `RunAnalyzersSafely`, which hands a raising
+/// context. Production uses the SDK's `RunAnalyzers` (0.41+), which hands a raising
 /// analyzer's exception back as that analyzer's result instead of throwing.
 type internal AnalyzerRunner = Client<CliAnalyzerAttribute, CliContext> list -> CliContext -> Async<AnalysisResult list>
 
@@ -673,7 +673,7 @@ let internal runSafely: AnalyzerRunner =
         async {
             let! perPath =
                 clients
-                |> List.map (fun client -> client.RunAnalyzersSafely context)
+                |> List.map (fun client -> client.RunAnalyzers context)
                 |> Async.Parallel
 
             return List.concat perPath

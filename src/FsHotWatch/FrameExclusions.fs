@@ -84,7 +84,7 @@ let private codeOfLine (tokenizer: FSharpSourceTokenizer) (state: FSharpTokenize
 /// its lines kept. What is left is code plus anything the lexer did not call prose, so a
 /// construct found in it can be a false alarm but is never a use missed.
 let private codeOf (text: string) : string =
-    let tokenizer = FSharpSourceTokenizer([], None, None, None)
+    let tokenizer = FSharpSourceTokenizer([], None, None)
 
     text.Split('\n')
     |> Array.mapFold (codeOfLine tokenizer) FSharpTokenizerLexState.Initial

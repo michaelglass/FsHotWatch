@@ -71,8 +71,8 @@ module StringRouteConstants =
             for decl in decls do
                 match decl with
                 | SynModuleDecl.Let(bindings = bindings) -> handleBindings moduleName bindings
-                | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = lid); decls = nested) ->
-                    walkDecls (lastIdent lid |> Option.defaultValue moduleName) nested
+                | SynModuleDecl.NestedModule(moduleInfo = moduleInfo; decls = nested) ->
+                    walkDecls (lastIdent moduleInfo.LongIdent |> Option.defaultValue moduleName) nested
                 | _ -> ()
 
         match parseResults.ParseTree with

@@ -10,7 +10,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.39.2" />
+        <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.42.0-fcs4313.4" />
         <!-- FSharp.Core is EXACT, never floated, and equal to the FSharp.Core the pinned FCS
              below requires (43.12.402 declares FSharp.Core [10.1.402]). A packed nuspec's
              floor is the version restore RESOLVED at pack time, so a float makes the floor
@@ -21,14 +21,14 @@
              compiles against FSharp.Core references it explicitly, so the floor is declared
              rather than inherited. scripts/check-package-floors.fsx (`mise run
              package-floors`, also in CI) fails when this floats or a packed floor exceeds it. -->
-        <PackageVersion Include="FSharp.Core" Version="10.1.402" />
+        <PackageVersion Include="FSharp.Core" Version="11.0.101" />
         <!-- FCS is EXACT, never floated: the fshw host supplies FCS to
              TestPrune.Analyzers at load time, and FCS's assembly version carries the patch
              (43.12.402.0), so an analyzer built against any other patch fails to load in the
              gate. Keep this equal to the FSharp.Compiler.Service in the pinned fshotwatch.cli's
              deps.json (.config/dotnet-tools.json) and move the two together;
              ToolchainPinTests fails when they diverge. -->
-        <PackageVersion Include="FSharp.Compiler.Service" Version="43.12.402" />
+        <PackageVersion Include="FSharp.Compiler.Service" Version="43.13.101.1-mg.1" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
@@ -57,7 +57,7 @@
         <PackageVersion Include="FSharp.Data.Adaptive" Version="1.2.26" />
         <!-- FsHotWatch.Lint only (unused by every consumer; retired with it). The gate's own
              FSharpLint analyzer is tools/fsharplint-shim, which pins its version outside CPM. -->
-        <PackageVersion Include="FSharpLintAnalyzerShim" Version="0.5.0-alpha.1" />
+        <PackageVersion Include="FSharpLintAnalyzerShim" Version="0.6.0-alpha.1-ref.zwqxlzro.g6272cc261260" />
         <PackageVersion Include="FsCheck" Version="3.3.2" />
         <PackageVersion Include="G-Research.FSharp.Analyzers" Version="0.25.0" />
         <PackageVersion Include="Ignore" Version="0.2.1" />
