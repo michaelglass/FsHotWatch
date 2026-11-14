@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- refactor: L1, the outcome store's records, moves into `FsHotWatch.Core` as `OutcomeRecords` (AUTOMATION-1695).
+  It contains the record codec (`RecordCodec`, unchanged byte for byte, which `RecordBytesGoldenTests` pins), `StoredRecord`,
+  whose counts, duration and run id live in `Ran` (`TestRun | InRun | NonTest`) and nowhere else, and one read
+  of a key as a union (`KeyRead`: `NothingFiled | OnlyRejected | Answered | Unreadable`). It also has the store interface
+  `IOutcomeStore` and an in-memory store for the simulation. `OutcomeStore.Store` implements `IOutcomeStore` and
+  reads through `KeyRead.ofFiles`; its existing members are unchanged. `OutcomeStore.Counts` is an abbreviation of
+  `OutcomeRecords.Counts`. A payload with a duration and no counts, which no writer files, now reads as torn.
+
 - refactor: R(c, T), the requirement set a lookup verdict is decided over, moves into `FsHotWatch.Core` as module
   `Requirements` (AUTOMATION-1695): `Configured`, `Command` (Check | Confirm), `Subject` (tree, producer, K_P keys),
   the key functions and `requirements`. The keys and requirements are unchanged.
