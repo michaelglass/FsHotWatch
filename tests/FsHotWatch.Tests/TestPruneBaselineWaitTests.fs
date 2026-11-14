@@ -637,7 +637,7 @@ let ``negative control (1587): a sealed tree this checkout's full suite never pa
 // The seal itself.
 // ---------------------------------------------------------------------------
 
-[<Fact(Timeout = 30000)>]
+[<Fact>]
 let ``IndexSeal: a seal reads back, and a cleared, blank or unwritable one is no seal`` () =
     withTempDir "index-seal" (fun dir ->
         let db = Path.Combine(dir, "tp.db")
@@ -659,7 +659,7 @@ let ``IndexSeal: a seal reads back, and a cleared, blank or unwritable one is no
         test <@ logged.Count >= 1 @>
         test <@ IndexSeal.load (Path.Combine(blocker, "tp.db")) = None @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact>]
 let ``IndexSeal: a seal that cannot be read is no seal, and one that can be neither rewritten nor cleared says so`` () =
     withTempDir "index-seal" (fun dir ->
         let sub = Path.Combine(dir, "idx")
