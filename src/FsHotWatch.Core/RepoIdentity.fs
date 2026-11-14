@@ -63,8 +63,7 @@ let private repositoryName (source: RepoIdentitySource) =
 let namespaceOf (repoRoot: string) : string =
     let source = describe repoRoot
 
-    let digest =
-        (ContentHash.ofText (identitySource source)).Substring(0, 16)
+    let digest = (ContentHash.ofText (identitySource source)).Substring(0, 16)
 
     let label =
         let name = repositoryName source
@@ -80,4 +79,4 @@ let namespaceOf (repoRoot: string) : string =
         else
             "repo"
 
-    $"%s{label}-%s{digest}"
+    $"{label}-{digest}"

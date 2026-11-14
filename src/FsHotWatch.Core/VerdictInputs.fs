@@ -42,6 +42,7 @@
 module FsHotWatch.VerdictInputs
 
 open System
+open System.Globalization
 open System.IO
 open System.Text.Json
 open Ignore
@@ -183,18 +184,29 @@ let private tryStringProp (el: JsonElement) (name: string) : string option =
 /// error names WHICH entry so a 29-entry declaration is fixable without bisecting.
 let private parseEntry (reasonKey: string) (index: int) (el: JsonElement) : Result<string * string, string> =
     if el.ValueKind <> JsonValueKind.Object then
-        Error $"entry %d{index} is not an object — each entry is {{ \"path\": …, \"%s{reasonKey}\": … }}"
+        Error(
+            "entry "
+            + (index.ToString(CultureInfo.InvariantCulture))
+            + " is not an object — each entry is { \"path\": …, \""
+            + reasonKey
+            + "\": … }"
+        )
     else
         match tryStringProp el "path", tryStringProp el reasonKey with
-        | None, _ -> Error $"entry %d{index} has no non-empty 'path'"
+        | None, _ -> Error $"entry {index.ToString(CultureInfo.InvariantCulture)} has no non-empty 'path'"
         | Some path, None ->
-            Error
-                $"'%s{path}' has no non-empty '%s{reasonKey}' — a declaration without a stated reason is one no reviewer can check"
+            Error(
+                "'"
+                + path
+                + "' has no non-empty '"
+                + reasonKey
+                + "' — a declaration without a stated reason is one no reviewer can check"
+            )
         | Some path, Some reason ->
             let normalized = normalizeSlashes (path.Trim())
 
             if escapesRepo normalized then
-                Error $"'%s{path}' is not inside the repo — a verdict input must be part of the tree being addressed"
+                Error $"'{path}' is not inside the repo — a verdict input must be part of the tree being addressed"
             else
                 Ok(normalized, reason)
 
@@ -207,10 +219,10 @@ let private parseArray
     | false, _ -> []
     | true, arr when arr.ValueKind = JsonValueKind.Array ->
         arr.EnumerateArray()
-        |> Seq.mapi (fun i el -> parseEntry reasonKey i el |> Result.mapError (fun e -> $"%s{arrayKey}: %s{e}"))
+        |> Seq.mapi (fun i el -> parseEntry reasonKey i el |> Result.mapError (fun e -> $"{arrayKey}: {e}"))
         |> Seq.toList
         |> List.map (Result.map List.singleton)
-    | true, _ -> [ Error $"'%s{arrayKey}' must be an array" ]
+    | true, _ -> [ Error $"'{arrayKey}' must be an array" ]
 
 /// Parse the `verdictInputs` block out of `.fshw.json`'s text.
 ///
@@ -265,7 +277,12 @@ let parse (json: string) : Declaration =
                     |> List.countBy fst
                     |> List.filter (fun (_, n) -> n > 1)
                     |> List.map (fun (p, n) ->
-                        $"%s{label}: '%s{p}' is declared %d{n} times — one path, one stated reason")
+                        (label
+                         + ": '"
+                         + p
+                         + "' is declared "
+                         + (n.ToString(CultureInfo.InvariantCulture))
+                         + " times — one path, one stated reason"))
 
                 // A path declared as BOTH an input and a not-an-input is not a
                 // conflict to resolve by precedence; it is two statements that
@@ -278,7 +295,7 @@ let parse (json: string) : Declaration =
                     |> List.map fst
                     |> List.filter excluded.Contains
                     |> List.map (fun p ->
-                        $"'%s{p}' is declared in BOTH 'hashed' and 'notInputs' — it cannot be an input and not an input")
+                        $"'{p}' is declared in BOTH 'hashed' and 'notInputs' — it cannot be an input and not an input")
 
                 { Hashed = hashed |> List.map (fun (p, w) -> { Path = p; Why = w })
                   NotInputs = notInputs |> List.map (fun (p, r) -> { Path = p; Reason = r })
