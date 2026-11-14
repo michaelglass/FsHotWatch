@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the shadow lookup answers an idle file command from its last outcome while the files its pattern matches are
+  unchanged, instead of reporting it missing on every tree it did not run on (AUTOMATION-1577, ADR-074; every
+  intelligence check since 1568 read missing on `plugin:file-cmd-*.fsx`). `DaemonConfig.requiredPlugins` and
+  `nonTestPlugins` give each required plugin with its `LookupEligibility` (`requiredPluginNames` and
+  `nonTestPluginNames` are their names); `configuredRequiredPlugins` reads them from `.fshw.json`.
+  `ShadowVerdict.Configured.RequiredPlugins` is `PluginInputs.RequiredPlugin list` (breaking for a caller that built
+  it from names). `pluginKeyFor` keys each plugin by its eligibility and `recordsKeyed` files under it (`recordsOf`
+  keeps the whole-tree key). A missing plugin that declares no inputs is named, with why, in `noDeclaredInputs` and
+  in the shadow line's `lookup.noDeclaredInputs`; `lineAs` and `line` take that list.
+
 - fix: a restarted daemon diffs from this checkout's own full pass instead of running the full suite again (AUTOMATION-1682,
   ADR-071; not in alpha.148). A replayed full pass files the `test-baseline` record; a restart diffs from the tree the
   index is sealed at when this checkout's full suite passed it (the ledger keeps 20); and a full pass whose index seal

@@ -137,6 +137,7 @@
     <Compile Include="OptionsPortable.fs" />
     <Compile Include="LookupVerdict.fs" />
     <Compile Include="Watcher.fs" />
+    <Compile Include="PluginInputs.fs" />
     <Compile Include="CommandPreprocessor.fs" />
     <Compile Include="SharedWatchPool.fs" />
     <Compile Include="CheckerPartitions.fs" />
