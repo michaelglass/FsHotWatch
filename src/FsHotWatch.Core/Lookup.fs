@@ -172,12 +172,15 @@ let ofRepoWith
                   TestProjects = List.sort required.TestProjects }
 
             // Each plugin resolved over the tree as the shadow resolves it (AUTOMATION-1577): one that
-            // declares its inputs is keyed by them, which walks the repository root for its pattern
-            // (the pattern scope), so it is a phase of its own.
+            // declares its inputs is keyed by them, which walks the repository root once for every
+            // pattern (the pattern scope, `PluginInputs.scopeOf`), so it is a phase of its own.
             let resolved =
                 timer.Time(
                     "plugin-inputs",
-                    fun () -> Requirements.resolve (PluginInputs.keyed repoRoot producer) configured
+                    fun () ->
+                        // One walk of the root, shared by every declared pattern.
+                        let scope = lazy (PluginInputs.scopeOf repoRoot)
+                        Requirements.resolve (PluginInputs.keyedIn scope producer) configured
                 )
 
             timer.Count(
