@@ -77,6 +77,7 @@
     <Compile Include="TestEvidenceStoreTests.fs" />
     <Compile Include="ActionKeyTests.fs" />
     <Compile Include="OutcomeStoreTests.fs" />
+    <Compile Include="RecordBytesGoldenTests.fs" />
     <Compile Include="OutcomeAnalyticsTests.fs" />
     <Compile Include="LookupVerdictTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
