@@ -98,16 +98,16 @@ let lookupIn
     | Some outcome -> Some outcome
     | None -> kpStore |> Option.bind read
 
-/// The lookup verdict of R(`command`, `subject`'s tree) for `configured`, from `store` and, for
+/// The lookup verdict of R(`command`, `subject`'s tree) for `resolved`, from `store` and, for
 /// the keys only the test runner files, `kpStore`.
 let answer
     (command: Requirements.Command)
     (store: OutcomeRecords.IOutcomeStore)
     (kpStore: OutcomeRecords.IOutcomeStore option)
-    (configured: Requirements.Configured)
+    (resolved: Requirements.Resolved)
     (subject: Requirements.Subject)
     : LookupVerdict.Answer =
-    LookupVerdict.decide (Requirements.requirements command subject configured) (lookupIn command store kpStore)
+    LookupVerdict.decide (Requirements.requirements command subject resolved) (lookupIn command store kpStore)
 
 /// What a pure lookup of a checkout concluded.
 [<RequireQualifiedAccess>]
@@ -168,15 +168,27 @@ let ofRepoWith
             let producer = DaemonIdentity.BinaryIdentity.render identity
 
             let configured: Requirements.Configured =
-                { RequiredPlugins = required.Plugins |> List.map _.Name
+                { RequiredPlugins = required.Plugins
                   TestProjects = List.sort required.TestProjects }
 
-            // Each plugin that declares its inputs keyed by them, as the shadow keys it (AUTOMATION-1577).
-            let declaredInputKeys =
+            // Each plugin resolved over the tree as the shadow resolves it (AUTOMATION-1577): one that
+            // declares its inputs is keyed by them, which walks the repository root for its pattern
+            // (the pattern scope), so it is a phase of its own.
+            let resolved =
                 timer.Time(
-                    "declared-input-keys",
-                    fun () -> PluginInputs.declaredInputKeys repoRoot producer required.Plugins
+                    "plugin-inputs",
+                    fun () -> Requirements.resolve (PluginInputs.keyed repoRoot producer) configured
                 )
+
+            timer.Count(
+                "declared-input-plugins",
+                resolved.RequiredPlugins
+                |> List.filter (fun p ->
+                    match p.Keying with
+                    | PluginInputs.Keying.DeclaredInputs _ -> true
+                    | PluginInputs.Keying.WholeTree -> false)
+                |> List.length
+            )
 
             let store = timer.Time("store-open", fun () -> storeAt repoRoot log)
 
@@ -189,8 +201,7 @@ let ofRepoWith
                             configured.TestProjects
                             { Tree = tree
                               Producer = producer
-                              OutcomeKeys = Map.empty
-                              DeclaredInputKeys = declaredInputKeys }
+                              OutcomeKeys = Map.empty }
                 )
 
             let kpStore =
@@ -199,12 +210,12 @@ let ofRepoWith
                 else
                     Some(OutcomeStore.openFor repoRoot log :> OutcomeRecords.IOutcomeStore)
 
-            let required = Requirements.requirements command subject configured
+            let required = Requirements.requirements command subject resolved
             timer.Count("requirements", required.Length)
             timer.Count("keys", (required |> List.sumBy (fun r -> r.Alternatives |> List.sumBy List.length)))
 
             let decided =
-                timer.Time("decide", fun () -> answer command store kpStore configured subject)
+                timer.Time("decide", fun () -> answer command store kpStore resolved subject)
 
             Read.Answered(tree, producer, decided)
 
