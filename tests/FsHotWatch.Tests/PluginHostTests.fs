@@ -1694,12 +1694,6 @@ let ``RerunPlugin returns Error for unregistered plugin`` () =
     | Result.Error msg -> test <@ msg.Contains("nonexistent") @>
     | Result.Ok() -> failwith "expected Error"
 
-[<Fact(Timeout = 15000)>]
-let ``RerunPlugin returns Ok for registered plugin`` () =
-    let host = PluginHost.create nullChecker "/tmp"
-    host.RegisterFileCommandPattern("coverage-ratchet", parsePattern "*.ratchet.json")
-    test <@ host.RerunPlugin("coverage-ratchet", (fun () -> [])) = Result.Ok() @>
-
 // ---------------------------------------------------------------------------
 // `rerun` reaches every FileChanged subscriber, not only FileCommands
 // ---------------------------------------------------------------------------
@@ -1757,6 +1751,58 @@ let ``RerunPlugin refuses a FileChanged subscriber while no source files are reg
         test <@ msg.Contains "no source files are registered" @>
 
     test <@ List.isEmpty (batches ()) @>
+
+// ---------------------------------------------------------------------------
+// A rerun reaches the plugin it names, and no other (AUTOMATION-1726)
+// ---------------------------------------------------------------------------
+//
+// A daemon's start re-runs each declared-input plugin with nothing on record (ADR-074). The
+// re-fire was a broadcast: every FileChanged subscriber was handed the synthetic change, on the
+// assumption that the others would answer from their task caches. A build plugin at start has
+// no entry for its still-empty project graph, so it ran `dotnet build` at once, 0.3 s ahead of
+// discovery's options evaluation, which then saw its inputs move and filed no record
+// (pin150-gate and e5-150 on alpha.150).
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``RerunPlugin of a file command reaches that plugin and no other subscriber`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    let target, targetBatches = fileChangedRecorder "changelog-gate"
+    let bystander, bystanderBatches = fileChangedRecorder "build-like"
+    host.RegisterHandler(target)
+    host.RegisterHandler(bystander)
+    host.RegisterFileCommandPattern("changelog-gate", parsePattern "CHANGELOG.md")
+
+    test <@ host.RerunPlugin("changelog-gate", (fun () -> [ "/tmp/src/A.fs" ])) = Result.Ok() @>
+
+    waitUntil (fun () -> not (host.AnyPluginBusy()) && not (List.isEmpty (targetBatches ()))) 5000
+    test <@ List.length (targetBatches ()) = 1 @>
+    test <@ List.isEmpty (bystanderBatches ()) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``RerunPlugin of a FileChanged subscriber reaches that plugin and no other subscriber`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    let target, targetBatches = fileChangedRecorder "fmt-like"
+    let bystander, bystanderBatches = fileChangedRecorder "build-like"
+    host.RegisterHandler(target)
+    host.RegisterHandler(bystander)
+
+    let sources = [ "/tmp/src/A.fs"; "/tmp/src/B.fs" ]
+    test <@ host.RerunPlugin("fmt-like", (fun () -> sources)) = Result.Ok() @>
+
+    waitUntil (fun () -> not (host.AnyPluginBusy()) && not (List.isEmpty (targetBatches ()))) 5000
+    test <@ targetBatches () = [ sources ] @>
+    test <@ List.isEmpty (bystanderBatches ()) @>
+
+[<Fact(Timeout = 15000)>]
+let ``RerunPlugin refuses a file command pattern no plugin is registered for`` () =
+    // Delivered to its plugin alone, a pattern with no plugin would re-run nothing: a refusal,
+    // never an `Ok` that reads as a re-run.
+    let host = PluginHost.create nullChecker "/tmp"
+    host.RegisterFileCommandPattern("coverage-ratchet", parsePattern "*.ratchet.json")
+
+    match host.RerunPlugin("coverage-ratchet", (fun () -> [])) with
+    | Ok() -> failwith "expected a refusal: no plugin is registered under the pattern's name"
+    | Result.Error msg -> test <@ msg.Contains "coverage-ratchet" @>
 
 [<Fact(Timeout = 15000)>]
 let ``RerunPlugin names a preprocessor as such and points at fshw format`` () =

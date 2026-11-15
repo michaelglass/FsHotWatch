@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a plugin re-run reaches that plugin alone, so a daemon's start no longer builds ahead of its own discovery
+  (AUTOMATION-1726). `PluginHost.RerunPlugin` broadcast its synthetic `FileChanged` to every subscriber, relying on the
+  others to answer from their task caches. At a start, ADR-074 re-runs each declared-input plugin with nothing on record;
+  the build plugin, whose project graph was still empty, had nothing cached and ran `dotnet build` 0.3 s ahead of the
+  options evaluation, which saw `bin/` and `obj/` move and filed no record (alpha.150, pin150-gate and e5-150). The
+  re-fire now goes only to the named plugin, and a pattern with no plugin of that name is refused rather than answered
+  `Ok`. A re-run no longer unsets any file's check, since nothing changed on disk.
+
 - fix: options-inputs and portable options records write every set in one canonical order (AUTOMATION-1723,
   AUTOMATION-1672). What an evaluation read, probed and listed, and the variables its files name, are gathered in
   concurrent collections whose order is the process's hash order, so two evaluations of the same inputs filed different
