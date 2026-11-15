@@ -24,6 +24,18 @@
   by the evaluating process from the SDK the `sdk` label already keys). A knob the evaluated files name is still
   keyed. `TestEvidenceKey.keyedEnvironment` is the test-evidence half, now testable on its own.
 
+- fix: a build beside an options evaluation no longer stops it being filed: the projects' build output is a replay
+  precondition, not a key (AUTOMATION-1726, ADR-076). Behaviour change: the options key moves
+  (`OptionsRecordSchema` `fshw-options-semantics-v2`, the index `fshw-options-inputs-v2`), so each workspace evaluates
+  cold once after this release, in the same release as AUTOMATION-1725's key change. `FiledInputs.ofEvaluation` parses
+  an evaluation's inputs once, against each project's `bin/` and `obj/<Configuration>/`: the compile items generated
+  there become `Generated`, which a replay requires to exist (and evaluates without, which regenerates them) but whose
+  bytes are not keyed, and probes of those directories are dropped; restore's outputs in `obj/` itself (the assets,
+  the nuget.g props) and every listing stay keyed. The filer watches only what is keyed. Measured on intelligence, a
+  record holds 64 generated items and 100 build-output probes; built against clean, every project kind (library, test,
+  web SDK, Fable) evaluates to identical options. Keyed, a build writing them while discovery evaluated refused the
+  filing (pin150-gate, e5-150, canary-fshotwatch-cli).
+
 ## 0.10.0-alpha.118 - 2026-11-16
 
 - fix: a plugin re-run reaches that plugin alone, so a daemon's start no longer builds ahead of its own discovery

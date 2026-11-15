@@ -198,7 +198,7 @@ let ``GOLDEN: the check-record key of a fixture project and every component it i
 let private goldenOptionsToolchain =
     "Ionide.ProjInfo@0.74.2.0/55555555-5555-5555-5555-555555555555;\
      Microsoft.Build@15.1.0.0/66666666-6666-6666-6666-666666666666;\
-     fshw-options-schema=fshw-options-semantics-v1"
+     fshw-options-schema=fshw-options-semantics-v2"
 
 [<Fact(Timeout = 15000)>]
 let ``GOLDEN: the options-record keys of a fixed request and every component they are folded from`` () =
@@ -240,8 +240,8 @@ let ``GOLDEN: the options-record keys of a fixed request and every component the
 
     golden
         "The options-inputs request key and the options-record key"
-        ("ak1:5d27b2fa53c41b9ee7f7c0c9aa47f96a1f706bbd317debf3010ffaa08fc826e3",
-         "ak1:5041e894015bfdec089ad7242230414053e82970b9a1ce97ace1cc437c536b49")
+        ("ak1:ce1acee5096f314d5f674ba5df327d191b9a55352632a761e3b95ff67a908e6d",
+         "ak1:17d603c33e224108c1310f47578181a766a128d023321b44b82d52cd848fac40")
         (requestKey.Value.Text, optionsKey.Value.Text)
 
 // AUTOMATION-1602 (b): the portable request key names no checkout root, so one tree's
@@ -279,7 +279,7 @@ let ``GOLDEN: the portable options request key names no root and is one key for 
 
     golden
         "The portable options request key"
-        "ak1:a6fed0d49ebcdd7e3f9b8049f84661d371cfce459bee414b7ed216b45e67fbd2"
+        "ak1:856e4d5c27199af0250771b3eec018fb654efb712c14fd0241034149572e846b"
         short.Value.Text
 
 // --- the golden test-prune analysis-record key ---
