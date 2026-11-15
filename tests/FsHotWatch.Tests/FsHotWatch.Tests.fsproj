@@ -294,6 +294,7 @@
     <Compile Include="NowarnFaultTests.fs" />
     <Compile Include="OptionsRecordsTests.fs" />
     <Compile Include="OptionsCanonicalOrderTests.fs" />
+    <Compile Include="HostKnobKeyTests.fs" />
     <Compile Include="OptionsPortableTests.fs" />
     <Compile Include="RecordKeyGoldenTests.fs" />
     <Compile Include="RecordAuditTests.fs" />
