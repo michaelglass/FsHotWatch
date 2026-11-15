@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: `mutate --judge` rejects an unknown judgement when the flag is read, and `--include` that
+  matches no method is an error rather than a silently unmeasured control (AUTOMATION-1733).
+
 - feat: `mutate --judge probe|symbol|static`, `--always-class` and `--include` (AUTOMATION-1688): judge each mutant
   against fshw's static selection, and always mutate a seeded control.
 
