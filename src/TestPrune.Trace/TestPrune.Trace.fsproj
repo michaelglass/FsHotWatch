@@ -38,6 +38,7 @@
         <Compile Include="RuntimeResolution.fs" />
         <Compile Include="Manifest.fs" />
         <Compile Include="PdbCheck.fs" />
+        <Compile Include="Leftovers.fs" />
         <Compile Include="Launch.fs" />
         <Compile Include="Ctrf.fs" />
         <Compile Include="ClosureDocuments.fs" />
