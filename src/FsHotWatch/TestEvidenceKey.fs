@@ -321,23 +321,32 @@ let moved (stored: (string * string) list) (current: (string * string) list) : s
 
     fromCurrent @ onlyStored
 
+/// The variables of `environment` that can change what MSBuild produces
+/// (`SessionScope.isMsbuildRelevant`), as `name=value` lines in ordinal order: the host knobs
+/// (`SessionScope.hostKnobs`, AUTOMATION-1725) and those a .NET process writes into its own
+/// environment (`SessionScope.processOwned`) aside.
+let keyedEnvironment (environment: (string * string) list) : string list =
+    environment
+    |> List.filter (fun (name, _) ->
+        SessionScope.isMsbuildRelevant name
+        && not (SessionScope.isHostKnob name)
+        && not (
+            SessionScope.processOwned
+            |> List.exists (fun o -> String.Equals(o, name, StringComparison.OrdinalIgnoreCase))
+        ))
+    |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
+    |> List.map (fun (name, value) -> $"%s{name}=%s{value}")
+
 /// The toolchain half of every key: the SDK `dotnet` resolves here, the checker build
 /// (`CheckCache.toolchainIdentity`: FCS, FSharp.Core and the check-record schema), the platform, and the values of the
-/// environment variables that can change what MSBuild produces.
+/// environment variables that can change what MSBuild produces (`keyedEnvironment`).
 let toolchainOf (repoRoot: string) : string =
     let msbuildEnvironment =
         Environment.GetEnvironmentVariables()
         |> Seq.cast<System.Collections.DictionaryEntry>
         |> Seq.map (fun e -> string e.Key, string e.Value)
-        |> Seq.filter (fun (name, _) ->
-            SessionScope.isMsbuildRelevant name
-            && not (
-                SessionScope.processOwned
-                |> List.exists (fun o -> String.Equals(o, name, StringComparison.OrdinalIgnoreCase))
-            ))
-        |> Seq.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
-        |> Seq.map (fun (name, value) -> $"%s{name}=%s{value}")
-        |> Seq.toList
+        |> List.ofSeq
+        |> keyedEnvironment
 
     [ DotnetToolchain.identity repoRoot
       CheckCache.toolchainIdentity
