@@ -249,15 +249,22 @@ let listingState (listing: Listing) : string =
 
 /// The variables of `environment` an evaluation that reads `names` depends on: those it
 /// names, in any case (MSBuild properties are case-insensitive), and those `envPrefixes`
-/// marks other than the runtime's internal knobs, as `env:<name>` labels over the value's
-/// digest.
+/// marks, as `env:<name>` labels over the value's digest. A prefix does not key the runtime's
+/// internal knobs, the host knobs (`SessionScope.hostKnobs`, AUTOMATION-1725) or what the
+/// evaluating process writes into its own environment (`SessionScope.processOwned`, derived from
+/// the SDK the `sdk` label keys); a name the files name is keyed whatever it is.
 let environmentInputs (names: string list) (environment: (string * string) list) : (string * string) list =
     let wanted = HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
+
+    let processOwned =
+        HashSet<string>(SessionScope.processOwned, StringComparer.OrdinalIgnoreCase)
 
     environment
     |> List.filter (fun (name, _) ->
         wanted.Contains name
         || not (name.StartsWith(runtimeInternalPrefix, StringComparison.OrdinalIgnoreCase))
+           && not (SessionScope.isHostKnob name)
+           && not (processOwned.Contains name)
            && envPrefixes
               |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
     |> List.distinctBy fst
