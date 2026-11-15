@@ -96,19 +96,30 @@ let private askLinux (path: string) : Identity voption =
     else
         ValueNone
 
+/// `ask`, with a native call that cannot be made (no libc, no such entry point, a marshalling
+/// failure) read as no identity: the cache then hashes the file, never errs.
+let internal orNone (ask: string -> Identity voption) (path: string) : Identity voption =
+    try
+        ask path
+    with
+    | :? DllNotFoundException
+    | :? EntryPointNotFoundException
+    | :? MarshalDirectiveException -> ValueNone
+
+/// The reader for a platform that is macOS (`isMacOS`), Linux (`isLinux`) or neither: `mac` or
+/// `linux` with an unmakeable call read as no identity, or no identity at all elsewhere.
+let internal selectReader
+    (isMacOS: bool)
+    (isLinux: bool)
+    (mac: string -> Identity voption)
+    (linux: string -> Identity voption)
+    : string -> Identity voption =
+    if isMacOS then orNone mac
+    elif isLinux then orNone linux
+    else fun _ -> ValueNone
+
 /// The identity of what `path` names, following a symlink as a read of it does, or none: a
 /// missing file, an unsupported platform or filesystem, or a failed call. None is never an
 /// error; the cache reads the file instead.
 let read: string -> Identity voption =
-    let ask =
-        if OperatingSystem.IsMacOS() then askMacOS
-        elif OperatingSystem.IsLinux() then askLinux
-        else fun _ -> ValueNone
-
-    fun path ->
-        try
-            ask path
-        with
-        | :? DllNotFoundException
-        | :? EntryPointNotFoundException
-        | :? MarshalDirectiveException -> ValueNone
+    selectReader (OperatingSystem.IsMacOS()) (OperatingSystem.IsLinux()) askMacOS askLinux

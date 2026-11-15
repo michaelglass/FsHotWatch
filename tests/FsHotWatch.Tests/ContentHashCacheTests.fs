@@ -494,3 +494,62 @@ let ``the cache lives in the checkout's own .fshw directory`` () =
     let root = Path.Combine(Path.GetTempPath(), "some-checkout")
 
     test <@ FsHwPaths.contentHashCacheFile root = Path.Combine(FsHwPaths.root root, "content-hash-cache") @>
+
+/// A getattrlist reply as the kernel fills it for the device, mtime, ctime, file id and data
+/// length: a u32 length, the i32 device, two `timespec`s, the u64 id, the i64 length.
+let private attrListReply () =
+    let buf = Array.zeroCreate<byte> 64
+
+    let put (offset: int) (bytes: byte array) =
+        Array.blit bytes 0 buf offset bytes.Length
+
+    put 0 (BitConverter.GetBytes 56u)
+    put 4 (BitConverter.GetBytes 16777233u)
+    put 8 (BitConverter.GetBytes 5L)
+    put 16 (BitConverter.GetBytes 6L)
+    put 24 (BitConverter.GetBytes 3L)
+    put 32 (BitConverter.GetBytes 4L)
+    put 40 (BitConverter.GetBytes 77UL)
+    put 48 (BitConverter.GetBytes 12L)
+    buf
+
+[<Fact>]
+let ``a getattrlist reply reads as the identity at its documented offsets, on every platform`` () =
+    let expected: FileIdentity.Identity =
+        { Size = 12L
+          ModifiedNs = 5_000_000_006L
+          ChangedNs = 3_000_000_004L
+          Inode = 77UL
+          Device = 16777233UL }
+
+    test <@ FileIdentity.parseMacOS (attrListReply ()) = expected @>
+
+let private known: FileIdentity.Identity =
+    { Size = 1L
+      ModifiedNs = 2L
+      ChangedNs = 3L
+      Inode = 4UL
+      Device = 5UL }
+
+let private reads (identity: FileIdentity.Identity) : string -> FileIdentity.Identity voption =
+    fun _ -> ValueSome identity
+
+[<Fact>]
+let ``each platform reads identities with its own reader, and any other with none`` () =
+    let mac = { known with Inode = 10UL }
+    let linux = { known with Inode = 20UL }
+    test <@ FileIdentity.selectReader true false (reads mac) (reads linux) "/f" = ValueSome mac @>
+    test <@ FileIdentity.selectReader false true (reads mac) (reads linux) "/f" = ValueSome linux @>
+    test <@ FileIdentity.selectReader false false (reads mac) (reads linux) "/f" = ValueNone @>
+
+[<Fact>]
+let ``a native call that cannot be made reads as no identity, so the file is hashed instead`` () =
+    let throwing (ex: exn) : string -> FileIdentity.Identity voption = fun _ -> raise ex
+
+    for ex in
+        [ DllNotFoundException() :> exn
+          EntryPointNotFoundException() :> exn
+          System.Runtime.InteropServices.MarshalDirectiveException() :> exn ] do
+        test <@ FileIdentity.orNone (throwing ex) "/f" = ValueNone @>
+
+    test <@ FileIdentity.orNone (reads known) "/f" = ValueSome known @>

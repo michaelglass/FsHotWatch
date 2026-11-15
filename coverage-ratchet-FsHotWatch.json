@@ -169,15 +169,15 @@
     ],
     "FileIdentity.fs": [
       {
-        "line": 82,
-        "branch": 38,
-        "reason": "2026-11-14 (E5 hash cache): floor = the measured value, no margin. On macOS the Linux reader's live statx call and the platform dispatch's other arms cannot run; `parseLinux` is covered from a constructed buffer.",
+        "line": 91,
+        "branch": 83,
+        "reason": "2026-11-15, measured on macOS by ContentHashCacheTests: line 91.7% (44/48), branch 83.3% (15/18). Each uncovered edge, inspected: askLinux (statx; lines 91-97, and its success/failure branch) is the Linux reader, which cannot run on macOS; the exception filter in orNone has one compiler-generated arm (no listed exception matched, so it rethrows) that no test drives, by design. parseLinux, parseMacOS, selectReader's three platforms and orNone's three exceptions are covered on every platform.",
         "platform": "macos"
       },
       {
-        "line": 60,
-        "branch": 25,
-        "reason": "provisional Linux floor (2026-11-14): not measured; on Linux the getattrlist reader cannot run, so the macOS arm is uncovered instead. Settle from CI artifacts via loosen-from-ci.",
+        "line": 66,
+        "branch": 77,
+        "reason": "2026-11-15, from GitHub CI run 43656051311 (main 36a36550, line 52.2% under the provisional 60) plus the per-edge fix: parseMacOS, selectReader and orNone are now covered on Linux. Each edge Linux cannot cover, inspected in that run's cobertura: askMacOS (getattrlist through MacAttrList; lines 40-55, about 15 lines, and its Ok/Error branch) is the macOS reader, which cannot run on Linux; plus orNone's compiler-generated rethrow arm, as on macOS. Expected about 68.8% lines (33/48) and 83% branches (15/18); floored a little under so a compiler line-count difference does not red it. Settle from the next CI run, never lower.",
         "platform": "linux"
       }
     ],
