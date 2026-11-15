@@ -203,7 +203,7 @@ let ``a kind with no key in both stores is vacuous, never agreement`` () =
                 cleanRoot
                 cleanRoot
                 { everyKey with
-                    Kinds = [ "options-inputs" ] }
+                    Kinds = [ RecordAudit.RecordKind.OptionsInputs ] }
 
         test <@ otherKind.Verdict = RecordAudit.Verdict.Vacuous @>)
 
@@ -280,7 +280,11 @@ let ``a kind without a comparison of its own is compared by outcome and outputs 
         |> ignore
 
         let report =
-            RecordAudit.audit audited.Root clean.Root { everyKey with Kinds = [ "format" ] }
+            RecordAudit.audit
+                audited.Root
+                clean.Root
+                { everyKey with
+                    Kinds = [ RecordAudit.RecordKind.Format ] }
 
         test <@ report.Mismatches |> List.map _.Fields = [ [ "outcome"; "outputs" ] ] @>)
 
@@ -589,13 +593,13 @@ let ``a history mismatch is rendered as history`` () =
 /// One key filed in both stores: `stored` by checkout `storedAt`, `clean` by `cleanAt`.
 let private pair
     (dir: string)
-    (kind: string)
+    (kind: RecordAudit.RecordKind)
     (stored: OutcomeStore.Record -> OutcomeStore.Record)
     (storedOutputs: string option)
     (clean: OutcomeStore.Record -> OutcomeStore.Record)
     (cleanOutputs: string option)
     =
-    let key = ActionKey.create kind [ "file", "a" ]
+    let key = ActionKey.create (RecordAudit.RecordKind.name kind) [ "file", "a" ]
     let audited = storeAt (Path.Combine(dir, "audited"))
     let cleanStore = storeAt (Path.Combine(dir, "clean"))
     let t0 = DateTimeOffset(2026, 11, 13, 0, 0, 0, TimeSpan.Zero)
@@ -621,7 +625,7 @@ let ``CONTROL testprune-analysis: a path-only difference agrees, a planted real 
         let fields, verdict =
             pair
                 dir
-                "testprune-analysis"
+                RecordAudit.RecordKind.TestPruneAnalysis
                 (inCheckout "/w/a")
                 (analysis "/w/a/tests/T.fs")
                 (inCheckout "/w/b")
@@ -633,7 +637,7 @@ let ``CONTROL testprune-analysis: a path-only difference agrees, a planted real 
         let fields, _ =
             pair
                 dir
-                "testprune-analysis"
+                RecordAudit.RecordKind.TestPruneAnalysis
                 (inCheckout "/w/a")
                 (analysis "/w/a/tests/T.fs")
                 (inCheckout "/w/b")
@@ -648,7 +652,13 @@ let ``CONTROL testprune-analysis: a path-only difference agrees, a planted real 
 
     withTempDir "audit-tp-escaped" (fun dir ->
         let fields, verdict =
-            pair dir "testprune-analysis" (inCheckout "/w/a") (span "/w/a/T.fs") (inCheckout "/w/b") (span "/w/b/T.fs")
+            pair
+                dir
+                RecordAudit.RecordKind.TestPruneAnalysis
+                (inCheckout "/w/a")
+                (span "/w/a/T.fs")
+                (inCheckout "/w/b")
+                (span "/w/b/T.fs")
 
         test <@ List.isEmpty fields && verdict = RecordAudit.Verdict.Agree @>)
 
@@ -657,7 +667,7 @@ let ``CONTROL testprune-analysis: a path-only difference agrees, a planted real 
         let fields, _ =
             pair
                 dir
-                "testprune-analysis"
+                RecordAudit.RecordKind.TestPruneAnalysis
                 (inCheckout "/w/a")
                 (analysis "/w/a-old/T.fs")
                 (inCheckout "/w/b")
@@ -678,7 +688,7 @@ let ``CONTROL options-inputs: its sets in another order, case or checkout agree;
         let fields, verdict =
             pair
                 dir
-                "options-inputs"
+                RecordAudit.RecordKind.OptionsInputs
                 (inCheckout "/w/a")
                 (optionsInputs "/w/a" [ "/w/a/x.fsproj"; "/w/a/Directory.Build.props" ] [ "NoWarn"; "Configuration" ])
                 (inCheckout "/w/b")
@@ -690,7 +700,7 @@ let ``CONTROL options-inputs: its sets in another order, case or checkout agree;
         let fields, _ =
             pair
                 dir
-                "options-inputs"
+                RecordAudit.RecordKind.OptionsInputs
                 (inCheckout "/w/a")
                 (optionsInputs "/w/a" [ "/w/a/x.fsproj"; "/w/a/Directory.Build.props" ] [ "NoWarn" ])
                 (inCheckout "/w/b")
@@ -700,7 +710,7 @@ let ``CONTROL options-inputs: its sets in another order, case or checkout agree;
 
     withTempDir "audit-oi-unreadable" (fun dir ->
         let fields, _ =
-            pair dir "options-inputs" id (Some "[1]") id (optionsInputs "/w/b" [] [])
+            pair dir RecordAudit.RecordKind.OptionsInputs id (Some "[1]") id (optionsInputs "/w/b" [] [])
 
         test <@ fields = [ "outputs-unreadable" ] @>)
 
@@ -719,11 +729,15 @@ let ``CONTROL test: a duration differs and agrees; the counts differ and do not`
             DurationMs = Some ms }
 
     withTempDir "audit-test-duration" (fun dir ->
-        let fields, verdict = pair dir "test" (run 10 100L) None (run 10 900L) None
+        let fields, verdict =
+            pair dir RecordAudit.RecordKind.Test (run 10 100L) None (run 10 900L) None
+
         test <@ List.isEmpty fields && verdict = RecordAudit.Verdict.Agree @>)
 
     withTempDir "audit-test-counts" (fun dir ->
-        let fields, _ = pair dir "test" (run 10 100L) None (run 9 100L) None
+        let fields, _ =
+            pair dir RecordAudit.RecordKind.Test (run 10 100L) None (run 9 100L) None
+
         test <@ fields = [ "counts" ] @>)
 
 /// A test-evidence entry as `TestEvidenceStore` files it, under `root`.
@@ -779,7 +793,7 @@ let private evidenceAudit (dir: string) (fileBoth: string -> string -> unit) =
           AuditedEvidence = Some auditedEvidence
           CleanEvidence = Some cleanEvidence }
         { everyKey with
-            Kinds = [ "test-evidence" ] }
+            Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
 
 let private evidenceKey = String('e', 64)
 
@@ -815,7 +829,7 @@ let ``test evidence is vacuous without evidence stores, and its unreadable files
                 (Path.Combine(dir, "a"))
                 (Path.Combine(dir, "c"))
                 { everyKey with
-                    Kinds = [ "test-evidence" ] }
+                    Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
 
         test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>)
 
@@ -919,7 +933,7 @@ let ``test evidence names a different project, and evidence stores that do not e
                   AuditedEvidence = Some(Path.Combine(dir, "ae"))
                   CleanEvidence = Some(Path.Combine(dir, "ce")) }
                 { everyKey with
-                    Kinds = [ "test-evidence" ] }
+                    Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
 
         test <@ report.Kinds |> List.map _.CleanKeys = [ 0 ] @>
         test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>)

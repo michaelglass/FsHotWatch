@@ -4206,7 +4206,7 @@ let ``audit judges this repository's box-wide store against the store a clean ho
     let expected =
         FsHotWatch.OutcomeStore.directoryFor "/repo",
         FsHotWatch.RecordAudit.storeUnderCacheHome "/clean" "/repo",
-        [ "check" ],
+        [ FsHotWatch.RecordAudit.RecordKind.Check ],
         Some FsHotWatch.RecordAudit.DefaultSample
 
     test
@@ -4241,6 +4241,64 @@ let ``audit refuses flags that name no clean store, two of them, a bad key or a 
         @>
 
     test <@ runAudit "/repo" [] = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``audit parses --kind into record kinds: repeated, comma-separated, or all`` () =
+    let kinds (flags: AuditFlag list) : Result<FsHotWatch.RecordAudit.RecordKind list, string> =
+        auditSetup "/repo" (AuditFlag.Clean "/c" :: flags) |> Result.map _.Options.Kinds
+
+    let both: Result<FsHotWatch.RecordAudit.RecordKind list, string> =
+        Ok
+            [ FsHotWatch.RecordAudit.RecordKind.Test
+              FsHotWatch.RecordAudit.RecordKind.TestEvidence ]
+
+    test <@ kinds [ AuditFlag.Kind "test,test-evidence" ] = both @>
+    test <@ kinds [ AuditFlag.Kind "test"; AuditFlag.Kind "test-evidence" ] = both @>
+    test <@ kinds [ AuditFlag.Kind " test , test-evidence " ] = both @>
+    test <@ kinds [ AuditFlag.Kind "all" ] = Ok FsHotWatch.RecordAudit.AuditKind.all @>
+
+[<Fact(Timeout = 15000)>]
+let ``audit refuses an unknown kind by name and lists the valid ones, as a usage error, never a vacuous audit`` () =
+    let refusal (flags: AuditFlag list) : Result<FsHotWatch.RecordAudit.Setup, bool * bool * bool> =
+        auditSetup "/repo" (AuditFlag.Clean "/c" :: flags)
+        |> Result.mapError (fun e -> e.Contains "'tset'", e.Contains "test-evidence", e.Contains "all")
+
+    test <@ refusal [ AuditFlag.Kind "test,tset" ] = Error(true, true, true) @>
+    test <@ refusal [ AuditFlag.Kind "tset" ] = Error(true, true, true) @>
+
+    test
+        <@
+            auditSetup "/repo" [ AuditFlag.Clean "/c"; AuditFlag.Kind "test," ]
+            |> Result.isError
+        @>
+
+    test <@ runAudit "/repo" [ AuditFlag.Clean "/c"; AuditFlag.Kind "test,test-evidence,nope" ] = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``every record kind's audit name is the name its producer files under`` () =
+    let name = FsHotWatch.RecordAudit.RecordKind.name
+
+    let audited =
+        [ name FsHotWatch.RecordAudit.RecordKind.Format
+          name FsHotWatch.RecordAudit.RecordKind.Analyze
+          name FsHotWatch.RecordAudit.RecordKind.TestPruneAnalysis
+          name FsHotWatch.RecordAudit.RecordKind.OptionsPortable
+          name FsHotWatch.RecordAudit.RecordKind.OptionsPortableInputs ]
+
+    let filed =
+        [ FsHotWatch.Fantomas.FormatCheckPlugin.FormatKind
+          FsHotWatch.Analyzers.AnalyzeRecords.Kind
+          FsHotWatch.TestPrune.AnalysisRecords.Kind
+          FsHotWatch.OptionsPortable.OptionsKind
+          FsHotWatch.OptionsPortable.RequestKind ]
+
+    test <@ audited = filed @>
+
+    test
+        <@
+            FsHotWatch.RecordAudit.RecordKind.all
+            |> List.forall (fun k -> FsHotWatch.RecordAudit.RecordKind.tryParse (name k) = Some k)
+        @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``audit exits 1 on a stored record that differs from the clean one, and writes its report`` () =

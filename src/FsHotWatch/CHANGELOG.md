@@ -7,6 +7,13 @@
   that plugin alone (AUTOMATION-1739). A daemon-level test now runs the start step `fshw start` runs and asserts a
   bystander that subscribes to every file change is handed nothing.
 
+- fix: `fshw audit --kind` refuses a kind it does not know instead of auditing it as a kind no store holds
+  (AUTOMATION-1731). `--kind test,test-evidence` audited ONE kind named `test,test-evidence` and answered vacuous
+  (exit 3), so a typo read as "nothing to compare". The kinds are now a closed `RecordAudit.RecordKind` parsed at the
+  boundary (`AuditKind.parse`): the flag repeats, a comma list is split, `all` expands, and an unknown name is a usage
+  error (exit 2) naming it beside the valid kinds. `Options.Kinds` is a `RecordKind list` and `AuditKind.find` takes a
+  `RecordKind`; only a `--key` record, whose kind the store names, resolves by name (`AuditKind.ofStoredName`).
+
 ## 0.10.0-alpha.118 - 2026-11-16
 
 - fix: a plugin re-run reaches that plugin alone, so a daemon's start no longer builds ahead of its own discovery

@@ -42,6 +42,54 @@ type Side =
     { Record: OutcomeStore.Record
       Outputs: string option }
 
+/// A record kind the audit can be asked for: the closed set of kinds FsHotWatch files.
+/// `fshw audit --kind` parses into it at the boundary, so a misspelled or comma-joined name
+/// is refused by name instead of being audited as a kind no store holds (a vacuous answer).
+[<RequireQualifiedAccess>]
+type RecordKind =
+    | Check
+    | Options
+    | OptionsInputs
+    | OptionsPortable
+    | OptionsPortableInputs
+    | Format
+    | TestPruneAnalysis
+    | Analyze
+    | Test
+    | TestEvidence
+
+module RecordKind =
+    /// Every kind, in the order help and refusals list them.
+    let all: RecordKind list =
+        [ RecordKind.Check
+          RecordKind.Options
+          RecordKind.OptionsInputs
+          RecordKind.OptionsPortable
+          RecordKind.OptionsPortableInputs
+          RecordKind.Format
+          RecordKind.TestPruneAnalysis
+          RecordKind.Analyze
+          RecordKind.Test
+          RecordKind.TestEvidence ]
+
+    /// The name the kind's producer files records under. Producers compiled after this
+    /// module (OptionsPortable, the plugins) are pinned to these names by a test.
+    let name (kind: RecordKind) : string =
+        match kind with
+        | RecordKind.Check -> CheckRecords.CheckKind
+        | RecordKind.Options -> CheckRecords.OptionsKind
+        | RecordKind.OptionsInputs -> OptionsRecords.InputsKind
+        | RecordKind.OptionsPortable -> "options-portable"
+        | RecordKind.OptionsPortableInputs -> "options-portable-inputs"
+        | RecordKind.Format -> "format"
+        | RecordKind.TestPruneAnalysis -> "testprune-analysis"
+        | RecordKind.Analyze -> "analyze"
+        | RecordKind.Test -> "test"
+        | RecordKind.TestEvidence -> "test-evidence"
+
+    let tryParse (text: string) : RecordKind option =
+        all |> List.tryFind (fun k -> name k = text)
+
 /// How one record kind is audited.
 [<NoComparison; NoEquality>]
 type AuditKind =
@@ -271,35 +319,86 @@ module AuditKind =
                   | Some _, Some _ -> ()
                   | _ -> "report-unreadable" ] }
 
-    /// The kinds with a comparison of their own. Every other kind is audited by `generic`.
-    let registered: AuditKind list = [ check; optionsInputs; test; testEvidence ]
+    /// How `kind` is audited: four kinds have a comparison of their own, the rest `generic`.
+    let find (kind: RecordKind) : AuditKind =
+        match kind with
+        | RecordKind.Check -> check
+        | RecordKind.OptionsInputs -> optionsInputs
+        | RecordKind.Test -> test
+        | RecordKind.TestEvidence -> testEvidence
+        | RecordKind.Options
+        | RecordKind.OptionsPortable
+        | RecordKind.OptionsPortableInputs
+        | RecordKind.Format
+        | RecordKind.TestPruneAnalysis
+        | RecordKind.Analyze -> generic (RecordKind.name kind)
 
-    /// How `kind` is audited.
-    let find (kind: string) : AuditKind =
-        registered
-        |> List.tryFind (fun k -> k.Kind = kind)
-        |> Option.defaultWith (fun () -> generic kind)
+    /// How a record named by its stored key (`--key`) is audited: the store is a boundary,
+    /// and a kind this build does not know is compared generically.
+    let ofStoredName (kind: string) : AuditKind =
+        match RecordKind.tryParse kind with
+        | Some known -> find known
+        | None -> generic kind
 
     /// The kinds audited when none is named. Kinds join as their comparison is shown not to
     /// red on a clean tree (AUTOMATION-1633 starts with check records).
-    let defaults: string list = [ CheckRecords.CheckKind ]
+    let defaults: RecordKind list = [ RecordKind.Check ]
 
-    /// Every kind a clean recompute files, for `--kind all`.
-    let all: string list =
-        [ CheckRecords.CheckKind
-          CheckRecords.OptionsKind
-          OptionsRecords.InputsKind
-          "format"
-          "testprune-analysis"
-          "analyze"
-          "test"
-          TestEvidenceKind ]
+    /// Every kind a clean recompute files, for `--kind all`. The portable options kinds
+    /// are filed only in shadow mode (AUTOMATION-1684), so `all` does not ask for them.
+    let all: RecordKind list =
+        [ RecordKind.Check
+          RecordKind.Options
+          RecordKind.OptionsInputs
+          RecordKind.Format
+          RecordKind.TestPruneAnalysis
+          RecordKind.Analyze
+          RecordKind.Test
+          RecordKind.TestEvidence ]
+
+    /// The keyword `--kind` takes for `all`.
+    [<Literal>]
+    let AllKeyword = "all"
+
+    /// `--kind` values (each repeatable and comma-separated; `all` for `all`) as kinds, in
+    /// first-named order; Error names every unknown name and lists the valid ones.
+    let parse (values: string list) : Result<RecordKind list, string> =
+        let names =
+            values
+            |> List.collect (fun v -> v.Split(',') |> List.ofArray)
+            |> List.map _.Trim()
+
+        let lookup name =
+            if name = AllKeyword then
+                Some all
+            else
+                RecordKind.tryParse name |> Option.map List.singleton
+
+        let folded =
+            names
+            |> List.fold
+                (fun acc name ->
+                    match acc, lookup name with
+                    | Ok kinds, Some more -> Ok(kinds @ more)
+                    | Ok _, None -> Error [ name ]
+                    | Error unknown, None -> Error(unknown @ [ name ])
+                    | Error unknown, Some _ -> Error unknown)
+                (Ok [])
+
+        match folded with
+        | Ok kinds -> Ok(List.distinct kinds)
+        | Error unknown ->
+            let valid = (RecordKind.all |> List.map RecordKind.name) @ [ AllKeyword ]
+            let quoted = unknown |> List.map (fun n -> $"'%s{n}'") |> String.concat ", "
+
+            Error
+                $"""unknown record kind %s{quoted}; --kind takes one of: %s{String.concat ", " valid} (repeat the flag or separate kinds with commas)"""
 
 /// What to audit.
 type Options =
     {
         /// The kinds to sample. Ignored when `Keys` names records.
-        Kinds: string list
+        Kinds: RecordKind list
         /// Keys audited per kind; None audits every shared key.
         Sample: int option
         /// The sampling seed: the same seed over the same stores audits the same keys.
@@ -720,11 +819,10 @@ let auditStores (stores: Stores) (options: Options) : Report =
     let auditKind
         (holds: ActionKey.KeyValue -> bool)
         (storedOf: ActionKey.KeyValue -> Side list)
-        (kindName: string)
+        (kind: AuditKind)
         (candidates: Side list)
         (limit: int option)
         =
-        let kind = AuditKind.find kindName
 
         let ordered =
             candidates
@@ -757,14 +855,14 @@ let auditStores (stores: Stores) (options: Options) : Report =
 
         let shared = ordered.Length
 
-        { Kind = kindName
+        { Kind = kind.Kind
           CleanKeys = candidates.Length
           Shared = shared
           Audited = audited.Length
           Records = audited |> List.sumBy (fun (_, stored) -> stored.Length)
           Mismatched = mismatches |> List.map _.Key |> List.distinct |> List.length },
         mismatches,
-        (kindName, audited |> List.map (fun (clean, _) -> clean.Record.Key.Value.Text))
+        (kind.Kind, audited |> List.map (fun (clean, _) -> clean.Record.Key.Value.Text))
 
     let results, unmatched =
         match options.Keys with
@@ -772,7 +870,8 @@ let auditStores (stores: Stores) (options: Options) : Report =
             options.Kinds
             |> List.distinct
             |> List.map (fun kind ->
-                if kind = AuditKind.TestEvidenceKind then
+                match kind with
+                | RecordKind.TestEvidence ->
                     // Test evidence lives in its own store beside the outcome store.
                     match stores.CleanEvidence, stores.AuditedEvidence with
                     | Some cleanEvidence, Some auditedEvidence ->
@@ -794,16 +893,16 @@ let auditStores (stores: Stores) (options: Options) : Report =
                         let holdsEvidence (key: ActionKey.KeyValue) =
                             File.Exists(evidencePath auditedEvidence (key.Text.Substring ActionKey.Prefix.Length))
 
-                        auditKind holdsEvidence storedEvidence kind candidates options.Sample
-                    | _ -> auditKind (fun _ -> false) (fun _ -> []) kind [] options.Sample
-                else
+                        auditKind holdsEvidence storedEvidence (AuditKind.find kind) candidates options.Sample
+                    | _ -> auditKind (fun _ -> false) (fun _ -> []) (AuditKind.find kind) [] options.Sample
+                | _ ->
                     let candidates =
                         cleanAnswers
                         |> Map.toList
                         |> List.map snd
-                        |> List.filter (fun s -> s.Record.Key.Kind = kind)
+                        |> List.filter (fun s -> s.Record.Key.Kind = RecordKind.name kind)
 
-                    auditKind holds storedOf kind candidates options.Sample),
+                    auditKind holds storedOf (AuditKind.find kind) candidates options.Sample),
             []
         | keys ->
             let found, missing =
@@ -814,7 +913,8 @@ let auditStores (stores: Stores) (options: Options) : Report =
             found
             |> List.map (fun key -> cleanAnswers[key])
             |> List.groupBy _.Record.Key.Kind
-            |> List.map (fun (kind, candidates) -> auditKind holds storedOf kind candidates None),
+            |> List.map (fun (kind, candidates) ->
+                auditKind holds storedOf (AuditKind.ofStoredName kind) candidates None),
             missing |> List.map _.Text
 
     { Seed = options.Seed
@@ -1080,6 +1180,7 @@ type Request =
         CleanHome: string option
         /// The audited store; None for the repository's box-wide one.
         Store: string option
+        /// `--kind` values as given: parsed by `resolve` (`AuditKind.parse`).
         Kinds: string list
         /// Keys per kind; None for the default, 0 for every shared key.
         Sample: int option
@@ -1145,11 +1246,17 @@ let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
             | Error e -> Some e
             | Ok _ -> None)
 
-    match clean, sample, badKey with
-    | Error e, _, _
-    | _, Error e, _
-    | _, _, Some e -> Error e
-    | Ok cleanStore, Ok sample, None ->
+    let kinds =
+        match request.Kinds with
+        | [] -> Ok AuditKind.defaults
+        | given -> AuditKind.parse given
+
+    match clean, sample, badKey, kinds with
+    | Error e, _, _, _
+    | _, Error e, _, _
+    | _, _, Some e, _
+    | _, _, _, Error e -> Error e
+    | Ok cleanStore, Ok sample, None, Ok kinds ->
         Ok
             { AuditedStore =
                 request.Store
@@ -1164,11 +1271,7 @@ let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
                 request.CleanHome
                 |> Option.map (fun home -> evidenceUnderCacheHome (Path.GetFullPath home) repoRoot)
               Options =
-                { Kinds =
-                    match request.Kinds with
-                    | [] -> AuditKind.defaults
-                    | [ "all" ] -> AuditKind.all
-                    | kinds -> kinds
+                { Kinds = kinds
                   Sample = sample
                   Seed = request.Seed |> Option.defaultValue Options.defaults.Seed
                   Keys = keys |> List.choose Result.toOption
