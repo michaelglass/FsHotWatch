@@ -167,8 +167,23 @@ let private stringArray (values: string seq) =
 let private readStrings (el: JsonElement) (name: string) =
     [ for v in el.GetProperty(name).EnumerateArray() -> v.GetString() ]
 
-module private IndexJson =
+module internal IndexJson =
     let toJson (index: Index) (key: ActionKey.ActionKey) : string =
+        // Each set in canonical order, AFTER the root is tokenised, which can reorder paths
+        // (AUTOMATION-1723).
+        let index =
+            { Reads = OptionsRecords.Canonical.strings index.Reads
+              Probes = OptionsRecords.Canonical.strings index.Probes
+              Listings = OptionsRecords.Canonical.listings index.Listings
+              EnvNames = OptionsRecords.Canonical.envNames index.EnvNames
+              Generated =
+                index.Generated
+                |> List.distinct
+                |> List.sortWith (fun (a, sa) (b, sb) ->
+                    match String.CompareOrdinal(a, b) with
+                    | 0 -> String.CompareOrdinal(sa, sb)
+                    | byPath -> byPath) }
+
         let o = JsonObject()
         o["schema"] <- InputsSchema
         o["reads"] <- stringArray index.Reads

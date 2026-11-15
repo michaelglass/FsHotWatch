@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: options-inputs and portable options records write every set in one canonical order (AUTOMATION-1723,
+  AUTOMATION-1672). What an evaluation read, probed and listed, and the variables its files name, are gathered in
+  concurrent collections whose order is the process's hash order, so two evaluations of the same inputs filed different
+  bytes. `OptionsRecords.Canonical` sorts paths and listings ordinally and names each variable once, in its ordinally
+  first spelling (MSBuild names are case-insensitive); the records' serialisers and `OptionsInputs.list` apply it. Keys
+  are unchanged: `optionsKey` sorts its labels and each listing's entries already. `OptionsCanonicalOrderTests` shuffles
+  and repeats every set and holds the bytes, their digest and the key fixed.
+
 - feat: a tree's file hashes can be read through a stat-validated cache (AUTOMATION-1696, E5).
   `TreeHash.Hashing = FullRehash | StatValidated of cacheFile` and `TreeHash.ofWalkedWith`; `ofWalked` and
   `Lookup.ofRepo` keep the full re-read, the mode for the nightly audit and the verdict before a land or a release.
