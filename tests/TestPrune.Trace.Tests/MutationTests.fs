@@ -603,7 +603,7 @@ let ``a statically judged report says so, and prints static recall`` () =
                   Failing = [ "a"; "b" ]
                   Selected = 1
                   Missed = [ "b" ] } ] with
-            Judging = Mutation.ByStatic }
+            Judging = Mutation.ByStatic [] }
 
     let text = Mutation.render r
     test <@ text.Contains "judged by static" @>
@@ -617,7 +617,7 @@ let ``targets named by an include are always mutated, beside the seeded draw fro
 
     let pool = [ t "Lib::a"; t "Lib::b"; t "Lib::c"; t "Seeded::miss"; t "Lib::d" ]
 
-    let chosen = Mutation.choose 2 7 [ "Seeded" ] pool
+    let chosen = Mutation.choose 2 7 [ "Seeded" ] pool |> Result.defaultValue []
     let names = chosen |> List.map _.Name
 
     test <@ names |> List.contains "Seeded::miss" @>
@@ -630,6 +630,63 @@ let ``targets named by an include are always mutated, beside the seeded draw fro
             |> List.forall (fun n -> n.StartsWith "Lib::")
         @>
     // The same seed draws the same targets; no include is the plain draw.
-    test <@ Mutation.choose 2 7 [ "Seeded" ] pool = chosen @>
-    test <@ (Mutation.choose 2 7 [] pool).Length = 2 @>
-    test <@ Mutation.choose 0 7 [ "Seeded" ] pool |> List.map _.Name = [ "Seeded::miss" ] @>
+    test <@ Mutation.choose 2 7 [ "Seeded" ] pool = Ok chosen @>
+    test <@ Mutation.choose 2 7 [] pool |> Result.map List.length = Ok 2 @>
+    test <@ Mutation.choose 0 7 [ "Seeded" ] pool |> Result.map (List.map _.Name) = Ok [ "Seeded::miss" ] @>
+
+[<Fact>]
+let ``an include that names no target is refused, never silently unmeasured`` () =
+    // An include is a seeded control the run must measure: one that matches nothing would
+    // drop the control without a word.
+    let t name : Mutation.Target =
+        { Name = name; Ids = [ 1 ]; Types = [] }
+
+    let pool = [ t "Lib::a"; t "Seeded::miss" ]
+
+    test
+        <@
+            Mutation.choose 1 7 [ "Seeded"; "Gone"; "Absent" ] pool = Error
+                "--include matches no method the baseline ran: Gone, Absent"
+        @>
+
+[<Fact>]
+let ``static judging leaves out a baseline test the report names no class for, and lists it`` () =
+    // A classless row is not one static selection could have run or skipped: counting its
+    // failure as a miss would measure the report's shape, not the selection (AUTOMATION-1733).
+    let classOf = Map [ "P.A.one", "P.A"; "P.B.two", "P.B" ]
+
+    let baseline =
+        [ outcome "P.A.one" Passed
+          outcome "P.B.two" Passed
+          outcome "P.C.classless" Passed ]
+
+    let judged, unclassed = Mutation.classed classOf baseline
+
+    test <@ judged |> List.map _.Name = [ "P.A.one"; "P.B.two" ] @>
+    test <@ unclassed = [ "P.C.classless" ] @>
+
+    let target: Mutation.Target =
+        { Name = "Lib::f"
+          Ids = [ 1 ]
+          Types = [] }
+
+    let s =
+        Mutation.judgeWith
+            (set [ "P.A.one" ])
+            judged
+            target
+            (Ok
+                [ outcome "P.A.one" Failed
+                  outcome "P.B.two" Passed
+                  outcome "P.C.classless" Failed ])
+
+    test <@ s.Failing = [ "P.A.one" ] && s.Missed = [] @>
+
+    let r =
+        { Mutation.summarize 3 [] 1 [ s ] with
+            Judging = Mutation.ByStatic unclassed }
+
+    let text = Mutation.render r
+    test <@ text.Contains "judged by static" @>
+    test <@ text.Contains "  unclassed: 1 test(s) the report names no class for are not judged: P.C.classless" @>
+    test <@ (Mutation.toJson r).Unclassed = [ "P.C.classless" ] @>

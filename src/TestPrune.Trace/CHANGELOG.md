@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: static judging no longer counts a test the CTRF report names no class for as a miss
+  (AUTOMATION-1733). Static selection can neither run nor skip such a test by class, so it is left
+  out of the judgement and listed: `ByStatic` carries the `unclassed` tests, `render` prints them, and
+  `MutationReportJson.Unclassed` holds them. `Mutation.classed` splits a baseline. `Ctrf.runReport`
+  returns a `Report` with each test's outcome and class, so the judge no longer re-reads the report
+  file. `Mutation.choose` returns `Error` naming any include that matches no target, rather than
+  dropping the seeded control without a word. BREAKING (API): `ByStatic` takes `unclassed`, and
+  `Mutation.choose` returns a `Result`.
+
 - feat: static mutation judging (AUTOMATION-1688). `Mutation.runWith` takes a `Judge` (`JudgeByProbe`,
   `JudgeBySymbol index`, `JudgeByStatic(index, alwaysClasses)`) and `includes`. `JudgeByStatic` judges each mutant
   against the static selection fshw runs: the index's `QueryAffectedTests` from the target's symbols, each selected

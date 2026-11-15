@@ -116,10 +116,20 @@ let classes (json: string) : Map<string, string> =
     with _ ->
         Map.empty
 
-/// Run `exe` with a CTRF report into `resultsDir` and return the report's outcomes.
+/// What one run's CTRF report says: each test's outcome (`parse`) and class (`classes`).
+type Report =
+    { Outcomes: TestOutcome list
+      Classes: Map<string, string> }
+
+/// The report a CTRF document holds.
+let report (json: string) : Report =
+    { Outcomes = parse json
+      Classes = classes json }
+
+/// Run `exe` with a CTRF report into `resultsDir` and return the report (`report`).
 /// `Error` names the run (`where`), its exit code and its last output lines when it wrote
 /// no report; a report an earlier run left in `resultsDir` is removed first.
-let run
+let runReport
     (where: string)
     (exe: string)
     (appArgs: string list)
@@ -127,7 +137,7 @@ let run
     (workDir: string)
     (resultsDir: string)
     (timeout: TimeSpan)
-    : Result<TestOutcome list, string> =
+    : Result<Report, string> =
     let args =
         appArgs
         @ [ "--report-xunit-ctrf"
@@ -136,16 +146,16 @@ let run
             "--results-directory"
             resultsDir ]
 
-    let report = Path.Combine(resultsDir, "run.ctrf.json")
+    let written = Path.Combine(resultsDir, "run.ctrf.json")
 
     // A report left by an earlier run in the same directory is never this run's.
-    if File.Exists report then
-        File.Delete report
+    if File.Exists written then
+        File.Delete written
 
     let code, output = Launch.run exe args env workDir timeout
 
-    if File.Exists report then
-        Ok(parse (File.ReadAllText report))
+    if File.Exists written then
+        Ok(report (File.ReadAllText written))
     else
         // The last lines usually say why: a test that ended the process, a crash at startup.
         let tail =
@@ -156,3 +166,8 @@ let run
             |> String.concat "\n"
 
         Error $"no CTRF report from the run %s{where} (exit %d{code}); its output ends:\n%s{tail}"
+
+/// `runReport`'s outcomes alone.
+let run where exe appArgs env workDir resultsDir timeout : Result<TestOutcome list, string> =
+    runReport where exe appArgs env workDir resultsDir timeout
+    |> Result.map _.Outcomes

@@ -73,8 +73,9 @@ type Judging =
     /// The static selection fshw runs for "the target's symbol changed": the index's
     /// `QueryAffectedTests` from the target's symbols as the only seeds, each selected test's
     /// class run whole (as the daemon's `--filter-class` runs it), plus the project's
-    /// always-run classes. No trace is read.
-    | ByStatic
+    /// always-run classes. No trace is read. A baseline test the report names no class for
+    /// (`unclassed`) is one static selection neither runs nor skips by class, so it is not judged.
+    | ByStatic of unclassed: string list
 
 /// The repository index a symbol-level judgement reads, and the root its paths are relative to.
 type Index =
@@ -471,6 +472,14 @@ let staticSelection
     : Set<string> =
     inClasses classOf (staticClasses index testProject alwaysClasses seeds) (baseline |> List.map _.Name)
 
+/// The `baseline` split by whether the report names each test's class (`classOf`): the
+/// classed tests, which static judging judges, and the names of the rest, which it cannot.
+let classed (classOf: Map<string, string>) (baseline: TestOutcome list) : TestOutcome list * string list =
+    let judged, unclassed =
+        baseline |> List.partition (fun o -> classOf.ContainsKey o.Name)
+
+    judged, unclassed |> List.map _.Name |> List.distinct |> List.sort
+
 /// The tests of a run that did not pass, sorted: a mutant cannot show their failure.
 let notPassed (outcomes: TestOutcome list) : string list =
     outcomes
@@ -510,14 +519,18 @@ type SampleJson =
 
 /// The report as plain data for `JsonSerializer`, which cannot write an F# union.
 type MutationReportJson =
-    { Universe: int
-      BaselineNotPassed: string list
-      Targets: int
-      Measured: int
-      FailingTotal: int
-      MissedTotal: int
-      Recall: float option
-      Samples: SampleJson list }
+    {
+        Universe: int
+        BaselineNotPassed: string list
+        Targets: int
+        Measured: int
+        FailingTotal: int
+        MissedTotal: int
+        Recall: float option
+        /// Baseline tests a static judgement left out: the report names no class for them.
+        Unclassed: string list
+        Samples: SampleJson list
+    }
 
 /// The report as plain data a JSON serializer can write.
 let toJson (r: MutationReport) : MutationReportJson =
@@ -528,6 +541,11 @@ let toJson (r: MutationReport) : MutationReportJson =
       FailingTotal = r.FailingTotal
       MissedTotal = r.MissedTotal
       Recall = r.Recall
+      Unclassed =
+        match r.Judging with
+        | ByStatic unclassed -> unclassed
+        | ByProbe
+        | BySymbol -> []
       Samples =
         r.Samples
         |> List.map (fun s ->
@@ -562,7 +580,7 @@ let render (r: MutationReport) : string =
         match r.Judging with
         | ByProbe -> "probe"
         | BySymbol -> "symbol"
-        | ByStatic -> "static"
+        | ByStatic _ -> "static"
 
     line
         $"mutation  %s{verdict}  recall %s{recall}  samples %d{r.Samples.Length} (measured %d{r.Measured})  targets %d{r.Targets}  tests %d{r.Universe}  judged by %s{judgedBy}"
@@ -573,6 +591,15 @@ let render (r: MutationReport) : string =
 
     if not r.BaselineNotPassed.IsEmpty then
         line $"  baseline: %d{r.BaselineNotPassed.Length} test(s) did not pass and are not judged"
+
+    match r.Judging with
+    | ByStatic(_ :: _ as unclassed) ->
+        let names = String.concat ", " unclassed
+
+        line $"  unclassed: %d{unclassed.Length} test(s) the report names no class for are not judged: %s{names}"
+    | ByStatic []
+    | ByProbe
+    | BySymbol -> ()
 
     for s in r.Samples do
         let outcome =
@@ -613,11 +640,19 @@ let private draw (n: int) (seed: int) (pool: Target list) : Target list =
 
 /// The targets of `pool` to mutate: every one whose name contains one of `includes` (a seeded
 /// control the run must always measure), and `n` drawn from the rest (`draw`), sorted by name.
-let choose (n: int) (seed: int) (includes: string list) (pool: Target list) : Target list =
-    let included, rest =
-        pool |> List.partition (fun t -> includes |> List.exists t.Name.Contains)
+/// `Error` names the includes no target matches: a control that matches nothing would
+/// otherwise go unmeasured without a word.
+let choose (n: int) (seed: int) (includes: string list) (pool: Target list) : Result<Target list, string> =
+    match
+        includes
+        |> List.filter (fun i -> not (pool |> List.exists (fun t -> t.Name.Contains i)))
+    with
+    | [] ->
+        let included, rest =
+            pool |> List.partition (fun t -> includes |> List.exists t.Name.Contains)
 
-    included @ draw n seed rest |> List.sortBy _.Name
+        Ok(included @ draw n seed rest |> List.sortBy _.Name)
+    | unmatched -> Error $"""--include matches no method the baseline ran: %s{String.concat ", " unmatched}"""
 
 /// The mutant's environment additions: the target's probe ids throw, and reflection over its
 /// union types throws.
@@ -635,7 +670,8 @@ let private mutantEnv (target: Target) =
 /// change), when given, keeps the methods it touched (`changedTargets`) and reports the touched
 /// methods no test ran as not mutable. A union-type target stands for adding a case to the
 /// union, which no diff shows, so `changed` does not filter them. A method target whose name
-/// contains one of `includes` is mutated besides the draw (`choose`). Each mutant is judged as
+/// contains one of `includes` is mutated besides the draw (`choose`); an include no method
+/// matches is an `Error`. Each mutant is judged as
 /// `judge` says. `Error` when the project cannot be prepared or the baseline wrote no test
 /// report.
 let runWith
@@ -654,17 +690,17 @@ let runWith
     |> Result.bind (fun launch ->
         let dir = Path.Combine(req.RunDir, "mutation")
         let baselineDumps = Path.Combine(dir, "baseline", "dumps")
-        let baselineResults = Path.Combine(dir, "baseline", "results")
 
-        Ctrf.run
+        Ctrf.runReport
             "baseline"
             launch.Apphost
             appArgs
             (envWith launch baselineDumps [])
             req.RepoRoot
-            baselineResults
+            (Path.Combine(dir, "baseline", "results"))
             timeout
-        |> Result.map (fun baseline ->
+        |> Result.bind (fun baselineReport ->
+            let baseline = baselineReport.Outcomes
             let manifest = launch.Shadow.Manifest
             let dumps, _ = DumpReader.readDirectory baselineDumps
             let merged = RunScopes.merged dumps
@@ -687,111 +723,118 @@ let runWith
                 unionTargets req.AssemblyName (reflectedTypes (Map.values merged)) manifest
                 |> List.filter keep
 
-            let chosen = choose samples seed includes methods @ draw unionSamples seed unions
-            let traces = tracesOf manifest dumps baseline
+            choose samples seed includes methods
+            |> Result.map (fun drawn ->
+                let chosen = drawn @ draw unionSamples seed unions
+                let traces = tracesOf manifest dumps baseline
 
-            // By symbol, each mutant is judged against the trace selection for "its symbol
-            // changed", over the baseline's traces ingested into a scratch store.
-            let bySymbol (ix: Index) =
-                let store = TraceStore.Store.Open(Path.Combine(dir, "baseline", "traces.db"))
+                // By symbol, each mutant is judged against the trace selection for "its symbol
+                // changed", over the baseline's traces ingested into a scratch store.
+                let bySymbol (ix: Index) =
+                    let store = TraceStore.Store.Open(Path.Combine(dir, "baseline", "traces.db"))
 
-                let summary =
-                    TraceIngest.ingest
-                        store
-                        { RunId = "baseline"
-                          TestProject = req.TestProject
-                          RepoRoot = ix.Root
-                          InputRoot = launch.InputRoot
-                          Kind = TraceStore.FullRun
-                          LaunchTreeHash = ""
-                          CurrentTreeHash = ""
-                          DumpDir = baselineDumps
-                          Shadow = launch.Shadow
-                          Outcomes = baseline
-                          Symbols = ix.Symbols
-                          FingerprintFiles = []
-                          FingerprintEnv = []
-                          RecordedAt = DateTimeOffset.UtcNow }
+                    let summary =
+                        TraceIngest.ingest
+                            store
+                            { RunId = "baseline"
+                              TestProject = req.TestProject
+                              RepoRoot = ix.Root
+                              InputRoot = launch.InputRoot
+                              Kind = TraceStore.FullRun
+                              LaunchTreeHash = ""
+                              CurrentTreeHash = ""
+                              DumpDir = baselineDumps
+                              Shadow = launch.Shadow
+                              Outcomes = baseline
+                              Symbols = ix.Symbols
+                              FingerprintFiles = []
+                              FingerprintEnv = []
+                              RecordedAt = DateTimeOffset.UtcNow }
 
-                summary.EnvFingerprint
-                |> Option.map (fun fingerprint ->
-                    let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
-                    let joined = Joiner.joinManifest symbolIndex manifest
-                    let keys = keysOf req.TestProject dumps baseline
-                    let universe = keys |> Map.values |> Seq.distinct |> List.ofSeq
+                    summary.EnvFingerprint
+                    |> Option.map (fun fingerprint ->
+                        let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
+                        let joined = Joiner.joinManifest symbolIndex manifest
+                        let keys = keysOf req.TestProject dumps baseline
+                        let universe = keys |> Map.values |> Seq.distinct |> List.ofSeq
 
-                    fun (target: Target) ->
-                        bySymbolOr (selected traces target) (targetSymbols symbolIndex joined target) (fun seeds ->
-                            let chosen =
-                                symbolSelection
-                                    store
-                                    fingerprint
-                                    req.TestProject
-                                    ix.Symbols
-                                    launch.InputRoot
-                                    universe
-                                    seeds
+                        fun (target: Target) ->
+                            bySymbolOr
+                                (selected traces target)
+                                (targetSymbols symbolIndex joined target)
+                                (fun seeds ->
+                                    let chosen =
+                                        symbolSelection
+                                            store
+                                            fingerprint
+                                            req.TestProject
+                                            ix.Symbols
+                                            launch.InputRoot
+                                            universe
+                                            seeds
 
-                            // A test with no key has no trace: R1 selects it.
-                            baseline
-                            |> List.map _.Name
-                            |> List.filter (fun name -> keys.TryFind name |> Option.forall chosen.Contains)
-                            |> Set.ofList))
+                                    // A test with no key has no trace: R1 selects it.
+                                    baseline
+                                    |> List.map _.Name
+                                    |> List.filter (fun name -> keys.TryFind name |> Option.forall chosen.Contains)
+                                    |> Set.ofList))
 
-            let selectionOf, judging =
-                match judge with
-                | JudgeByProbe -> selected traces, ByProbe
-                | JudgeBySymbol ix ->
-                    // By probe when the baseline ingests no trace to select with.
-                    bySymbol ix
-                    |> Option.map (fun select -> select, BySymbol)
-                    |> Option.defaultValue (selected traces, ByProbe)
-                | JudgeByStatic(ix, alwaysClasses) ->
-                    // No trace is read: the index's own walk from the target's symbols, by class.
-                    let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
-                    let joined = Joiner.joinManifest symbolIndex manifest
+                // What each mutant is judged against, over which baseline tests.
+                let selectionOf, judgedBaseline, judging =
+                    match judge with
+                    | JudgeByProbe -> selected traces, baseline, ByProbe
+                    | JudgeBySymbol ix ->
+                        // By probe when the baseline ingests no trace to select with.
+                        bySymbol ix
+                        |> Option.map (fun select -> select, baseline, BySymbol)
+                        |> Option.defaultValue (selected traces, baseline, ByProbe)
+                    | JudgeByStatic(ix, alwaysClasses) ->
+                        // No trace is read: the index's own walk from the target's symbols, by
+                        // class. A test the report names no class for is not judged (`classed`).
+                        let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
+                        let joined = Joiner.joinManifest symbolIndex manifest
+                        let judgeable, unclassed = classed baselineReport.Classes baseline
 
-                    let classOf =
-                        Ctrf.classes (File.ReadAllText(Path.Combine(baselineResults, "run.ctrf.json")))
+                        let select (target: Target) =
+                            staticSelection
+                                ix.Symbols
+                                req.TestProject
+                                alwaysClasses
+                                baselineReport.Classes
+                                judgeable
+                                (targetSymbols symbolIndex joined target)
 
-                    let select (target: Target) =
-                        staticSelection
-                            ix.Symbols
-                            req.TestProject
-                            alwaysClasses
-                            classOf
-                            baseline
-                            (targetSymbols symbolIndex joined target)
+                        select, judgeable, ByStatic unclassed
 
-                    select, ByStatic
+                let judged =
+                    chosen
+                    |> List.mapi (fun i target ->
+                        let at = Path.Combine(dir, string i)
 
-            let judged =
-                chosen
-                |> List.mapi (fun i target ->
-                    let at = Path.Combine(dir, string i)
+                        Ctrf.run
+                            $"with %s{target.Name} mutated"
+                            launch.Apphost
+                            appArgs
+                            (envWith launch (Path.Combine(at, "dumps")) (mutantEnv target))
+                            req.RepoRoot
+                            (Path.Combine(at, "results"))
+                            timeout
+                        |> judgeWith (selectionOf target) judgedBaseline target)
 
-                    Ctrf.run
-                        $"with %s{target.Name} mutated"
-                        launch.Apphost
-                        appArgs
-                        (envWith launch (Path.Combine(at, "dumps")) (mutantEnv target))
-                        req.RepoRoot
-                        (Path.Combine(at, "results"))
-                        timeout
-                    |> judgeWith (selectionOf target) baseline target)
-
-            { summarize
-                  baseline.Length
-                  (notPassed baseline)
-                  (methods.Length + (if unionSamples > 0 then unions.Length else 0))
-                  judged with
-                NotMutable =
-                    match changedNames with
-                    | None -> []
-                    | Some names ->
-                        Set.difference names (targets req.AssemblyName hit manifest |> List.map _.Name |> Set.ofList)
-                        |> Set.toList
-                Judging = judging }))
+                { summarize
+                      baseline.Length
+                      (notPassed baseline)
+                      (methods.Length + (if unionSamples > 0 then unions.Length else 0))
+                      judged with
+                    NotMutable =
+                        match changedNames with
+                        | None -> []
+                        | Some names ->
+                            Set.difference
+                                names
+                                (targets req.AssemblyName hit manifest |> List.map _.Name |> Set.ofList)
+                            |> Set.toList
+                    Judging = judging })))
 
 /// `runWith` judging by probe, with no included target.
 let run req appArgs samples unionSamples seed only changed timeout =

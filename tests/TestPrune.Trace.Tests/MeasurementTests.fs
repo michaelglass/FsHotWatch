@@ -429,7 +429,8 @@ let ``judged statically, a mutant's failing tests are those outside the classes 
             |> ok
 
         let none = judged index
-        test <@ none.Judging = Mutation.ByStatic @>
+        // A real xUnit report names every test's class, nested ones included: nothing is left unjudged.
+        test <@ none.Judging = Mutation.ByStatic [] @>
         test <@ none.Measured > 0 @>
         test <@ none.Samples |> List.forall (fun s -> s.Missed = s.Failing && s.Selected = 0) @>
         test <@ (Mutation.render none).Contains "judged by static" @>

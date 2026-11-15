@@ -302,6 +302,12 @@ let fileCensusUsage =
     + "  (default: the assembly), replacing the earlier ones: R7 selects them when a file no trace claims changes\n"
     + measureTail
 
+/// The judgement `--judge` names, parsed where the flag is read.
+type private JudgeKind =
+    | Probe
+    | Symbol
+    | Static
+
 type private MeasureArgs =
     { ProjectDir: string option
       Assembly: string option
@@ -314,7 +320,7 @@ type private MeasureArgs =
       UnionSamples: int
       Only: string list
       Includes: string list
-      Judge: string option
+      Judge: JudgeKind option
       AlwaysClasses: string list
       Diff: string option
       Db: string option
@@ -354,7 +360,13 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
                       Ok { a with UnionSamples = n }))
           "--only", (fun v a -> Ok { a with Only = a.Only @ [ v ] })
           "--include", (fun v a -> Ok { a with Includes = a.Includes @ [ v ] })
-          "--judge", (fun v a -> Ok { a with Judge = Some v })
+          "--judge",
+          (fun v a ->
+              match v with
+              | "probe" -> Ok { a with Judge = Some Probe }
+              | "symbol" -> Ok { a with Judge = Some Symbol }
+              | "static" -> Ok { a with Judge = Some Static }
+              | other -> Error $"--judge needs probe, symbol or static, got %s{other}")
           "--always-class",
           (fun v a ->
               Ok
@@ -667,12 +679,12 @@ let private judgeOf (index: Mutation.Index option) (a: MeasureArgs) : Result<Mut
     let judge =
         match a.Judge, index with
         | None, None
-        | Some "probe", _ -> Ok Mutation.JudgeByProbe
+        | Some Probe, _ -> Ok Mutation.JudgeByProbe
         | None, Some ix
-        | Some "symbol", Some ix -> Ok(Mutation.JudgeBySymbol ix)
-        | Some "static", Some ix -> Ok(Mutation.JudgeByStatic(ix, a.AlwaysClasses))
-        | Some("symbol" | "static" as j), None -> Error $"--judge %s{j} needs --index"
-        | Some other, _ -> Error $"--judge needs probe, symbol or static, got %s{other}"
+        | Some Symbol, Some ix -> Ok(Mutation.JudgeBySymbol ix)
+        | Some Static, Some ix -> Ok(Mutation.JudgeByStatic(ix, a.AlwaysClasses))
+        | Some Symbol, None -> Error "--judge symbol needs --index"
+        | Some Static, None -> Error "--judge static needs --index"
 
     match judge with
     | Ok(Mutation.JudgeByStatic _) -> judge
