@@ -178,3 +178,21 @@ set of plugins. Now:
   re-run aimed at no plugin, and none at every plugin, to write.
 - Tests: a re-run of a file command, and of a `FileChanged` subscriber, reaches its plugin and no
   other subscriber (`PluginHostTests`, red before the fix); a pattern with no plugin is refused.
+
+## E5 result: the gate is met (2026-11-15)
+
+The maintainer ruled that the gate is judged on the cached warm case. The cold and edited cases are
+always reported, but they do not gate. Measured on thellma-and-louisa: intelligence main 37c86203
+against alpha.150 records.
+
+| Case | Median |
+|---|---|
+| aot-cached-warm (gated) | **139.7 ms** (max 145 ms), under the 150 ms budget |
+| aot-cached-edited | 119.5 ms; answers "missing" (an edited tree has no record) |
+| aot-cached-cold | 540.5 ms |
+| aot-cold | 519 ms |
+| aot-warm | 198.4 ms |
+| jit-warm | 345.2 ms |
+| today's `fshw verdict` | 987.1 ms, 120.5 MB |
+
+Phase 1 therefore meets its latency gate, so the root-pattern enumeration above stays as it is.
