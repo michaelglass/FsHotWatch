@@ -200,10 +200,12 @@ let list (projects: Types.ProjectOptions list) : EvaluationInputs =
 
             collection.UnloadProject evaluated
 
-    { Reads = Seq.append reads fileSystem.Reads |> Seq.distinct |> List.ofSeq
-      Probes = Seq.append probes fileSystem.Probes |> Seq.distinct |> List.ofSeq
-      Listings = fileSystem.Listings
-      EnvNames = List.ofSeq envNames }
+    // In canonical order: the collections above iterate in the process's hash order (AUTOMATION-1723).
+    OptionsRecords.Canonical.inputs
+        { Reads = Seq.append reads fileSystem.Reads |> List.ofSeq
+          Probes = Seq.append probes fileSystem.Probes |> List.ofSeq
+          Listings = fileSystem.Listings
+          EnvNames = List.ofSeq envNames }
 
 /// What fshw itself contributes to an options record's key: how it evaluates a project
 /// and records what the evaluation read (`list`, `RecordingFileSystem`), and how it files

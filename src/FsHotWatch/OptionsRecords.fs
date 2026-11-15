@@ -170,6 +170,51 @@ let probesAbove (projectFile: string) : string list =
 
 let private ordinal (a: string) (b: string) = String.CompareOrdinal(a, b)
 
+/// Each set an evaluation gathers, in one canonical order (AUTOMATION-1723, AUTOMATION-1672).
+/// What MSBuild read, probed and listed is gathered in concurrent collections whose order is the
+/// process's hash order, so two evaluations of the same inputs gathered them in different orders
+/// and filed different bytes for equal content. The key never depended on that order (its labels
+/// are sorted), but every byte a record files must not either.
+module Canonical =
+    let private ordinal (a: string) (b: string) = String.CompareOrdinal(a, b)
+
+    /// Paths: each once, ordinally.
+    let strings (values: string list) : string list =
+        values |> List.distinct |> List.sortWith ordinal
+
+    /// Listings: each once, by directory, pattern, kind and depth, ordinally.
+    let listings (values: Listing list) : Listing list =
+        values
+        |> List.distinct
+        |> List.sortWith (fun a b ->
+            match ordinal a.Directory b.Directory with
+            | 0 ->
+                match ordinal a.Pattern b.Pattern with
+                | 0 ->
+                    match ordinal (ListingKind.token a.Kind) (ListingKind.token b.Kind) with
+                    | 0 -> compare a.Recursive b.Recursive
+                    | byKind -> byKind
+                | byPattern -> byPattern
+            | byDirectory -> byDirectory)
+
+    /// Variable names. MSBuild properties are case-insensitive, so each variable once, in its
+    /// ordinally first spelling, ordered case-insensitively and then ordinally.
+    let envNames (values: string list) : string list =
+        values
+        |> List.groupBy (fun name -> name.ToUpperInvariant())
+        |> List.map (fun (_, spellings) -> List.min spellings)
+        |> List.sortWith (fun a b ->
+            match String.Compare(a, b, StringComparison.OrdinalIgnoreCase) with
+            | 0 -> ordinal a b
+            | byName -> byName)
+
+    /// `inputs` with each set in canonical order.
+    let inputs (inputs: EvaluationInputs) : EvaluationInputs =
+        { Reads = strings inputs.Reads
+          Probes = strings inputs.Probes
+          Listings = listings inputs.Listings
+          EnvNames = envNames inputs.EnvNames }
+
 let private digestOf (lines: string seq) =
     lines |> Seq.sortWith ordinal |> String.concat "\n" |> ContentHash.ofText
 
@@ -481,8 +526,9 @@ module ProjectOptionsJson =
         | :? FormatException -> None
 
 /// The index record's outputs: what the evaluation read, and the `options` key it filed.
-module private InputsJson =
+module internal InputsJson =
     let toJson (inputs: EvaluationInputs) (key: ActionKey.ActionKey) : string =
+        let inputs = Canonical.inputs inputs
         let o = JsonObject()
         o["schema"] <- InputsSchema
         o["reads"] <- stringArray inputs.Reads
