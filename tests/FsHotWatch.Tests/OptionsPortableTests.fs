@@ -622,10 +622,36 @@ let ``a generated compile item that is not text, or not there, is never filed po
                 |> Seq.exists (fun m -> m.Contains "is not text the root token can rebind")
             @>
 
+        // Not there when the projects are evaluated: the root-keyed filer refuses the filing
+        // (AUTOMATION-1726), so no portable filing is attempted.
         File.Delete box.B.Generated
         plainLoad box box.B |> ignore
         test <@ not (portableFiled box box.B) @>
-        test <@ box.Messages |> Seq.exists (fun m -> m.Contains "is not there") @>)
+        test <@ box.Messages |> Seq.exists (fun m -> m.Contains "the options name is not there") @>)
+
+// The portable copy guards its own read: a generated compile item deleted after the root-keyed
+// filing and before the portable one is never filed portably.
+[<Fact(Timeout = 120000)>]
+let ``a generated compile item gone between the filing and the portable copy is never filed portably`` () =
+    withBox (fun box ->
+        let t = box.B
+        let options = [ sampleOptions t ]
+        let inputs = OptionsInputs.list options
+        File.Delete t.Generated
+
+        match
+            OptionsPortable.shadow box.Store t.Root box.ShadowLog "fshw-test" (fun () -> Some "c") box.Messages.Enqueue
+        with
+        | Some shadow -> shadow.AfterFiled (request t) inputs options environment
+        | None -> failwith "this tree is portable: the shadow is on"
+
+        test <@ not (portableFiled box t) @>
+
+        test
+            <@
+                box.Messages
+                |> Seq.exists (fun m -> m.Contains $"the generated compile item %s{t.Generated} is not there")
+            @>)
 
 [<Fact(Timeout = 120000)>]
 let ``a generated compile item the evaluation never wrote disagrees`` () =

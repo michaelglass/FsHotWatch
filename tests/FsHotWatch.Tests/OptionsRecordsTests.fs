@@ -348,6 +348,128 @@ let ``a generated compile item a clean removed is evaluated again, which regener
 
         test <@ loads = 1 @>)
 
+// --- build output: a replay precondition, never a key (AUTOMATION-1726) ------------------
+//
+// A build writes into each project's bin/ and obj/<Configuration>/. The options record names
+// the generated compile items there by PATH (FCS reads them, so a replay needs them present),
+// and their BYTES never change the options: they are a must-exist precondition, not keyed. The
+// build-output directories' existence never changes the options either (measured for every
+// project kind on intelligence, built vs clean: 0 differing lines), so those probes are not
+// keyed. What restore writes in obj/ itself (the assets, the nuget.g props) stays keyed.
+
+[<Fact(Timeout = 120000)>]
+let ``a generated compile item rewritten after the options were filed still replays`` () =
+    withTree (fun t ->
+        let generated =
+            t.Path("src", "App", "obj", "Debug", "net10.0", "App.AssemblyInfo.fs")
+
+        let loads, _ =
+            restartAfter
+                t
+                (fun () -> File.WriteAllText(generated, "module AssemblyInfo // rebuilt\n"))
+                (request t)
+                sameEnvironment
+
+        test <@ loads = 0 @>)
+
+/// A build of a built checkout, running beside the evaluation: it rewrites the generated
+/// compile item and writes into bin/ on every evaluation, as `dotnet build` does.
+let private buildBesideTheEvaluation (t: Tree) =
+    let n = ref 0
+
+    fun () ->
+        n.Value <- n.Value + 1
+        untilFileClockReachesNow ()
+
+        writeFile
+            (Path.Combine(t.ProjectDir, "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
+            $"module AssemblyInfo // build %d{n.Value}\n"
+
+        writeFile (Path.Combine(t.ProjectDir, "bin", "Debug", "net10.0", "App.dll")) $"build %d{n.Value}"
+
+// pin150-gate and e5-150, alpha.150: the start's build rewrote obj/ and bin/ while discovery
+// evaluated, and the filing was refused ("…/bin/Debug/net10.0/publish/ changed while the
+// projects were evaluated"), twice, so the next start evaluated again.
+[<Fact(Timeout = 120000)>]
+let ``a build writing the projects' build output while they are evaluated does not stop the filing`` () =
+    withTree (fun t ->
+        // Built: bin/ is there before, so creating it moves nothing.
+        Directory.CreateDirectory(Path.Combine(t.ProjectDir, "bin", "Debug", "net10.0"))
+        |> ignore
+
+        untilFileClockReachesNow ()
+
+        let cold, first =
+            daemonLoader t (request t) sameEnvironment (buildBesideTheEvaluation t) None
+
+        first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ cold.Loads = 1 @>
+        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
+        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ counted.Loads = 0 @>)
+
+// The control: restore's outputs are keyed, so one written while the projects are evaluated
+// still refuses the filing, as any keyed input does.
+[<Fact(Timeout = 120000)>]
+let ``a restore output written while the projects are evaluated is still never filed`` () =
+    withTree (fun t ->
+        let n = ref 0
+
+        let restore () =
+            n.Value <- n.Value + 1
+            untilFileClockReachesNow ()
+            File.WriteAllText(t.Assets, $"""{{"version":3,"restore":%d{n.Value}}}""")
+
+        let _, first = daemonLoader t (request t) sameEnvironment restore None
+        first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        let counted, restarted = daemonLoader t (request t) sameEnvironment ignore None
+        restarted.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+        test <@ counted.Loads = 1 @>)
+
+[<Fact>]
+let ``filed inputs key restore's outputs and require the generated compile items, and drop build-output probes`` () =
+    let dir = "/r/src/App"
+    let project = sampleOptions (dir + "/App.fsproj") (dir + "/obj/project.assets.json")
+    let generated = dir + "/obj/Debug/net10.0/App.AssemblyInfo.fs"
+
+    let raw =
+        { Reads =
+            [ dir + "/App.fsproj"
+              dir + "/obj/project.assets.json"
+              dir + "/obj/App.fsproj.nuget.g.props"
+              generated
+              "/r/Directory.Build.props" ]
+          Probes =
+            [ dir + "/obj"
+              dir + "/obj/project.assets.json"
+              dir + "/obj/Debug/"
+              dir + "/bin"
+              dir + "/bin/Debug/"
+              dir + "/bin/Debug/net10.0/publish/"
+              "/r/maybe.props" ]
+          Listings =
+            [ { Kind = ListingKind.Files
+                Directory = dir + "/obj"
+                Pattern = "*.props"
+                Recursive = false } ]
+          EnvNames = [ "HOME" ] }
+
+    let filed = FiledInputs.ofEvaluation [ project ] raw
+
+    test <@ filed.Generated = [ generated ] @>
+
+    test
+        <@
+            filed.Keyed.Reads = [ dir + "/App.fsproj"
+                                  dir + "/obj/project.assets.json"
+                                  dir + "/obj/App.fsproj.nuget.g.props"
+                                  "/r/Directory.Build.props" ]
+        @>
+
+    test <@ filed.Keyed.Probes = [ dir + "/obj"; dir + "/obj/project.assets.json"; "/r/maybe.props" ] @>
+    test <@ filed.Keyed.Listings = raw.Listings @>
+    test <@ filed.Keyed.EnvNames = raw.EnvNames @>
+
 [<Fact(Timeout = 120000)>]
 let ``a file an Exists condition looked for that appears is evaluated again`` () =
     withTree (fun t ->
@@ -645,13 +767,13 @@ let ``a project directory that changes on every evaluation is evaluated twice at
     withTree (fun t ->
         let n = ref 0
 
+        // A keyed input in the project's own directory: restore's assets. (A generated compile
+        // item changing on every evaluation no longer stops a filing: it is not keyed,
+        // AUTOMATION-1726, and `a build writing the projects' build output…` pins that.)
         let churn () =
             n.Value <- n.Value + 1
             untilFileClockReachesNow ()
-
-            writeFile
-                (Path.Combine(t.ProjectDir, "obj", "Debug", "net10.0", "App.AssemblyInfo.fs"))
-                $"// %d{n.Value}\n"
+            File.WriteAllText(t.Assets, $"""{{"version":3,"restore":%d{n.Value}}}""")
 
         let cold, first = daemonLoader t (request t) sameEnvironment churn None
         first.LoadProjects [ t.Project ] |> Seq.toList |> ignore
@@ -908,7 +1030,12 @@ let private withSynthetic (body: string -> OutcomeStore.Store -> EvaluationInput
         body root store (syntheticInputs root) (syntheticRequest root))
 
 let private never: string -> FileStamp.Stamp voption = fun _ -> ValueNone
-let private projects = [ sampleOptions "/r/A.fsproj" "/r/obj/project.assets.json" ]
+
+/// The key mechanics only: a project naming no generated compile item, which these trees do not
+/// hold (a generated item is a replay precondition, AUTOMATION-1726).
+let private projects =
+    [ { sampleOptions "/r/A.fsproj" "/r/obj/project.assets.json" with
+          SourceFiles = [ "/r/Lib.fs" ] } ]
 
 [<Fact>]
 let ``a lookup names why it misses: nothing filed, unreadable records, gone options, and every moved input`` () =
@@ -919,7 +1046,20 @@ let ``a lookup names why it misses: nothing filed, unreadable records, gone opti
             | Replayed _ -> "replayed"
 
         test <@ missed (tryReplay store req [] DateTime.UtcNow) = "no evaluation of this request is filed" @>
-        test <@ file store req inputs projects [ "KNOB", "1" ] DateTime.MinValue Set.empty never = Filed @>
+
+        test
+            <@
+                file
+                    store
+                    req
+                    (FiledInputs.ofEvaluation projects inputs)
+                    projects
+                    [ "KNOB", "1" ]
+                    DateTime.MinValue
+                    Set.empty
+                    never = Filed
+            @>
+
         test <@ missed (tryReplay store req [ "KNOB", "1" ] DateTime.UtcNow) = "replayed" @>
 
         // Six inputs moved: the reason names five and counts the rest.
@@ -971,7 +1111,7 @@ let ``nothing is filed into a store that cannot be written`` () =
 
         test
             <@
-                file store req inputs projects [] DateTime.MinValue Set.empty never = Refused
+                file store req (FiledInputs.ofEvaluation projects inputs) projects [] DateTime.MinValue Set.empty never = Refused
                     "the outcome store could not be written"
             @>
 
@@ -982,7 +1122,9 @@ let ``nothing is filed into a store that cannot be written`` () =
                     [ { inputs.Listings.Head with
                           Recursive = true } ] }
 
-        let refused = file store req tree projects [] DateTime.MinValue Set.empty never
+        let refused =
+            file store req (FiledInputs.ofEvaluation projects tree) projects [] DateTime.MinValue Set.empty never
+
         test <@ refused = Refused $"MSBuild listed the tree under %s{root}, which is not keyed" @>)
 
 [<Fact>]
@@ -1133,7 +1275,10 @@ let ``a listing's kind keys under its token, and an index naming any other kind 
         let label = "listing:files:*:" + Path.Combine(root, "*.props")
         test <@ key.Inputs |> List.exists (fun (l, _) -> l = label) @>
 
-        test <@ file store req inputs projects [] DateTime.MinValue Set.empty never = Filed @>
+        test
+            <@
+                file store req (FiledInputs.ofEvaluation projects inputs) projects [] DateTime.MinValue Set.empty never = Filed
+            @>
 
         let filed = (store.LookupWithOutputs(requestKey req)).Value |> snd |> Option.get
 
@@ -1298,7 +1443,8 @@ let ``an input rewritten between its change time being read and its bytes being 
 
             if path = a then before else FileStamp.read path
 
-        let filing = file store req inputs projects [] DateTime.MaxValue Set.empty racing
+        let filing =
+            file store req (FiledInputs.ofEvaluation projects inputs) projects [] DateTime.MaxValue Set.empty racing
 
         test
             <@
@@ -1343,7 +1489,16 @@ let ``a probe or a listing that changes between the change times being read and 
                 | "probe" -> probe
                 | _ -> "listing:files:*:" + Path.Combine(root, "*.props")
 
-            let filing = file store req inputs projects [] DateTime.MaxValue Set.empty racing
+            let filing =
+                file
+                    store
+                    req
+                    (FiledInputs.ofEvaluation projects inputs)
+                    projects
+                    []
+                    DateTime.MaxValue
+                    Set.empty
+                    racing
 
             test
                 <@
