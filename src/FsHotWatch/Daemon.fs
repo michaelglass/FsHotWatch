@@ -4168,7 +4168,7 @@ type Daemon
                     async {
                         return
                             host.RerunPlugin(
-                                name,
+                                PluginFramework.PluginName.create name,
                                 (fun () -> pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value)
                             )
                     }

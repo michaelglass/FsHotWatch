@@ -1985,7 +1985,9 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
 
         // Rerun via the public host API — same call the IPC endpoint makes.
-        let rerunResult = host.RerunPlugin(pluginName, (fun () -> []))
+        let rerunResult =
+            host.RerunPlugin(FsHotWatch.PluginFramework.PluginName.create pluginName, (fun () -> []))
+
         test <@ rerunResult = Result.Ok() @>
 
         // Status still reads Completed from the previous run, so `waitForStatusSettled`
