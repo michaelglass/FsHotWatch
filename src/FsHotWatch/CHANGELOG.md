@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the options and test-evidence keys no longer read the host knobs (AUTOMATION-1725). Behaviour change: both keys
+  move, so each workspace evaluates and tests cold once after this release. `SessionScope.hostKnobs` names, each with its
+  reason, the variables that configure the host or the CLI around an evaluation and never what it produces:
+  `MSBUILDDISABLENODEREUSE`, `DOTNET_CLI_USE_MSBUILD_SERVER`, `DOTNET_CLI_TELEMETRY_OPTOUT`, `DOTNET_NOLOGO`,
+  `DOTNET_SKIP_FIRST_TIME_EXPERIENCE` and `MSBUILDTERMINALLOGGER`. fshw itself injects `MSBUILDDISABLENODEREUSE` into
+  the dotnet children it starts, so keying it split one evaluation across start modes: the 11-15 audit's two options
+  keys of one tree differed in that label alone. The options key also stops keying `SessionScope.processOwned` (written
+  by the evaluating process from the SDK the `sdk` label already keys). A knob the evaluated files name is still
+  keyed. `TestEvidenceKey.keyedEnvironment` is the test-evidence half, now testable on its own.
+
 - feat: a tree's file hashes can be read through a stat-validated cache (AUTOMATION-1696, E5).
   `TreeHash.Hashing = FullRehash | StatValidated of cacheFile` and `TreeHash.ofWalkedWith`; `ofWalked` and
   `Lookup.ofRepo` keep the full re-read, the mode for the nightly audit and the verdict before a land or a release.
