@@ -155,3 +155,26 @@ criterion: (b) needs 100%.
   command on its projects' K_P set (an upstream input, ADR-059 §38) is future work.
 - On FsHotWatch's `main`, this lands before the Phase 1 stack, which moves `LookupVerdict`,
   `Requirements` and the store into FsHotWatch.Core and rebases onto it.
+
+## Regression: the start's re-run was a broadcast (AUTOMATION-1726, 2026-11-15)
+
+The start re-run this ADR introduced was aimed at one plugin and delivered to all of them.
+`PluginHost.RerunPlugin(name: string, …)` re-fired a file command with `EmitFileChanged`, the
+host's fan-out, on the assumption, written in its doc comment, that "other plugins cache-hit, only
+the target sees a miss". At a daemon's start the build plugin's project graph is still empty and
+nothing is cached for it, so it missed: it ran `dotnet build` 11 ms after the re-run, 0.3 s
+ahead of discovery's options evaluation, which saw `bin/` and `obj/` move and filed no record
+(alpha.150: pin150-gate, e5-150, canary-fshotwatch-cli, land). The build ran
+64.0–71.5 s over an empty graph.
+
+The type allowed it: a re-run was a name and a callback, and its delivery could be any event to any
+set of plugins. Now:
+
+- `RerunPlugin(target: PluginName, sourceFiles: unit -> string list) : Result<unit, string>`
+  resolves `target` to a `Rerun`, a record with a private representation holding the ONE registered
+  plugin and the change it is re-fired with. Only the host constructs one, and only from a plugin it
+  found registered under that name (a file pattern without a plugin is refused).
+- The one-plugin dispatch, `rerunDispatch : Rerun -> unit`, accepts nothing else, so there is no
+  re-run aimed at no plugin, and none at every plugin, to write.
+- Tests: a re-run of a file command, and of a `FileChanged` subscriber, reaches its plugin and no
+  other subscriber (`PluginHostTests`, red before the fix); a pattern with no plugin is refused.

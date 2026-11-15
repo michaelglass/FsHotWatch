@@ -56,6 +56,18 @@ let private scanRewroteClause (repoRoot: string) (files: string list) =
 
     $"; these files were rewritten: %s{shown}; include them in the change and run the check again"
 
+/// A plugin re-run, resolved: the ONE registered plugin it re-fires, and the change it re-fires
+/// that plugin with (AUTOMATION-1726). Only `PluginHost.RerunPlugin` makes one, from a
+/// `PluginName` it found registered, and the only thing done with one is to dispatch its change
+/// to its plugin. A re-run aimed at no plugin, or at every plugin, cannot be written: the start's
+/// re-run of a file command was once a broadcast "that everyone else cache-hits", and a build
+/// plugin with an empty project graph did not.
+[<NoEquality; NoComparison>]
+type Rerun =
+    private
+        { Target: PluginFramework.RegisteredPlugin
+          Refire: FileChangeKind }
+
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
     (
@@ -322,6 +334,18 @@ type PluginHost
                 p.Dispatch event
         finally
             workStore.EndOperation fanOut
+
+    /// Dispatch a re-run's change to its plugin alone, which is that plugin's business and no
+    /// other's (AUTOMATION-1726). An operation of its own, as a fan-out is. It takes a `Rerun`,
+    /// so the one-plugin dispatch exists only for a re-run resolved to a registered plugin.
+    let rerunDispatch (rerun: Rerun) =
+        touchActivity ()
+        let delivery = workStore.BeginOperation "dispatch"
+
+        try
+            rerun.Target.Dispatch(PluginFramework.DispatchFileChanged rerun.Refire)
+        finally
+            workStore.EndOperation delivery
 
     /// Install the read-only project-graph accessor exposed to every plugin via
     /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over its
@@ -1004,49 +1028,69 @@ type PluginHost
     /// Force a plugin to re-run from a cleared task cache.
     ///
     /// A FileCommand plugin with a registered pattern gets a synthetic `FileChanged`
-    /// whose path matches only it — other plugins cache-hit, only the target sees a
-    /// miss. Any other plugin subscribed to `FileChanged` (format-check)
-    /// gets a `SourceChanged` over `sourceFiles ()` — the daemon's registered source
-    /// set, the same files a cold scan would deliver — with its cache cleared first,
-    /// so the run it produces is a fresh one over the real tree, not a replay.
+    /// whose path matches its pattern. Any other plugin subscribed to `FileChanged`
+    /// (format-check) gets a `SourceChanged` over `sourceFiles ()` — the daemon's
+    /// registered source set, the same files a cold scan would deliver — with its cache
+    /// cleared first, so the run it produces is a fresh one over the real tree, not a replay.
     ///
-    /// Returns `Error` with the reason when nothing can be re-fired: no such plugin, a
-    /// plugin that does not consume file changes (a FileCommand configured only with
-    /// `afterTests`, a build-triggered plugin), a preprocessor (which has no cached
-    /// state to refresh — `fshw format` re-runs it over every registered file), or a
-    /// registered source set that is still empty. The caller waits for plugins to
-    /// settle before inspecting status.
-    member this.RerunPlugin(name: string, sourceFiles: unit -> string list) : Result<unit, string> =
-        match this.GetFileCommandPattern(name) with
-        | Some pattern ->
-            this.ClearTaskCachePlugin(name)
-            this.EmitFileChanged(SourceChanged [ Watcher.FilePattern.syntheticPath normalizedRepoRoot pattern ])
-            Result.Ok()
-        | None ->
-            let registered =
-                registeredPlugins
-                |> Seq.tryFind (fun p -> PluginFramework.PluginName.value p.Name = name)
+    /// Either event goes to the named plugin ALONE (AUTOMATION-1726). A broadcast relied on
+    /// every other subscriber answering from its task cache, and a build plugin at a
+    /// daemon's start has nothing cached for its still-empty project graph: the start's
+    /// re-run of a file command (ADR-074) set off `dotnet build` ahead of discovery, and the
+    /// options evaluation it raced filed no record. Nothing changed on disk, so no other
+    /// plugin has anything to do, and no file's check is unset by a re-run.
+    ///
+    /// Returns `Error` with the reason when nothing can be re-fired: no such plugin (a
+    /// pattern included), a plugin that does not consume file changes (a FileCommand
+    /// configured only with `afterTests`, a build-triggered plugin), a preprocessor (which
+    /// has no cached state to refresh — `fshw format` re-runs it over every registered
+    /// file), or a registered source set that is still empty. The caller waits for plugins
+    /// to settle before inspecting status.
+    member this.RerunPlugin
+        (target: PluginFramework.PluginName, sourceFiles: unit -> string list)
+        : Result<unit, string> =
+        this.ResolveRerun(target, sourceFiles)
+        |> Result.map (fun rerun ->
+            this.ClearTaskCachePlugin(PluginFramework.PluginName.value rerun.Target.Name)
+            rerunDispatch rerun)
 
-            let isPreprocessor =
-                preprocessorsSnapshot () |> List.exists (fun p -> p.Name = name)
+    /// The `Rerun` for `target`, or why nothing can be re-fired (see `RerunPlugin`).
+    member private this.ResolveRerun
+        (target: PluginFramework.PluginName, sourceFiles: unit -> string list)
+        : Result<Rerun, string> =
+        let name = PluginFramework.PluginName.value target
 
-            match registered with
-            | Some p when p.Subscriptions.Contains PluginFramework.SubscribeFileChanged ->
-                match sourceFiles () with
-                | [] ->
-                    Result.Error
-                        $"Plugin '%s{name}' consumes file changes, but no source files are registered yet — run `fshw scan` first"
-                | files ->
-                    this.ClearTaskCachePlugin(name)
-                    this.EmitFileChanged(SourceChanged files)
-                    Result.Ok()
-            | Some _ ->
+        let registered =
+            registeredPlugins
+            |> Seq.tryFind (fun p -> PluginFramework.PluginName.value p.Name = name)
+
+        let isPreprocessor =
+            preprocessorsSnapshot () |> List.exists (fun p -> p.Name = name)
+
+        match this.GetFileCommandPattern(name), registered with
+        | Some pattern, Some p ->
+            Result.Ok
+                { Target = p
+                  Refire = SourceChanged [ Watcher.FilePattern.syntheticPath normalizedRepoRoot pattern ] }
+        | Some _, None ->
+            Result.Error
+                $"'%s{name}' has a registered file pattern but no registered plugin of that name, so there is nothing to re-run"
+        | None, Some p when p.Subscriptions.Contains PluginFramework.SubscribeFileChanged ->
+            match sourceFiles () with
+            | [] ->
                 Result.Error
-                    $"Plugin '%s{name}' has no registered file pattern and does not consume file changes, so there is no event to re-fire (only FileCommand plugins with a pattern and FileChanged subscribers support rerun)"
-            | None when isPreprocessor ->
-                Result.Error
-                    $"'%s{name}' is a preprocessor, not a plugin: it keeps no cached state to refresh — `fshw format` re-runs it over every registered file and reports what ran"
-            | None -> Result.Error $"Plugin '%s{name}' has no registered file pattern and is not a registered plugin"
+                    $"Plugin '%s{name}' consumes file changes, but no source files are registered yet — run `fshw scan` first"
+            | files ->
+                Result.Ok
+                    { Target = p
+                      Refire = SourceChanged files }
+        | None, Some _ ->
+            Result.Error
+                $"Plugin '%s{name}' has no registered file pattern and does not consume file changes, so there is no event to re-fire (only FileCommand plugins with a pattern and FileChanged subscribers support rerun)"
+        | None, None when isPreprocessor ->
+            Result.Error
+                $"'%s{name}' is a preprocessor, not a plugin: it keeps no cached state to refresh — `fshw format` re-runs it over every registered file and reports what ran"
+        | None, None -> Result.Error $"Plugin '%s{name}' has no registered file pattern and is not a registered plugin"
 
     /// Tear down all plugins that have a Teardown function.
     member _.Teardown() =

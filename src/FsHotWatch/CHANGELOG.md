@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix: a plugin re-run reaches that plugin alone, so a daemon's start no longer builds ahead of its own discovery
+  (AUTOMATION-1726). `PluginHost.RerunPlugin` broadcast its synthetic `FileChanged` to every subscriber, relying on the
+  others to answer from their task caches. At a start, ADR-074 re-runs each declared-input plugin with nothing on record;
+  the build plugin, whose project graph was still empty, had nothing cached and ran `dotnet build` 0.3 s ahead of the
+  options evaluation, which saw `bin/` and `obj/` move and filed no record (alpha.150, pin150-gate and e5-150). The
+  re-fire now goes only to the named plugin, and a pattern with no plugin of that name is refused rather than answered
+  `Ok`. A re-run no longer unsets any file's check, since nothing changed on disk. `RerunPlugin` takes a `PluginName`
+  and resolves it to a `Rerun` (private: one registered plugin and the change it is re-fired with), the only value the
+  one-plugin dispatch accepts, so a re-run aimed at no plugin or at every plugin cannot be written.
+  Measured on intelligence (thellma-and-louisa), the stray build ran 64.0–71.5 s from the daemon's first 0.1 s, over an
+  empty graph (its artifact freshness and copy checks examined nothing): e5-150 (alpha.150) 64.0 s, 23 of 25 projects;
+  canary-fshotwatch-cli (alpha.150) 67.6 s, 23 of 25; land (alpha.150) 71.5 s, 7 of 25. It did not delay the first
+  check (the scan waits for a build the tree owes in any case, and this one started before discovery); what it cost is
+  the record: e5-150 and canary filed none (evaluations of 23.7 s and 19.6 s, a retry included), so their next start
+  evaluated again (e5-150: 10 s) instead of replaying (0.8 s on land). With the fix, a start whose tree owes a build
+  runs it after discovery, as a cold scan does: up to the evaluation's length later on a start with no record.
+
 - fix: options-inputs and portable options records write every set in one canonical order (AUTOMATION-1723,
   AUTOMATION-1672). What an evaluation read, probed and listed, and the variables its files name, are gathered in
   concurrent collections whose order is the process's hash order, so two evaluations of the same inputs filed different

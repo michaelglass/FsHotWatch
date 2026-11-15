@@ -716,7 +716,8 @@ let rerunUnrecordedDeclaredIn
     (daemon: FsHotWatch.Daemon.Daemon)
     : string list =
     if shadowEnabled then
-        runUnrecordedDeclared repoRoot (fun name -> daemon.Host.RerunPlugin(name, fun () -> []))
+        runUnrecordedDeclared repoRoot (fun name ->
+            daemon.Host.RerunPlugin(FsHotWatch.PluginFramework.PluginName.create name, fun () -> []))
     else
         []
 
