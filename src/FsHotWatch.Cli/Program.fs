@@ -285,8 +285,9 @@ type AuditFlag =
                     "The cache home a from-scratch recompute ran under (its FSHW_CACHE_HOME); the clean store is this repository's store inside it",
                 Name = "clean-home")>] CleanHome of string
     | [<CmdFlag(Description = "Audit this outcome store instead of this repository's box-wide one")>] Store of string
-    | [<CmdFlag(Description = "A record kind to sample (repeatable; default: check)", Repeatable = true)>] Kind of
-        string
+    | [<CmdFlag(Description =
+                    "A record kind to sample: check, options, options-inputs, options-portable, options-portable-inputs, format, testprune-analysis, analyze, test, test-evidence, or all (repeatable or comma-separated; default: check; an unknown kind is a usage error)",
+                Repeatable = true)>] Kind of string
     | [<CmdFlag(Description = "Keys audited per kind (default 200; 0 audits every key both stores hold)")>] Sample of
         int
     | [<CmdFlag(Description = "Sampling seed: the same seed over the same stores audits the same records (default fshw-audit)")>] Seed of
