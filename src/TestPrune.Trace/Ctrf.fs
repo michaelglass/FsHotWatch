@@ -53,27 +53,68 @@ let private repairControlChars (json: string) : string =
 
     out.ToString()
 
+/// The row array of a CTRF report (`results.tests`, else a top-level `tests`); empty when
+/// there is none. Throws on text that is not JSON.
+let private rowsIn (json: string) : JsonNode list =
+    let root = JsonNode.Parse(repairControlChars json)
+
+    let rows =
+        match root.["results"] with
+        | null -> root.["tests"]
+        | results ->
+            match results.["tests"] with
+            | null -> root.["tests"]
+            | tests -> tests
+
+    match rows with
+    | :? JsonArray as a -> List.ofSeq a
+    | _ -> []
+
 /// The per-test rows of a CTRF report (`results.tests`, or a top-level `tests`). A real
 /// MTP report omits rows for tests that threw a raw exception; such a test simply gets
 /// no outcome here, which ingestion records as `NoOutcome`, never as passed. An
 /// unreadable report has no rows.
 let parse (json: string) : TestOutcome list =
     try
-        let root = JsonNode.Parse(repairControlChars json)
-
-        let rows =
-            match root.["results"] with
-            | null -> root.["tests"]
-            | results ->
-                match results.["tests"] with
-                | null -> root.["tests"]
-                | tests -> tests
-
-        match rows with
-        | :? JsonArray as a -> a |> Seq.choose rowOf |> List.ofSeq
-        | _ -> []
+        rowsIn json |> List.choose rowOf
     with _ ->
         []
+
+/// The test class of each row, by its name: xUnit v3's `extra.type`, else the class in its
+/// `suite` path (`[assembly, collection, class, method]`). A row naming neither has no class.
+/// The class is xUnit's, as `--filter-class` takes it (a nested module is `Outer+Inner`).
+/// An unreadable report has no classes.
+let classes (json: string) : Map<string, string> =
+    let text (node: JsonNode) =
+        match node with
+        | :? JsonValue as v ->
+            match v.TryGetValue<string>() with
+            | true, s when not (String.IsNullOrEmpty s) -> Some s
+            | _ -> None
+        | _ -> None
+
+    let classOf (row: JsonNode) =
+        let fromExtra =
+            match row.["extra"] with
+            | null -> None
+            | extra -> text extra.["type"]
+
+        fromExtra
+        |> Option.orElse (
+            match row.["suite"] with
+            | :? JsonArray as suite when suite.Count >= 4 -> text suite.[2]
+            | _ -> None
+        )
+
+    try
+        rowsIn json
+        |> List.choose (fun row ->
+            match row with
+            | null -> None
+            | row -> Option.map2 (fun name cls -> name, cls) (text row.["name"]) (classOf row))
+        |> Map.ofList
+    with _ ->
+        Map.empty
 
 /// Run `exe` with a CTRF report into `resultsDir` and return the report's outcomes.
 /// `Error` names the run (`where`), its exit code and its last output lines when it wrote

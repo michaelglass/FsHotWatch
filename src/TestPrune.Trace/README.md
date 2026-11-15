@@ -225,6 +225,7 @@ index was built from.
 
 ```text
 test-prune-traces mutate --project-dir <dir> --assembly <name> [--samples 20] [--union-samples 5] [--index <db>] [--seed 1] [--only <text>]... [--diff <file>] [--db <store>] [--project <name>]
+  [--judge probe|symbol|static] [--always-class <class>]... [--include <text>]...
 ```
 
 `mutate` runs the woven project once to record each test's trace, then once per sampled
@@ -247,6 +248,17 @@ for whether trace selection can replace the static walk.
 `--index <test-impact db>` judges each mutant against trace selection itself, for "the
 target's symbol changed" (R1-R4, then R6), over the first run's ingested traces. Without it the
 probe-level judgement above stands. The report ends with `judged by probe` or `judged by symbol`.
+
+`--judge static` (with `--index`) judges each mutant against the **static** selection fshw's
+impact-filtered check runs instead, and reads no trace: the index's `QueryAffectedTests` from
+the method's symbols as the only seeds, each selected test's class run whole (as fshw's
+`--filter-class` runs it, a test's class read from the CTRF report), plus every
+`--always-class` (the project's `alwaysClasses`). A failing test outside that set is a static
+miss; a mutant no test fails is an untested method, not a miss. A method the index does not know
+selects only the always-run classes. `--judge probe|symbol` picks the other two judgements
+explicitly. `--include <text>` always mutates the methods whose name contains the text, besides
+the `--samples` drawn: a seeded control, such as a method one test reaches only through
+reflection, that every run must report as a miss.
 
 `--union-samples` (default 5) adds **union-type** targets: each one is a union of the
 repository that the first run reflected over (`FSharpType.GetUnionCases` and the other

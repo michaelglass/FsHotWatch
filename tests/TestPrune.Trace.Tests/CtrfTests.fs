@@ -56,3 +56,33 @@ let ``a raw control character in a string literal does not cost the report its r
         $"""{{"results":{{"tests":[{{"name":"N.C.a","status":"failed","message":"%s{esc}[31mno%s{esc}[0m"}}]}}}}"""
 
     test <@ Ctrf.parse json = [ { Name = "N.C.a"; Outcome = Failed } ] @>
+
+// --- each row's test class (AUTOMATION-1688) -----------------------------------------------
+
+[<Fact>]
+let ``a row's class is xUnit's extra.type, else the class in its suite path, else none`` () =
+    let json =
+        """{"results":{"tests":[
+             {"name":"N.C.a(x: 1)","status":"passed","extra":{"type":"N.C","method":"a"}},
+             {"name":"N.D+Inner.b","status":"passed","suite":["asm","coll","N.D+Inner","b"]},
+             {"name":"N.E.c","status":"passed"},
+             {"name":"N.F.d","status":"failed","suite":["too short"]}]}}"""
+
+    test <@ Ctrf.classes json = Map [ "N.C.a(x: 1)", "N.C"; "N.D+Inner.b", "N.D+Inner" ] @>
+
+[<Fact>]
+let ``an unreadable report has no classes`` () =
+    test <@ Map.isEmpty (Ctrf.classes "not json") @>
+    test <@ Map.isEmpty (Ctrf.classes "{}") @>
+
+[<Fact>]
+let ``a null row, a name or class that is not a string, and an empty class name give no class`` () =
+    let json =
+        """{"results":{"tests":[
+             null,
+             {"name":1,"extra":{"type":"N.A"}},
+             {"name":"N.B.b","extra":{"type":{"nested":"N.B"}},"suite":"not an array"},
+             {"name":"N.C.c","extra":{"type":""}},
+             {"name":"N.D.d","extra":{"type":7},"suite":["asm","coll","N.D","d"]}]}}"""
+
+    test <@ Ctrf.classes json = Map [ "N.D.d", "N.D" ] @>

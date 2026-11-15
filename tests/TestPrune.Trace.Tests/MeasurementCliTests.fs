@@ -107,7 +107,7 @@ let private fake audit overhead census =
                 call req args 0.0 0 0 timeout
                 census
           Mutate =
-            fun req args samples unions seed only changed timeout _ ->
+            fun req args samples unions seed only _ changed timeout _ ->
                 callUnions req args 0.0 seed samples unions only changed timeout
                 mutationReport }
 
@@ -759,20 +759,103 @@ let ``mutate --index refuses an index it cannot read before running anything`` (
 let ``mutate --index opens a readable index and passes it on, rooted at the repository`` () =
     let path = Path.Combine(Path.GetTempPath(), $"tp-index-%A{Guid.NewGuid()}.db")
     TestPrune.Database.Database.create path |> ignore
-    let mutable passed: Mutation.Index option = None
+    let mutable passed: Mutation.Judge = Mutation.JudgeByProbe
     let m, _ = passing ()
 
     let m =
         { m with
             Mutate =
-                fun _ _ _ _ _ _ _ _ index ->
-                    passed <- index
+                fun _ _ _ _ _ _ _ _ _ judge ->
+                    passed <- judge
                     mutationReport }
 
     Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--index"; path ]
     |> ignore
 
-    test <@ passed |> Option.map _.Root = Some cwd @>
+    test
+        <@
+            match passed with
+            | Mutation.JudgeBySymbol ix -> ix.Root = cwd
+            | _ -> false
+        @>
+
+// --- static judging (AUTOMATION-1688) -------------------------------------------------------
+
+/// Run `mutate` with `extra` flags; the judge and includes the measurement received, if it ran.
+let private mutateCapturing (extra: string list) =
+    let mutable received: (Mutation.Judge * string list) option = None
+    let m, _ = passing ()
+
+    let m =
+        { m with
+            Mutate =
+                fun _ _ _ _ _ _ includes _ _ judge ->
+                    received <- Some(judge, includes)
+                    mutationReport }
+
+    let o =
+        Program.runWith m cwd ([ "mutate"; "--project-dir"; "P"; "--assembly"; "P" ] @ extra)
+
+    o, received
+
+let private freshIndex () =
+    let path = Path.Combine(Path.GetTempPath(), $"tp-index-%A{Guid.NewGuid()}.db")
+    TestPrune.Database.Database.create path |> ignore
+    path
+
+[<Fact>]
+let ``mutate --judge static judges against the index's static walk with the always-run classes`` () =
+    let index = freshIndex ()
+
+    let _, received =
+        mutateCapturing
+            [ "--index"
+              index
+              "--judge"
+              "static"
+              "--always-class"
+              "P.A"
+              "--always-class"
+              "P.B+Inner"
+              "--include"
+              "Seeded" ]
+
+    test
+        <@
+            match received with
+            | Some(Mutation.JudgeByStatic(ix, always), includes) ->
+                ix.Root = cwd && always = [ "P.A"; "P.B+Inner" ] && includes = [ "Seeded" ]
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``mutate judges by probe without an index, by symbol with one, and as --judge says`` () =
+    let index = freshIndex ()
+
+    let judged extra =
+        match snd (mutateCapturing extra) with
+        | Some(Mutation.JudgeByProbe, []) -> "probe"
+        | Some(Mutation.JudgeBySymbol _, []) -> "symbol"
+        | Some(Mutation.JudgeByStatic _, []) -> "static"
+        | other -> $"%A{other}"
+
+    test <@ judged [] = "probe" @>
+    test <@ judged [ "--index"; index ] = "symbol" @>
+    test <@ judged [ "--index"; index; "--judge"; "symbol" ] = "symbol" @>
+    test <@ judged [ "--index"; index; "--judge"; "probe" ] = "probe" @>
+    test <@ judged [ "--judge"; "probe" ] = "probe" @>
+
+[<Fact>]
+let ``mutate refuses a symbol or static judgement with no index, and an unknown judgement`` () =
+    let refused extra =
+        let o, received = mutateCapturing extra
+        o.Exit, received.IsNone, o.Stderr.Split('\n').[0]
+
+    test <@ refused [ "--judge"; "static" ] = (2, true, "--judge static needs --index") @>
+    test <@ refused [ "--judge"; "symbol" ] = (2, true, "--judge symbol needs --index") @>
+    test <@ refused [ "--judge"; "trace" ] = (2, true, "--judge needs probe, symbol or static, got trace") @>
+
+    test <@ refused [ "--always-class"; "P.A" ] = (2, true, "--always-class needs --judge static") @>
 
 [<Fact>]
 let ``file-census --db that cannot be opened is a usage error naming it`` () =
