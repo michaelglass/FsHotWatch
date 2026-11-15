@@ -48,7 +48,7 @@ let OutputsSchema = "fshw-options-outputs-v1"
 
 /// The format of an `options-inputs` record's outputs. Any other is read as a miss.
 [<Literal>]
-let InputsSchema = "fshw-options-inputs-v1"
+let InputsSchema = "fshw-options-inputs-v2"
 
 /// Which entries a listing names: what `Directory.EnumerateFiles`, `EnumerateDirectories` or
 /// `EnumerateFileSystemEntries` gives.
@@ -214,6 +214,69 @@ module Canonical =
           Probes = strings inputs.Probes
           Listings = listings inputs.Listings
           EnvNames = envNames inputs.EnvNames }
+
+/// An evaluation's inputs as they are filed (AUTOMATION-1726): what the key reads, and the
+/// generated compile items a replay requires to be there.
+///
+/// A build writes into each project's `bin/` and `obj/<Configuration>/`. The options name the
+/// compile items it generated there by path, and FCS reads them, so a replay needs each one
+/// present; their bytes never change the options, so they are not keyed. Whether those
+/// directories exist never changes the options either (measured on intelligence for every
+/// project kind, built vs clean: 0 differing lines; the design-time build creates them before
+/// any target-time condition reads them), so probes of them are not keyed. Keyed, any build
+/// beside an evaluation moved its inputs and refused its filing (pin150-gate, e5-150). What
+/// restore writes in `obj/` itself (the assets, the nuget.g props) stays keyed.
+type FiledInputs =
+    {
+        /// What `optionsKey` reads: the evaluation's inputs, less its projects' build output.
+        Keyed: EvaluationInputs
+        /// The projects' compile items under their build output: each must exist for a replay.
+        Generated: string list
+    }
+
+module FiledInputs =
+    /// The directories `project`'s build writes: `bin/`, and `obj/<Configuration>/` when the
+    /// evaluation named a configuration (without one, `obj/` holds only restore's outputs).
+    let private buildOutputOf (project: Types.ProjectOptions) : string list =
+        let dir = Path.GetDirectoryName(Path.GetFullPath project.ProjectFileName)
+
+        match project.ProjectSdkInfo.Configuration with
+        | "" -> [ Path.Combine(dir, "bin") ]
+        | configuration -> [ Path.Combine(dir, "bin"); Path.Combine(dir, "obj", configuration) ]
+
+    let private under (dirs: string list) (path: string) =
+        let path = Path.TrimEndingDirectorySeparator path
+
+        dirs
+        |> List.exists (fun dir ->
+            path = dir
+            || path.StartsWith(dir + string Path.DirectorySeparatorChar, StringComparison.Ordinal))
+
+    /// `inputs`, which evaluating `projects` read, parsed for filing.
+    let ofEvaluation (projects: Types.ProjectOptions list) (inputs: EvaluationInputs) : FiledInputs =
+        let inBuildOutput = under (projects |> List.collect buildOutputOf |> List.distinct)
+
+        let generated =
+            [ for p in projects do
+                  for source in p.SourceFiles do
+                      let full = Path.GetFullPath source
+
+                      if inBuildOutput full then
+                          full ]
+            |> List.distinct
+
+        let isGenerated = Set.ofList generated
+
+        { Keyed =
+            { inputs with
+                Reads = inputs.Reads |> List.filter (Path.GetFullPath >> isGenerated.Contains >> not)
+                Probes = inputs.Probes |> List.filter (Path.GetFullPath >> inBuildOutput >> not) }
+          Generated = generated }
+
+    /// `filed` with each set in canonical order.
+    let canonical (filed: FiledInputs) : FiledInputs =
+        { Keyed = Canonical.inputs filed.Keyed
+          Generated = Canonical.strings filed.Generated }
 
 let private digestOf (lines: string seq) =
     lines |> Seq.sortWith ordinal |> String.concat "\n" |> ContentHash.ofText
@@ -534,8 +597,9 @@ module ProjectOptionsJson =
 
 /// The index record's outputs: what the evaluation read, and the `options` key it filed.
 module internal InputsJson =
-    let toJson (inputs: EvaluationInputs) (key: ActionKey.ActionKey) : string =
-        let inputs = Canonical.inputs inputs
+    let toJson (filed: FiledInputs) (key: ActionKey.ActionKey) : string =
+        let filed = FiledInputs.canonical filed
+        let inputs = filed.Keyed
         let o = JsonObject()
         o["schema"] <- InputsSchema
         o["reads"] <- stringArray inputs.Reads
@@ -553,11 +617,12 @@ module internal InputsJson =
             )
 
         o["envNames"] <- stringArray inputs.EnvNames
+        o["generated"] <- stringArray filed.Generated
 
         o["optionsKey"] <- key.Value.Text
         o.ToJsonString()
 
-    let tryOfJson (text: string) : (EvaluationInputs * ActionKey.KeyValue) option =
+    let tryOfJson (text: string) : (FiledInputs * ActionKey.KeyValue) option =
         try
             use doc = JsonDocument.Parse text
             let o = doc.RootElement
@@ -579,8 +644,12 @@ module internal InputsJson =
                                 Recursive = l.GetProperty("recursive").GetBoolean() } ]
                       EnvNames = readStrings o "envNames" }
 
+                let filed =
+                    { Keyed = inputs
+                      Generated = readStrings o "generated" }
+
                 match ActionKey.KeyValue.tryParse (o.GetProperty("optionsKey").GetString()) with
-                | Some filedKey -> Some(inputs, filedKey)
+                | Some filedKey -> Some(filed, filedKey)
                 | None -> None
         with
         | :? JsonException
@@ -607,32 +676,37 @@ let tryReplay
     | Some(_, outputs) ->
         match outputs |> Option.bind InputsJson.tryOfJson with
         | None -> Missed "the filed inputs are unreadable"
-        | Some(inputs, filedKey) ->
-            let key = optionsKey request inputs environment
-
-            match OutcomeStore.Through.lookupWithOutputs store key.Value with
-            | Some(_, Some text) ->
-                match ProjectOptionsJson.tryOfJson loadTime text with
-                | Some projects -> Replayed projects
-                | None -> Missed "the filed options are unreadable"
-            | Some(_, None)
+        | Some(filed, filedKey) ->
+            // A generated compile item the options name and FCS would read is a precondition:
+            // without it, evaluating regenerates it.
+            match filed.Generated |> List.tryFind (File.Exists >> not) with
+            | Some gone -> Missed $"the generated compile item %s{gone} is not there"
             | None ->
-                match
-                    OutcomeStore.Through.lookup store filedKey
-                    |> Option.map (fun filed -> ActionKey.moved filed.Key.Inputs key.Inputs)
-                with
-                | None
-                | Some [] -> Missed "the filed options are gone"
-                | Some moved ->
-                    let shown = moved |> List.truncate 5 |> String.concat ", "
+                let key = optionsKey request filed.Keyed environment
 
-                    let more =
-                        if moved.Length > 5 then
-                            $" and %d{moved.Length - 5} more"
-                        else
-                            ""
+                match OutcomeStore.Through.lookupWithOutputs store key.Value with
+                | Some(_, Some text) ->
+                    match ProjectOptionsJson.tryOfJson loadTime text with
+                    | Some projects -> Replayed projects
+                    | None -> Missed "the filed options are unreadable"
+                | Some(_, None)
+                | None ->
+                    match
+                        OutcomeStore.Through.lookup store filedKey
+                        |> Option.map (fun record -> ActionKey.moved record.Key.Inputs key.Inputs)
+                    with
+                    | None
+                    | Some [] -> Missed "the filed options are gone"
+                    | Some moved ->
+                        let shown = moved |> List.truncate 5 |> String.concat ", "
 
-                    Missed $"inputs moved: %s{shown}%s{more}"
+                        let more =
+                            if moved.Length > 5 then
+                                $" and %d{moved.Length - 5} more"
+                            else
+                                ""
+
+                        Missed $"inputs moved: %s{shown}%s{more}"
 
 /// Whether an evaluation was filed.
 type Filing =
@@ -675,9 +749,11 @@ let absentOf (paths: string seq) : Set<string> =
     |> Seq.filter (fun path -> not (File.Exists path || Directory.Exists path))
     |> Set.ofSeq
 
-/// File the options `projects` evaluated from `inputs` for `request`, unless an input may
+/// File the options `projects` evaluated from `filed` for `request`, unless a keyed input may
 /// have changed since `since` (the evaluation's start, less the racy window), judged by
-/// `stamp`.
+/// `stamp`. The projects' build output is not watched: it is not keyed, and a build writing it
+/// beside the evaluation changes nothing the options hold (AUTOMATION-1726). A generated
+/// compile item the options name must be there to be filed, as it must to be replayed.
 ///
 /// A path that is absent is judged by the nearest directory above it that is there, except
 /// one outside the checkout that `absentAtStart` (`absentOf`, taken before the evaluation
@@ -694,13 +770,14 @@ let absentOf (paths: string seq) : Set<string> =
 let file
     (store: OutcomeRecords.IOutcomeStore)
     (request: Request)
-    (inputs: EvaluationInputs)
+    (filed: FiledInputs)
     (projects: Types.ProjectOptions list)
     (environment: (string * string) list)
     (since: DateTime)
     (absentAtStart: Set<string>)
     (stamp: string -> FileStamp.Stamp voption)
     : Filing =
+    let inputs = filed.Keyed
     let inCheckout = under request.Root
 
     let changedSince (path: string) =
@@ -724,9 +801,10 @@ let file
         @ inputs.Probes
         @ [ for listing in inputs.Listings -> listing.Directory ]
 
-    match inputs.Listings |> List.tryFind _.Recursive with
-    | Some listing -> Refused $"MSBuild listed the tree under %s{listing.Directory}, which is not keyed"
-    | None ->
+    match inputs.Listings |> List.tryFind _.Recursive, filed.Generated |> List.tryFind (File.Exists >> not) with
+    | Some listing, _ -> Refused $"MSBuild listed the tree under %s{listing.Directory}, which is not keyed"
+    | None, Some gone -> Refused $"the generated compile item %s{gone} the options name is not there"
+    | None, None ->
         let key = optionsKey request inputs environment
 
         match watched |> List.distinct |> List.filter changedSince with
@@ -752,7 +830,7 @@ let file
                 // replay of something else.
                 if
                     filedRecord key "options" (ProjectOptionsJson.toJson projects)
-                    && filedRecord (requestKey request) "options-inputs" (InputsJson.toJson inputs key)
+                    && filedRecord (requestKey request) "options-inputs" (InputsJson.toJson filed key)
                 then
                     Filed
                 else
@@ -820,7 +898,7 @@ type CachingLoader
         OutcomeStore.Through.lookupWithOutputs store (requestKey req).Value
         |> Option.bind snd
         |> Option.bind InputsJson.tryOfJson
-        |> Option.map (fun (inputs, _) -> inputs.Probes)
+        |> Option.map (fun (filed, _) -> filed.Keyed.Probes)
         |> Option.defaultValue []
 
     // `known`: probes an earlier evaluation of the request listed. With the well-known files
@@ -848,7 +926,17 @@ type CachingLoader
             else
                 try
                     let inputs = listInputs loaded
-                    Some inputs, file store req inputs loaded env (startedAt - racyWindow) absentAtStart stamp
+
+                    Some inputs,
+                    file
+                        store
+                        req
+                        (FiledInputs.ofEvaluation loaded inputs)
+                        loaded
+                        env
+                        (startedAt - racyWindow)
+                        absentAtStart
+                        stamp
                 with ex ->
                     None, Refused $"its inputs could not be listed: %s{ex.Message}"
 

@@ -106,11 +106,12 @@ let ``an options-inputs record of the same inputs is the same bytes, digest and 
                 differed.Value <- differed.Value + 1
 
             let key = optionsKey request inputs environment
-            let bytes = InputsJson.toJson inputs key
+            let filedOf (i: EvaluationInputs) = { Keyed = i; Generated = [] }
+            let bytes = InputsJson.toJson (filedOf inputs) key
 
             optionsKey request other environment = key
-            && InputsJson.toJson other key = bytes
-            && ContentHash.ofText (InputsJson.toJson other key) = ContentHash.ofText bytes)
+            && InputsJson.toJson (filedOf other) key = bytes
+            && ContentHash.ofText (InputsJson.toJson (filedOf other) key) = ContentHash.ofText bytes)
     )
 
     // A property whose two gatherings were always already identical proves nothing about order.

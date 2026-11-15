@@ -220,7 +220,7 @@ let list (projects: Types.ProjectOptions list) : EvaluationInputs =
 /// every build and so made every release re-evaluate every project. `RecordKeyGoldenTests`
 /// pins the request key and fails on any change to how it is computed.
 [<Literal>]
-let OptionsRecordSchema = "fshw-options-semantics-v1"
+let OptionsRecordSchema = "fshw-options-semantics-v2"
 
 /// The toolchain an options record is keyed by, from its parts: Ionide's build (its
 /// global properties and design-time targets), the MSBuild that runs it, and fshw's
