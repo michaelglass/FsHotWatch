@@ -7,6 +7,7 @@ module FsHotWatch.Tests.GitIgnoreEquivalenceTests
 
 open System.IO
 open Xunit
+open Swensen.Unquote
 open FsCheck
 open FsCheck.FSharp
 open Ignore
@@ -203,6 +204,48 @@ let private writeTree (root: string) (files: string list) (ignores: (string * st
 
     files |> List.distinct |> List.filter (fun f -> tryWrite f "x")
 
+/// Write `files` and `ignores` under `root` and ask every written file, and every directory above
+/// one, what `GitIgnores` and the per-file oracle answer: the queries where they disagree, named,
+/// and how many files the oracle ignored and kept.
+let private disagreements (root: string) (files: string list) (ignores: (string * string list) list) =
+    let written = writeTree root files ignores
+    let ignoresNow = PathFilter.GitIgnores root
+    let abs (rel: string) = Path.Combine(root, rel)
+
+    let dirs =
+        written
+        |> List.collect (fun f ->
+            let parts = f.Split '/'
+            [ for n in 1 .. parts.Length - 1 -> String.concat "/" parts[.. n - 1] ])
+        |> List.distinct
+
+    let fileAnswers =
+        written
+        |> List.map (fun f ->
+            f, attempt (fun () -> oracleIgnored root f false), attempt (fun () -> ignoresNow.IsIgnored(abs f, false)))
+
+    let wrong =
+        [ for f, want, got in fileAnswers do
+              if got <> want then
+                  sprintf "file %s: oracle %A, GitIgnores %A" f want got
+          for d in dirs do
+              let want = attempt (fun () -> oracleIgnored root d true)
+              let got = attempt (fun () -> ignoresNow.IsIgnored(abs d, true))
+
+              if got <> want then
+                  sprintf "directory %s: oracle %A, GitIgnores %A" d want got
+
+              let wantUnder = attempt (fun () -> oracleUnderIgnored root d)
+              let gotUnder = attempt (fun () -> ignoresNow.IsUnderIgnored(abs d))
+
+              if gotUnder <> wantUnder then
+                  sprintf "under %s: oracle %A, GitIgnores %A" d wantUnder gotUnder ]
+
+    let count (answer: bool) =
+        fileAnswers |> List.filter (fun (_, want, _) -> want = Ok answer) |> List.length
+
+    wrong, count true, count false
+
 [<Fact(Timeout = PropertyTestCapMs)>]
 let ``GitIgnores answers what the per-file Ignore matcher answers for every file and directory of a tree`` () =
     let ignored = ref 0
@@ -212,39 +255,62 @@ let ``GitIgnores answers what the per-file Ignore matcher answers for every file
         Config.QuickThrowOnFailure.WithMaxTest(150),
         Prop.forAll (Arb.fromGen treeGen) (fun (files, ignores) ->
             withTempDir "gitignore-equivalence" (fun root ->
-                let written = writeTree root files ignores
-                let ignoresNow = PathFilter.GitIgnores root
-                let abs (rel: string) = Path.Combine(root, rel)
-
-                let dirs =
-                    written
-                    |> List.collect (fun f ->
-                        let parts = f.Split '/'
-                        [ for n in 1 .. parts.Length - 1 -> String.concat "/" parts[.. n - 1] ])
-                    |> List.distinct
-
-                let filesAgree =
-                    written
-                    |> List.forall (fun f ->
-                        let want = attempt (fun () -> oracleIgnored root f false)
-
-                        match want with
-                        | Ok true -> ignored.Value <- ignored.Value + 1
-                        | Ok false -> kept.Value <- kept.Value + 1
-                        | Error _ -> ()
-
-                        attempt (fun () -> ignoresNow.IsIgnored(abs f, false)) = want)
-
-                let dirsAgree =
-                    dirs
-                    |> List.forall (fun d ->
-                        attempt (fun () -> ignoresNow.IsIgnored(abs d, true)) = attempt (fun () ->
-                            oracleIgnored root d true)
-                        && attempt (fun () -> ignoresNow.IsUnderIgnored(abs d)) = attempt (fun () ->
-                            oracleUnderIgnored root d))
-
-                filesAgree && dirsAgree))
+                let wrong, i, k = disagreements root files ignores
+                ignored.Value <- ignored.Value + i
+                kept.Value <- kept.Value + k
+                List.isEmpty wrong))
     )
 
     if ignored.Value < 200 || kept.Value < 200 then
         failwith $"only {ignored.Value} ignored and {kept.Value} kept files: the generator misses a region"
+
+/// The case GitHub CI's Linux run 43659129229 found (seed 15333788256446128806,614693935018741563):
+/// on a case-sensitive file system `A` and `a`, `K` and `k`, `AB` and `ab` are different directories.
+[<Fact>]
+let ``the case Linux CI found: GitIgnores agrees with the per-file matcher`` () =
+    let files =
+        [ "x.log/k"
+          "ab"
+          "A/a/xlog"
+          "ab/AB/a/A"
+          "k/AB/K/é"
+          "a+b/build/out/log"
+          "AB/K"
+          "b"
+          "AB/a"
+          "log"
+          "build/é"
+          "Build"
+          "AB/xlog/AB"
+          "K/log/ab/b"
+          "out/build"
+          "xlog/b/x.log/K"
+          "b/A/x.log"
+          "k/a/a/x.log" ]
+
+    let ignores =
+        [ "", [ "/xlog/[]a]"; "K/" ]
+          "a", [ "!b/**"; "out/a|b"; "*.log/[!a]/é"; "!/\\#x"; "K/log/(a)"; "!/K/**/" ]
+          "b", [ "?"; "*/*b/"; "[]a]/AB"; "ab/{a,b}"; "[ab]/a$/**"; "[!a]/x^y/[a-z]/" ]
+          "", [ "**/**/"; "!**"; "[!a]/ab/a$"; "(a)/"; "[]a]/[]a]/"; "**"; "/*/é/" ] ]
+
+    withTempDir "gitignore-equivalence-ci" (fun root ->
+        let wrong, _, _ = disagreements root files ignores
+        test <@ List.isEmpty wrong @>)
+
+/// The cause of that case, on any file system: `**/**/` compiles in its directory form (`**/**`)
+/// and not in its file form (AUTOMATION-1720). A directory query reads only the directory form,
+/// so it is answered, as the per-file matcher answers it; a file query fails as that matcher fails.
+[<Fact>]
+let ``a line only the file form of which cannot compile fails file queries, not directory ones`` () =
+    withTempDir "gitignore-forms" (fun root ->
+        let wrong, _, _ = disagreements root [ "d/x"; "d/e/y" ] [ "", [ "**/**/" ] ]
+        test <@ List.isEmpty wrong @>
+
+        let ignores = PathFilter.GitIgnores root
+        test <@ ignores.IsIgnored(Path.Combine(root, "d"), true) @>
+
+        let fileQueryFails =
+            (attempt (fun () -> ignores.IsIgnored(Path.Combine(root, "d", "x"), false))).IsError
+
+        test <@ fileQueryFails @>)

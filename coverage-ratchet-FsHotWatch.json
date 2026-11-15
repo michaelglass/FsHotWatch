@@ -175,9 +175,9 @@
         "platform": "macos"
       },
       {
-        "line": 66,
-        "branch": 77,
-        "reason": "2026-11-15, from GitHub CI run 43656051311 (main 36a36550, line 52.2% under the provisional 60) plus the per-edge fix: parseMacOS, selectReader and orNone are now covered on Linux. Each edge Linux cannot cover, inspected in that run's cobertura: askMacOS (getattrlist through MacAttrList; lines 40-55, about 15 lines, and its Ok/Error branch) is the macOS reader, which cannot run on Linux; plus orNone's compiler-generated rethrow arm, as on macOS. Expected about 68.8% lines (33/48) and 83% branches (15/18); floored a little under so a compiler line-count difference does not red it. Settle from the next CI run, never lower.",
+        "line": 70,
+        "branch": 83,
+        "reason": "2026-11-15, measured on Linux by GitHub CI run 43659129229 (main f0d02318): line 70.8% (34/48), branch 83.3% (15/18); floored just under. Each uncovered edge, inspected in that run's cobertura: askMacOS (getattrlist through MacAttrList; lines 41-55, and its Ok/Error branch) is the macOS reader, which cannot run on Linux; and the exception filter in orNone has one compiler-generated arm (no listed exception matched, so it rethrows) that no test drives, by design, as on macOS.",
         "platform": "linux"
       }
     ],

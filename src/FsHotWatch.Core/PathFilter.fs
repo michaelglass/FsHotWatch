@@ -270,11 +270,16 @@ type IgnoreRules private (rules: IndexedRule array) =
 /// dropped and the path asked without one. `Ignore` reads a query `d/` as `d/` plus an
 /// empty name, so `packages/*` would match `packages/` itself, where git matches only
 /// what is inside it.
+///
+/// Each matcher is built when a query of its kind first needs it, never both at once: a line
+/// whose file form `Ignore` cannot compile but whose directory form it can (`**/**/`; see
+/// AUTOMATION-1720) then fails only the queries that read the file form, as the matcher for
+/// that query alone does (`GitIgnoreEquivalenceTests`).
 type GitIgnores(repoRoot: string) =
     let root = Path.GetFullPath(repoRoot).TrimEnd(Path.DirectorySeparatorChar)
 
     let rulesByDir =
-        System.Collections.Generic.Dictionary<string, string list * IgnoreRules * IgnoreRules>()
+        System.Collections.Generic.Dictionary<string, string list * Lazy<IgnoreRules> * Lazy<IgnoreRules>>()
 
     let relative (abs: string) =
         Path.GetRelativePath(root, abs).Replace('\\', '/')
@@ -292,13 +297,13 @@ type GitIgnores(repoRoot: string) =
         else
             []
 
-    let rec rulesFor (dir: string) : string list * IgnoreRules * IgnoreRules =
+    let rec rulesFor (dir: string) : string list * Lazy<IgnoreRules> * Lazy<IgnoreRules> =
         match rulesByDir.TryGetValue dir with
         | true, rules -> rules
         | _ ->
             let inherited =
                 if dir = root then
-                    [], IgnoreRules.Of [], IgnoreRules.Of []
+                    [], lazy (IgnoreRules.Of []), lazy (IgnoreRules.Of [])
                 else
                     rulesFor (Path.GetDirectoryName dir)
 
@@ -314,7 +319,7 @@ type GitIgnores(repoRoot: string) =
                         |> List.map (fun l -> l.TrimEnd('/'))
                         |> List.filter (fun l -> l <> "" && l <> "!")
 
-                    lines, IgnoreRules.Of lines, IgnoreRules.Of directoryLines
+                    lines, lazy (IgnoreRules.Of lines), lazy (IgnoreRules.Of directoryLines)
 
             rulesByDir[dir] <- rules
             rules
@@ -328,7 +333,7 @@ type GitIgnores(repoRoot: string) =
             false
         else
             let _, files, directories = rulesFor (Path.GetDirectoryName abs)
-            (if isDirectory then directories else files).IsIgnored(relative abs)
+            (if isDirectory then directories else files).Value.IsIgnored(relative abs)
 
     /// Whether the directory `absoluteDir`, or any directory between it and the root, is
     /// ignored. Git never looks inside an ignored directory, so nothing under one is
