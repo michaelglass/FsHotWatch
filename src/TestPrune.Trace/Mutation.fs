@@ -70,11 +70,25 @@ type Judging =
     /// The trace selection (`TraceSelect`, R1-R4 and R6) for "the target's symbol changed",
     /// over the baseline's ingested traces and the repository index.
     | BySymbol
+    /// The static selection fshw runs for "the target's symbol changed": the index's
+    /// `QueryAffectedTests` from the target's symbols as the only seeds, each selected test's
+    /// class run whole (as the daemon's `--filter-class` runs it), plus the project's
+    /// always-run classes. No trace is read.
+    | ByStatic
 
 /// The repository index a symbol-level judgement reads, and the root its paths are relative to.
 type Index =
     { Symbols: TestPrune.Ports.SymbolStore
       Root: string }
+
+/// What each mutant is to be judged against, with what that judgement reads.
+type Judge =
+    /// The probe ids of the baseline's traces (`selected`).
+    | JudgeByProbe
+    /// Trace selection over the index (`BySymbol`); by probe when the baseline ingests no trace.
+    | JudgeBySymbol of Index
+    /// Static selection over the index (`ByStatic`), with the test project's always-run classes.
+    | JudgeByStatic of Index * alwaysClasses: string list
 
 /// The harness's report over one project.
 type MutationReport =
@@ -417,6 +431,46 @@ let targetSymbols (ix: Joiner.SymbolIndex) (joined: Joiner.JoinTarget[]) (target
        |> List.choose (fun t -> Joiner.typeCandidates t |> List.tryFind ix.Exists))
     |> List.distinct
 
+/// The test classes static selection runs in `testProject` when `seeds` changed: the class of
+/// every test the index's static walk (`QueryAffectedTests`) selects there, each run whole as
+/// fshw runs it, and the project's `alwaysClasses`. A target with no seeds is one the index
+/// does not know, so the walk has nothing to start from and is not asked: only the always-run
+/// classes run.
+let staticClasses
+    (index: TestPrune.Ports.SymbolStore)
+    (testProject: string)
+    (alwaysClasses: string list)
+    (seeds: string list)
+    : Set<string> =
+    let walked =
+        match seeds with
+        | [] -> Set.empty
+        | _ ->
+            index.QueryAffectedTests seeds
+            |> List.filter (fun t -> t.TestProject = testProject)
+            |> List.map _.TestClass
+            |> Set.ofList
+
+    Set.union walked (Set.ofList alwaysClasses)
+
+/// The `names` whose class (`classOf`, from the CTRF report) is one of `classes`. A test the
+/// report names no class for is outside every class.
+let inClasses (classOf: Map<string, string>) (classes: Set<string>) (names: string list) : Set<string> =
+    names
+    |> List.filter (fun name -> classOf.TryFind name |> Option.exists classes.Contains)
+    |> Set.ofList
+
+/// The baseline tests static selection runs when `seeds` changed (`staticClasses`, `inClasses`).
+let staticSelection
+    (index: TestPrune.Ports.SymbolStore)
+    (testProject: string)
+    (alwaysClasses: string list)
+    (classOf: Map<string, string>)
+    (baseline: TestOutcome list)
+    (seeds: string list)
+    : Set<string> =
+    inClasses classOf (staticClasses index testProject alwaysClasses seeds) (baseline |> List.map _.Name)
+
 /// The tests of a run that did not pass, sorted: a mutant cannot show their failure.
 let notPassed (outcomes: TestOutcome list) : string list =
     outcomes
@@ -508,6 +562,7 @@ let render (r: MutationReport) : string =
         match r.Judging with
         | ByProbe -> "probe"
         | BySymbol -> "symbol"
+        | ByStatic -> "static"
 
     line
         $"mutation  %s{verdict}  recall %s{recall}  samples %d{r.Samples.Length} (measured %d{r.Measured})  targets %d{r.Targets}  tests %d{r.Universe}  judged by %s{judgedBy}"
@@ -556,6 +611,14 @@ let private draw (n: int) (seed: int) (pool: Target list) : Target list =
         |> List.sort
         |> List.map (fun name -> byName.[name])
 
+/// The targets of `pool` to mutate: every one whose name contains one of `includes` (a seeded
+/// control the run must always measure), and `n` drawn from the rest (`draw`), sorted by name.
+let choose (n: int) (seed: int) (includes: string list) (pool: Target list) : Target list =
+    let included, rest =
+        pool |> List.partition (fun t -> includes |> List.exists t.Name.Contains)
+
+    included @ draw n seed rest |> List.sortBy _.Name
+
 /// The mutant's environment additions: the target's probe ids throw, and reflection over its
 /// union types throws.
 let private mutantEnv (target: Target) =
@@ -571,8 +634,10 @@ let private mutantEnv (target: Target) =
 /// name contains one of its strings before sampling; `changed` (`changedSpans` of a real
 /// change), when given, keeps the methods it touched (`changedTargets`) and reports the touched
 /// methods no test ran as not mutable. A union-type target stands for adding a case to the
-/// union, which no diff shows, so `changed` does not filter them. `Error` when the project
-/// cannot be prepared or the baseline wrote no test report.
+/// union, which no diff shows, so `changed` does not filter them. A method target whose name
+/// contains one of `includes` is mutated besides the draw (`choose`). Each mutant is judged as
+/// `judge` says. `Error` when the project cannot be prepared or the baseline wrote no test
+/// report.
 let runWith
     (req: TraceSession.PrepareRequest)
     (appArgs: string list)
@@ -580,14 +645,16 @@ let runWith
     (unionSamples: int)
     (seed: int)
     (only: string list)
+    (includes: string list)
     (changed: Map<string, (int * int) list> option)
     (timeout: TimeSpan)
-    (index: Index option)
+    (judge: Judge)
     : Result<MutationReport, string> =
     TraceSession.prepareProject req
     |> Result.bind (fun launch ->
         let dir = Path.Combine(req.RunDir, "mutation")
         let baselineDumps = Path.Combine(dir, "baseline", "dumps")
+        let baselineResults = Path.Combine(dir, "baseline", "results")
 
         Ctrf.run
             "baseline"
@@ -595,7 +662,7 @@ let runWith
             appArgs
             (envWith launch baselineDumps [])
             req.RepoRoot
-            (Path.Combine(dir, "baseline", "results"))
+            baselineResults
             timeout
         |> Result.map (fun baseline ->
             let manifest = launch.Shadow.Manifest
@@ -620,66 +687,83 @@ let runWith
                 unionTargets req.AssemblyName (reflectedTypes (Map.values merged)) manifest
                 |> List.filter keep
 
-            let chosen = draw samples seed methods @ draw unionSamples seed unions
+            let chosen = choose samples seed includes methods @ draw unionSamples seed unions
             let traces = tracesOf manifest dumps baseline
 
-            // With an index, each mutant is judged against the trace selection for "its symbol
+            // By symbol, each mutant is judged against the trace selection for "its symbol
             // changed", over the baseline's traces ingested into a scratch store.
-            let bySymbol =
-                index
-                |> Option.bind (fun ix ->
-                    let store = TraceStore.Store.Open(Path.Combine(dir, "baseline", "traces.db"))
+            let bySymbol (ix: Index) =
+                let store = TraceStore.Store.Open(Path.Combine(dir, "baseline", "traces.db"))
 
-                    let summary =
-                        TraceIngest.ingest
-                            store
-                            { RunId = "baseline"
-                              TestProject = req.TestProject
-                              RepoRoot = ix.Root
-                              InputRoot = launch.InputRoot
-                              Kind = TraceStore.FullRun
-                              LaunchTreeHash = ""
-                              CurrentTreeHash = ""
-                              DumpDir = baselineDumps
-                              Shadow = launch.Shadow
-                              Outcomes = baseline
-                              Symbols = ix.Symbols
-                              FingerprintFiles = []
-                              FingerprintEnv = []
-                              RecordedAt = DateTimeOffset.UtcNow }
+                let summary =
+                    TraceIngest.ingest
+                        store
+                        { RunId = "baseline"
+                          TestProject = req.TestProject
+                          RepoRoot = ix.Root
+                          InputRoot = launch.InputRoot
+                          Kind = TraceStore.FullRun
+                          LaunchTreeHash = ""
+                          CurrentTreeHash = ""
+                          DumpDir = baselineDumps
+                          Shadow = launch.Shadow
+                          Outcomes = baseline
+                          Symbols = ix.Symbols
+                          FingerprintFiles = []
+                          FingerprintEnv = []
+                          RecordedAt = DateTimeOffset.UtcNow }
 
-                    summary.EnvFingerprint
-                    |> Option.map (fun fingerprint ->
-                        let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
-                        let joined = Joiner.joinManifest symbolIndex manifest
-                        let keys = keysOf req.TestProject dumps baseline
-                        let universe = keys |> Map.values |> Seq.distinct |> List.ofSeq
+                summary.EnvFingerprint
+                |> Option.map (fun fingerprint ->
+                    let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
+                    let joined = Joiner.joinManifest symbolIndex manifest
+                    let keys = keysOf req.TestProject dumps baseline
+                    let universe = keys |> Map.values |> Seq.distinct |> List.ofSeq
 
-                        fun (target: Target) ->
-                            bySymbolOr
-                                (selected traces target)
-                                (targetSymbols symbolIndex joined target)
-                                (fun seeds ->
-                                    let chosen =
-                                        symbolSelection
-                                            store
-                                            fingerprint
-                                            req.TestProject
-                                            ix.Symbols
-                                            launch.InputRoot
-                                            universe
-                                            seeds
+                    fun (target: Target) ->
+                        bySymbolOr (selected traces target) (targetSymbols symbolIndex joined target) (fun seeds ->
+                            let chosen =
+                                symbolSelection
+                                    store
+                                    fingerprint
+                                    req.TestProject
+                                    ix.Symbols
+                                    launch.InputRoot
+                                    universe
+                                    seeds
 
-                                    // A test with no key has no trace: R1 selects it.
-                                    baseline
-                                    |> List.map _.Name
-                                    |> List.filter (fun name -> keys.TryFind name |> Option.forall chosen.Contains)
-                                    |> Set.ofList)))
+                            // A test with no key has no trace: R1 selects it.
+                            baseline
+                            |> List.map _.Name
+                            |> List.filter (fun name -> keys.TryFind name |> Option.forall chosen.Contains)
+                            |> Set.ofList))
 
-            let selectionOf (target: Target) =
-                match bySymbol with
-                | Some select -> select target
-                | None -> selected traces target
+            let selectionOf, judging =
+                match judge with
+                | JudgeByProbe -> selected traces, ByProbe
+                | JudgeBySymbol ix ->
+                    // By probe when the baseline ingests no trace to select with.
+                    bySymbol ix
+                    |> Option.map (fun select -> select, BySymbol)
+                    |> Option.defaultValue (selected traces, ByProbe)
+                | JudgeByStatic(ix, alwaysClasses) ->
+                    // No trace is read: the index's own walk from the target's symbols, by class.
+                    let symbolIndex = Joiner.ofStore ix.Symbols ix.Root
+                    let joined = Joiner.joinManifest symbolIndex manifest
+
+                    let classOf =
+                        Ctrf.classes (File.ReadAllText(Path.Combine(baselineResults, "run.ctrf.json")))
+
+                    let select (target: Target) =
+                        staticSelection
+                            ix.Symbols
+                            req.TestProject
+                            alwaysClasses
+                            classOf
+                            baseline
+                            (targetSymbols symbolIndex joined target)
+
+                    select, ByStatic
 
             let judged =
                 chosen
@@ -707,11 +791,11 @@ let runWith
                     | Some names ->
                         Set.difference names (targets req.AssemblyName hit manifest |> List.map _.Name |> Set.ofList)
                         |> Set.toList
-                Judging = if bySymbol.IsSome then BySymbol else ByProbe }))
+                Judging = judging }))
 
-/// `runWith` judging by probe: no index.
+/// `runWith` judging by probe, with no included target.
 let run req appArgs samples unionSamples seed only changed timeout =
-    runWith req appArgs samples unionSamples seed only changed timeout None
+    runWith req appArgs samples unionSamples seed only [] changed timeout JudgeByProbe
 
 /// The samples a report stores (`TraceStore.MutationSample`), one per judged target (of its
 /// kind: symbol or union-type) plus one symbol `NotMutable` per changed method no test ran.

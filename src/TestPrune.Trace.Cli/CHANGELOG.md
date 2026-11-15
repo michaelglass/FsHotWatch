@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `mutate --judge probe|symbol|static`, `--always-class` and `--include` (AUTOMATION-1688): judge each mutant
+  against fshw's static selection, and always mutate a seeded control.
+
 ## 0.9.4 - 2026-11-12
 
 - chore: rebuild to bundle updated dependencies

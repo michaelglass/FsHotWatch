@@ -236,7 +236,8 @@ let private recall (cwd: string) (args: string list) : Outcome =
             with e ->
                 fail 2 $"recall measured nothing: %s{e.Message}"
 
-/// `Mutation.run`: request, app args, samples, union samples, seed, target filter, change, timeout.
+/// `Mutation.runWith`: request, app args, samples, union samples, seed, target filter, included
+/// targets, change, timeout, judgement.
 type MutateMeasure =
     TraceSession.PrepareRequest
         -> string list
@@ -244,9 +245,10 @@ type MutateMeasure =
         -> int
         -> int
         -> string list
+        -> string list
         -> Map<string, (int * int) list> option
         -> TimeSpan
-        -> Mutation.Index option
+        -> Mutation.Judge
         -> Result<Mutation.MutationReport, string>
 
 /// The process-driving measurements the verbs run (substituted in tests).
@@ -286,6 +288,10 @@ let mutateUsage =
     + "  --diff samples only the methods a real change touched (its new-side lines, e.g. jj diff --git or git diff -U0);\n"
     + "  --db stores every sample there under --project (default: the assembly), for shadow-report\n"
     + "  --index <test-impact db> judges each mutant against trace selection for \"its symbol changed\" (R1-R4, R6)\n"
+    + "  [--judge probe|symbol|static] [--always-class <class>]... [--include <text>]...\n"
+    + "  --judge static judges against fshw's static selection instead: the index's walk from the method's\n"
+    + "    symbols, each selected class run whole, plus every --always-class (needs --index)\n"
+    + "  --include always mutates the methods whose name contains it, besides the --samples drawn\n"
     + "  --union-samples draws union-type mutants (reflection over one union throws) from the unions a test reflected over\n"
     + measureTail
 
@@ -307,6 +313,9 @@ type private MeasureArgs =
       Samples: int
       UnionSamples: int
       Only: string list
+      Includes: string list
+      Judge: string option
+      AlwaysClasses: string list
       Diff: string option
       Db: string option
       Project: string option
@@ -344,6 +353,13 @@ let private setters: Map<string, string -> MeasureArgs -> Result<MeasureArgs, st
                   else
                       Ok { a with UnionSamples = n }))
           "--only", (fun v a -> Ok { a with Only = a.Only @ [ v ] })
+          "--include", (fun v a -> Ok { a with Includes = a.Includes @ [ v ] })
+          "--judge", (fun v a -> Ok { a with Judge = Some v })
+          "--always-class",
+          (fun v a ->
+              Ok
+                  { a with
+                      AlwaysClasses = a.AlwaysClasses @ [ v ] })
           "--timeout-min",
           (fun v a ->
               positiveNumber "--timeout-min" v
@@ -399,6 +415,9 @@ let private measure
           Samples = 20
           UnionSamples = 5
           Only = []
+          Includes = []
+          Judge = None
+          AlwaysClasses = []
           Diff = None
           Db = None
           Project = None
@@ -641,6 +660,25 @@ let private indexOf (cwd: string) (repoRoot: string) (path: string option) =
                       Mutation.Index.Root = repoRoot }
             )
 
+/// What `--judge` asks each mutant to be judged against: without it, by symbol with an index
+/// and by probe without one. A symbol or static judgement reads the index, and only a static
+/// one takes `--always-class`.
+let private judgeOf (index: Mutation.Index option) (a: MeasureArgs) : Result<Mutation.Judge, string> =
+    let judge =
+        match a.Judge, index with
+        | None, None
+        | Some "probe", _ -> Ok Mutation.JudgeByProbe
+        | None, Some ix
+        | Some "symbol", Some ix -> Ok(Mutation.JudgeBySymbol ix)
+        | Some "static", Some ix -> Ok(Mutation.JudgeByStatic(ix, a.AlwaysClasses))
+        | Some("symbol" | "static" as j), None -> Error $"--judge %s{j} needs --index"
+        | Some other, _ -> Error $"--judge needs probe, symbol or static, got %s{other}"
+
+    match judge with
+    | Ok(Mutation.JudgeByStatic _) -> judge
+    | Ok _ when not a.AlwaysClasses.IsEmpty -> Error "--always-class needs --judge static"
+    | _ -> judge
+
 /// Store a census's gaps (`FileCensus.gaps`) under `project` in the trace store at `db`, when
 /// one is given, replacing the project's earlier ones. R7 reads them from there.
 let private storeGaps (cwd: string) (db: string option) (project: string) (report: FileCensus.FileCensusReport) =
@@ -702,6 +740,9 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
               "--union-samples"
               "--seed"
               "--only"
+              "--include"
+              "--judge"
+              "--always-class"
               "--diff"
               "--db"
               "--project"
@@ -709,7 +750,8 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
             rest
             (fun req a ->
                 indexOf cwd req.RepoRoot a.IndexPath
-                |> Result.bind (fun index ->
+                |> Result.bind (fun index -> judgeOf index a)
+                |> Result.bind (fun judge ->
                     changeOf cwd a.Diff
                     |> Result.bind (fun (changed, treeHash) ->
                         m.Mutate
@@ -719,9 +761,10 @@ let runWith (m: Measures) (cwd: string) (args: string list) : Outcome =
                             a.UnionSamples
                             a.Seed
                             a.Only
+                            a.Includes
                             changed
                             (TimeSpan.FromMinutes a.TimeoutMin)
-                            index
+                            judge
                         |> Result.bind (
                             storeSamples cwd a.Db (a.Project |> Option.defaultValue req.TestProject) treeHash
                         ))))

@@ -403,9 +403,61 @@ let ``judged by symbol, every test a mutated fixture method or union breaks is o
             { Symbols = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
               Root = Fixtures.fixtureRoot }
 
-        let report = Mutation.runWith req [] 1000 10 1 [] None timeout (Some index) |> ok
+        let report =
+            Mutation.runWith req [] 1000 10 1 [] [] None timeout (Mutation.JudgeBySymbol index)
+            |> ok
+
         test <@ report.Judging = Mutation.BySymbol @>
         test <@ report.Measured > 0 && report.Samples.Length = report.Targets @>
         test <@ report.Samples |> List.exists (fun s -> s.Kind = TraceStore.UnionTypeMutant) @>
         test <@ report.Samples |> List.collect _.Missed |> List.isEmpty @>
         test <@ (Mutation.render report).Contains "judged by symbol" @>)
+
+[<Fact>]
+let ``judged statically, a mutant's failing tests are those outside the classes static selection runs`` () =
+    // AUTOMATION-1688: the static judgement reads each baseline test's class from the real
+    // xUnit CTRF report and runs the selected classes whole. The fixture index holds no
+    // cross-project edges, so its own walk selects nothing and every failing test is missed;
+    // a walk reaching every fixture test misses none.
+    withScratch (fun req ->
+        let index: Mutation.Index =
+            { Symbols = TestPrune.Ports.toSymbolStore FixtureIndex.withTests.Value
+              Root = Fixtures.fixtureRoot }
+
+        let judged (ix: Mutation.Index) =
+            Mutation.runWith req [] 3 0 1 [] [] None timeout (Mutation.JudgeByStatic(ix, []))
+            |> ok
+
+        let none = judged index
+        test <@ none.Judging = Mutation.ByStatic @>
+        test <@ none.Measured > 0 @>
+        test <@ none.Samples |> List.forall (fun s -> s.Missed = s.Failing && s.Selected = 0) @>
+        test <@ (Mutation.render none).Contains "judged by static" @>
+
+        // A walk that reaches every FxTests class, named as fshw names them (xUnit's names,
+        // nested classes with `+`): every failing test is in one by its CTRF class, so none is
+        // missed. (The fixture index is built without xUnit's references, so it holds no test
+        // methods of its own to walk to.)
+        let fixtureClasses =
+            [ for c in [ "A"; "B"; "C"; "D"; "E"; "F" ] -> $"FxTests.AttributionTests+Class%s{c}" ]
+            @ [ "FxTests.ReflectionTests"
+                "FxTests.RootedA"
+                "FxTests.RootedB"
+                "FxTests.SuiteFiles"
+                "FxTests.SuiteRoot" ]
+
+        let everything =
+            { index with
+                Symbols =
+                    { index.Symbols with
+                        QueryAffectedTests =
+                            fun _ ->
+                                [ for c in fixtureClasses ->
+                                      { SymbolFullName = c + ".t"
+                                        TestProject = "FxTests"
+                                        TestClass = c
+                                        TestMethod = "t" } ] } }
+
+        let all = judged everything
+        test <@ all.Measured > 0 @>
+        test <@ all.Samples |> List.collect _.Missed |> List.isEmpty @>)

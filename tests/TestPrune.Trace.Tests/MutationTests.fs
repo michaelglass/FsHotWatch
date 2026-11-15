@@ -500,3 +500,136 @@ let ``a target with no indexed symbol is judged by probe`` () =
     let byProbe = set [ "probe" ]
     test <@ Mutation.bySymbolOr byProbe [] (fun _ -> set [ "symbol" ]) = byProbe @>
     test <@ Mutation.bySymbolOr byProbe [ "S" ] Set.ofList = set [ "S" ] @>
+
+// --- static judging (AUTOMATION-1688) -------------------------------------------------------
+
+let private testIn (project: string) (cls: string) (meth: string) : TestPrune.AstAnalyzer.TestMethodInfo =
+    { SymbolFullName = $"%s{cls}.%s{meth}"
+      TestProject = project
+      TestClass = cls
+      TestMethod = meth }
+
+/// An index whose static walk answers `walk` and records every seed list it was asked.
+let private walking (walk: string list -> TestPrune.AstAnalyzer.TestMethodInfo list) =
+    let asked = ResizeArray<string list>()
+
+    let store =
+        { TestPrune.InMemoryStore.fromAnalysisResults [] with
+            QueryAffectedTests =
+                fun seeds ->
+                    asked.Add seeds
+                    walk seeds }
+
+    store, asked
+
+[<Fact>]
+let ``static selection runs this project's affected classes whole, and the always-run classes`` () =
+    let store, asked =
+        walking (fun _ ->
+            [ testIn "P" "P.A" "one"
+              testIn "P" "P.A" "two"
+              testIn "P" "P.B+Inner" "three"
+              testIn "Other" "Other.C" "four" ])
+
+    let classes = Mutation.staticClasses store "P" [ "P.Always" ] [ "Lib.f"; "Lib.g" ]
+
+    test <@ classes = set [ "P.A"; "P.B+Inner"; "P.Always" ] @>
+    test <@ List.ofSeq asked = [ [ "Lib.f"; "Lib.g" ] ] @>
+
+[<Fact>]
+let ``a target the index does not know selects only the always-run classes, without asking the index`` () =
+    let store, asked = walking (fun _ -> [ testIn "P" "P.A" "one" ])
+
+    test <@ Mutation.staticClasses store "P" [ "P.Always" ] [] = set [ "P.Always" ] @>
+    test <@ asked.Count = 0 @>
+
+[<Fact>]
+let ``a baseline test is in the static set when its class is, and a test of no known class is not`` () =
+    let classOf = Map [ "P.A.one(x: 1)", "P.A"; "P.A.two", "P.A"; "P.B.three", "P.B" ]
+
+    let names = [ "P.A.one(x: 1)"; "P.A.two"; "P.B.three"; "P.A.classless" ]
+
+    test <@ Mutation.inClasses classOf (set [ "P.A" ]) names = set [ "P.A.one(x: 1)"; "P.A.two" ] @>
+
+[<Fact>]
+let ``a test reaching the mutated method only through reflection is a static miss`` () =
+    // The seeded miss of AUTOMATION-1688: the static graph has no edge from the reflecting test
+    // to the method, so static selection for "the method changed" runs the test that calls it
+    // directly, not the one that reaches it by name.
+    let store, _ = walking (fun _ -> [ testIn "P" "P.Direct" "calls f" ])
+
+    let classOf =
+        Map
+            [ "P.Direct.calls f", "P.Direct"
+              "P.ByName.invokes f by name", "P.ByName"
+              "P.Other.x", "P.Other" ]
+
+    let baseline =
+        [ outcome "P.Direct.calls f" Passed
+          outcome "P.ByName.invokes f by name" Passed
+          outcome "P.Other.x" Passed ]
+
+    let selection = Mutation.staticSelection store "P" [] classOf baseline [ "Lib.f" ]
+
+    let target: Mutation.Target =
+        { Name = "Lib::f"
+          Ids = [ 1 ]
+          Types = [] }
+
+    let s =
+        Mutation.judgeWith
+            selection
+            baseline
+            target
+            (Ok
+                [ outcome "P.Direct.calls f" Failed
+                  outcome "P.ByName.invokes f by name" Failed
+                  outcome "P.Other.x" Passed ])
+
+    test <@ s.Outcome = Mutation.Measured @>
+    test <@ s.Failing = [ "P.ByName.invokes f by name"; "P.Direct.calls f" ] @>
+    test <@ s.Selected = 1 && s.Missed = [ "P.ByName.invokes f by name" ] @>
+
+[<Fact>]
+let ``a statically judged report says so, and prints static recall`` () =
+    let r =
+        { Mutation.summarize
+              3
+              []
+              2
+              [ { Target = "Lib::f"
+                  Kind = TraceStore.SymbolMutant
+                  Outcome = Mutation.Measured
+                  Failing = [ "a"; "b" ]
+                  Selected = 1
+                  Missed = [ "b" ] } ] with
+            Judging = Mutation.ByStatic }
+
+    let text = Mutation.render r
+    test <@ text.Contains "judged by static" @>
+    test <@ text.Contains "recall 1/2" @>
+    test <@ text.Contains "missed  b  by Lib::f" @>
+
+[<Fact>]
+let ``targets named by an include are always mutated, beside the seeded draw from the rest`` () =
+    let t name : Mutation.Target =
+        { Name = name; Ids = [ 1 ]; Types = [] }
+
+    let pool = [ t "Lib::a"; t "Lib::b"; t "Lib::c"; t "Seeded::miss"; t "Lib::d" ]
+
+    let chosen = Mutation.choose 2 7 [ "Seeded" ] pool
+    let names = chosen |> List.map _.Name
+
+    test <@ names |> List.contains "Seeded::miss" @>
+    test <@ names.Length = 3 @>
+
+    test
+        <@
+            names
+            |> List.filter (fun n -> n <> "Seeded::miss")
+            |> List.forall (fun n -> n.StartsWith "Lib::")
+        @>
+    // The same seed draws the same targets; no include is the plain draw.
+    test <@ Mutation.choose 2 7 [ "Seeded" ] pool = chosen @>
+    test <@ (Mutation.choose 2 7 [] pool).Length = 2 @>
+    test <@ Mutation.choose 0 7 [ "Seeded" ] pool |> List.map _.Name = [ "Seeded::miss" ] @>
