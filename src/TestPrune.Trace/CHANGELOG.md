@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: static mutation judging (AUTOMATION-1688). `Mutation.runWith` takes a `Judge` (`JudgeByProbe`,
+  `JudgeBySymbol index`, `JudgeByStatic(index, alwaysClasses)`) and `includes`. `JudgeByStatic` judges each mutant
+  against the static selection fshw runs: the index's `QueryAffectedTests` from the target's symbols, each selected
+  class run whole, plus the always-run classes (`Mutation.staticClasses`, `Mutation.staticSelection`), reported as
+  `judged by static`. `Mutation.choose` always mutates the targets an include names. `Ctrf.classes` reads each
+  row's test class. BREAKING (API): `Mutation.runWith` takes `includes` and a `Judge` instead of `Index option`.
+
 ## 0.9.4 - 2026-11-12
 
 - chore: rebuild to bundle updated dependencies
