@@ -45,15 +45,22 @@ type private Expiry<'Request> =
 /// A positive delay restarts the debounce with the longer of the pending and new delays.
 /// A zero delay flushes: it merges into any pending input and queues the cohort for
 /// admission at once, which makes it a barrier ordered after everything posted before it.
+///
+/// `delayTask` and `awaitReceipt` are the two waits whose timing decides which arm of an
+/// await runs: a debounce timer, and the supervised request's receipt as a cohort's input
+/// retires. Tests pass an already-finished one to pin the arm a real one reaches only when
+/// the pool runs it first. In production they are `Task.Delay` and the receipt itself.
 type Queue<'State, 'Request>
     (
         store: Store,
         name: string,
         worker: SupervisedWork.Queue<'State, 'Request>,
         merge: 'Request -> 'Request -> 'Request,
-        ?delayTask: TimeSpan -> Task
+        ?delayTask: TimeSpan -> Task,
+        ?awaitReceipt: Task<unit> -> Task<unit>
     ) =
     let delayTask = defaultArg delayTask (fun delay -> Task.Delay(delay))
+    let awaitReceipt = defaultArg awaitReceipt id
 
     let handle =
         store.Register(
@@ -81,7 +88,7 @@ type Queue<'State, 'Request>
     let settleWith (cohort: Cohort<'Request>) (receipt: Task<unit>) =
         task {
             try
-                do! receipt
+                do! awaitReceipt receipt
                 settle cohort None
             with failure ->
                 settle cohort (Some failure)

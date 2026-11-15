@@ -491,3 +491,77 @@ let ``a debounce timer that has already finished still admits its cohort`` () =
         Assert.Equal(1, worker.State)
     finally
         input.Close()
+
+/// A supervised receipt as `settleWith` awaits it once the request has finished: the receipt,
+/// returned only after it completed, whatever its outcome.
+let private finishedFirst (receipt: Task<unit>) : Task<unit> =
+    receipt.ContinueWith(fun (_: Task<unit>) -> ()).Wait()
+    receipt
+
+// `settleWith`'s `do! receipt` has two arms: the request still running when its cohort's input
+// retires, and the request already finished. A worker held open pins the first; this pins the
+// second, which a fast worker reached only when the pool happened to run it first (GitHub CI run
+// 43671932991 missed it, 43670057067 on the same sha did not), as `delayTask` pins line 137's.
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a supervised request that has already finished still settles its cohort`` () =
+    let store = Store()
+    let awaited = Collections.Concurrent.ConcurrentQueue<bool>()
+
+    let worker =
+        SupervisedWork.Queue(
+            store,
+            "changes",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (_: int list) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state values _ _ -> async { return state + List.sum values })
+        )
+
+    let input =
+        DebouncedWork.Queue(
+            store,
+            "changes",
+            worker,
+            (@),
+            awaitReceipt =
+                (fun receipt ->
+                    let finished = finishedFirst receipt
+                    awaited.Enqueue finished.IsCompleted
+                    finished)
+        )
+
+    try
+        finish (input.Post([ 1; 2 ], TimeSpan.Zero))
+        Assert.Equal(3, worker.State)
+        Assert.Equal<bool list>([ true ], List.ofSeq awaited)
+        Assert.False(store.Snapshot.IsBusy)
+    finally
+        input.Close()
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a supervised request that has already failed settles its cohort with the failure`` () =
+    let store = Store()
+    let failure = InvalidOperationException("controlled supervised failure")
+
+    let worker =
+        SupervisedWork.Queue(
+            store,
+            "changes",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (_: int list) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun _ _ _ _ -> async { return raise failure })
+        )
+
+    let input =
+        DebouncedWork.Queue(store, "changes", worker, (@), awaitReceipt = finishedFirst)
+
+    try
+        let receipt = input.Post([ 1 ], TimeSpan.Zero)
+        Assert.Same(failure, Assert.Throws<InvalidOperationException>(fun () -> finish receipt))
+    finally
+        input.Close()
