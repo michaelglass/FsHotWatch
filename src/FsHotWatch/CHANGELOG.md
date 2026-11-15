@@ -14,6 +14,16 @@
   error (exit 2) naming it beside the valid kinds. `Options.Kinds` is a `RecordKind list` and `AuditKind.find` takes a
   `RecordKind`; only a `--key` record, whose kind the store names, resolves by name (`AuditKind.ofStoredName`).
 
+- fix: the options and test-evidence keys no longer read the host knobs (AUTOMATION-1725). Behaviour change: both keys
+  move, so each workspace evaluates and tests cold once after this release. `SessionScope.hostKnobs` names, each with its
+  reason, the variables that configure the host or the CLI around an evaluation and never what it produces:
+  `MSBUILDDISABLENODEREUSE`, `DOTNET_CLI_USE_MSBUILD_SERVER`, `DOTNET_CLI_TELEMETRY_OPTOUT`, `DOTNET_NOLOGO`,
+  `DOTNET_SKIP_FIRST_TIME_EXPERIENCE` and `MSBUILDTERMINALLOGGER`. fshw itself injects `MSBUILDDISABLENODEREUSE` into
+  the dotnet children it starts, so keying it split one evaluation across start modes: the 11-15 audit's two options
+  keys of one tree differed in that label alone. The options key also stops keying `SessionScope.processOwned` (written
+  by the evaluating process from the SDK the `sdk` label already keys). A knob the evaluated files name is still
+  keyed. `TestEvidenceKey.keyedEnvironment` is the test-evidence half, now testable on its own.
+
 ## 0.10.0-alpha.118 - 2026-11-16
 
 - fix: a plugin re-run reaches that plugin alone, so a daemon's start no longer builds ahead of its own discovery
@@ -623,7 +633,6 @@
 - Finish: AUTOMATION-1456 one process-alive probe, and each caller's reading of an unknown
 - Finish: AUTOMATION-1486 a hosted session marks its root before its attach is answered
 
-
 ## 0.10.0-alpha.104 - 2026-11-04
 
 - Finish: AUTOMATION-1481 a host connection that fails before its preamble says so
@@ -631,7 +640,6 @@
 - Finish: AUTOMATION-1479 a check record keys only the references its project compiles against
 - Finish: AUTOMATION-1480 a commit id SourceLink stamps in moves no check record's key
 - Finish: AUTOMATION-1478 check records name a referenced output by what a check reads, not its checkout path
-
 
 ## 0.10.0-alpha.103 - 2026-11-03
 

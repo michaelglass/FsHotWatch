@@ -97,6 +97,26 @@ let private isProcessOwned (name: string) =
     processOwned
     |> List.exists (fun owned -> String.Equals(name, owned, StringComparison.OrdinalIgnoreCase))
 
+/// Variables that configure the host or the CLI around an evaluation and never what it produces
+/// (AUTOMATION-1725), each with why. No key reads them: keying one splits a single evaluation
+/// across the ways a process can be started (as `DOTNET_INTERNAL_*` did, AUTOMATION-1438). fshw
+/// itself injects `MSBUILDDISABLENODEREUSE` into the dotnet children it starts, and the 11-15
+/// audit's options keys differed in that label alone. A knob the evaluated files NAME is still
+/// keyed, like any variable they name. Add a name only with its reason.
+let hostKnobs: (string * string) list =
+    [ "MSBUILDDISABLENODEREUSE",
+      "whether MSBuild keeps worker nodes alive after a build; fshw injects it into dotnet children"
+      "DOTNET_CLI_USE_MSBUILD_SERVER", "whether the dotnet CLI hands a build to the MSBuild server process"
+      "DOTNET_CLI_TELEMETRY_OPTOUT", "whether the dotnet CLI sends telemetry"
+      "DOTNET_NOLOGO", "whether the dotnet CLI prints its banner"
+      "DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "whether the dotnet CLI runs its first-run setup"
+      "MSBUILDTERMINALLOGGER", "which console logger MSBuild writes its progress with" ]
+
+/// True when `name` is one of `hostKnobs`, in any case.
+let isHostKnob (name: string) : bool =
+    hostKnobs
+    |> List.exists (fun (knob, _) -> String.Equals(name, knob, StringComparison.OrdinalIgnoreCase))
+
 /// True when a variable named `name` can change in-process MSBuild evaluation.
 let isMsbuildRelevant (name: string) : bool =
     msbuildRelevant
