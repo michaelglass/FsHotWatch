@@ -29,6 +29,7 @@
     <Compile Include="FingerprintTests.fs" />
     <Compile Include="RuntimeResolutionTests.fs" />
     <Compile Include="ManifestTests.fs" />
+    <Compile Include="LeftoversTests.fs" />
     <Compile Include="LaunchTests.fs" />
     <Compile Include="WeaverTests.fs" />
     <Compile Include="WeaverShapeTests.fs" />

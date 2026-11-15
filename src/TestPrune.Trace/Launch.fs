@@ -54,31 +54,124 @@ let OutputTailChars = 65536
 [<Literal>]
 let DroppedOutputMarker = "[earlier output dropped]\n"
 
-/// Reads `reader` to its end, keeping the last `limit` characters, prefixed with
-/// `DroppedOutputMarker` when anything before them was dropped.
-let internal drainTail (reader: TextReader) (limit: int) : Task<string> =
-    task {
-        let buffer = Array.zeroCreate<char> 8192
-        let kept = StringBuilder()
-        let mutable dropped = false
-        let mutable reading = true
+/// Ends the note a launch adds when it stopped processes its child left running.
+[<Literal>]
+let LeftRunningNote = "process(es) the run left running"
 
-        while reading do
-            let! read = reader.ReadAsync(buffer, 0, buffer.Length)
-            reading <- read > 0
-            kept.Append(buffer, 0, read) |> ignore
+/// Starts the note a launch adds when its output was still held open after the run ended and
+/// every process found holding it was stopped.
+[<Literal>]
+let HeldOpenNote = "[launch: output still held open after the run ended"
+
+/// How long a launch waits for the output pipes to close, once its child has exited and what
+/// it left running is stopped; and again after stopping what holds them.
+let DrainGrace = TimeSpan.FromSeconds 2.0
+
+/// The last `limit` characters of a stream read so far. A launch reads it when the stream ends,
+/// or when it stops waiting for the end.
+type internal Tail(limit: int) =
+    let kept = StringBuilder()
+    let mutable dropped = false
+
+    // Monitor rather than `lock`, whose compiled lock-taken check is a branch no input can take.
+    member _.Append(buffer: char[], count: int) =
+        Monitor.Enter kept
+
+        try
+            kept.Append(buffer, 0, count) |> ignore
 
             // Trim once the buffer holds twice the limit, so a trim costs amortized O(1).
             if kept.Length > 2 * limit then
                 kept.Remove(0, kept.Length - limit) |> ignore
                 dropped <- true
+        finally
+            Monitor.Exit kept
 
-        if kept.Length > limit then
-            kept.Remove(0, kept.Length - limit) |> ignore
-            dropped <- true
+    /// The kept text, prefixed with `DroppedOutputMarker` when anything before it was dropped.
+    member _.Text() =
+        Monitor.Enter kept
 
-        return (if dropped then DroppedOutputMarker else "") + kept.ToString()
+        try
+            let over = kept.Length - limit
+
+            let text =
+                if over > 0 then
+                    kept.ToString(over, limit)
+                else
+                    kept.ToString()
+
+            (if dropped || over > 0 then DroppedOutputMarker else "") + text
+        finally
+            Monitor.Exit kept
+
+/// Reads `reader` to its end into `tail`.
+let internal drainInto (reader: TextReader) (tail: Tail) : Task =
+    task {
+        let buffer = Array.zeroCreate<char> 8192
+        let mutable reading = true
+
+        while reading do
+            let! read = reader.ReadAsync(buffer, 0, buffer.Length)
+            reading <- read > 0
+            tail.Append(buffer, read)
     }
+
+/// How a launch's output pipes ended once its child had exited and what carried its id was
+/// stopped.
+type internal Ending =
+    /// They closed within `DrainGrace`.
+    | Closed
+    /// They closed once the `stopped` processes holding them were.
+    | ClosedByStopping of stopped: int
+    /// They are still open after the `stopped` processes found holding them were: something
+    /// not found holds them.
+    | StillHeld of stopped: int
+    /// They are still open, and what holds them could not be looked for.
+    | Unsearched of why: string
+
+/// End what a launch's child left running (AUTOMATION-1734), and say what was done, as notes
+/// for the launch's output. Every process carrying `launchId` is stopped. If the output pipes
+/// (`streams`, read by `draining`) are still open `DrainGrace` later, the processes holding
+/// them are found by the pipes' identity (`Leftovers.holders`, in `table`) and stopped, and the launch
+/// waits once more. It never waits longer, and never throws for what it could not find.
+let internal endLeftovers
+    (table: Leftovers.ProcessTable)
+    (launchId: string)
+    (streams: Stream list)
+    (draining: Task)
+    : string =
+    // A process re-parented when the child exited is outside `Kill true`'s tree, and one that
+    // inherited the output pipes holds them open: waiting for them to close waits for it.
+    let tagged = Leftovers.carrying table launchId |> Result.map Leftovers.terminate
+
+    let ending =
+        if draining.Wait DrainGrace then
+            Closed
+        else
+            match Leftovers.holders table streams with
+            | Error why -> Unsearched why
+            | Ok pids ->
+                let stopped = Leftovers.terminate pids
+
+                if draining.Wait DrainGrace then
+                    ClosedByStopping stopped
+                else
+                    StillHeld stopped
+
+    let taggedNote =
+        match tagged with
+        | Ok 0 -> ""
+        | Ok n -> $"[launch: stopped %d{n} %s{LeftRunningNote}]\n"
+        | Error why -> $"[launch: could not look for the processes the run left running: %s{why}]\n"
+
+    let endingNote =
+        match ending with
+        | Closed -> ""
+        | ClosedByStopping n -> $"[launch: stopped %d{n} %s{LeftRunningNote}, holding its output]\n"
+        | StillHeld n -> $"%s{HeldOpenNote} by a process not found (stopped %d{n} that held it); the rest is dropped]\n"
+        | Unsearched why -> $"%s{HeldOpenNote}; what holds it could not be looked for: %s{why}; the rest is dropped]\n"
+
+    taggedNote + endingNote
 
 /// A launch's output as report lines: one per non-blank line, line endings removed.
 let outputLines (output: string) : string list =
@@ -117,14 +210,21 @@ let direct: Launcher =
             |> Seq.toList do
             psi.Environment.Remove k |> ignore
 
+        // The launch's own id, which everything the child starts inherits (`endLeftovers`).
+        let launchId = Guid.NewGuid().ToString "N"
+        psi.Environment.[Leftovers.LaunchIdEnv] <- launchId
+
         for k, v in req.Env do
             psi.Environment.[k] <- v
 
         // `using` rather than `use`: `use` compiles a null check on the process that can never
         // be taken (Process.Start returns null only for UseShellExecute=true).
         using (Process.Start psi) (fun p ->
-            let out = drainTail p.StandardOutput OutputTailChars
-            let err = drainTail p.StandardError OutputTailChars
+            let out = Tail OutputTailChars
+            let err = Tail OutputTailChars
+
+            let draining =
+                Task.WhenAll(drainInto p.StandardOutput out, drainInto p.StandardError err)
 
             // Killing a child that already exited is a no-op, so a cancellation racing
             // the child's own exit is harmless. Disposing the registration waits for a
@@ -136,8 +236,16 @@ let direct: Launcher =
                 p.Kill true
 
             p.WaitForExit()
+
+            let notes =
+                endLeftovers
+                    Leftovers.current
+                    launchId
+                    [ p.StandardOutput.BaseStream; p.StandardError.BaseStream ]
+                    draining
+
             ct.ThrowIfCancellationRequested()
-            p.ExitCode, out.Result + err.Result)
+            p.ExitCode, out.Text() + err.Text() + notes)
 
 /// Run `exe` to completion (or kill its process tree at `timeout`), returning the exit
 /// code and the combined output (the tail of each stream, stdout first): `direct`, uncancellable. The child inherits this process's
