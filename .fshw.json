@@ -132,7 +132,7 @@
         "args": "run --project tests/FsHotWatch.Simulation.Tests --no-build --",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
-        "group": "default",
+        "group": "trace",
         "coverage": false,
         "traces": false
       },
@@ -143,7 +143,7 @@
         "args": "run --project tests/TestPrune.Tests --no-build --",
         "filterTemplate": "--filter-class {classes}",
         "classJoin": " ",
-        "group": "default",
+        "group": "trace",
         "coverage": {
           "enabled": false,
           "collectForImpact": true

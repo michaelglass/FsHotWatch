@@ -78,7 +78,46 @@ let private pathGen: Gen<string> =
         return String.concat "/" parts
     }
 
+/// `Ignore` as its own `Add` builds it, one `IgnoreRule` per line, with each distinct line's
+/// rule built once per run instead of once per matcher.
+///
+/// `Ignore.Add(line)` is `OriginalRules.Add line; rules.Add(IgnoreRule line)` (Ignore 0.2.1),
+/// and an `IgnoreRule` is a function of its line: a regex and a negation flag. Its regex is
+/// `RegexOptions.Compiled`, compiled on first match, and building every rule anew for each
+/// generated case made the oracle three quarters of the line property's time (AUTOMATION-1695's
+/// CI budget). The answers still come from `Ignore`'s own `IsIgnored` over `Ignore`'s own
+/// rules; `the shared-rule oracle answers what a fresh Ignore answers` pins that. The private
+/// field is the package's, read by reflection: a real boundary, checked loudly below.
+let private compiledRules =
+    System.Collections.Concurrent.ConcurrentDictionary<string, IgnoreRule>(System.StringComparer.Ordinal)
+
+let private rulesField =
+    match
+        typeof<Ignore>
+            .GetField(
+                "rules",
+                System.Reflection.BindingFlags.NonPublic
+                ||| System.Reflection.BindingFlags.Instance
+            )
+    with
+    | null -> failwith "Ignore no longer keeps its rules in a private `rules` field: rebuild `oracle` on Ignore.Add"
+    | field -> field
+
 let private oracle (lines: string list) =
+    let ig = Ignore()
+    // Reflection boundary: the package's own rule list, filled as `Add` fills it.
+    let rules = rulesField.GetValue ig :?> System.Collections.Generic.List<IgnoreRule>
+
+    for line in lines do
+        // A line whose regex .NET refuses throws here, as `Add` throws, and is never cached.
+        let rule = compiledRules.GetOrAdd(line, IgnoreRule)
+        ig.OriginalRules.Add line
+        rules.Add rule
+
+    ig
+
+/// What `oracle` stands in for: a fresh `Ignore` built by `Add`, every rule compiled anew.
+let private freshIgnore (lines: string list) =
     (Ignore(), lines) ||> List.fold (fun (ig: Ignore) l -> ig.Add l)
 
 /// `work`'s answer, or the pattern `Ignore` could not compile. Some valid gitignore lines
@@ -126,44 +165,101 @@ let ``IgnoreRules answers what Ignore answers for every line set and path`` () =
     if ignored.Value < 5000 || kept.Value < 5000 then
         failwith $"only {ignored.Value} ignored and {kept.Value} kept: the generator misses a region"
 
+[<Fact(Timeout = PropertyTestCapMs)>]
+let ``the shared-rule oracle answers what a fresh Ignore answers`` () =
+    // Lines repeat across cases, so most rules here come from the cache, the case it must get right.
+    let case =
+        gen {
+            let! lineCount = Gen.choose (0, 8)
+            let! lines = Gen.listOfLength lineCount lineGen
+            let! paths = Gen.listOfLength 24 pathGen
+            return lines, paths
+        }
+
+    Check.One(
+        Config.QuickThrowOnFailure.WithMaxTest(300),
+        Prop.forAll (Arb.fromGen case) (fun (lines, paths) ->
+            match attempt (fun () -> freshIgnore lines), attempt (fun () -> oracle lines) with
+            | Ok fresh, Ok shared ->
+                shared.OriginalRules |> List.ofSeq = lines
+                && paths |> List.forall (fun p -> shared.IsIgnored p = fresh.IsIgnored p)
+            | Error fresh, Error shared -> fresh = shared
+            | Ok _, Error _
+            | Error _, Ok _ -> false)
+    )
+
 // --- the tree: nested .gitignore files, read the way `GitIgnores` reads them ----------
 
 /// The `GitIgnores` this replaces, as it read a tree before `IgnoreRules`: each directory's
 /// rules are its parent's plus its own `.gitignore` (rebased by `rebaseIgnoreLine`), matched
 /// by one `Ignore`, and a directory asked in directory form against the same rules with any
 /// trailing `/` dropped.
-let private oracleIgnored (root: string) (rel: string) (isDirectory: bool) : bool =
-    let parts = rel.Split '/'
+///
+/// One per written tree. The matcher for a path depends only on the directory holding it and
+/// on the form it is asked in, so it is built once per (directory, form) and asked for every
+/// path there. Building it per query compiled every rule of the chain anew for each file,
+/// directory and ancestor asked about (`Ignore` compiles a regex per rule on first use), which
+/// made this oracle most of the property's time (AUTOMATION-1695's CI budget). The answers are
+/// the same: the same lines, read from the same files, in the same `Ignore`.
+type private TreeOracle(root: string) =
+    let matchers =
+        System.Collections.Generic.Dictionary<string * bool, Result<Ignore, string>>()
 
-    let dirs = [ for i in 0 .. parts.Length - 1 -> String.concat "/" parts[.. i - 1] ]
+    let matcherFor (dir: string) (isDirectory: bool) : Result<Ignore, string> =
+        match matchers.TryGetValue((dir, isDirectory)) with
+        | true, m -> m
+        | false, _ ->
+            let parts = if dir = "" then [||] else dir.Split '/'
+            let dirs = [ for i in 0 .. parts.Length -> String.concat "/" parts[.. i - 1] ]
 
-    let lines =
-        dirs
-        |> List.collect (fun dir ->
-            let file = Path.Combine(root, dir, ".gitignore")
+            let lines =
+                dirs
+                |> List.collect (fun d ->
+                    let file = Path.Combine(root, d, ".gitignore")
 
-            if File.Exists file then
-                File.ReadAllLines file
-                |> Array.choose (PathFilter.rebaseIgnoreLine dir)
-                |> List.ofArray
+                    if File.Exists file then
+                        File.ReadAllLines file
+                        |> Array.choose (PathFilter.rebaseIgnoreLine d)
+                        |> List.ofArray
+                    else
+                        [])
+
+            let lines =
+                if isDirectory then
+                    lines
+                    |> List.map (fun l -> l.TrimEnd('/'))
+                    |> List.filter (fun l -> l <> "" && l <> "!")
+                else
+                    lines
+
+            let m = attempt (fun () -> oracle lines)
+            matchers[(dir, isDirectory)] <- m
+            m
+
+    member _.IsIgnored(rel: string, isDirectory: bool) : Result<bool, string> =
+        let dir =
+            match rel.LastIndexOf '/' with
+            | -1 -> ""
+            | i -> rel.Substring(0, i)
+
+        matcherFor dir isDirectory
+        |> Result.bind (fun m -> attempt (fun () -> m.IsIgnored rel))
+
+    member this.IsUnderIgnored(rel: string) : Result<bool, string> =
+        let parts = rel.Split '/'
+
+        // The prefixes in order, stopping at the first that is ignored or fails, as `List.exists`
+        // over the per-query answers did.
+        let rec firstOf (n: int) =
+            if n > parts.Length then
+                Ok false
             else
-                [])
+                match this.IsIgnored(String.concat "/" parts[.. n - 1], true) with
+                | Ok true -> Ok true
+                | Ok false -> firstOf (n + 1)
+                | Error e -> Error e
 
-    let lines =
-        if isDirectory then
-            lines
-            |> List.map (fun l -> l.TrimEnd('/'))
-            |> List.filter (fun l -> l <> "" && l <> "!")
-        else
-            lines
-
-    (oracle lines).IsIgnored rel
-
-let private oracleUnderIgnored (root: string) (rel: string) : bool =
-    let parts = rel.Split '/'
-
-    [ 1 .. parts.Length ]
-    |> List.exists (fun n -> oracleIgnored root (String.concat "/" parts[.. n - 1]) true)
+        firstOf 1
 
 let private treeGen =
     gen {
@@ -210,6 +306,7 @@ let private writeTree (root: string) (files: string list) (ignores: (string * st
 let private disagreements (root: string) (files: string list) (ignores: (string * string list) list) =
     let written = writeTree root files ignores
     let ignoresNow = PathFilter.GitIgnores root
+    let oracleNow = TreeOracle root
     let abs (rel: string) = Path.Combine(root, rel)
 
     let dirs =
@@ -221,21 +318,20 @@ let private disagreements (root: string) (files: string list) (ignores: (string 
 
     let fileAnswers =
         written
-        |> List.map (fun f ->
-            f, attempt (fun () -> oracleIgnored root f false), attempt (fun () -> ignoresNow.IsIgnored(abs f, false)))
+        |> List.map (fun f -> f, oracleNow.IsIgnored(f, false), attempt (fun () -> ignoresNow.IsIgnored(abs f, false)))
 
     let wrong =
         [ for f, want, got in fileAnswers do
               if got <> want then
                   sprintf "file %s: oracle %A, GitIgnores %A" f want got
           for d in dirs do
-              let want = attempt (fun () -> oracleIgnored root d true)
+              let want = oracleNow.IsIgnored(d, true)
               let got = attempt (fun () -> ignoresNow.IsIgnored(abs d, true))
 
               if got <> want then
                   sprintf "directory %s: oracle %A, GitIgnores %A" d want got
 
-              let wantUnder = attempt (fun () -> oracleUnderIgnored root d)
+              let wantUnder = oracleNow.IsUnderIgnored d
               let gotUnder = attempt (fun () -> ignoresNow.IsUnderIgnored(abs d))
 
               if gotUnder <> wantUnder then
