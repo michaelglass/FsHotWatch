@@ -112,3 +112,63 @@ let ``an already-cancelled launch never starts its child`` () =
 let ``an explicit DOTNET_ROOT wins over the running runtime's root`` () =
     test <@ Launch.dotnetRootFrom "/opt/dotnet" = "/opt/dotnet" @>
     test <@ Launch.dotnetRootFrom "" = Launch.dotnetRootFrom null @>
+
+/// Whether `pid` names a live process (signal 0 asks without signalling).
+let private alive (pid: int) =
+    let code, _ =
+        Launch.run "/bin/sh" [ "-c"; $"kill -0 %d{pid} 2>/dev/null" ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+
+    code = 0
+
+// AUTOMATION-1734: a mutant's test left a TERM-ignoring loop re-parented to init, holding the
+// inherited stdout, and the harness waited for the pipe to close until its 20-minute timeout.
+// The orphan here loops forever, far past the xUnit cap, so a launcher that waited on the pipe
+// is a reported hang, not a slow pass: no stopwatch, which a loaded box can push past any bound.
+[<Fact(Timeout = 120_000)>]
+let ``a run returns when its child exits, killing what the child left running on its output`` () =
+    let script =
+        "trap '' TERM; ( trap '' TERM; while :; do sleep 1; done ) & echo orphan=$!; echo started"
+
+    let code, output =
+        Launch.run "/bin/sh" [ "-c"; script ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 10.0)
+
+    let orphan =
+        output.Split '\n'
+        |> Array.pick (fun l ->
+            if l.StartsWith "orphan=" then
+                Some(int (l.Substring 7))
+            else
+                None)
+
+    try
+        test <@ code = 0 && output.Contains "started" @>
+        test <@ not (alive orphan) @>
+        // The loop and the `sleep` it is in: how many depends on when the kill lands.
+        test <@ output.Contains Launch.LeftRunningNote @>
+    finally
+        if alive orphan then
+            Launch.run "/bin/kill" [ "-9"; string orphan ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+            |> ignore
+
+[<Fact>]
+let ``a run whose child leaves nothing running says nothing about it`` () =
+    let _, output =
+        Launch.run "/bin/sh" [ "-c"; "echo done" ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+
+    test <@ output = "done\n" @>
+
+[<Fact>]
+let ``output held open where lsof cannot run still ends after the grace, and says why`` () =
+    // macOS finds what holds a launch's output with lsof; without it the launch must still
+    // return, naming what it could not do, never throw and never stay silent.
+    if not (OperatingSystem.IsMacOS()) then
+        Assert.Skip "lsof finds the holders only on macOS; Linux reads /proc"
+
+    use server = new IO.Pipes.AnonymousPipeServerStream(IO.Pipes.PipeDirection.In)
+    let neverClosed = Threading.Tasks.TaskCompletionSource().Task
+
+    let notes =
+        Launch.endLeftovers "/nonexistent/lsof" "no-such-launch" [ server ] neverClosed
+
+    test <@ notes.StartsWith Launch.HeldOpenNote @>
+    test <@ notes.Contains "/nonexistent/lsof" @>

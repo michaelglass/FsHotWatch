@@ -102,6 +102,11 @@ between assemblies while weaving and abandons the verification launch; once it i
 `prepareProjectWith` raises `OperationCanceledException` instead of returning a refusal, and
 the next prepare of the project starts over rather than reusing what the cancelled one left.
 
+`Launch.direct` never waits on output held by what a run left behind. Once the child exits it
+stops every process carrying the launch's id in its environment, then, if the output is still
+open after `Launch.DrainGrace`, the processes holding that pipe (found by its identity), and notes
+what it stopped or could not find in the run's output (AUTOMATION-1734).
+
 `launch.Env` holds exactly `TESTPRUNE_TRACE_OUT` (the dump directory, created empty),
 `TESTPRUNE_TRACE_IDS` (the probe id count), `TESTPRUNE_TRACE_REPO_ROOT` (file inputs outside
 it are ignored) and `DOTNET_ROOT`.

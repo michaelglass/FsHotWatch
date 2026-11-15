@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a run no longer waits on output that a process the test run left behind still holds
+  (AUTOMATION-1734). A mutant's test once left a TERM-ignoring loop holding stdout, and the harness
+  waited for the pipe until its 20-minute timeout. `Launch.direct` tags its child's environment
+  (`Leftovers.LaunchIdEnv`) and, once the child exits, stops every process carrying the tag. If the
+  output is still open `Launch.DrainGrace` (2 s) later, it finds the processes holding that pipe by
+  its identity (`/proc` on Linux, `lsof` on macOS), stops them (TERM, then KILL after
+  `Leftovers.TermGrace`), waits once more, and returns. The output notes what was stopped, and what
+  could not be found or looked for. Known gap: on macOS a forked, never-exec'd leftover that closed
+  its copy of the pipe is found by neither and is left running; it cannot stall a run.
+
 - fix: static judging no longer counts a test the CTRF report names no class for as a miss
   (AUTOMATION-1733). Static selection can neither run nor skip such a test by class, so it is left
   out of the judgement and listed: `ByStatic` carries the `unclassed` tests, `render` prints them, and
