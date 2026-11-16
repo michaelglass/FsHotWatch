@@ -1,0 +1,28 @@
+<Project>
+  <!--
+    AUTOMATION-1759: a reference assembly follows its intermediate copy by CONTENT.
+
+    The SDK copies obj/<cfg>/<tfm>/refint/X.dll to obj/<cfg>/<tfm>/ref/X.dll in
+    CopyFilesToOutputDirectory with `CopyRefAssembly`, which copies only when the module
+    version id changed. The F# compiler can give a changed reference assembly the OLD id: a
+    `[<Literal>]`'s value in a file that 32 or more files follow drops out of its signature hash
+    (AUTOMATION-1498's mechanism). obj/ref then kept the old bytes, dependents were judged up to
+    date and kept the old inlined value: a build that tested a tree it did not hold.
+
+    When the bytes differ, copy. A change that leaves the reference assembly's bytes alone (a
+    body that is not inline) still leaves obj/ref alone, so dependents still skip recompiling.
+  -->
+  <Target Name="RefAssemblyFollowsContent"
+          AfterTargets="CopyFilesToOutputDirectory"
+          Condition="'$(ProduceReferenceAssembly)' == 'true' and '@(IntermediateRefAssembly)' != '' and Exists('$(TargetRefPath)')">
+    <GetFileHash Files="@(IntermediateRefAssembly)">
+      <Output TaskParameter="Hash" PropertyName="_RefAssemblyIntermediateHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(TargetRefPath)">
+      <Output TaskParameter="Hash" PropertyName="_RefAssemblyPublishedHash" />
+    </GetFileHash>
+    <Copy SourceFiles="@(IntermediateRefAssembly)"
+          DestinationFiles="$(TargetRefPath)"
+          Condition="'$(_RefAssemblyIntermediateHash)' != '$(_RefAssemblyPublishedHash)'" />
+  </Target>
+</Project>
