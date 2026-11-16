@@ -32,6 +32,7 @@
   is keyed whatever its class. `MSBUILDALWAYSOVERWRITEREADONLYFILES` (only in the build's Copy task) and
   `DOTNET_ENVIRONMENT` (in no SDK assembly) are no longer keyed; both were in every options key intelligence filed
   under alpha.150. Part of the same key change as the two entries below.
+  `TestEvidenceKey.unclassifiedEnvironment` names the variables the test-evidence key reads by prefix alone.
 
 - fix: a build beside an options evaluation no longer stops it being filed: the projects' build output is a replay
   precondition, not a key (AUTOMATION-1726, ADR-076). Behaviour change: the options key moves

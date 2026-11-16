@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: the daemon log names each variable the test-evidence key reads only because of a prefix
+  (`test evidence: keyed, unclassified: NAME`), so the misses they cause can be counted (AUTOMATION-1737). The key
+  itself is unchanged: it stays on prefixes, less the host knobs and process-owned variables.
+
 ## 0.13.0-alpha.117 - 2026-11-16
 
 - refactor: test evidence, test baselines and the reuse refusal read and file through `OutcomeRecords.IOutcomeStore`
@@ -232,7 +236,6 @@
 - AUTOMATION-1559: A non-symbol edit beside a symbol selection runs every project in full
 - AUTOMATION-1560: A check with FCS errors stamps the file dirty, so its rows are not a baseline
 
-
 ## 0.13.0-alpha.108 - 2026-11-11
 
 - fix: a dependency fanout whose projects already hold evidence at these inputs launches no run (AUTOMATION-1534). It force-ran them,
@@ -347,7 +350,6 @@
 ## 0.13.0-alpha.104 - 2026-11-04
 
 - Finish: AUTOMATION-1482 a fresh workspace answers TestPrune's replayed checks from filed analyses
-
 
 ## 0.13.0-alpha.103 - 2026-11-03
 
@@ -775,7 +777,6 @@
 - Finish: AUTOMATION-1313 fshw findings: tree-bound analyzer findings with codes
 - Finish: AUTOMATION-1288 coverage argsTemplate expands {repoRoot}
 
-
 ## 0.13.0-alpha.90 - 2026-10-24
 
 - fix: a killed host's abort reason counts the rows its partial CTRF report lists. It
@@ -877,7 +878,6 @@
 - feat(test-prune): optional tests.maxParallelProjects caps concurrent test groups
 - Merge: optional tests.maxParallelProjects caps concurrent test groups, longest first
 
-
 ## 0.13.0-alpha.83 - 2026-10-17
 
 - perf: after a green, an edit the symbol diff sees as changing no symbol (a comment, a moved
@@ -905,11 +905,9 @@
 
 - fix: every daemon-log pointer names the configured log, with a guard against new literals
 
-
 ## 0.13.0-alpha.80 - 2026-10-17
 
 - fix(test-prune): an unfiltered in-flight run absorbs triggers it already satisfies
-
 
 ## 0.13.0-alpha.79 - 2026-10-17
 
@@ -951,7 +949,6 @@
 ## 0.13.0-alpha.76 - 2026-10-16
 
 - fix!: a #nowarn file no longer turns the evidence receipt red after an edit
-
 
 ## 0.13.0-alpha.75 - 2026-10-16
 
@@ -1474,7 +1471,6 @@
 
 - Bundle TestPrune.Core 13.1.1
 
-
 ## 0.13.0-alpha.48 - 2026-09-26
 
 - chore: an extension refresh logs each extension's stored edge count at info, with how
@@ -1624,11 +1620,9 @@
 
 - Let a plugin fold declare one long bounded unit of work
 
-
 ## 0.13.0-alpha.42 - 2026-09-20
 
 - Drop private-tracker references from comments and docs
-
 
 ## 0.13.0-alpha.41 - 2026-09-18
 
