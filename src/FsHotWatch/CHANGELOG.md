@@ -24,6 +24,15 @@
   by the evaluating process from the SDK the `sdk` label already keys). A knob the evaluated files name is still
   keyed. `TestEvidenceKey.keyedEnvironment` is the test-evidence half, now testable on its own.
 
+- fix: a prefixed environment variable in the options key is classified, and one no list classifies is keyed AND
+  reported (AUTOMATION-1725). A variable under `DOTNET_`, `MSBUILD` or `NUGET_` that the evaluated files do not name is
+  either `Evaluates` (keyed, with a reason), `DoesNotEvaluate` (not keyed, with a reason and the evidence), or
+  unclassified: still keyed, so an unlisted variable can only cost a miss, never give a false hit, and now named in the
+  daemon log (`options: keyed, unclassified: NAME`) and in the filed inputs (`unclassified`). A variable the files name
+  is keyed whatever its class. `MSBUILDALWAYSOVERWRITEREADONLYFILES` (only in the build's Copy task) and
+  `DOTNET_ENVIRONMENT` (in no SDK assembly) are no longer keyed; both were in every options key intelligence filed
+  under alpha.150. Part of the same key change as the two entries below.
+
 - fix: a build beside an options evaluation no longer stops it being filed: the projects' build output is a replay
   precondition, not a key (AUTOMATION-1726, ADR-076). Behaviour change: the options key moves
   (`OptionsRecordSchema` `fshw-options-semantics-v2`, the index `fshw-options-inputs-v2`), so each workspace evaluates
