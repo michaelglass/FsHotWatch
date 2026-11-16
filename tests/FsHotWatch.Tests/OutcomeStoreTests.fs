@@ -955,3 +955,21 @@ let ``rows that cannot be filed are logged and not filed, and the record stands`
 
         test <@ logs () |> List.exists (fun l -> l.Contains "could not file the test rows") @>
         test <@ store.Lookup key <> None @>)
+
+// KNOWN GAP (AUTOMATION-1744): a read that quarantines a record moves the record file only. Its
+// rows index stays under the key, orphaned (no record names it), until GC evicts the key. This
+// pins the CURRENT behaviour; a fix that moves or deletes the index with its record changes it.
+[<Fact>]
+let ``known gap: a record quarantined on read leaves its rows index orphaned until its key is evicted`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t"
+        let recordPath, rowsPath, _ = fileRun store key Outcome.Fail t0 (rowsOf 3)
+        File.WriteAllText(recordPath, (File.ReadAllText recordPath).Replace(Schema, "fshw-outcome-v0"))
+
+        test <@ store.Lookup key = None @>
+        test <@ not (File.Exists recordPath) @>
+        test <@ File.Exists rowsPath @>
+        test <@ (readAllTestRows dir).Indexes.Length = 1 @>
+
+        test <@ store.Gc(t0.AddDays 15.0, Set.empty) = [ key.Value ] @>
+        test <@ not (File.Exists rowsPath) @>)

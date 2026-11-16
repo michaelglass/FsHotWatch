@@ -260,3 +260,115 @@ let ``a run whose record could not be filed files no rows`` () =
         let run = produced (TestsFailed("", false, TimeSpan.FromSeconds 1.0)) (Some ctrf)
         fileOutcome store key place run (recordOf OutcomeStore.Outcome.Fail) |> ignore
         test <@ (let scan = OutcomeStore.readAllTestRows root in List.isEmpty scan.Indexes && scan.Unreadable = 0) @>)
+
+// --- end to end: a red run and a later green one through the real filing path ---
+
+let private kp =
+    TestEvidenceKey.ofLabels [ "toolchain", "t"; "closure", "A.Tests"; "scope", "verdict-tree" ]
+
+let private candidateA: Candidate =
+    { Project = "A.Tests"
+      ProjectFile = "/w/tests/A.Tests/A.Tests.fsproj"
+      Closure = []
+      TestConfig = "{}" }
+
+let private producerAt (runId: string) (at: DateTimeOffset) : TestEvidenceStore.Producer =
+    { Worktree = "/w"
+      RunId = runId
+      TreeHash = "sha256:tree"
+      ProducerHash = "fshw 1"
+      EarnedAt = at }
+
+/// File `run` as `publish` does: the record `outcomeRecordOf` builds, through `fileOutcome`.
+let private fileThroughRunner (store: OutcomeStore.Store) (producer: TestEvidenceStore.Producer) (run: ProducedRun) =
+    match outcomeRecordOf candidateA (Some(Ok kp)) (Some(Ok kp)) run producer with
+    | Some record ->
+        fileOutcome store (testActionKey kp "full") (RunPlace.ofProducer "box" producer) run record
+        |> ignore
+    | None -> failwith "the runner filed no record for this run"
+
+[<Fact>]
+let ``a red run and a later green one on the same tree and tool are reported flaky, and the red never replays`` () =
+    TestHelpers.withTempDir "rows-e2e" (fun dir ->
+        let root = Path.Combine(dir, "outcomes")
+
+        let store =
+            OutcomeStore.Store(
+                { Root = root
+                  Ttl = TimeSpan.FromDays 14.0
+                  MaxBytes = 100_000_000L
+                  Log = ignore }
+            )
+
+        let full = (testActionKey kp "full").Value
+
+        let red =
+            produced
+                (TestsFailed("", false, TimeSpan.FromSeconds 1.0))
+                (Some
+                    """{"results":{"summary":{"tests":2,"passed":0,"failed":2,"pending":0,"skipped":0,"other":0},"tests":[
+                        {"name":"A.bad","status":"failed","duration":7,"extra":{"exception":"Swensen.Unquote.AssertionFailedException"}},
+                        {"name":"A.slow","status":"failed","duration":15007,"extra":{"exception":"Xunit.Sdk.TestTimeoutException"}}]}}""")
+
+        fileThroughRunner store (producerAt "run-red" t0) red
+
+        // The red run filed its record, and rows holding exactly its two outcomes.
+        test
+            <@
+                store.History full |> List.map (fun r -> r.Outcome, r.Producer.RunId) = [ OutcomeStore.Outcome.Fail,
+                                                                                          Some "run-red" ]
+            @>
+
+        let rowsOf (runId: string) =
+            (OutcomeStore.readAllTestRows root).Indexes
+            |> List.filter (fun i -> i.Run.RunId = runId)
+            |> List.collect (fun i -> FsHotWatch.Core.NonEmpty.toList i.Rows)
+            |> List.map (fun r -> r.Name, r.Outcome)
+
+        test <@ rowsOf "run-red" = [ "A.bad", TestRows.Outcome.Failed; "A.slow", TestRows.Outcome.TimedOut ] @>
+
+        // The red is never a replayable result: it does not qualify as test evidence, and a
+        // green earned before it at the same K_P is refused reuse.
+        test <@ qualifies (Some(Ok kp)) (Some(Ok kp)) red = Error "the run failed" @>
+        test <@ (reuseRefusal (Some(store :> OutcomeRecords.IOutcomeStore)) kp (t0.AddHours -1.0)).IsSome @>
+
+        let green =
+            produced
+                (TestsPassed("", false, TimeSpan.FromSeconds 1.0))
+                (Some
+                    """{"results":{"summary":{"tests":2,"passed":2,"failed":0,"pending":0,"skipped":0,"other":0},"tests":[
+                        {"name":"A.bad","status":"passed","duration":6},
+                        {"name":"A.slow","status":"passed","duration":40}]}}""")
+
+        fileThroughRunner store (producerAt "run-green" (t0.AddHours 1.0)) green
+        test <@ rowsOf "run-green" = [ "A.bad", TestRows.Outcome.Passed; "A.slow", TestRows.Outcome.Passed ] @>
+
+        let report =
+            FsHotWatch.Cli.OutcomeAnalytics.analyze
+                None
+                (OutcomeStore.readAll root)
+                (OutcomeStore.readAllTestRows root)
+                (FsHotWatch.Cli.OutcomeAnalytics.readShadowLogs [])
+
+        test
+            <@
+                report.FlakyTests
+                |> List.map (fun f -> f.Test, f.Outcomes, f.RedRun, f.GreenRun, f.Tree, f.Tool) = [ "A.bad",
+                                                                                                    [ TestRows.Outcome.Passed,
+                                                                                                      1
+                                                                                                      TestRows.Outcome.Failed,
+                                                                                                      1 ],
+                                                                                                    "run-red",
+                                                                                                    "run-green",
+                                                                                                    "sha256:tree",
+                                                                                                    "fshw 1"
+                                                                                                    "A.slow",
+                                                                                                    [ TestRows.Outcome.Passed,
+                                                                                                      1
+                                                                                                      TestRows.Outcome.TimedOut,
+                                                                                                      1 ],
+                                                                                                    "run-red",
+                                                                                                    "run-green",
+                                                                                                    "sha256:tree",
+                                                                                                    "fshw 1" ]
+            @>)
