@@ -950,3 +950,27 @@ let ``an unreadable directory a dir-slash exclude names is no hole in a direct w
                 test <@ Result.isError (inputsFor (snapshot root []) request) @>
             finally
                 File.SetUnixFileMode(hidden, rwx))
+
+// AUTOMATION-1737: the test-evidence key stays on prefixes (minus host knobs and process-owned
+// variables), so a variable keyed only by its prefix is named, to measure how often one moves a key.
+[<Fact>]
+let ``a variable keyed only by its prefix is named as unclassified, and nothing else is`` () =
+    let environment =
+        [ "DOTNET_ROOT", "/sdk"
+          "nuget_packages", "/nuget"
+          "Configuration", "Release"
+          "MSBUILDDISABLENODEREUSE", "1"
+          "DOTNET_HOST_PATH", "/sdk/dotnet"
+          "PATH", "/bin" ]
+
+    test <@ unclassifiedEnvironment environment = [ "DOTNET_ROOT"; "nuget_packages" ] @>
+
+[<Fact>]
+let ``the unclassified note names the prefix-keyed variables, and is absent when there are none`` () =
+    test
+        <@
+            unclassifiedNote [ "DOTNET_ROOT", "/sdk"; "NUGET_PACKAGES", "/n"; "PATH", "/bin" ] = Some
+                "test evidence: keyed, unclassified: DOTNET_ROOT, NUGET_PACKAGES"
+        @>
+
+    test <@ unclassifiedNote [ "PATH", "/bin"; "MSBUILDDISABLENODEREUSE", "1" ] = None @>
