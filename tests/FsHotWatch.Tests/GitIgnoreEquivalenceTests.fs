@@ -128,21 +128,43 @@ let private attempt (work: unit -> 'T) : Result<'T, string> =
     with :? System.Text.RegularExpressions.RegexParseException as e ->
         Error e.Message
 
+/// This run's seed, chosen at the START and written to the test output before any case runs, so
+/// a run cancelled at its cap names the draw that can replay it (AUTOMATION-1760): a cancelled
+/// FsCheck run reports nothing of its own.
+let private runSeed (property: string) : Rnd =
+    let seed = uint64 (System.Random.Shared.NextInt64())
+    let gamma = uint64 (System.Random.Shared.NextInt64()) ||| 1UL
+    System.Console.Out.WriteLine $"%s{property}: replay with Rnd(%d{seed}UL, %d{gamma}UL)"
+    System.Console.Out.Flush()
+    Rnd(seed, gamma)
+
+/// How many distinct lines one run of the line property draws its line sets from. Every distinct
+/// line is a `RegexOptions.Compiled` regex built twice (once for the oracle, once for
+/// `IgnoreRules`), and building them was the property's whole cost: drawing each line afresh gave
+/// about 12,000 distinct lines in 3,000 cases, 13 s on a quiet laptop, 43 s under a CI gate's
+/// load, and past the 120 s cap twice (AUTOMATION-1760). The line SETS (order, negation, which
+/// rule decides) are what the 3,000 cases explore; the lines themselves vary by run, through the
+/// run's seed.
+[<Literal>]
+let private LinePoolSize = 400
+
 [<Fact(Timeout = PropertyTestCapMs)>]
 let ``IgnoreRules answers what Ignore answers for every line set and path`` () =
     let ignored = ref 0
     let kept = ref 0
+    let rnd = runSeed "IgnoreRules answers what Ignore answers"
+    let pool = Gen.sampleWithSeed rnd 10 LinePoolSize lineGen
 
     let case =
         gen {
             let! lineCount = Gen.choose (0, 8)
-            let! lines = Gen.listOfLength lineCount lineGen
+            let! lines = Gen.listOfLength lineCount (Gen.elements pool)
             let! paths = Gen.listOfLength 24 pathGen
             return lines, paths
         }
 
     Check.One(
-        Config.QuickThrowOnFailure.WithMaxTest(3000),
+        Config.QuickThrowOnFailure.WithMaxTest(3000).WithReplay(Some { Rnd = rnd; Size = None }),
         Prop.forAll (Arb.fromGen case) (fun (lines, paths) ->
             match attempt (fun () -> oracle lines), attempt (fun () -> PathFilter.IgnoreRules.Of lines) with
             | Ok expected, Ok actual ->
