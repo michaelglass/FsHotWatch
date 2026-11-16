@@ -127,6 +127,122 @@ let envPrefixes = [ "DOTNET_"; "MSBUILD"; "NUGET_" ]
 /// evaluation's files name is keyed like any other they name.
 let runtimeInternalPrefix = "DOTNET_INTERNAL_"
 
+/// What a prefixed variable does to an evaluation, as far as fshw knows.
+type EnvironmentClass =
+    /// It changes what an evaluation produces: keyed.
+    | Evaluates of reason: string
+    /// Shown not to change what an evaluation produces: not keyed. `evidence` says how.
+    | DoesNotEvaluate of reason: string * evidence: string
+
+/// Where the evidence below was read: the names each SDK assembly contains, SDK 10.0.401.
+[<Literal>]
+let private ScannedSdk = "SDK 10.0.401"
+
+/// The prefixed variables fshw has classified (AUTOMATION-1725). A prefixed variable in neither
+/// class is keyed all the same and reported as unclassified, so an unlisted variable can only
+/// cost a miss, never give a false hit. `DoesNotEvaluate` needs positive evidence: a name a scan
+/// does not find can still be read by a computed name, and any variable is an MSBuild property,
+/// which is why a variable the evaluated files name is keyed whatever its class.
+let classifiedEnvironment: (string * EnvironmentClass) list =
+    [ "DOTNET_ROOT",
+      Evaluates
+          $"where SDK resolution and the workload resolver look for SDKs, workload manifests and packs (named in Microsoft.Build, Microsoft.Build.Framework and WorkloadManifestReader, %s{ScannedSdk})"
+      "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR",
+      Evaluates "overrides the directory the .NET SDK resolver resolves MSBuild SDKs from"
+      "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_VER", Evaluates "overrides the SDK version the .NET SDK resolver reports"
+      "DOTNET_CLI_HOME", Evaluates "where the workload resolver reads user-local workload manifests and install state"
+      "DOTNET_CLI_WORKLOAD_DISABLE_PACK_GROUPS", Evaluates "changes how the workload resolver resolves packs"
+      "DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK",
+      Evaluates
+          $"read by the workload manifest reader, which runs during evaluation (WorkloadManifestReader, %s{ScannedSdk})"
+      "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT",
+      Evaluates
+          "switches the evaluating runtime to the invariant culture, which property functions that case or format text run in"
+      "MSBUILDADDITIONALSDKRESOLVERSFOLDER", Evaluates "adds SDK resolvers, which can resolve a different SDK"
+      "MSBUILDADDITIONALSDKRESOLVERSFOLDER_NET", Evaluates "adds SDK resolvers, which can resolve a different SDK"
+      "MSBUILDINCLUDEDEFAULTSDKRESOLVER", Evaluates "whether the default SDK resolver takes part in resolution"
+      "MSBUILDDISABLENUGETSDKRESOLVER", Evaluates "whether SDKs from NuGet packages resolve at all"
+      "MSBUILD_NUGET_PATH", Evaluates "where the NuGet SDK resolver loads NuGet from"
+      "MSBUILDDISABLEFEATURESFROMVERSION", Evaluates "turns off MSBuild change waves, which change evaluation"
+      "MSBUILDENABLEALLPROPERTYFUNCTIONS", Evaluates "lets property functions call any method"
+      "MSBUILDFAILONDRIVEENUMERATINGWILDCARD",
+      Evaluates "makes a wildcard that enumerates a whole drive an evaluation error"
+      "MSBUILDIGNOREEMPTYIMPORTS", Evaluates "whether importing an empty file is an error"
+      "MSBUILDUSECASESENSITIVEITEMNAMES", Evaluates "whether item names compare case-sensitively"
+      "MSBUILDEVALUATEELEMENTSWITHFALSECONDITIONINPROJECTEVALUATION",
+      Evaluates "whether elements whose condition is false are evaluated"
+      "MSBUILDIGNORETREATASLOCALPROPERTY", Evaluates "whether a project's TreatAsLocalProperty applies"
+      "MSBUILDTREATALLTOOLSVERSIONSASCURRENT", Evaluates "which toolset a project evaluates with"
+      "MSBUILDTREATHIGHERTOOLSVERSIONASCURRENT", Evaluates "which toolset a project evaluates with"
+      "MSBUILDDEFAULTTOOLSVERSION", Evaluates "which toolset a project evaluates with"
+      "MSBUILDLEGACYDEFAULTTOOLSVERSION", Evaluates "which toolset a project evaluates with"
+      "MSBUILD_SDKREFERENCE_PROPERTY_EXPANSION_MODE", Evaluates "how properties in an SDK reference expand"
+      "NUGET_PACKAGES", Evaluates "the package folder the NuGet SDK resolver resolves package SDKs from"
+      "NUGET_FALLBACK_PACKAGES", Evaluates "fallback folders the NuGet SDK resolver also resolves from"
+      "NUGET_COMMON_APPLICATION_DATA",
+      Evaluates "where the machine-wide NuGet.Config is read, which names the package folders"
+      "MSBUILDALWAYSOVERWRITEREADONLYFILES",
+      DoesNotEvaluate(
+          "lets the Copy task overwrite read-only files when a build copies",
+          $"named only in Microsoft.Build.Tasks.Core, the build's tasks; in none of Microsoft.Build, Microsoft.Build.Framework or the SDK resolvers (%s{ScannedSdk})"
+      )
+      "DOTNET_ENVIRONMENT",
+      DoesNotEvaluate(
+          "selects the environment a .NET generic host application runs in",
+          $"named in no assembly of the SDK (%s{ScannedSdk}); read by Microsoft.Extensions.Hosting in the application at run time"
+      ) ]
+
+/// The role a variable of the environment plays in the options key.
+[<RequireQualifiedAccess>]
+type private EnvironmentRole =
+    /// The evaluated files name it: keyed whatever else it is.
+    | Named
+    /// Prefixed and classified as changing an evaluation: keyed.
+    | Classified
+    /// Prefixed and classified nowhere: keyed, and reported.
+    | Unclassified
+    /// Not keyed: no prefix, or a prefix with a reason not to key it.
+    | Unkeyed
+
+let private classifiedIndex =
+    Map.ofList [ for name, cls in classifiedEnvironment -> name.ToUpperInvariant(), cls ]
+
+let private roleOf (named: HashSet<string>) (name: string) : EnvironmentRole =
+    if named.Contains name then
+        EnvironmentRole.Named
+    elif
+        name.StartsWith(runtimeInternalPrefix, StringComparison.OrdinalIgnoreCase)
+        || SessionScope.isHostKnob name
+        || SessionScope.processOwned
+           |> List.exists (fun owned -> String.Equals(name, owned, StringComparison.OrdinalIgnoreCase))
+        || not (
+            envPrefixes
+            |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        )
+    then
+        EnvironmentRole.Unkeyed
+    else
+        match classifiedIndex.TryFind(name.ToUpperInvariant()) with
+        | Some(Evaluates _) -> EnvironmentRole.Classified
+        | Some(DoesNotEvaluate _) -> EnvironmentRole.Unkeyed
+        | None -> EnvironmentRole.Unclassified
+
+/// `environment`'s variables, once each, with the role each plays for an evaluation that names
+/// `names` (MSBuild properties are case-insensitive).
+let private rolesIn (names: string list) (environment: (string * string) list) =
+    let named = HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
+
+    environment
+    |> List.distinctBy fst
+    |> List.map (fun (name, value) -> name, value, roleOf named name)
+
+/// The variables of `environment` the options key reads only because of a key prefix, with no
+/// classification: keyed, and reported as unclassified, so a miss they cause has a visible cause.
+let unclassifiedEnvironment (names: string list) (environment: (string * string) list) : string list =
+    [ for name, _, role in rolesIn names environment do
+          if role = EnvironmentRole.Unclassified then
+              name ]
+
 /// The files MSBuild looks for above a project, by name.
 let wellKnownAbove =
     [ "Directory.Build.props"
@@ -313,25 +429,17 @@ let listingState (listing: Listing) : string =
 /// The variables of `environment` an evaluation that reads `names` depends on: those it
 /// names, in any case (MSBuild properties are case-insensitive), and those `envPrefixes`
 /// marks, as `env:<name>` labels over the value's digest. A prefix does not key the runtime's
-/// internal knobs, the host knobs (`SessionScope.hostKnobs`, AUTOMATION-1725) or what the
+/// internal knobs, the host knobs (`SessionScope.hostKnobs`, AUTOMATION-1725), what the
 /// evaluating process writes into its own environment (`SessionScope.processOwned`, derived from
-/// the SDK the `sdk` label keys); a name the files name is keyed whatever it is.
+/// the SDK the `sdk` label keys) or a variable classified as not changing an evaluation
+/// (`classifiedEnvironment`); a name the files name is keyed whatever it is.
 let environmentInputs (names: string list) (environment: (string * string) list) : (string * string) list =
-    let wanted = HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
-
-    let processOwned =
-        HashSet<string>(SessionScope.processOwned, StringComparer.OrdinalIgnoreCase)
-
-    environment
-    |> List.filter (fun (name, _) ->
-        wanted.Contains name
-        || not (name.StartsWith(runtimeInternalPrefix, StringComparison.OrdinalIgnoreCase))
-           && not (SessionScope.isHostKnob name)
-           && not (processOwned.Contains name)
-           && envPrefixes
-              |> List.exists (fun prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-    |> List.distinctBy fst
-    |> List.map (fun (name, value) -> "env:" + name, ContentHash.ofText value)
+    [ for name, value, role in rolesIn names environment do
+          match role with
+          | EnvironmentRole.Named
+          | EnvironmentRole.Classified
+          | EnvironmentRole.Unclassified -> "env:" + name, ContentHash.ofText value
+          | EnvironmentRole.Unkeyed -> () ]
 
 /// The key of the index record for `request`.
 let requestKey (request: Request) : ActionKey.ActionKey =
@@ -595,9 +703,10 @@ module ProjectOptionsJson =
         | :? InvalidOperationException
         | :? FormatException -> None
 
-/// The index record's outputs: what the evaluation read, and the `options` key it filed.
+/// The index record's outputs: what the evaluation read, the `options` key it filed, and the
+/// variables that key read with no classification (`unclassifiedEnvironment`).
 module internal InputsJson =
-    let toJson (filed: FiledInputs) (key: ActionKey.ActionKey) : string =
+    let toJson (filed: FiledInputs) (unclassified: string list) (key: ActionKey.ActionKey) : string =
         let filed = FiledInputs.canonical filed
         let inputs = filed.Keyed
         let o = JsonObject()
@@ -618,6 +727,7 @@ module internal InputsJson =
 
         o["envNames"] <- stringArray inputs.EnvNames
         o["generated"] <- stringArray filed.Generated
+        o["unclassified"] <- stringArray (Canonical.envNames unclassified)
 
         o["optionsKey"] <- key.Value.Text
         o.ToJsonString()
@@ -830,7 +940,10 @@ let file
                 // replay of something else.
                 if
                     filedRecord key "options" (ProjectOptionsJson.toJson projects)
-                    && filedRecord (requestKey request) "options-inputs" (InputsJson.toJson filed key)
+                    && filedRecord
+                        (requestKey request)
+                        "options-inputs"
+                        (InputsJson.toJson filed (unclassifiedEnvironment inputs.EnvNames environment) key)
                 then
                     Filed
                 else
@@ -976,6 +1089,13 @@ type CachingLoader
 
             let loaded, filing, loadedAt, inputs =
                 evaluateOnce req env projects (Option.defaultValue [] known @ filed)
+
+            // A prefixed variable no list classifies is keyed; say which, so a miss it causes
+            // has a visible cause (AUTOMATION-1725).
+            match inputs |> Option.map (fun i -> unclassifiedEnvironment i.EnvNames env) with
+            | Some(_ :: _ as unclassified) when not retried ->
+                log $"""options: keyed, unclassified: %s{unclassified |> Canonical.envNames |> String.concat ", "}"""
+            | _ -> ()
 
             match filing with
             | Moved moved when
