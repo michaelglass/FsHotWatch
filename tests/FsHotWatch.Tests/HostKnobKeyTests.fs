@@ -31,10 +31,23 @@ let private environment =
       "HOME", "/home/u"
       "PATH", "/bin" ]
 
-/// Every variable that is no key's business: the named host knobs, and what the evaluating
-/// process writes into its own environment.
-let private unkeyed =
-    (SessionScope.hostKnobs |> List.map fst) @ SessionScope.processOwned
+let private hostKnobNames = SessionScope.hostKnobs |> List.map fst
+
+/// The names of `names` that move the options key when set. Every one is listed, so one list's
+/// failure never hides another's.
+let private movingTheOptionsKey (names: string list) =
+    let inputs = inputsNaming [ "HOME" ]
+    let key = optionsKey request inputs environment
+
+    names
+    |> List.filter (fun name -> optionsKey request inputs (environment @ [ name, "1" ]) <> key)
+
+/// The names of `names` that move the test-evidence toolchain when set.
+let private movingTheToolchain (names: string list) =
+    let keyed = TestEvidenceKey.keyedEnvironment environment
+
+    names
+    |> List.filter (fun name -> TestEvidenceKey.keyedEnvironment (environment @ [ name, "1" ]) <> keyed)
 
 [<Fact>]
 let ``the host knobs are named, each with its reason, and include the two seen to split keys`` () =
@@ -46,20 +59,19 @@ let ``the host knobs are named, each with its reason, and include the two seen t
 
 [<Fact>]
 let ``an options key is the same with each host knob set or unset`` () =
-    let inputs = inputsNaming [ "HOME" ]
-    let key = optionsKey request inputs environment
+    test <@ List.isEmpty (movingTheOptionsKey hostKnobNames) @>
 
-    for name in unkeyed do
-        let withKnob = optionsKey request inputs (environment @ [ name, "1" ])
-        test <@ (name, withKnob) = (name, key) @>
+[<Fact>]
+let ``an options key is the same with each process-owned variable set or unset`` () =
+    test <@ List.isEmpty (movingTheOptionsKey SessionScope.processOwned) @>
 
 [<Fact>]
 let ``a test-evidence toolchain is the same with each host knob set or unset`` () =
-    let keyed = TestEvidenceKey.keyedEnvironment environment
+    test <@ List.isEmpty (movingTheToolchain hostKnobNames) @>
 
-    for name in unkeyed do
-        let withKnob = TestEvidenceKey.keyedEnvironment (environment @ [ name, "1" ])
-        test <@ (name, withKnob) = (name, keyed) @>
+[<Fact>]
+let ``a test-evidence toolchain is the same with each process-owned variable set or unset`` () =
+    test <@ List.isEmpty (movingTheToolchain SessionScope.processOwned) @>
 
 [<Fact>]
 let ``a variable an evaluation reads still moves both keys`` () =
