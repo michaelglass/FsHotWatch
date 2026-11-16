@@ -1539,3 +1539,47 @@ let ``a project with no package assets and no target framework is listed from on
         let inputs = OptionsInputs.list [ bare ]
         test <@ List.contains t.Project inputs.Reads @>
         test <@ not (List.contains t.Assets inputs.Reads) @>)
+
+// AUTOMATION-1725: a prefixed variable no list classifies is keyed (an unlisted variable may only
+// cost a miss) and reported, so that miss has a visible cause: in the daemon's log, and in the
+// filed inputs.
+[<Fact(Timeout = 120000)>]
+let ``an evaluation keyed by an unclassified prefixed variable says so in its log and its filed inputs`` () =
+    withTree (fun t ->
+        let logged = Collections.Concurrent.ConcurrentQueue<string>()
+        let environment = sameEnvironment @ [ "DOTNET_FSHW_UNCLASSIFIED_PROBE", "1" ]
+
+        let inner =
+            CountingLoader((fun () -> [ sampleOptions t.Project t.Assets ]), ignore, None)
+
+        let loader =
+            CachingLoader(
+                inner,
+                OptionsInputs.list,
+                t.Store,
+                (fun _ -> request t),
+                (fun () -> environment),
+                logged.Enqueue,
+                racyWindow = TimeSpan.Zero,
+                stamp = inTree t
+            )
+            :> IWorkspaceLoader
+
+        loader.LoadProjects [ t.Project ] |> Seq.toList |> ignore
+
+        test
+            <@
+                logged
+                |> Seq.contains "options: keyed, unclassified: DOTNET_FSHW_UNCLASSIFIED_PROBE"
+            @>
+
+        let filed =
+            OutcomeStore.Through.lookupWithOutputs t.Store (requestKey (request t)).Value
+            |> Option.bind snd
+            |> Option.map System.Text.Json.Nodes.JsonNode.Parse
+
+        let unclassified =
+            filed
+            |> Option.map (fun o -> [ for n in o["unclassified"].AsArray() -> n.GetValue<string>() ])
+
+        test <@ unclassified = Some [ "DOTNET_FSHW_UNCLASSIFIED_PROBE" ] @>)
