@@ -56,15 +56,16 @@ let private inputsGen: Gen<EvaluationInputs> =
               EnvNames = names }
     }
 
+/// `values` gathered in another order, with some gathered twice.
+let private again (values: 'T list) : Gen<'T list> =
+    gen {
+        let! repeated = Gen.subListOf values
+        let! shuffled = Gen.shuffle (values @ repeated)
+        return List.ofArray shuffled
+    }
+
 /// `inputs` gathered in another order, with some entries gathered twice.
 let private regathered (inputs: EvaluationInputs) : Gen<EvaluationInputs> =
-    let again (values: 'T list) =
-        gen {
-            let! repeated = Gen.subListOf values
-            let! shuffled = Gen.shuffle (values @ repeated)
-            return List.ofArray shuffled
-        }
-
     gen {
         let! reads = again inputs.Reads
         let! probes = again inputs.Probes
@@ -76,6 +77,35 @@ let private regathered (inputs: EvaluationInputs) : Gen<EvaluationInputs> =
               Probes = probes
               Listings = listed
               EnvNames = names }
+    }
+
+/// Compile items a build generated under the projects' build output.
+let private generatedItems =
+    [ "/r/src/A/obj/Debug/net10.0/A.AssemblyInfo.fs"
+      "/r/src/B/obj/Debug/net10.0/B.AssemblyInfo.fs"
+      "/r/src/A/obj/Debug/net10.0/A.AssemblyAttributes.fs" ]
+
+let private filedGen: Gen<FiledInputs> =
+    gen {
+        let! keyed = inputsGen
+        let! generated = Gen.subListOf generatedItems
+        return { Keyed = keyed; Generated = generated }
+    }
+
+/// `filed` gathered in another order, with some entries gathered twice.
+let private regatheredFiled (filed: FiledInputs) : Gen<FiledInputs> =
+    gen {
+        let! keyed = regathered filed.Keyed
+        let! generated = again filed.Generated
+        return { Keyed = keyed; Generated = generated }
+    }
+
+/// A filed set of inputs and the same set gathered again, as the options-inputs property draws them.
+let private filedCase: Gen<FiledInputs * FiledInputs> =
+    gen {
+        let! filed = filedGen
+        let! other = regatheredFiled filed
+        return filed, other
     }
 
 let private request: Request =
@@ -90,28 +120,20 @@ let private environment =
 
 [<Fact>]
 let ``an options-inputs record of the same inputs is the same bytes, digest and key however they were gathered`` () =
-    let case =
-        gen {
-            let! inputs = inputsGen
-            let! other = regathered inputs
-            return inputs, other
-        }
-
     let differed = ref 0
 
     Check.One(
         Config.QuickThrowOnFailure.WithMaxTest(500),
-        Prop.forAll (Arb.fromGen case) (fun (inputs, other) ->
-            if inputs <> other then
+        Prop.forAll (Arb.fromGen filedCase) (fun (filed, other) ->
+            if filed <> other then
                 differed.Value <- differed.Value + 1
 
-            let key = optionsKey request inputs environment
-            let filedOf (i: EvaluationInputs) = { Keyed = i; Generated = [] }
-            let bytes = InputsJson.toJson (filedOf inputs) [] key
+            let key = optionsKey request filed.Keyed environment
+            let bytes = InputsJson.toJson filed [] key
 
-            optionsKey request other environment = key
-            && InputsJson.toJson (filedOf other) [] key = bytes
-            && ContentHash.ofText (InputsJson.toJson (filedOf other) [] key) = ContentHash.ofText bytes)
+            optionsKey request other.Keyed environment = key
+            && InputsJson.toJson other [] key = bytes
+            && ContentHash.ofText (InputsJson.toJson other [] key) = ContentHash.ofText bytes)
     )
 
     // A property whose two gatherings were always already identical proves nothing about order.
@@ -176,3 +198,29 @@ let ``the canonical order sorts each set ordinally and names a variable once, in
     test <@ canonical.Listings |> List.map _.Directory = [ "/r/a"; "/r/b" ] @>
     test <@ canonical.EnvNames = [ "NoWarn"; "UserSecretsId" ] @>
     test <@ Canonical.inputs canonical = canonical @>
+
+/// The list fields of record `'T` that no draw of `pairs` varies (never non-empty) or regathers
+/// (never different between its two gatherings). A field that is itself a record is checked by
+/// the caller, as its own `'T`.
+let private unexercised<'T> (pairs: ('T * 'T) list) : string list =
+    let isEmpty (value: obj) =
+        (value :?> Collections.IEnumerable) |> Seq.cast<obj> |> Seq.isEmpty
+
+    [ for field in FSharp.Reflection.FSharpType.GetRecordFields typeof<'T> do
+          if not (FSharp.Reflection.FSharpType.IsRecord field.PropertyType) then
+              let values = pairs |> List.map (fun (a, b) -> field.GetValue a, field.GetValue b)
+
+              if values |> List.forall (fst >> isEmpty) then
+                  $"%s{typeof<'T>.Name}.%s{field.Name} is never varied"
+
+              if values |> List.forall (fun (a, b) -> a = b) then
+                  $"%s{typeof<'T>.Name}.%s{field.Name} is never regathered" ]
+
+// AUTOMATION-1741: a field added to the inputs records must be drawn varied and regathered by the
+// order property's generators. Record syntax makes a generator name a new field, but a constant
+// there would leave its order untested, as `FiledInputs.Generated` was (always empty) until this.
+[<Fact>]
+let ``the order property's generators vary and regather every field of the inputs records`` () =
+    let pairs = Gen.sample 300 filedCase |> List.ofArray
+    let keyed = pairs |> List.map (fun (a, b) -> a.Keyed, b.Keyed)
+    test <@ List.isEmpty (unexercised<FiledInputs> pairs @ unexercised<EvaluationInputs> keyed) @>
