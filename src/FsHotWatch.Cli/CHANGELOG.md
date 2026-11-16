@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw analytics` reports flaky TESTS (AUTOMATION-1744): one test on one tree by one tool recorded both passed
+  and red (failed, timed out, cancelled or other), with how many runs recorded each outcome and the newest red and
+  green run ids, from the per-test rows the store files beside each test record. Skipped is neither. `--json` carries
+  them under `flakyTests`, with `testRowRuns` and `unreadableTestRows`; a window with no rows is named as a gap.
+
 ## 0.14.0-alpha.152 - 2026-11-16
 
 - feat(trace): mutate --judge static measures fshw's static selection recall (AUTOMATION-1688)

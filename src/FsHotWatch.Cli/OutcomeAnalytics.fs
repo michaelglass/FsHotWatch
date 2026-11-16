@@ -5,11 +5,14 @@
 /// reads with `OutcomeStore.readAll`, which quarantines nothing) nor any ledger.
 ///
 /// It reports only what the store records. The store files one outcome per action — per
-/// test PROJECT run, not per test — so flaky and slow are per project. A metric the data
-/// cannot answer is named in `Gaps`, never reported as a zero.
+/// test PROJECT run — so flaky input sets and slow are per project; flaky TESTS come from the
+/// per-test rows filed beside each test record (AUTOMATION-1744). A metric the data cannot
+/// answer is named in `Gaps`, never reported as a zero.
 ///
 /// Definitions:
 ///   * flaky: one action key (the same inputs) recorded both pass and fail;
+///   * flaky test: one test, on one tree by one tool, recorded both passed and red (failed,
+///     timed out, cancelled or other), with each outcome counted and a red and a green run;
 ///   * slow: nearest-rank percentiles of `durationMs`, per subject;
 ///   * reds later green: a fail record followed by a pass record under the same key;
 ///   * runs a lookup would have answered: records filed under a key that already held a
@@ -64,6 +67,23 @@ type Flaky =
         LastSeen: DateTimeOffset
     }
 
+/// One test recorded both green and red on the same tree by the same tool (AUTOMATION-1744),
+/// from the per-test rows filed beside each test record.
+type FlakyTest =
+    {
+        Project: string
+        Test: string
+        Tree: string
+        Tool: string
+        /// How many runs recorded each outcome, in `TestRows.Outcome` order; only outcomes seen.
+        Outcomes: (TestRows.Outcome * int) list
+        /// The newest run that recorded it red (failed, timed out, cancelled or other).
+        RedRun: string
+        /// The newest run that recorded it passed.
+        GreenRun: string
+        LastSeen: DateTimeOffset
+    }
+
 type Slow =
     { Kind: string
       Subject: string
@@ -99,21 +119,27 @@ type LookupReads =
       Missing: int }
 
 type Report =
-    { Since: DateTimeOffset option
-      RecordsRead: int
-      UnreadableRecords: int
-      Kinds: (string * int) list
-      DurationsRecorded: int
-      Flaky: Flaky list
-      Slow: Slow list
-      Reds: Reds
-      Reuse: Reuse list
-      StoreDays: StoreDay list
-      ShadowDays: ShadowDay list
-      ShadowUnreadable: int
-      ShadowLogs: string list
-      LookupReads: LookupReads
-      Gaps: string list }
+    {
+        Since: DateTimeOffset option
+        RecordsRead: int
+        UnreadableRecords: int
+        Kinds: (string * int) list
+        DurationsRecorded: int
+        Flaky: Flaky list
+        /// Run indexes of per-test rows read, and index files that are not one.
+        TestRowRuns: int
+        UnreadableTestRows: int
+        FlakyTests: FlakyTest list
+        Slow: Slow list
+        Reds: Reds
+        Reuse: Reuse list
+        StoreDays: StoreDay list
+        ShadowDays: ShadowDay list
+        ShadowUnreadable: int
+        ShadowLogs: string list
+        LookupReads: LookupReads
+        Gaps: string list
+    }
 
 /// A shadow log line, or `None` for anything that is not a complete `fshw-shadow-v1` line.
 let parseShadowLine (text: string) : ShadowLine option =
@@ -196,10 +222,11 @@ let private laterGreen (history: OutcomeStore.Record list) (r: OutcomeStore.Reco
     && history
        |> List.exists (fun later -> pass later && later.RecordedAt > r.RecordedAt)
 
-let private gaps (durations: int) (records: int) (shadow: ShadowRead) (lookupReads: int) =
-    [ yield
-          "flaky and slow are per test project, not per test: a record holds one outcome per project run. \
-           Smallest addition: file the failed test ids in a fail record's `outputs`."
+let private gaps (rowRuns: int) (durations: int) (records: int) (shadow: ShadowRead) (lookupReads: int) =
+    [ if rowRuns = 0 then
+          yield
+              "flaky tests: no run in the window filed per test rows (filed beside each test record since \
+               AUTOMATION-1744), so flaky is per test project only."
       if records > 0 && durations = 0 then
           yield
               "slow: no record carries durationMs (the runner files its K_P test records with DurationMs = None). \
@@ -212,13 +239,60 @@ let private gaps (durations: int) (records: int) (shadow: ShadowRead) (lookupRea
           "cache hits: the store is still a shadow (ADR-059 §7), so no lookup has yet replaced a run; \
            'runs a lookup would have answered' counts the runs it could have." ]
 
-/// The report over `scan`'s records and `shadow`'s lines, both limited to `since` when given.
-let analyze (since: DateTimeOffset option) (scan: OutcomeStore.Scan) (shadow: ShadowRead) : Report =
+/// Whether `outcome` is a red: anything that ran and did not pass.
+let private isRed (outcome: TestRows.Outcome) =
+    match outcome with
+    | TestRows.Outcome.Failed
+    | TestRows.Outcome.TimedOut
+    | TestRows.Outcome.Cancelled
+    | TestRows.Outcome.Other -> true
+    | TestRows.Outcome.Passed
+    | TestRows.Outcome.Skipped -> false
+
+/// Each test that `runs` recorded both passed and red on one tree by one tool (AUTOMATION-1744),
+/// newest first. A skip is neither: it did not run.
+let flakyTests (runs: TestRows.Index list) : FlakyTest list =
+    runs
+    |> List.collect (fun index ->
+        FsHotWatch.Core.NonEmpty.toList index.Rows
+        |> List.map (fun row -> index.Run, row))
+    |> List.groupBy (fun (run, row) -> run.Project, row.Name, run.Tree, run.Tool)
+    |> List.choose (fun ((project, test, tree, tool), seen) ->
+        let newestRun (counts: TestRows.Outcome -> bool) =
+            seen
+            |> List.filter (fun (_, row) -> counts row.Outcome)
+            |> List.sortBy (fun (run, _) -> run.RecordedAt)
+            |> List.tryLast
+            |> Option.map (fun (run, _) -> run.RunId)
+
+        match newestRun isRed, newestRun ((=) TestRows.Outcome.Passed) with
+        | Some red, Some green ->
+            Some
+                { Project = project
+                  Test = test
+                  Tree = tree
+                  Tool = tool
+                  Outcomes = seen |> List.countBy (fun (_, row) -> row.Outcome) |> List.sortBy fst
+                  RedRun = red
+                  GreenRun = green
+                  LastSeen = seen |> List.map (fun (run, _) -> run.RecordedAt) |> List.max }
+        | _ -> None)
+    |> List.sortBy (fun f -> -f.LastSeen.UtcTicks, f.Project, f.Test)
+
+/// The report over `scan`'s records, `rows`' per-test rows and `shadow`'s lines, each limited to
+/// `since` when given.
+let analyze
+    (since: DateTimeOffset option)
+    (scan: OutcomeStore.Scan)
+    (rows: OutcomeStore.TestRowsScan)
+    (shadow: ShadowRead)
+    : Report =
     let inWindow (at: DateTimeOffset) =
         since |> Option.forall (fun s -> at >= s)
 
     let records = scan.Records |> List.filter (fun r -> inWindow r.RecordedAt)
     let lines = shadow.Lines |> List.filter (fun l -> inWindow l.At)
+    let rowRuns = rows.Indexes |> List.filter (fun i -> inWindow i.Run.RecordedAt)
 
     let byKey = records |> List.groupBy _.Key.Value |> Map.ofList
 
@@ -328,6 +402,9 @@ let analyze (since: DateTimeOffset option) (scan: OutcomeStore.Scan) (shadow: Sh
       Kinds = records |> List.countBy _.Key.Kind |> List.sortBy fst
       DurationsRecorded = durations
       Flaky = flaky
+      TestRowRuns = rowRuns.Length
+      UnreadableTestRows = rows.Unreadable
+      FlakyTests = flakyTests rowRuns
       Slow = slow
       Reds =
         { Fails = fails.Length
@@ -341,7 +418,7 @@ let analyze (since: DateTimeOffset option) (scan: OutcomeStore.Scan) (shadow: Sh
         { Reads = reads.Length
           Satisfied = reads.Length - missing
           Missing = missing }
-      Gaps = gaps durations records.Length shadow reads.Length }
+      Gaps = gaps rowRuns.Length durations records.Length shadow reads.Length }
 
 let private seconds (ms: int64) =
     (float ms / 1000.0).ToString("0.0", Globalization.CultureInfo.InvariantCulture)
@@ -385,6 +462,24 @@ let render (top: int) (r: Report) : string list =
               yield
                   $"  %s{f.Subject} [%s{f.Kind}]: %d{f.FlakyKeys} of %d{f.Keys} input sets; %d{f.Passes} pass / %d{f.Fails} fail; \
                     %d{f.Worktrees} checkout(s); last %s{stamp f.LastSeen}"
+
+      yield ""
+
+      yield
+          $"Flaky tests (one test, same tree and tool, recorded both passed and red; %d{r.TestRowRuns} run(s) of per test rows, %d{r.UnreadableTestRows} unreadable):"
+
+      match r.FlakyTests with
+      | [] -> yield "  no test recorded both outcomes"
+      | flaky ->
+          for f in List.truncate top flaky do
+              let outcomes =
+                  f.Outcomes
+                  |> List.map (fun (o, n) -> $"%d{n} %s{TestRows.Outcome.token o}")
+                  |> String.concat ", "
+
+              yield
+                  $"  %s{f.Test} [%s{f.Project}]: %s{outcomes}; red in run %s{f.RedRun}, passed in run %s{f.GreenRun}; \
+                    tree %s{f.Tree}, tool %s{f.Tool}; last %s{stamp f.LastSeen}"
 
       yield ""
       yield $"Slow (by recorded durationMs; %d{r.DurationsRecorded} of %d{r.RecordsRead} records carry one):"
@@ -478,6 +573,23 @@ let toJson (r: Report) : string =
                             "passes", ji f.Passes
                             "fails", ji f.Fails
                             "worktrees", ji f.Worktrees
+                            "lastSeen", time f.LastSeen ]
+                      :> JsonNode)
+              )
+              "testRowRuns", ji r.TestRowRuns
+              "unreadableTestRows", ji r.UnreadableTestRows
+              "flakyTests",
+              arr (
+                  r.FlakyTests
+                  |> List.map (fun f ->
+                      obj
+                          [ "project", js f.Project
+                            "test", js f.Test
+                            "tree", js f.Tree
+                            "tool", js f.Tool
+                            "outcomes", counts (f.Outcomes |> List.map (fun (o, n) -> TestRows.Outcome.token o, n))
+                            "redRun", js f.RedRun
+                            "greenRun", js f.GreenRun
                             "lastSeen", time f.LastSeen ]
                       :> JsonNode)
               )
