@@ -5555,16 +5555,23 @@ module Daemon =
     /// The daemon's MSBuild loader with options records (ADR-059 §18, AUTOMATION-1372): an
     /// evaluation is filed in `repoRoot`'s outcome store, and replayed by a later daemon
     /// for as long as every input it read is byte-identical.
-    let internal optionsRecordsLoader (repoRoot: string) (portable: OptionsPortable.Mode) : IWorkspaceLoader =
+    ///
+    /// `wrap` is handed the MSBuild loader and returns the one evaluations run through, and the
+    /// evaluations are filed in `store`: the daemon passes `id` and `repoRoot`'s store, and a
+    /// test wraps the real evaluation to run a build beside it (AUTOMATION-1740).
+    let internal optionsRecordsLoaderOver
+        (wrap: IWorkspaceLoader -> IWorkspaceLoader)
+        (store: OutcomeStore.Store)
+        (repoRoot: string)
+        (portable: OptionsPortable.Mode)
+        : IWorkspaceLoader =
         let (Types.ToolsPath sdk) = msbuildToolsPath repoRoot
-        let inner = WorkspaceLoader.Create(Types.ToolsPath sdk, [])
+        let inner = wrap (WorkspaceLoader.Create(Types.ToolsPath sdk, []))
         let root = Path.GetFullPath repoRoot
         let toolchain = OptionsInputs.toolchain ()
 
         let globalProperties =
             [ for KeyValue(name, value) in ProjectLoader.getGlobalProps None [] Set.empty -> name, value ]
-
-        let store = OutcomeStore.openFor repoRoot (Logging.info "options-records")
 
         let shadow =
             match portable with
@@ -5594,6 +5601,11 @@ module Daemon =
             ?shadow = shadow
         )
         :> IWorkspaceLoader
+
+    /// `optionsRecordsLoaderOver` as the daemon runs it: the MSBuild loader itself, filing in
+    /// `repoRoot`'s outcome store.
+    let internal optionsRecordsLoader (repoRoot: string) (portable: OptionsPortable.Mode) : IWorkspaceLoader =
+        optionsRecordsLoaderOver id (OutcomeStore.openFor repoRoot (Logging.info "options-records")) repoRoot portable
 
     /// A checker for one answer the warm checker faulted on: a code its file's own `#nowarn`
     /// silences (AUTOMATION-1664, `CheckPipeline`'s `freshChecker`). Built per such answer
