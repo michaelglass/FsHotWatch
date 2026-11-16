@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.58 - 2026-11-16
+
 - build: `FsHotWatch.Core.dll` is no longer in this package's `lib/`: it ships in the FsHotWatch package, which this
   one depends on (AUTOMATION-1695). Consumers see no change.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.118 - 2026-11-16
+
 - fix: a plugin re-run reaches that plugin alone, so a daemon's start no longer builds ahead of its own discovery
   (AUTOMATION-1726). `PluginHost.RerunPlugin` broadcast its synthetic `FileChanged` to every subscriber, relying on the
   others to answer from their task caches. At a start, ADR-074 re-runs each declared-input plugin with nothing on record;

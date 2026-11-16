@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.32 - 2026-11-16
+
+- feat: AUTOMATION-1636 action { Need.* } builder and oracles, analyzer-action pilot in shadow
+- feat: AUTOMATION-1635 FsHotWatch.Core: digest newtypes, typed ActionKey/Outcome, closed Verdict/Purity
+- fix: an ActionKey cannot say one file is both present and absent (AUTOMATION-1635)
+- refactor: drop NeedTrace.isEmpty, a public emptiness test nothing calls (AUTOMATION-1635)
+- Build each gitignore matcher only when a query of its kind needs it
+- Cover FileIdentity's platform-neutral code on Linux, and floor each platform per edge
+- Walk the repository root once for every declared pattern, not once per plugin
+- Name the phase timer an interface: Timing.IPhaseTimer
+- Resolve each required plugin's keying as a union, so a declared plugin cannot lack its key
+- Key declared-input plugins in Core's lookup too, from one definition of what each plugin reads
+- Read a tree's file hashes through a stat-validated cache, with a full re-read kept for lands
+- Compile each .gitignore rule once, and skip a rule a path cannot match
+- Time the parts of the tree walk behind FSHW_LOOKUP_PHASES, for experiment E5
+- Time a lookup's phases behind FSHW_LOOKUP_PHASES, for experiment E5
+- Keep FsHotWatch.Core off FSharp.Core's printf engine, and fail the build if it returns
+- Put the lookup verdict of a tree in Core, and read the shadow through it
+- Move the daemon's identity and the test-failure clearance into FsHotWatch.Core, unchanged
+- Define the required plugins once, in Core, from the raw configuration
+- Move the outcome store and the repository identity into FsHotWatch.Core
+- Move the tree walk and hash into FsHotWatch.Core, unchanged
+- Move unreadable files aside when a deterministic action files a computed record
+- Let the lookup path read and file through IOutcomeStore
+- Record that StoredRecord.Outputs is owed a type per kind
+- Move L1, the outcome store's records, into FsHotWatch.Core
+- Move R(c, T) into FsHotWatch.Core, unchanged
+- Move ActionKey and LookupVerdict into FsHotWatch.Core, unchanged
+- Ship FsHotWatch.Core inside the FsHotWatch package, not Analyzers
+
+
 ## 0.7.0-alpha.31 - 2026-11-12
 
 - fix: a command that exits nonzero now reports its command line and exit code in the error entry, ahead of
