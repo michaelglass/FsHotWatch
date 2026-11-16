@@ -119,23 +119,15 @@ waiting to land.
     in progress does not count, and neither does a green run on an earlier commit.
     The tagger also requires a green CI run, but check the commit yourself; do not
     rely on the tagger alone.
-  - Once the consumer canary runs in CI, it must pass on that commit as well.
   - When `main` is red, the train waits for the fix. Do not release around a red.
-- **Where the consumer canary runs:** a consumer's full gate is too heavy for a
-  releaser's working machine. Make `scripts/remote-canary.sh` the consumer's `gate` in
-  `~/.fssemantictagger.json` and give it a `remote` object; the gate then runs on that
-  build server with the same pin and the same refuse-on-any-red contract. The script's
-  header documents the fields. Two settings are deliberate:
-  - The `gate` names the script in the checkout being RELEASED:
-    `"${MISE_PROJECT_ROOT:?…}/scripts/remote-canary.sh" FsHotWatch.Cli`. A fixed path
-    such as the default checkout runs whatever script that working copy holds at the
-    time, which may be unreviewed or from a different commit. The tagger gives the gate
-    no releasing-repo root (its cwd is the consumer workspace), but `mise run release`
-    exports `MISE_PROJECT_ROOT` to its whole process tree. A release started without
-    mise therefore fails the gate with that message and is refused. Once the tagger
-    exposes the root itself, the gate should use that instead (AUTOMATION-1715).
-  - The `wrap` queues the canary at heavy-run priority 2, the release-line class: a
-    release waits on it, so it goes ahead of ordinary work on the build server.
+- **No consumer gate before tagging** (maintainer, 2026-11-16): a release waits on this
+  repository's own CI only (`mise run ci` green on `main`, and green GitHub CI on the commit).
+  It does not run or wait for a consumer's gate against the candidate build, so
+  `~/.fssemantictagger.json` names no consumer. A consumer gates a release where it adopts it:
+  at its pin bump, and regularly by running `main` built from source against a consumer
+  commit known green under its current pin. A bad alpha is handled by rolling forward: the consumer skips
+  the pin, the fix lands, and the next train releases it. `scripts/remote-canary.sh` still
+  runs a consumer's gate on a build server for such a run; it is no longer a release step.
 - **Out-of-train releases:** only when a published release is broken for a consumer,
   and only by the maintainer or on their explicit instruction. It still needs green
   CI, and it counts as that day's train.
