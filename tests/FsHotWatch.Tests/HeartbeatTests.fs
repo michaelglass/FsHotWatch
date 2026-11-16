@@ -338,10 +338,10 @@ let ``a tick that finds a beat in flight skips it`` () =
     // Timer creates when a beat outlasts the tick, and the latch must refuse the
     // second one.
     //
-    // The sibling test below drives two real timers under load and asserts on
-    // observed concurrency; on a busy box it can pass having never exercised the
-    // guard at all (`maxSeen` stuck at 0). Timing stays smoke-tested there; the
-    // PROPERTY lives here, where load cannot reach it.
+    // The sibling test below drives real timers and asserts on observed concurrency.
+    // On a busy box its beats can be starved, so it first requires that a beat was
+    // seen at all (`maxSeen >= 1`) and fails saying so rather than passing vacuously.
+    // The PROPERTY lives here, where load cannot reach it.
     let beating = ref 0
     let ran = ResizeArray<string>()
     let reentrant = ref None
