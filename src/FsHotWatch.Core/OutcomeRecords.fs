@@ -186,6 +186,24 @@ type IOutcomeStore =
     abstract FileComputed: Computed -> Filing
     /// File a record as its key's only one: file it, then drop the key's others (AUTOMATION-1587).
     abstract Supersede: StoredRecord -> Filing
+    /// File the per-test rows of the run a COMPUTED record describes, beside that record under its
+    /// key (AUTOMATION-1744), write-once. They live and die with the key. Only a computed record
+    /// carries rows: a replayed one did not run here.
+    abstract FileTestRows: Computed * TestRows.RunRows -> Filing
+
+/// The index a record's rows are filed as (AUTOMATION-1744).
+module TestRowsOf =
+    /// `rows` beside `record`: the run's key, project, tool and instant are the record's.
+    let index (record: StoredRecord) (rows: TestRows.RunRows) : TestRows.Index =
+        { Run =
+            { Key = record.Key.Value
+              Project = record.Subject
+              RunId = rows.RunId
+              Tree = rows.Tree
+              Tool = record.Producer.Binary
+              Machine = rows.Machine
+              RecordedAt = record.RecordedAt }
+          Rows = rows.Rows }
 
 /// The file format.
 module RecordCodec =
@@ -446,6 +464,18 @@ type InMemoryOutcomeStore() =
 
     let quarantined = ResizeArray<string * QuarantineReason>()
 
+    /// Per-test row indexes (AUTOMATION-1744): each key's, by file name, as filed bytes.
+    let rows =
+        Collections.Generic.Dictionary<ActionKey.KeyValue, ResizeArray<string * byte[]>>()
+
+    let rowsOf (key: ActionKey.KeyValue) =
+        match rows.TryGetValue key with
+        | true, list -> list
+        | false, _ ->
+            let list = ResizeArray()
+            rows[key] <- list
+            list
+
     let filesOf (key: ActionKey.KeyValue) =
         match files.TryGetValue key with
         | true, list -> list
@@ -511,6 +541,12 @@ type InMemoryOutcomeStore() =
         | Some i -> list[i] <- (name, text)
         | None -> list.Add(name, text)
 
+    /// The row indexes filed under `key` (AUTOMATION-1744), by file name, decoded.
+    member _.TestRowsUnder(key: ActionKey.KeyValue) : (string * Result<TestRows.Index, string>) list =
+        match rows.TryGetValue key with
+        | true, list -> list |> Seq.map (fun (name, bytes) -> name, TestRows.decode bytes) |> List.ofSeq
+        | false, _ -> []
+
     /// The files moved into quarantine, by a read or by a computing writer, with why.
     member _.Quarantined: (string * QuarantineReason) list = List.ofSeq quarantined
 
@@ -558,4 +594,21 @@ type InMemoryOutcomeStore() =
 
             (filesOf record.Key.Value).RemoveAll(fun (n, _) -> n <> name) |> ignore
 
+            (rowsOf record.Key.Value).RemoveAll(fun (n, _) -> n <> TestRows.fileNameFor name)
+            |> ignore
+
             filing
+
+        member _.FileTestRows(computed, runRows) =
+            let record = Computed.record computed
+
+            let name =
+                TestRows.fileNameFor (RecordCodec.fileName (RecordCodec.encodePayload record))
+
+            let list = rowsOf record.Key.Value
+
+            if list |> Seq.exists (fun (n, _) -> n = name) then
+                Filing.AlreadyFiled
+            else
+                list.Add(name, TestRows.encode (TestRowsOf.index record runRows))
+                Filing.Filed

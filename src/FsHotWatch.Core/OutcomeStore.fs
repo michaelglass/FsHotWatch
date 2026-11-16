@@ -221,6 +221,36 @@ let readAll (root: string) : Scan =
     { Records = scan.Records |> List.map fst
       Unreadable = scan.Unreadable }
 
+/// Every per-test row index in a store directory (AUTOMATION-1744), read without changing it.
+type TestRowsScan =
+    {
+        /// Every readable index, in no particular order.
+        Indexes: TestRows.Index list
+        /// Index files that are not an index: torn, or of another schema.
+        Unreadable: int
+    }
+
+/// Read every per-test row index under `root` for analysis (AUTOMATION-1744). A pure read, as
+/// `readAll`: a file that is not an index is counted and left where it is.
+let readAllTestRows (root: string) : TestRowsScan =
+    let recordsDir = Path.Combine(root, "records")
+
+    let read =
+        if Directory.Exists recordsDir then
+            [ for shard in Directory.GetDirectories recordsDir do
+                  for dir in Directory.GetDirectories shard do
+                      for file in Directory.GetFiles(dir, "*" + TestRows.Suffix) ->
+                          try
+                              TestRows.decode (File.ReadAllBytes file)
+                          with
+                          | :? IOException
+                          | :? UnauthorizedAccessException as ex -> Error ex.Message ]
+        else
+            []
+
+    { Indexes = read |> List.choose Result.toOption
+      Unreadable = read |> List.filter Result.isError |> List.length }
+
 /// One key's records under `root` with their outputs, oldest first, read without changing
 /// the store (AUTOMATION-1633): where a lookup quarantines a file it cannot read, this
 /// leaves it and counts it. Empty when the store holds no directory for the key.
@@ -525,13 +555,13 @@ type Store(settings: Settings) =
     let readKey (keyValue: ActionKey.KeyValue) : Record list =
         readKeyWithOutputs keyValue |> List.map fst
 
-    let writeOnce (path: string) (text: string) =
+    let writeOnceBytes (path: string) (bytes: byte[]) =
         Directory.CreateDirectory tmpDir |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
         let temporary = Path.Combine(tmpDir, Guid.NewGuid().ToString "N")
 
         try
-            File.WriteAllText(temporary, text)
+            File.WriteAllBytes(temporary, bytes)
 
             try
                 File.Move(temporary, path, false)
@@ -543,6 +573,22 @@ type Store(settings: Settings) =
         finally
             if File.Exists temporary then
                 File.Delete temporary
+
+    let writeOnce (path: string) (text: string) =
+        writeOnceBytes path (Text.Encoding.UTF8.GetBytes text)
+
+    /// Delete the record file `file` and the per-test rows filed beside it (AUTOMATION-1744): rows
+    /// live and die with their record. Throws as `File.Delete` does; a missing index is no error.
+    let deleteRecord (file: string) =
+        File.Delete file
+        File.Delete(Path.Combine(Path.GetDirectoryName file, TestRows.fileNameFor file))
+
+    /// The bytes deleting the record file `file` frees: the record and the rows filed beside it.
+    let recordBytes (file: string) =
+        let rows =
+            FileInfo(Path.Combine(Path.GetDirectoryName file, TestRows.fileNameFor file))
+
+        FileInfo(file).Length + (if rows.Exists then rows.Length else 0L)
 
     /// File `record`'s bytes once: the path it is filed at and whether this call filed it, or why
     /// it could not be filed. Never throws.
@@ -574,7 +620,7 @@ type Store(settings: Settings) =
         for other in Directory.GetFiles(Path.GetDirectoryName kept, "*.json") do
             if not (String.Equals(other, kept, StringComparison.Ordinal)) then
                 try
-                    File.Delete other
+                    deleteRecord other
                 with ex ->
                     settings.Log $"outcome store: could not delete the superseded {other}: {ex.Message}"
 
@@ -692,7 +738,7 @@ type Store(settings: Settings) =
             for other in Directory.GetFiles(dir, "*.json") do
                 if not (String.Equals(other, path, StringComparison.Ordinal)) then
                     try
-                        File.Delete other
+                        deleteRecord other
                     with ex ->
                         settings.Log $"outcome store: could not delete the superseded {other}: {ex.Message}"
 
@@ -765,7 +811,7 @@ type Store(settings: Settings) =
                                   let superseded =
                                       [ for (r, (file, _)) in List.take (records.Length - 1) records ->
                                             { File = file
-                                              Size = FileInfo(file).Length
+                                              Size = recordBytes file
                                               RecordedAt = r.RecordedAt } ]
 
                                   yield
@@ -851,7 +897,7 @@ type Store(settings: Settings) =
                   for s in e.Superseded do
                       if trimmed.Contains s.File then
                           try
-                              File.Delete s.File
+                              deleteRecord s.File
                               yield e.Kind, s.Size
                           with ex ->
                               settings.Log $"outcome store: could not trim {s.File}: {ex.Message}" ]
@@ -955,6 +1001,24 @@ type Store(settings: Settings) =
 
         member _.FileComputed computed = fileComputed computed
 
+        member _.FileTestRows(computed, rows) =
+            let record = OutcomeRecords.Computed.record computed
+
+            try
+                let recordFile =
+                    OutcomeRecords.RecordCodec.fileName (OutcomeRecords.RecordCodec.encodePayload record)
+
+                let path =
+                    Path.Combine(directoryOf record.Key.Value, TestRows.fileNameFor recordFile)
+
+                if writeOnceBytes path (TestRows.encode (OutcomeRecords.TestRowsOf.index record rows)) then
+                    OutcomeRecords.Filing.Filed
+                else
+                    OutcomeRecords.Filing.AlreadyFiled
+            with ex ->
+                settings.Log $"outcome store: could not file the test rows of {record.Subject}: {ex.Message}"
+                OutcomeRecords.Filing.NotFiled ex.Message
+
         member _.Supersede record =
             match fileOnce record with
             | Ok(path, filing) ->
@@ -983,6 +1047,18 @@ module Through =
     /// filed (now or already). Never throws.
     let fileComputed (store: OutcomeRecords.IOutcomeStore) (computed: OutcomeRecords.Computed) : bool =
         match store.FileComputed computed with
+        | OutcomeRecords.Filing.Filed
+        | OutcomeRecords.Filing.AlreadyFiled -> true
+        | OutcomeRecords.Filing.NotFiled _ -> false
+
+    /// File the per-test rows of the run `computed` describes beside it (AUTOMATION-1744); whether
+    /// they are filed (now or already). Never throws.
+    let fileTestRows
+        (store: OutcomeRecords.IOutcomeStore)
+        (computed: OutcomeRecords.Computed)
+        (rows: TestRows.RunRows)
+        : bool =
+        match store.FileTestRows(computed, rows) with
         | OutcomeRecords.Filing.Filed
         | OutcomeRecords.Filing.AlreadyFiled -> true
         | OutcomeRecords.Filing.NotFiled _ -> false

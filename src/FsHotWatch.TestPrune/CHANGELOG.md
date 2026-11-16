@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: a project run files its per-test rows beside its outcome record, at the moment it files the record
+  (AUTOMATION-1744). The rows come from the run's CTRF report through `Flakiness.parseCtrfRows`, the one CTRF row
+  reader: a failed row whose `extra.exception` is `Xunit.Sdk.TestTimeoutException` is timed out, one naming
+  `OperationCanceledException` or `TaskCanceledException` is cancelled, and neither is a failure. `parseCtrfTests` and
+  the flakiness history fold both into failed, as before. BREAKING: `TestEvidenceRun.fileOutcome` takes the run's
+  `RunPlace` (run id, tree hash, machine), what the record does not say.
+
 ## 0.13.0-alpha.118 - 2026-11-16
 
 - feat: the daemon log names each variable the test-evidence key reads only because of a prefix

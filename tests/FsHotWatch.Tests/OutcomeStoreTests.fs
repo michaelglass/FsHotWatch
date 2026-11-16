@@ -793,3 +793,165 @@ let ``an unreadable gc stamp counts as never having run`` () =
         match store.GcIfDue(t0, Set.empty, TimeSpan.FromHours 6.0) with
         | GcRun.Ran _ -> ()
         | GcRun.NotDue lastRanAt -> failwith $"expected a GC, got not due (last ran %O{lastRanAt})")
+
+// AUTOMATION-1744: a test run's per-test rows are filed beside its record, under its key, so they
+// live and die with it under the store's own TTL and byte budget.
+
+let private rowsOf (count: int) : TestRows.RunRows =
+    let rows =
+        [ for i in 1..count ->
+              ({ Name = $"A.Tests.%s{Guid.NewGuid().ToString()}"
+                 Outcome =
+                   (if i % 2 = 0 then
+                        TestRows.Outcome.Passed
+                    else
+                        TestRows.Outcome.TimedOut)
+                 DurationMs = int64 i }
+              : TestRows.Row) ]
+
+    { RunId = "run-1"
+      Tree = "sha256:tree"
+      Machine = "box"
+      Rows = (FsHotWatch.Core.NonEmpty.ofList rows).Value }
+
+/// File a run's record and its rows as the runner does; the record's path and the rows' path.
+let private fileRun (store: Store) (key: ActionKey.ActionKey) (outcome: Outcome) (at: DateTimeOffset) rows =
+    let computed = justRan (recordOf key outcome at) None
+    let outcomes = store :> OutcomeRecords.IOutcomeStore
+    test <@ outcomes.FileComputed computed = OutcomeRecords.Filing.Filed @>
+    test <@ Through.fileTestRows outcomes computed rows @>
+
+    let recordPath =
+        Path.Combine(
+            store.DirectoryOf key,
+            OutcomeRecords.RecordCodec.fileName (
+                OutcomeRecords.RecordCodec.encodePayload (OutcomeRecords.Computed.record computed)
+            )
+        )
+
+    recordPath, Path.Combine(store.DirectoryOf key, TestRows.fileNameFor recordPath), computed
+
+[<Fact>]
+let ``a run's rows are filed beside its record, and no record read sees them`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t"
+        let rows = rowsOf 3
+        let recordPath, rowsPath, computed = fileRun store key Outcome.Fail t0 rows
+
+        test
+            <@
+                File.Exists rowsPath
+                && Path.GetDirectoryName rowsPath = Path.GetDirectoryName recordPath
+            @>
+
+        test <@ recordFiles dir = [ recordPath ] @>
+        test <@ (store.History key).Length = 1 && store.HoldsKey key @>
+        test <@ (readAll dir).Unreadable = 0 @>
+
+        let expected =
+            OutcomeRecords.TestRowsOf.index (OutcomeRecords.Computed.record computed) rows
+
+        test
+            <@
+                readAllTestRows dir = { Indexes = [ expected ]
+                                        Unreadable = 0 }
+            @>
+
+        test
+            <@
+                (store :> OutcomeRecords.IOutcomeStore).FileTestRows(computed, rows) = OutcomeRecords.Filing.AlreadyFiled
+            @>)
+
+[<Fact>]
+let ``gc evicts a key's rows with it`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:old"
+        let _, rowsPath, _ = fileRun store key Outcome.Pass t0 (rowsOf 3)
+        test <@ store.Gc(t0.AddDays 15.0, Set.empty) = [ key.Value ] @>
+        test <@ not (File.Exists rowsPath) @>
+        test <@ (let scan = readAllTestRows dir in List.isEmpty scan.Indexes && scan.Unreadable = 0) @>)
+
+[<Fact>]
+let ``a run's rows count toward the store's byte budget`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        let older = keyFor "sha256:a"
+        let newer = keyFor "sha256:b"
+        let _, olderRows, _ = fileRun store older Outcome.Pass t0 (rowsOf 200)
+        fileRun store newer Outcome.Pass (t0.AddMinutes 1.0) (rowsOf 200) |> ignore
+        let records = recordFiles dir |> List.sumBy (fun f -> FileInfo(f).Length)
+        let total = bytesUnder (Path.Combine(dir, "records"))
+        // The records alone fit; with their rows they do not.
+        test <@ records < total - 1L @>
+        let evicted = (withBudget dir (total - 1L) ignore).Gc(t0.AddMinutes 2.0, Set.empty)
+        test <@ evicted = [ older.Value ] @>
+        test <@ not (File.Exists olderRows) @>)
+
+[<Fact>]
+let ``trimming a superseded record deletes its rows and counts their bytes`` () =
+    withStore 1_000_000_000L (fun dir _ store ->
+        let key = keyFor "sha256:t"
+        let olderRecord, olderRows, _ = fileRun store key Outcome.Fail t0 (rowsOf 200)
+
+        let _, newerRows, _ =
+            fileRun store key Outcome.Pass (t0.AddMinutes 1.0) (rowsOf 200)
+
+        let total = bytesUnder (Path.Combine(dir, "records"))
+        // Trimming the superseded record alone does not fit the budget; with its rows it does.
+        let budget = total - FileInfo(olderRecord).Length - 1L
+        let evicted = (withBudget dir budget ignore).Gc(t0.AddMinutes 2.0, Set.empty)
+        test <@ List.isEmpty evicted @>
+        test <@ not (File.Exists olderRecord) && not (File.Exists olderRows) @>
+        test <@ File.Exists newerRows @>
+        test <@ (store.Lookup key |> Option.map _.Outcome) = Some Outcome.Pass @>)
+
+[<Fact>]
+let ``superseding a key drops the rows of the records it drops`` () =
+    withStore 1_000_000L (fun _ _ store ->
+        let key = keyFor "sha256:t"
+        let _, olderRows, _ = fileRun store key Outcome.Fail t0 (rowsOf 3)
+
+        let _, newerRows, newer =
+            fileRun store key Outcome.Pass (t0.AddMinutes 1.0) (rowsOf 3)
+
+        (store :> OutcomeRecords.IOutcomeStore).Supersede(OutcomeRecords.Computed.record newer)
+        |> ignore
+
+        test <@ not (File.Exists olderRows) && File.Exists newerRows @>)
+
+[<Fact>]
+let ``a file under a key that is not an index is counted unreadable by the scan, and left`` () =
+    withStore 1_000_000L (fun dir _ store ->
+        test <@ (let scan = readAllTestRows dir in List.isEmpty scan.Indexes && scan.Unreadable = 0) @>
+        let key = keyFor "sha256:t"
+        let _, rowsPath, _ = fileRun store key Outcome.Pass t0 (rowsOf 3)
+        let torn = Path.Combine(store.DirectoryOf key, "torn" + TestRows.Suffix)
+        File.WriteAllText(torn, "not gzip")
+        test <@ (readAllTestRows dir).Unreadable = 1 && (readAllTestRows dir).Indexes.Length = 1 @>
+        let readable = File.GetUnixFileMode rowsPath
+        File.SetUnixFileMode(rowsPath, UnixFileMode.None)
+
+        try
+            test <@ (let scan = readAllTestRows dir in List.isEmpty scan.Indexes && scan.Unreadable = 2) @>
+        finally
+            File.SetUnixFileMode(rowsPath, readable)
+
+        test <@ File.Exists torn @>)
+
+[<Fact>]
+let ``rows that cannot be filed are logged and not filed, and the record stands`` () =
+    withStore 1_000_000L (fun _ logs store ->
+        let key = keyFor "sha256:t"
+        let computed = justRan (recordOf key Outcome.Pass t0) None
+        let outcomes = store :> OutcomeRecords.IOutcomeStore
+        outcomes.FileComputed computed |> ignore
+        let keyDir = store.DirectoryOf key
+        let writable = File.GetUnixFileMode keyDir
+        File.SetUnixFileMode(keyDir, UnixFileMode.UserRead ||| UnixFileMode.UserExecute)
+
+        try
+            test <@ not (Through.fileTestRows outcomes computed (rowsOf 3)) @>
+        finally
+            File.SetUnixFileMode(keyDir, writable)
+
+        test <@ logs () |> List.exists (fun l -> l.Contains "could not file the test rows") @>
+        test <@ store.Lookup key <> None @>)

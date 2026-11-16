@@ -2593,7 +2593,21 @@
       "line": 100,
       "branch": 100,
       "reason": "new file (AUTOMATION-1685: the repository files a rewriting preprocessor may be handed). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-14 on macOS by the confirm run of the full suite (RepoFilesTests, PluginHostTests, CommandPreprocessorTests): line 100%, branch 100%. No platform branch (path parsing and the checkout's .gitignore rules read the same way on both), so platform-neutral."
-    }
+    },
+    "TestRows.fs": [
+      {
+        "line": 100,
+        "branch": 85,
+        "reason": "new file (AUTOMATION-1744: the per-test row index filed beside a test record). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-17 on macOS by TestRowsTests, OutcomeStoreTests and OutcomeAnalyticsTests with coverage: line 100% (120/120), branch 86.0% (49/57). Every parse refusal is driven. The 8 uncovered branches are compiler-generated: the null checks `use` emits before disposing the encoder's and decoder's streams (5), the fall-through of the decoder's exception filter (an exception that is neither InvalidDataException nor JsonException is rethrown, and none can be raised from the bytes), and one arm each of the inlined `Result.bind` that opens the header and the row parse chains, whose Ok and Error paths the tests both take. Pure computation; platform-neutral.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 85,
+        "reason": "new file (AUTOMATION-1744). Not yet measured on Linux CI: set equal to the macOS measurement because the module has no platform-dependent code; re-baseline from CI (`mise run loosen-from-ci`) if the Linux report differs.",
+        "platform": "linux"
+      }
+    ]
   },
   "countFloors": {
     "AnalyzerIdentity.fs": [

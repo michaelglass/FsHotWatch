@@ -80,6 +80,7 @@
     <Compile Include="RecordBytesGoldenTests.fs" />
     <Compile Include="OutcomeRecordsTests.fs" />
     <Compile Include="OutcomeAnalyticsTests.fs" />
+    <Compile Include="TestRowsTests.fs" />
     <Compile Include="LookupVerdictTests.fs" />
     <Compile Include="AnalyzerCacheKeyTests.fs" />
     <Compile Include="LintCacheKeyTests.fs" />

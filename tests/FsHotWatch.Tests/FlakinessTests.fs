@@ -474,3 +474,58 @@ let ``verdict evidence preserves coherent nested and flattened clean reports`` (
         test <@ summary.Passed = 1 @>
         test <@ summary.Skipped = 1 @>
     | Error reason -> failwith reason
+
+// --- parseCtrfRows (AUTOMATION-1744): a timeout and a cancellation kept apart from a failure ---
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``parseCtrfRows keeps a timed-out and a cancelled row apart from a failed one, by the exception each names`` () =
+    // The timed-out row's shape is xUnit v3's own, from a real report: a failed row whose
+    // `extra.exception` is Xunit.Sdk.TestTimeoutException.
+    let json =
+        """{"results":{"tests":[
+            {"name":"A.passed","status":"passed","duration":1},
+            {"name":"A.failed","status":"failed","duration":2,"extra":{"exception":"Swensen.Unquote.AssertionFailedException"}},
+            {"name":"A.timedOut","status":"failed","duration":15007,"message":"Test execution timed out after 15000 milliseconds","extra":{"exception":"Xunit.Sdk.TestTimeoutException"}},
+            {"name":"A.cancelled","status":"failed","duration":4,"extra":{"exception":"System.OperationCanceledException"}},
+            {"name":"A.taskCancelled","status":"failed","duration":5,"extra":{"exception":"System.Threading.Tasks.TaskCanceledException"}},
+            {"name":"A.noExtra","status":"failed","duration":6},
+            {"name":"A.extraNotObject","status":"failed","duration":7,"extra":"x"},
+            {"name":"A.noException","status":"failed","duration":8,"extra":{}},
+            {"name":"A.skipped","status":"skipped"},
+            {"name":"A.pending","status":"pending","duration":0},
+            {"name":"A.other","status":"other","duration":9}]}}"""
+
+    let rows = parseCtrfRows json |> List.map (fun r -> r.Name, r.Outcome, r.DurationMs)
+
+    test
+        <@
+            rows = [ "A.passed", FsHotWatch.TestRows.Outcome.Passed, 1L
+                     "A.failed", FsHotWatch.TestRows.Outcome.Failed, 2L
+                     "A.timedOut", FsHotWatch.TestRows.Outcome.TimedOut, 15007L
+                     "A.cancelled", FsHotWatch.TestRows.Outcome.Cancelled, 4L
+                     "A.taskCancelled", FsHotWatch.TestRows.Outcome.Cancelled, 5L
+                     "A.noExtra", FsHotWatch.TestRows.Outcome.Failed, 6L
+                     "A.extraNotObject", FsHotWatch.TestRows.Outcome.Failed, 7L
+                     "A.noException", FsHotWatch.TestRows.Outcome.Failed, 8L
+                     "A.skipped", FsHotWatch.TestRows.Outcome.Skipped, 0L
+                     "A.pending", FsHotWatch.TestRows.Outcome.Skipped, 0L
+                     "A.other", FsHotWatch.TestRows.Outcome.Other, 9L ]
+        @>
+
+    // The flakiness history folds both into Failed, as it always kept them.
+    test
+        <@
+            parseCtrfTests json
+            |> List.filter (fun r -> r.Name = "A.timedOut" || r.Name = "A.cancelled")
+            |> List.forall (fun r -> r.Outcome = TestOutcome.Failed)
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``parseCtrfRows reads a null document as no rows and skips a null row`` () =
+    test <@ List.isEmpty (parseCtrfRows "null") @>
+
+    test
+        <@
+            parseCtrfRows """{"tests":[null,{"name":"A.x","status":"passed","duration":1}]}"""
+            |> List.map _.Name = [ "A.x" ]
+        @>

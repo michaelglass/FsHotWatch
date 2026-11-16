@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: the outcome store keeps per-test rows (AUTOMATION-1744). A test run's rows (each test's name, outcome and
+  duration, under the run's key, project, run id, tree, tool, machine and instant, written once per file) are filed
+  beside its record as `<record id>.tests.jsonl.gz`, gzipped JSON lines, so a per-test flake rate outlives the
+  checkout's `.fshw/test-runs`. They live and die with their record: GC evicts them with the key, counts their bytes
+  toward the byte budget and deletes them with a superseded record it trims; a supersede drops them with the records
+  it drops. No record read sees them (records are `*.json`). The outcome is a closed `TestRows.Outcome` that keeps
+  `TimedOut` and `Cancelled` apart from `Failed`. BREAKING for an `IOutcomeStore` implementer: it gains
+  `FileTestRows`, which files the rows of a just-computed record only. `OutcomeStore.readAllTestRows` reads every
+  index without changing the store, counting a file that is not one.
+
 - fix: a runtime setting in the environment fshw spawns from either never reaches the process it starts or moves the
   test-evidence key with its value (AUTOMATION-1749). The key read the daemon's own environment, while a repository
   host's children get their client's: a session's `DOTNET_ROLL_FORWARD` or GC setting reached its test hosts and never

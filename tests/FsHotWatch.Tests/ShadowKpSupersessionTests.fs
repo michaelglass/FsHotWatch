@@ -91,7 +91,7 @@ let private file
     let key = Ok(kpOf project)
 
     outcomeRecordOf (candidate project) (Some key) (Some key) run producer
-    |> Option.map (fileOutcome kp (fullKeyOf project) run)
+    |> Option.map (fileOutcome kp (fullKeyOf project) (RunPlace.ofProducer "box" producer) run)
     |> ignore
 
 let private suite (run: string) (project: string) (failed: string list) (passed: string list) : Suite =
@@ -264,7 +264,7 @@ let ``a timed-out full run is never cleared, whatever its report names`` () =
         let key = Ok(kpOf "A.Tests")
 
         outcomeRecordOf (candidate "A.Tests") (Some key) (Some key) timedOut producer
-        |> Option.map (fileOutcome kp (fullKeyOf "A.Tests") timedOut)
+        |> Option.map (fileOutcome kp (fullKeyOf "A.Tests") (RunPlace.ofProducer "box" producer) timedOut)
         |> ignore
 
         bPassedInFull kp
@@ -355,7 +355,7 @@ let private namedBy (report: string) =
         let key = Ok(kpOf "A.Tests")
 
         outcomeRecordOf (candidate "A.Tests") (Some key) (Some key) run producer
-        |> Option.map (fileOutcome kp (fullKeyOf "A.Tests") run)
+        |> Option.map (fileOutcome kp (fullKeyOf "A.Tests") (RunPlace.ofProducer "box" producer) run)
         |> ignore
 
         kp.LookupWithOutputs(fullKeyOf "A.Tests")

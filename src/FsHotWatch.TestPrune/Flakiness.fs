@@ -79,17 +79,39 @@ let private ctrfTestsArray (root: JsonNode) : JsonArray =
     | null -> asJsonArray root.["tests"]
     | arr -> arr
 
-/// Parse a CTRF (Common Test Report Format) JSON document and extract per-
-/// test records. Returns [] when the document has no `tests` array or is
-/// unparseable — silent failure is the right behaviour for an opportunistic
-/// post-test step that shouldn't crash the test runner if the report is
-/// missing or malformed. Entries missing `name` or `status` are dropped.
-///
-/// NOTE: a real report OMITS per-test entries for tests that threw a raw
-/// (non-assertion) exception while still counting them in the summary — so
-/// this array is NOT a reliable run total. Use `Ctrf.tryVerdictReport` for the
-/// pass/fail verdict; this array is only for flakiness history.
-let internal parseCtrfTests (json: string) : TestRunRecord list =
+/// The exception xUnit v3 writes in a failed row's `extra.exception` for a test stopped at its
+/// own timeout (seen on real reports: "Test execution timed out after N milliseconds").
+let private timedOutException = "Xunit.Sdk.TestTimeoutException"
+
+/// The exceptions a failed row names for a test stopped by a cancellation: what the runner
+/// prints as `failed (canceled)` (`TestReports.parseFailedTestsAgainst`).
+let private cancelledExceptions =
+    set
+        [ "System.OperationCanceledException"
+          "System.Threading.Tasks.TaskCanceledException" ]
+
+/// How the CTRF row `node` with `status` came out (AUTOMATION-1744). A failed row stopped at its
+/// timeout or by a cancellation is told apart from one that failed, by the exception it names.
+let private rowOutcome (node: JsonNode) (status: string) : FsHotWatch.TestRows.Outcome =
+    match status with
+    | "passed" -> FsHotWatch.TestRows.Outcome.Passed
+    | "failed" ->
+        match node.["extra"] with
+        | :? JsonObject as extra ->
+            match tryGetString extra "exception" with
+            | Some ex when ex = timedOutException -> FsHotWatch.TestRows.Outcome.TimedOut
+            | Some ex when cancelledExceptions.Contains ex -> FsHotWatch.TestRows.Outcome.Cancelled
+            | _ -> FsHotWatch.TestRows.Outcome.Failed
+        | _ -> FsHotWatch.TestRows.Outcome.Failed
+    | "skipped"
+    | "pending" -> FsHotWatch.TestRows.Outcome.Skipped
+    | _ -> FsHotWatch.TestRows.Outcome.Other
+
+/// Each row of a CTRF report: its name, its outcome with a timeout and a cancellation kept apart
+/// from a failure (`rowOutcome`), and its duration (0 when it has none). The one CTRF row reader:
+/// `parseCtrfTests` folds it for the flakiness history, and the outcome store files it as a run's
+/// per-test rows (AUTOMATION-1744). The same tolerance as `parseCtrfTests`.
+let internal parseCtrfRows (json: string) : FsHotWatch.TestRows.Row list =
     try
         match FsHotWatch.Ctrf.parseReport json with
         | null -> []
@@ -104,15 +126,43 @@ let internal parseCtrfTests (json: string) : TestRunRecord list =
                     else
                         match tryGetString node "name", tryGetString node "status" with
                         | Some name, Some status ->
-                            Some
+                            Some(
                                 { Name = name
-                                  Outcome = parseOutcome status
-                                  DurationMs = tryGetNumber node "duration" |> Option.map int |> Option.defaultValue 0
-                                  RunStartedAt = DateTime.UtcNow }
+                                  Outcome = rowOutcome node status
+                                  DurationMs =
+                                    tryGetNumber node "duration" |> Option.map int64 |> Option.defaultValue 0L }
+                                : FsHotWatch.TestRows.Row
+                            )
                         | _ -> None)
                 |> Seq.toList
     with _ ->
         []
+
+/// Parse a CTRF (Common Test Report Format) JSON document and extract per-
+/// test records. Returns [] when the document has no `tests` array or is
+/// unparseable — silent failure is the right behaviour for an opportunistic
+/// post-test step that shouldn't crash the test runner if the report is
+/// missing or malformed. Entries missing `name` or `status` are dropped.
+///
+/// NOTE: a real report OMITS per-test entries for tests that threw a raw
+/// (non-assertion) exception while still counting them in the summary — so
+/// this array is NOT a reliable run total. Use `Ctrf.tryVerdictReport` for the
+/// pass/fail verdict; this array is only for flakiness history.
+/// Timed-out and cancelled rows fold into `Failed` here, as the history always kept them.
+let internal parseCtrfTests (json: string) : TestRunRecord list =
+    parseCtrfRows json
+    |> List.map (fun row ->
+        { Name = row.Name
+          Outcome =
+            match row.Outcome with
+            | FsHotWatch.TestRows.Outcome.Passed -> Passed
+            | FsHotWatch.TestRows.Outcome.Failed
+            | FsHotWatch.TestRows.Outcome.TimedOut
+            | FsHotWatch.TestRows.Outcome.Cancelled -> Failed
+            | FsHotWatch.TestRows.Outcome.Skipped -> Skipped
+            | FsHotWatch.TestRows.Outcome.Other -> Other
+          DurationMs = int row.DurationMs
+          RunStartedAt = DateTime.UtcNow })
 
 /// The test classes a CTRF report declares. xUnit writes each row's `suite` as a path
 /// ending in the row's class and method, so a row whose `name` is that class, `.`, that

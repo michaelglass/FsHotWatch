@@ -510,6 +510,36 @@ let outcomeRecordOf
               RecordedAt = producer.EarnedAt }
     | _ -> None
 
+/// Where a run ran, for the per-test rows filed beside its record (AUTOMATION-1744): what the
+/// record does not already say.
+type RunPlace =
+    {
+        /// The run whose report the rows are read from.
+        RunId: string
+        /// The verdict tree hash of the checkout that ran it.
+        Tree: string
+        /// The host it ran on.
+        Machine: string
+    }
+
+module RunPlace =
+    /// Where `producer`'s run ran, on `machine`.
+    let ofProducer (machine: string) (producer: TestEvidenceStore.Producer) : RunPlace =
+        { RunId = producer.RunId
+          Tree = producer.TreeHash
+          Machine = machine }
+
+/// The per-test rows of `run`'s report (AUTOMATION-1744); `None` when it wrote no report or the
+/// report lists no row.
+let testRowsOf (place: RunPlace) (run: ProducedRun) : TestRows.RunRows option =
+    run.Report
+    |> Option.bind (Flakiness.parseCtrfRows >> FsHotWatch.Core.NonEmpty.ofList)
+    |> Option.map (fun rows ->
+        { RunId = place.RunId
+          Tree = place.Tree
+          Machine = place.Machine
+          Rows = rows })
+
 /// File `record`, the outcome of `run` (ADR-059 step 7), in `outcomes`. `fullKey` is the
 /// project's full-run key under the same K_P. Returns the keys it filed under.
 ///
@@ -517,13 +547,22 @@ let outcomeRecordOf
 /// passing run that passed each failure the newest full fail at `fullKey` names also files
 /// that fail's clearance (`TestFailureClearance`, AUTOMATION-1444). A timed-out run names
 /// nothing: what it did not finish is not among its failures.
+///
+/// The run's per-test rows (`testRowsOf`) are filed beside its record, once the record is filed,
+/// so they live and die with it (AUTOMATION-1744).
 let fileOutcome
     (outcomes: OutcomeRecords.IOutcomeStore)
     (fullKey: ActionKey.ActionKey)
+    (place: RunPlace)
     (run: ProducedRun)
     (record: OutcomeStore.Record)
     : ActionKey.KeyValue list =
     let names = run.Report |> Option.bind Ctrf.tryTestNames
+
+    let fileWithRows (computed: OutcomeRecords.Computed) =
+        if OutcomeStore.Through.fileComputed outcomes computed then
+            testRowsOf place run
+            |> Option.iter (OutcomeStore.Through.fileTestRows outcomes computed >> ignore)
 
     match run.Result with
     | TestsFailed _ ->
@@ -535,13 +574,11 @@ let fileOutcome
                 Some(TestFailureClearance.outputsOf n.Failed)
             | _ -> None
 
-        OutcomeStore.Through.fileComputed outcomes (OutcomeStore.justRan record outputs)
-        |> ignore
+        fileWithRows (OutcomeStore.justRan record outputs)
 
         [ record.Key.Value ]
     | _ ->
-        OutcomeStore.Through.fileComputed outcomes (OutcomeStore.justRan record None)
-        |> ignore
+        fileWithRows (OutcomeStore.justRan record None)
 
         let clearance =
             names
@@ -702,7 +739,13 @@ let publish
                         (Map.tryFind candidate.Project reconciled.Keys)
                         run
                         producer
-                    |> Option.map (fileOutcome wired.Store (testActionKey atLaunch "full") run)
+                    |> Option.map (
+                        fileOutcome
+                            wired.Store
+                            (testActionKey atLaunch "full")
+                            (RunPlace.ofProducer Environment.MachineName producer)
+                            run
+                    )
                     |> Option.defaultValue []
                 | _ -> [])
 
