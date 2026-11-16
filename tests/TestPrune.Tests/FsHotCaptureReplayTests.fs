@@ -299,8 +299,15 @@ type ``faithful FsHot FCS capture``() =
                 test <@ pluginResult |> Result.isOk @>
                 test <@ testsResult |> Result.isOk @>
 
-                test <@ (pluginResult |> Result.map _.Dependencies.Length) = Ok 1549 @>
-                test <@ (testsResult |> Result.map _.Dependencies.Length) = Ok 9629 @>
+                // AUTOMATION-1733 added `StaticInit` edges; every other edge is unchanged.
+                let edgeCounts (result: Result<AnalysisResult, string>) =
+                    result
+                    |> Result.map (fun r ->
+                        r.Dependencies |> List.filter (fun d -> d.Kind <> StaticInit) |> List.length,
+                        r.Dependencies |> List.filter (fun d -> d.Kind = StaticInit) |> List.length)
+
+                test <@ edgeCounts pluginResult = Ok(1549, 2) @>
+                test <@ edgeCounts testsResult = Ok(9629, 8) @>
 
                 let lowPlugin, _ = analyze 4096 pluginFile pluginSource pluginParse pluginCheck
                 let lowTests, _ = analyze 4096 testsFile testsSource testsParse testsCheck

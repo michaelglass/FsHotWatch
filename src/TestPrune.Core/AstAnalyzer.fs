@@ -164,6 +164,10 @@ type DependencyKind =
     | SharedState
     /// A test asserts prose produced by another symbol without naming that symbol.
     | SharedLiteral
+    /// Reading a module-level value (or constructing a class with a `static let`) runs its
+    /// file's static initializer, which evaluates every other such value of the file: it
+    /// depends on them without naming them (`staticInitEdges`).
+    | StaticInit
 
 /// A directed dependency from one symbol to another, with its kind.
 type Dependency =
@@ -1371,6 +1375,9 @@ type internal TypeDefnShape =
         /// A struct union lays every case's fields out in one value, so its payloads are
         /// part of the type's layout and stay in its header.
         IsStruct: bool
+        /// The type declares a `static let` or a `static member val`: its class constructor
+        /// runs the file's static initializer (`staticInitEdges`).
+        HasStaticInit: bool
         Children: TypeChild list
     }
 
@@ -1382,6 +1389,20 @@ let private isStructAttribute (attributes: SynAttributes) =
             match List.tryLast a.TypeName.LongIdent with
             | Some id -> id.idText = "Struct" || id.idText = "StructAttribute"
             | None -> false))
+
+/// A class's own members (a union's or record's live in `members` of `SynTypeDefn`).
+let private objectModelMembers (typeRepr: SynTypeDefnRepr) : SynMemberDefn list =
+    match typeRepr with
+    | SynTypeDefnRepr.ObjectModel(members = members) -> members
+    | _ -> [] // INT-WILDCARD-001:ok — only an object model holds `let` bindings and auto-properties
+
+/// A `static let` or `static member val`: a static field the file's initializer sets, so the
+/// type's class constructor runs that initializer.
+let private isStaticallyInitializedMember (memberDefn: SynMemberDefn) =
+    match memberDefn with
+    | SynMemberDefn.LetBindings(isStatic = true)
+    | SynMemberDefn.AutoProperty(isStatic = true) -> true
+    | _ -> false // INT-WILDCARD-001:ok — instance members and every other form set no static field
 
 /// Walk the parsed AST to collect each type definition with its union cases and members.
 let private visitTypeDefnShapes (results: ResizeArray<TypeDefnShape>) (decl: SynModuleDecl) =
@@ -1445,6 +1466,9 @@ let private visitTypeDefnShapes (results: ResizeArray<TypeDefnShape>) (decl: Syn
                 { Name = ids |> List.map (fun id -> id.idText) |> String.concat "."
                   Range = rangeWithAttributes attributes fullRange
                   IsStruct = isStructAttribute attributes
+                  HasStaticInit =
+                    Seq.append (objectModelMembers typeRepr) extraMembers
+                    |> Seq.exists isStaticallyInitializedMember
                   Children = sortedChildren children }
     // An exception's header is its name and fields, like a record's; its members are
     // children, cut out when their own symbols hash them.
@@ -1458,6 +1482,7 @@ let private visitTypeDefnShapes (results: ResizeArray<TypeDefnShape>) (decl: Syn
             { Name = exceptionName exceptionDefinition
               Range = rangeWithAttributes (exceptionAttributes exceptionDefinition) fullRange
               IsStruct = false
+              HasStaticInit = false
               Children = sortedChildren children }
     | _ -> ()
 
@@ -2255,6 +2280,77 @@ let private useEdges
 
     dependencies, classifiedTargetKinds, droppedEdgeCount
 
+/// A module-level binding that is a static FIELD, evaluated by its file's static
+/// initializer: no curried parameters (a function, including `let f = fun x -> …`, is
+/// compiled to a method), not a `[<Literal>]` (inlined at every use, never initialized)
+/// and not generic (a type function is a method too).
+let private isStaticallyInitialized (symbol: FSharpSymbol) =
+    match symbol with
+    | :? FSharpMemberOrFunctionOrValue as mfv ->
+        try
+            mfv.IsModuleValueOrMember
+            && mfv.DeclaringEntity |> Option.exists _.IsFSharpModule
+            && mfv.CurriedParameterGroups.Count = 0
+            && mfv.GenericParameters.Count = 0
+            && mfv.LiteralValue.IsNone
+            && not mfv.IsProperty
+        with _ ->
+            false
+    | _ -> false
+
+/// The edges F#'s file-level static initialization adds (AUTOMATION-1733).
+///
+/// F# evaluates the module-level values of a file, and the `static let`/`static member val`
+/// fields of its classes, in ONE static initializer, and the first read of any of them runs
+/// all of them. A reader of one therefore depends on every other: if `let empty = { … }`
+/// throws, reading any value of that file, or constructing a class of it that has a
+/// `static let`, fails with a `TypeInitializationException`. Measured on SDK 10.0.401,
+/// `--realsig-` and `--realsig+` alike: reading a computed value in any module of the file
+/// ran it (a function-typed value built by partial application too), and so did
+/// constructing a class with a `static let` or a `static member val`; calling a function,
+/// building a record, using a union case, or a class or static member of a type without
+/// static fields did not, so only those values and types get these edges. A value whose
+/// initializer is a constant is inlined and runs nothing; it is kept, which can only
+/// over-select. In a consumer the walk stopped at `OrgDetails.empty` and
+/// `DsaFactSchema.unknownSubject` and missed 27 tests that reached those files only this way
+/// (one through a JSON converter's `static let` defaults table).
+///
+/// The edges are a ring, not a product: the members point at each other in declaration
+/// order and the last points back at the first, so each reaches all the others with
+/// `members` edges instead of `members²`.
+let private staticInitEdges
+    (typeShapes: TypeDefnShape list)
+    (definitions: (SymbolInfo * FSharpSymbolUse) list)
+    (symbols: SymbolInfo list)
+    =
+    let tracked = symbols |> List.map _.FullName |> Set.ofList
+
+    // A type with a `static let` or `static member val`: constructing it or touching a static
+    // member runs its class constructor, which runs the file's initializer.
+    let hasStaticInit (si: SymbolInfo) (u: FSharpSymbolUse) =
+        si.Kind = Type
+        && typeShapes
+           |> List.exists (fun shape ->
+               shape.HasStaticInit
+               && shape.Name = canonicalShortName si.FullName
+               && Range.rangeContainsRange shape.Range u.Range)
+
+    let values =
+        definitions
+        |> List.filter (fun (si, u) ->
+            tracked.Contains si.FullName
+            && (isStaticallyInitialized u.Symbol || hasStaticInit si u))
+        |> List.sortBy (fun (_, u) -> u.Range.StartLine, u.Range.StartColumn)
+        |> List.map (fun (si, _) -> si.FullName)
+        |> List.distinct
+
+    match values with
+    | []
+    | [ _ ] -> []
+    | first :: _ ->
+        List.pairwise (values @ [ first ])
+        |> List.map (fun (from, target) -> coreEdge StaticInit from target)
+
 /// What the entity definitions of a file declare before any member is read: each
 /// collection definition (name -> synthetic name, fixture), each test class's collection
 /// memberships, and every entity-level attribute.
@@ -2886,6 +2982,7 @@ let private extractResults
                 @ collectionSynthEdges
                 @ literalSynthEdges
                 @ inherited.Edges
+                @ staticInitEdges syntax.TypeShapes definitions symbols
 
             let symbols =
                 symbols @ collectionSynthSymbols @ literalSynthSymbols @ inherited.Symbols

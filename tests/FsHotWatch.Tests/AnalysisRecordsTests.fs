@@ -28,7 +28,15 @@ let private analysisUnder (root: string) : AnalysisResult =
               Kind = Function
               Location = Extern(Some(Path.Combine(root, "src", "P.fs"))) } ]
       Dependencies =
-        [ for i, kind in List.indexed [ Calls; UsesType; PatternMatches; References; SharedState; SharedLiteral ] ->
+        [ for i, kind in
+              List.indexed
+                  [ Calls
+                    UsesType
+                    PatternMatches
+                    References
+                    SharedState
+                    SharedLiteral
+                    StaticInit ] ->
               { FromSymbol = $"P.S%d{i}"
                 ToSymbol = "P.S0"
                 Kind = kind

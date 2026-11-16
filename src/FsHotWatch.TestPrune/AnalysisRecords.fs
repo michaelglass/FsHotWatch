@@ -38,7 +38,7 @@ let Schema = "fshw-testprune-analysis-v1"
 /// id moved with every build, so every release re-analysed every file.
 /// `RecordKeyGoldenTests` pins the key and fails on any change to how it is computed.
 [<Literal>]
-let AnalysisSchema = "fshw-testprune-analysis-semantics-v1"
+let AnalysisSchema = "fshw-testprune-analysis-semantics-v2"
 
 /// The analyser identity, from its parts: TestPrune.Core's release (`name@version`) and
 /// the plugin's analysis `schema`.
@@ -116,6 +116,7 @@ let private dependencyToken (kind: DependencyKind) =
     | References -> "references"
     | SharedState -> "shared-state"
     | SharedLiteral -> "shared-literal"
+    | StaticInit -> "static-init"
 
 let private dependencyOf (token: string) =
     match token with
@@ -125,6 +126,7 @@ let private dependencyOf (token: string) =
     | "references" -> References
     | "shared-state" -> SharedState
     | "shared-literal" -> SharedLiteral
+    | "static-init" -> StaticInit
     | other -> raise (FormatException $"a dependency kind TestPrune does not have: %s{other}")
 
 let private strings (values: string list) =

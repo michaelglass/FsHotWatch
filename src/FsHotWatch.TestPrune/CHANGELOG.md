@@ -6,6 +6,12 @@
   (`test evidence: keyed, unclassified: NAME`), so the misses they cause can be counted (AUTOMATION-1737). The key
   itself is unchanged: it stays on prefixes, less the host knobs and process-owned variables.
 
+- fix: analysis records carry TestPrune.Core's `StaticInit` edges (token `static-init`), so a change to a type a
+  module-level value constructs selects the readers of that file's other values (AUTOMATION-1733). `AnalysisSchema` is
+  `fshw-testprune-analysis-semantics-v2`: a record filed before would lack the edges.
+  Pinning this release forces a cold re-index of the consumer (index schema 26 -> 27 and a new analysis key):
+  measured on intelligence, up to about 550 s and a 13.4 GB peak on the first run.
+
 ## 0.13.0-alpha.117 - 2026-11-16
 
 - refactor: test evidence, test baselines and the reuse refusal read and file through `OutcomeRecords.IOutcomeStore`

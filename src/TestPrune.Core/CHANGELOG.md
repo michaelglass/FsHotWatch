@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: a change to a type that a module-level value constructs selects the tests that read any OTHER value of that
+  value's file, or construct a class of it with a `static let` (AUTOMATION-1733). F# evaluates a file's module-level
+  values and its classes' `static let`/`static member val` fields in one static initializer that the first read of any
+  of them runs, so `let empty = { … }` throwing fails every reader. Measured on SDK 10.0.401 (`--realsig-` and
+  `--realsig+`): reading a computed value in any module of the file runs it, a function-typed value built by partial
+  application included, and so does constructing a class with a `static let` or `static member val`; calling a
+  function, building a record, using a union case, or a class without static fields does not. Each such value and type
+  now has a `StaticInit` edge into a ring over its file's members. In a consumer, static selection for record
+  constructors made to throw missed 24 and 3 failing tests that reached the type only this way. Dead-code
+  reachability (`GetReachableSymbols`, `GetIncomingEdgesBatch`) does not follow these edges. **BREAKING (API):**
+  `DependencyKind` gains `StaticInit` (`static_init` in the index). Index schema 27 (`SchemaVersion` 26 -> 27): a
+  REBUILD, so the first run after upgrading re-indexes the repository.
+
 ## 16.2.0 - 2026-11-12
 
 - feat: `Database.GetFileKeys` reads every indexed file's stored cache key in one query (AUTOMATION-1587), for a

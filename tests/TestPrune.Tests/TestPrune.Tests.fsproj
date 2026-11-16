@@ -45,6 +45,7 @@
     <Compile Include="AstAnalyzerTests.fs" />
     <Compile Include="FsHotCaptureReplayTests.fs" />
     <Compile Include="LiteralCouplingTests.fs" />
+    <Compile Include="StaticInitTests.fs" />
     <Compile Include="BindingFormAuditTests.fs" />
     <Compile Include="UnqualifiedNameAuditTests.fs" />
     <Compile Include="ParseDiagnosticSeverityTests.fs" />
