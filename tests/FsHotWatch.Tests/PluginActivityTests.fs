@@ -152,10 +152,9 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
     test <@ List.isEmpty (s.GetActivityTail("p")) @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
-// Single-threaded so enforceGlobalCap's eviction path runs every time: entries of
-// KNOWN size are pushed until the 2 MB cap is exceeded. The concurrent-stress
-// variant lives in FsHotWatch.IntegrationTests, where cross-lock recheck races
-// make it flaky.
+// Single-threaded so the history eviction runs every time: entries of KNOWN size are
+// pushed until the 2 MB cap is exceeded. The concurrent variants live in
+// FsHotWatch.IntegrationTests/PluginActivityConcurrencyTests.fs.
 [<Fact(Timeout = 15000)>]
 let ``global cap evicts oldest history entries first (single-threaded, deterministic)`` () =
     let s = State()
@@ -299,10 +298,8 @@ let ``UpdateSubtask is a no-op when key not present`` () =
     s.UpdateSubtask("p", "missing", "label")
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
 
-// The concurrent-stress variant (100 Task.Run workers) lives in
-// FsHotWatch.IntegrationTests/PluginActivityConcurrencyTests.fs: its cross-lock
-// branch hits fire flakily under load, which made PluginActivity.fs line coverage
-// jitter here.
+// The concurrent variant (100 Task.Run workers) lives in
+// FsHotWatch.IntegrationTests/PluginActivityConcurrencyTests.fs, which says why.
 
 [<Fact(Timeout = 15000)>]
 let ``StartSubtask then EndSubtask sequentially leaves no open subtasks`` () =
