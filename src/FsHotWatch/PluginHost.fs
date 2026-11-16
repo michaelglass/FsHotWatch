@@ -593,7 +593,11 @@ type PluginHost
     /// can add, remove, or retarget projects — invalidating every file's options —
     /// so nothing is treated as known-checked until the following re-scan re-adds
     /// each file. Clearing the whole set also prevents removed files from lingering.
-    member _.EmitFileChanged(change: FileChangeKind) =
+    ///
+    /// A broadcast, for what changed on disk: internal, so no consumer of the library can re-fire
+    /// a plugin through it. A re-run of one plugin goes through `RerunPlugin`, which reaches that
+    /// plugin alone (AUTOMATION-1726, AUTOMATION-1739).
+    member internal _.EmitFileChanged(change: FileChangeKind) =
         match change with
         | SourceChanged files
         | ProjectChanged files ->

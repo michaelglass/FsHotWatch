@@ -129,3 +129,48 @@ let ``a start over a configuration the daemon refuses checks nothing and runs no
         let rerun (_: string) : Result<unit, string> = failwith "nothing may be re-run"
         test <@ List.isEmpty (runUnrecordedDeclared repo rerun) @>
         test <@ runCount runs = 0 @>)
+
+/// A plugin that subscribes to every file change and records each one it is handed: what a build
+/// plugin with an empty project graph is at a start, without running a build.
+let private bystander (name: string) =
+    let seen = ResizeArray<FsHotWatch.Events.FileChangeKind>()
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
+        { Name = FsHotWatch.PluginFramework.PluginName.create name
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FsHotWatch.Events.FileChanged change -> lock seen (fun () -> seen.Add change)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeFileChanged ]
+          PrepareCommit = None
+          CacheKey = None
+          Teardown = None }
+
+    handler, (fun () -> lock seen (fun () -> List.ofSeq seen))
+
+// AUTOMATION-1739: the start's re-run reaches the plugin it re-runs and no other. Its re-fire was
+// a broadcast once, and a build plugin with an empty project graph, which had nothing cached,
+// ran `dotnet build` ahead of discovery (AUTOMATION-1726). Here at the daemon level, through the
+// start step `fshw start` runs: nothing changed on disk, so a bystander sees no change at all.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the start's re-run of a declared-input plugin reaches no other plugin`` () =
+    withTempDir "shadow-start-bystander" (fun repo ->
+        let runs = checkout repo
+        let daemon = started repo
+        let handler, seen = bystander "build-like"
+        daemon.Host.RegisterHandler handler
+
+        test <@ rerunUnrecordedDeclaredIn true repo daemon = [ fsx ] @>
+        waitUntil (fun () -> runCount runs >= 1) 30_000
+        settled daemon
+        waitForSettled daemon.Host "build-like" 30_000
+
+        test <@ runCount runs = 1 @>
+        test <@ seen () = [] @>)
