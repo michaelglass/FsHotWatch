@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a runtime setting in the environment fshw spawns from either never reaches the process it starts or moves the
+  test-evidence key with its value (AUTOMATION-1749). The key read the daemon's own environment, while a repository
+  host's children get their client's: a session's `DOTNET_ROLL_FORWARD` or GC setting reached its test hosts and never
+  reached the key. Both now read one source, `ProcessHelper.inheritedEnvironment`. The key also reads the runtime's
+  `COMPlus_*` spelling of its GC and JIT settings, which reached test hosts unkeyed. `TestEvidenceKey.keyedEnvironment`
+  documents the decision for each class. A test-evidence key moves only where such a variable is set or a session's
+  environment differs from the host's.
+
 ## 0.10.0-alpha.119 - 2026-11-16
 
 - BREAKING: `PluginHost.EmitFileChanged` is internal. It broadcasts a change on disk to every plugin, and a consumer

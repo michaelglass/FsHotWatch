@@ -692,10 +692,7 @@ let internal evidenceWiringWhen
             Logging.info "test-prune" $"test evidence: keyed %s{TestEvidenceKey.LoadedEnvironment.describe loaded}"
 
             // Named so the misses a prefix-keyed variable causes can be counted (AUTOMATION-1737).
-            Environment.GetEnvironmentVariables()
-            |> Seq.cast<Collections.DictionaryEntry>
-            |> Seq.map (fun e -> string e.Key, string e.Value)
-            |> List.ofSeq
+            ProcessHelper.inheritedEnvironment ()
             |> TestEvidenceKey.unclassifiedNote
             |> Option.iter (Logging.info "test-prune")
 

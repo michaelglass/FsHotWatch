@@ -1696,6 +1696,26 @@ let private sanitizedChildEnvKeys =
 [<Literal>]
 let TraceRecorderEnvPrefix = "TESTPRUNE_TRACE_"
 
+/// The environment a child fshw starts inherits, before its own overlay: its session's when a
+/// repository host spawns for a client (`SessionScope.SessionEnvironment`), else this process's,
+/// without what no child inherits (`sanitizedChildEnvKeys`, the trace recorder's variables).
+/// The ONE source for both the spawn (`makeChildProcessStartInfo`) and the test-evidence key
+/// (`TestEvidenceKey.childKeyedEnvironment`): a key read from anywhere else describes a
+/// process that never ran (AUTOMATION-1749).
+let inheritedEnvironment () : (string * string) list =
+    let source =
+        match SessionScope.SessionEnvironment.current () with
+        | Some session -> SessionScope.SessionEnvironment.variables session |> Map.toList
+        | None ->
+            [ for entry in Environment.GetEnvironmentVariables() |> Seq.cast<Collections.DictionaryEntry> ->
+                  string entry.Key, string entry.Value ]
+
+    source
+    |> List.filter (fun (key, _) ->
+        not (List.contains key sanitizedChildEnvKeys)
+        && not (key.StartsWith(TraceRecorderEnvPrefix, StringComparison.Ordinal)))
+
+
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env of a child whose command line
 /// invokes `dotnet` (`invokesDotnet`), unless the caller already set the key. A shell
 /// wrapper that runs `dotnet` gets it, so its descendant `dotnet` inherits it; a
@@ -1962,25 +1982,13 @@ let private makeChildProcessStartInfo
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
 
-    // A session of a repository host spawns from ITS client's environment, not from
-    // the host process's, which belongs to whichever worktree launched the host.
-    match SessionScope.SessionEnvironment.current () with
-    | Some session ->
-        psi.Environment.Clear()
+    // A session of a repository host spawns from ITS client's environment, not from the host
+    // process's, which belongs to whichever worktree launched the host. Stripped before the
+    // overlay, so a caller-supplied entry in `env` survives.
+    psi.Environment.Clear()
 
-        for KeyValue(key, value) in SessionScope.SessionEnvironment.variables session do
-            psi.Environment[key] <- value
-    | None -> ()
-
-    // Strip before overlay so a caller-supplied entry in `env` survives.
-    for key in sanitizedChildEnvKeys do
-        psi.Environment.Remove(key) |> ignore
-
-    for key in
-        psi.Environment.Keys
-        |> Seq.filter (fun k -> k.StartsWith(TraceRecorderEnvPrefix, StringComparison.Ordinal))
-        |> List.ofSeq do
-        psi.Environment.Remove(key) |> ignore
+    for (key, value) in inheritedEnvironment () do
+        psi.Environment[key] <- value
 
     for (key, value) in mergeDotnetEnv command args env do
         psi.Environment[key] <- value

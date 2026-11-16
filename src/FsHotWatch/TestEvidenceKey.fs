@@ -328,17 +328,53 @@ let private setAside (name: string) =
     || SessionScope.processOwned
        |> List.exists (fun o -> String.Equals(o, name, StringComparison.OrdinalIgnoreCase))
 
+/// The prefix of the runtime's legacy spelling of its `DOTNET_` settings (GC, JIT, tiering):
+/// the runtime of every test host reads both. `DOTNET_` is keyed already (`msbuildRelevant`);
+/// this prefix changes no evaluation, so only the test-evidence key reads it (AUTOMATION-1749).
+[<Literal>]
+let RuntimeLegacyPrefix = "COMPlus_"
+
+let private isRuntimeLegacy (name: string) =
+    name.StartsWith(RuntimeLegacyPrefix, StringComparison.OrdinalIgnoreCase)
+
 /// The variables of `environment` that can change what MSBuild produces
-/// (`SessionScope.isMsbuildRelevant`), as `name=value` lines in ordinal order: the host knobs
-/// (`SessionScope.hostKnobs`, AUTOMATION-1725) and those a .NET process writes into its own
-/// environment (`SessionScope.processOwned`) aside.
+/// (`SessionScope.isMsbuildRelevant`) or what a test host's runtime does (`RuntimeLegacyPrefix`),
+/// as `name=value` lines in ordinal order: the host knobs (`SessionScope.hostKnobs`,
+/// AUTOMATION-1725) and those a .NET process writes into its own environment
+/// (`SessionScope.processOwned`) aside.
+///
+/// What a runtime setting does to a test host (AUTOMATION-1749), decided per class:
+/// - `DOTNET_ROLL_FORWARD*`, `DOTNET_ROOT`: passed and keyed. They choose the runtime a test
+///   host runs on. fshw cannot tell a setting meant for its own host from one meant for the
+///   tests, so the tests get it and their evidence is split by it. To run fshw's host on a newer
+///   major, roll it forward with the host's own `--roll-forward` or runtimeconfig, which no child
+///   inherits.
+/// - `DOTNET_gc*`/`DOTNET_GC*`, `DOTNET_Tiered*`, `DOTNET_TC_*`, `DOTNET_ReadyToRun`,
+///   `DOTNET_SYSTEM_GLOBALIZATION_*`, and the same knobs spelt `COMPlus_*`: passed and keyed. They
+///   change how the code under test runs.
+/// - `DOTNET_ROOT_<arch>` and the MSBuild discovery paths: stripped
+///   (`ProcessHelper.inheritedEnvironment`).
+/// - `DOTNET_HOST_PATH`, `DOTNET_INTERNAL_ThreadSuspendInjection`: passed, not keyed
+///   (`processOwned`). The .NET host and the CLI set them the same way for every process on a
+///   platform, and the platform is keyed (`toolchainOf`).
+/// - The host knobs (CLI banner, telemetry, node reuse, MSBuild server, terminal logger): passed,
+///   not keyed. They configure the CLI, never what a test computes.
 let keyedEnvironment (environment: (string * string) list) : string list =
     environment
-    |> List.filter (fun (name, _) -> SessionScope.isMsbuildRelevant name && not (setAside name))
+    |> List.filter (fun (name, _) ->
+        (SessionScope.isMsbuildRelevant name || isRuntimeLegacy name)
+        && not (setAside name))
     |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
     |> List.map (fun (name, value) -> $"%s{name}=%s{value}")
 
-/// The variables `keyedEnvironment` keys only because of a prefix (`SessionScope.msbuildRelevant`),
+/// The keyed environment (`keyedEnvironment`) of what a child fshw starts now inherits
+/// (`ProcessHelper.inheritedEnvironment`): a session's client environment in a repository host,
+/// this process's otherwise.
+let childKeyedEnvironment () : string list =
+    ProcessHelper.inheritedEnvironment () |> keyedEnvironment
+
+
+/// The variables `keyedEnvironment` keys only because of a prefix (`SessionScope.msbuildRelevant`, `RuntimeLegacyPrefix`),
 /// in ordinal order: no list says what each does to a build, so each is named, to measure how
 /// often one moves a key (AUTOMATION-1737). The test-evidence key stays on prefixes: it covers
 /// the build and the test run, where a false hit reports a result that was never run.
@@ -349,6 +385,7 @@ let unclassifiedEnvironment (environment: (string * string) list) : string list 
             match key with
             | SessionScope.EnvironmentKey.Prefix prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
             | SessionScope.EnvironmentKey.Exact _ -> false)
+        || isRuntimeLegacy name
 
     environment
     |> List.filter (fun (name, _) -> byPrefix name && not (setAside name))
@@ -364,14 +401,11 @@ let unclassifiedNote (environment: (string * string) list) : string option =
 
 /// The toolchain half of every key: the SDK `dotnet` resolves here, the checker build
 /// (`CheckCache.toolchainIdentity`: FCS, FSharp.Core and the check-record schema), the platform, and the values of the
-/// environment variables that can change what MSBuild produces (`keyedEnvironment`).
+/// environment variables that can change what MSBuild produces or a test host runs (`keyedEnvironment`), as a
+/// child inherits them (`childKeyedEnvironment`).
 let toolchainOf (repoRoot: string) : string =
-    let msbuildEnvironment =
-        Environment.GetEnvironmentVariables()
-        |> Seq.cast<System.Collections.DictionaryEntry>
-        |> Seq.map (fun e -> string e.Key, string e.Value)
-        |> List.ofSeq
-        |> keyedEnvironment
+    // What the test hosts it keys inherit, not this process: they differ in a repository host.
+    let msbuildEnvironment = childKeyedEnvironment ()
 
     [ DotnetToolchain.identity repoRoot
       CheckCache.toolchainIdentity
