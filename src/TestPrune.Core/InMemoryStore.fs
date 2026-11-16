@@ -107,14 +107,18 @@ let fromAnalysisResultsWith (policy: Domain.WalkPolicy) (results: AnalysisResult
                     { Child = symbol.FullName
                       Parent = parent })))
 
+    // Dead-code reachability's edges (`forwardEdges`, `reverseEdges`) leave out `StaticInit`: a
+    // value only its file's initializer evaluates is still one nothing uses (as `Database`).
+    let usageDeps = allDeps |> List.filter (fun d -> d.Kind <> StaticInit)
+
     let forwardEdges = // from -> [to]
-        allDeps
+        usageDeps
         |> List.groupBy (fun d -> d.FromSymbol)
         |> Map.ofList
         |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.ToSymbol) |> Set.ofList)
 
-    let reverseEdges = // to -> [from] (for QueryAffectedTests: who depends on this?)
-        allDeps
+    let reverseEdges = // to -> [from] (dead code's incoming edges; selection walks `walkedReverseEdges`)
+        usageDeps
         |> List.groupBy (fun d -> d.ToSymbol)
         |> Map.ofList
         |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.FromSymbol) |> Set.ofList)

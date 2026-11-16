@@ -151,6 +151,7 @@ let private depKindToString =
     | References -> "references"
     | SharedState -> "shared_state"
     | SharedLiteral -> "shared_literal"
+    | StaticInit -> "static_init"
 
 let private stringToDepKind (warned: HashSet<string>) =
     function
@@ -160,6 +161,7 @@ let private stringToDepKind (warned: HashSet<string>) =
     | "references" -> References
     | "shared_state" -> SharedState
     | "shared_literal" -> SharedLiteral
+    | "static_init" -> StaticInit
     | unknown ->
         if warned.Add($"DependencyKind:%s{unknown}") then
             eprintfn $"Warning: unknown DependencyKind '%s{unknown}' in database, defaulting to References"
@@ -473,6 +475,12 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 ///          never runs, so its `--filter-class` ran no test; it is now stored once per
 ///          concrete class that inherits it. A file not re-indexed would keep the base row
 ///          and lack the derived ones (AUTOMATION-1569).
+/// v27    — no schema text change; a REBUILD, because the graph gained edges an unchanged file
+///          would never get. A module-level value now has a `static_init` edge to the other
+///          values of its file, whose one static initializer the first read of any of them
+///          runs (AUTOMATION-1733). A file not re-indexed would keep none, so a change to a type
+///          one of its values constructs would not select the readers of the file's other
+///          values.
 ///
 /// A `SchemaVersion` bump rebuilds the tables core's DDL creates and nothing else
 /// (FsHotWatch ADR-059 §5). Every other table in the file (a plugin's, a host's such as FsHotWatch's)
@@ -490,7 +498,7 @@ let private openConnectionWaiting (busyTimeout: TimeSpan) (dbPath: string) =
 /// the newer open path. A consumer that only needs its own plugin table needs no probe:
 /// `Ports.pluginStoreAt` opens the file without core's version check or DDL.
 [<Literal>]
-let SchemaVersion = 26
+let SchemaVersion = 27
 
 /// The `source_files.path` that owns the edges an extension contributes
 /// (see `Database.ReplaceExtensionEdges`). The leading underscore keeps it out of the
@@ -1663,7 +1671,9 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
         use reader = cmd.ExecuteReader()
         readAll reader (fun r -> r.GetString(0)) |> Set.ofList
 
-    /// Get all symbols reachable from the given root symbol names (transitively).
+    /// Get all symbols reachable from the given root symbol names (transitively), for dead-code
+    /// analysis. A `static_init` edge is not followed: a value only its file's initializer
+    /// evaluates is still one nothing uses.
     member _.GetReachableSymbols(rootSymbolNames: string list) : Set<string> =
         if rootSymbolNames.IsEmpty then
             Set.empty
@@ -1678,7 +1688,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                     SELECT id, full_name FROM symbols WHERE full_name IN (%s{nameSet})
                     UNION
                     SELECT s.id, s.full_name FROM symbols s
-                    JOIN dependencies d ON d.to_symbol_id = s.id
+                    JOIN dependencies d ON d.to_symbol_id = s.id AND d.dep_kind <> 'static_init'
                     JOIN reachable r ON r.id = d.from_symbol_id
                 )
                 SELECT DISTINCT full_name FROM reachable
@@ -1789,7 +1799,8 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
 
         if reader.Read() then Some(reader.GetString(0)) else None
 
-    /// Get incoming edges for a batch of symbol names (who depends on each).
+    /// Get incoming edges for a batch of symbol names (who depends on each), for dead-code
+    /// analysis, which does not count a `static_init` edge as a use (`GetReachableSymbols`).
     member _.GetIncomingEdgesBatch(symbolNames: string list) : Map<string, string list> =
         if symbolNames.IsEmpty then
             Map.empty
@@ -1805,6 +1816,7 @@ type Database internal (dbPath: string, policy: Domain.WalkPolicy, busyTimeout: 
                 JOIN symbols s_to ON s_to.id = d.to_symbol_id
                 JOIN symbols s_from ON s_from.id = d.from_symbol_id
                 WHERE s_to.full_name IN (%s{nameSet})
+                  AND d.dep_kind <> 'static_init'
                 """
 
             bindNameSet cmd symbolNames

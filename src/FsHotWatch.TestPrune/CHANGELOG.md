@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: analysis records carry TestPrune.Core's `StaticInit` edges (token `static-init`), so a change to a type a
+  module-level value constructs selects the readers of that file's other values (AUTOMATION-1733). `AnalysisSchema` is
+  `fshw-testprune-analysis-semantics-v2`: a record filed before would lack the edges.
+
 - refactor: test evidence, test baselines and the reuse refusal read and file through `OutcomeRecords.IOutcomeStore`
   (AUTOMATION-1695). `TestEvidenceRun.Wiring.Outcomes` is an `OutcomeStore.Wired option`: the store and its
   collection, which the plugin wires as the disk store's GcIfDue with the same "not due" log line. Behaviour unchanged.
