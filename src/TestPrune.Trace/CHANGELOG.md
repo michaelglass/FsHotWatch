@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-11-16
+
 - fix: a run no longer waits on output that a process the test run left behind still holds
   (AUTOMATION-1734). A mutant's test once left a TERM-ignoring loop holding stdout, and the harness
   waited for the pipe until its 20-minute timeout. `Launch.direct` tags its child's environment

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-11-16
+
+- feat(trace): mutate --judge static measures fshw's static selection recall (AUTOMATION-1688)
+- fix: AUTOMATION-1733 a file's static initializer is a dependency between its values
+- fix(trace): a run never waits on output a leftover process holds; it stops what the run left running
+- fix(trace): static judging leaves out classless tests and refuses an include that matches nothing
+
+
 ## 0.9.4 - 2026-11-12
 
 - chore: rebuild to bundle updated dependencies

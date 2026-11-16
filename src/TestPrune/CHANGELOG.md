@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 17.0.0 - 2026-11-16
+
+- fix: AUTOMATION-1733 a file's static initializer is a dependency between its values
+
+
 ## 16.2.0 - 2026-11-12
 
 - feat: AUTOMATION-1587 step 2 shadow test-baseline records, one rewritten index, GC keeps what it names

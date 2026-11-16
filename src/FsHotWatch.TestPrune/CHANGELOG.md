@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.118 - 2026-11-16
+
 - feat: the daemon log names each variable the test-evidence key reads only because of a prefix
   (`test evidence: keyed, unclassified: NAME`), so the misses they cause can be counted (AUTOMATION-1737). The key
   itself is unchanged: it stays on prefixes, less the host knobs and process-owned variables.

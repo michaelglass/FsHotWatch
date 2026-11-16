@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-11-16
+
 - fix: `mutate --judge` rejects an unknown judgement when the flag is read, and `--include` that
   matches no method is an error rather than a silently unmeasured control (AUTOMATION-1733).
 

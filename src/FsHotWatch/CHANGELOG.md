@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.119 - 2026-11-16
+
 - BREAKING: `PluginHost.EmitFileChanged` is internal. It broadcasts a change on disk to every plugin, and a consumer
   outside the library could re-fire plugins through it; a re-run of one plugin goes through `RerunPlugin`, which reaches
   that plugin alone (AUTOMATION-1739). A daemon-level test now runs the start step `fshw start` runs and asserts a

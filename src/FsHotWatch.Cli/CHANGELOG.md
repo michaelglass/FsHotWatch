@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.152 - 2026-11-16
+
+- feat(trace): mutate --judge static measures fshw's static selection recall (AUTOMATION-1688)
+- fix: AUTOMATION-1733 a file's static initializer is a dependency between its values
+- fix(trace): a run never waits on output a leftover process holds; it stops what the run left running
+- fix(trace): static judging leaves out classless tests and refuses an include that matches nothing
+- Check that the order property's generators vary and regather every field of the inputs records
+- Test a real build and publish beside a real options evaluation: filed on the first evaluation, replayed on restart
+- Name the variables the test-evidence key reads by prefix alone, so the misses they cause can be counted
+- Classify prefixed environment variables in the options key: unclassified ones stay keyed and are reported
+- A build beside an options evaluation no longer stops it being filed: build output is a replay precondition, not a key
+- Stop keying host knobs in the options and test-evidence keys: a named list, each with its reason
+- fshw audit refuses an unknown --kind instead of answering vacuous
+- Make EmitFileChanged internal, and test at the daemon level that the start's re-run reaches no other plugin
+- Pin DebouncedWork's settled-receipt arm, the branch one CI run reached by luck and the next did not
+
+
 ## 0.14.0-alpha.151 - 2026-11-16
 
 - A daemon start stops racing its own build: a plugin re-run reaches that plugin alone

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 17.0.0 - 2026-11-16
+
 - fix: a change to a type that a module-level value constructs selects the tests that read any OTHER value of that
   value's file, or construct a class of it with a `static let` (AUTOMATION-1733). F# evaluates a file's module-level
   values and its classes' `static let`/`static member val` fields in one static initializer that the first read of any
