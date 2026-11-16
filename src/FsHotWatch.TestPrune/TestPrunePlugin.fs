@@ -691,6 +691,19 @@ let internal evidenceWiringWhen
             let loaded = TestEvidenceKey.LoadedEnvironment.ofProcess repoRoot configs.Values
             Logging.info "test-prune" $"test evidence: keyed %s{TestEvidenceKey.LoadedEnvironment.describe loaded}"
 
+            // Named so the misses a prefix-keyed variable causes can be counted (AUTOMATION-1737).
+            match
+                TestEvidenceKey.unclassifiedEnvironment (
+                    Environment.GetEnvironmentVariables()
+                    |> Seq.cast<Collections.DictionaryEntry>
+                    |> Seq.map (fun e -> string e.Key, string e.Value)
+                    |> List.ofSeq
+                )
+            with
+            | [] -> ()
+            | unclassified ->
+                Logging.info "test-prune" $"""test evidence: keyed, unclassified: %s{String.concat ", " unclassified}"""
+
             try
                 Some
                     { Store = TestEvidenceStore.openFor repoRoot (Logging.info "test-prune")

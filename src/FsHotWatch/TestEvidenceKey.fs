@@ -321,21 +321,39 @@ let moved (stored: (string * string) list) (current: (string * string) list) : s
 
     fromCurrent @ onlyStored
 
+/// True for the variables no key reads: the host knobs and what a .NET process writes into its own
+/// environment.
+let private setAside (name: string) =
+    SessionScope.isHostKnob name
+    || SessionScope.processOwned
+       |> List.exists (fun o -> String.Equals(o, name, StringComparison.OrdinalIgnoreCase))
+
 /// The variables of `environment` that can change what MSBuild produces
 /// (`SessionScope.isMsbuildRelevant`), as `name=value` lines in ordinal order: the host knobs
 /// (`SessionScope.hostKnobs`, AUTOMATION-1725) and those a .NET process writes into its own
 /// environment (`SessionScope.processOwned`) aside.
 let keyedEnvironment (environment: (string * string) list) : string list =
     environment
-    |> List.filter (fun (name, _) ->
-        SessionScope.isMsbuildRelevant name
-        && not (SessionScope.isHostKnob name)
-        && not (
-            SessionScope.processOwned
-            |> List.exists (fun o -> String.Equals(o, name, StringComparison.OrdinalIgnoreCase))
-        ))
+    |> List.filter (fun (name, _) -> SessionScope.isMsbuildRelevant name && not (setAside name))
     |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
     |> List.map (fun (name, value) -> $"%s{name}=%s{value}")
+
+/// The variables `keyedEnvironment` keys only because of a prefix (`SessionScope.msbuildRelevant`),
+/// in ordinal order: no list says what each does to a build, so each is named, to measure how
+/// often one moves a key (AUTOMATION-1737). The test-evidence key stays on prefixes: it covers
+/// the build and the test run, where a false hit reports a result that was never run.
+let unclassifiedEnvironment (environment: (string * string) list) : string list =
+    let byPrefix (name: string) =
+        SessionScope.msbuildRelevant
+        |> List.exists (fun key ->
+            match key with
+            | SessionScope.EnvironmentKey.Prefix prefix -> name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            | SessionScope.EnvironmentKey.Exact _ -> false)
+
+    environment
+    |> List.filter (fun (name, _) -> byPrefix name && not (setAside name))
+    |> List.map fst
+    |> List.sortWith (fun a b -> String.CompareOrdinal(a, b))
 
 /// The toolchain half of every key: the SDK `dotnet` resolves here, the checker build
 /// (`CheckCache.toolchainIdentity`: FCS, FSharp.Core and the check-record schema), the platform, and the values of the
