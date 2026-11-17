@@ -4648,7 +4648,19 @@ let ``a change batch cascades past a saved file whose new signature a scan recor
             release.Set()
             Assert.True(scan.Wait(HangWait), "the released scan must complete")
 
+            // The scan's return says its results were posted, not that the recorder has
+            // handled them (AUTOMATION-1768). Its seal follows them through the same mailbox.
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () -> seals.ToArray() |> Array.exists (fun s -> s.Trigger.IsBootScan)),
+                    TimeSpan.FromSeconds 30.0
+                ),
+                "the forced scan's seal must reach the consumer"
+            )
+
             // The scan read Early.fs's new bytes, and answered Late.fs from before the save.
+            test <@ not (Array.isEmpty (resultsFor early)) @>
+            test <@ not (Array.isEmpty (resultsFor late)) @>
             test <@ resultsFor early |> Array.exists (fun r -> r.Source.Contains "\"one\"") @>
             test <@ resultsFor late |> Array.forall (not << hasError) @>
 
