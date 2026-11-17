@@ -133,3 +133,8 @@ let ``the drop-ins name fresh places under this process's root`` () =
     finally
         dir.Delete true
         File.Delete file
+
+// PLANTED VIOLATION (scratch commit, never landed): the gate must refuse this.
+[<Fact(Timeout = 15000)>]
+let ``planted: a test that names the shared temp directory`` () =
+    test <@ Directory.Exists(Path.GetTempPath()) @>
