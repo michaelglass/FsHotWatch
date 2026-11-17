@@ -3591,6 +3591,66 @@ let ``FSHW-SPAWN-001 does not fire on starting a thread, timer or stopwatch`` ()
             |> List.filter (fun e -> e.Message.Contains "without going through ProcessHelper")
 
         test <@ findings.IsEmpty @>)
+// ---------------------------------------------------------------------------
+// FSHW-TIME-001 (AUTOMATION-1695) — a module the deterministic simulation drives
+// (PluginWorkOwner, SupervisedWork, DebouncedWork) must take every timing source
+// from its store's AsyncRuntime.Runtime. A direct `Task.Run`, timer or default
+// scheduler is a pool-timing dependence the simulation cannot reach: the flake
+// class it exists to remove, back again.
+// ---------------------------------------------------------------------------
+
+let private timingFindings (fileName: string) (lines: string list) =
+    runRulesOnFile fileName (fsSource lines)
+    |> List.filter (fun e -> e.Message.Contains "deterministic simulation (AUTOMATION-1695)")
+
+let private directTiming =
+    [ "module Temp"
+      "open System"
+      "open System.Threading"
+      "open System.Threading.Tasks"
+      "let a () = Task.Run(fun () -> ())"
+      "let b () = Task.Delay(TimeSpan.FromSeconds 1.0)"
+      "let c (t: Task) = t.ContinueWith((fun (_: Task) -> ()), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default)"
+      "let d () = ThreadPool.QueueUserWorkItem(fun _ -> ()) |> ignore"
+      "let e (s: CancellationTokenSource) = s.CancelAsync()"
+      "let f (s: CancellationTokenSource) = s.CancelAfter(TimeSpan.FromSeconds 1.0)"
+      "let g () = new Timer((fun _ -> ()), null, 0, -1)"
+      "let h () = Async.RunSynchronously(async { return () })"
+      "let i (t: Task) = t.ContinueWith(fun (_: Task) -> ())" ]
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-TIME-001 fires on each timing source reached directly in a simulated module`` () =
+    withAnalyzerGate (fun () ->
+        let findings = timingFindings "SupervisedWork.fs" directTiming
+        // a..i: nine calls, one of them (c) reaching two sources (ContinueWith on the default
+        // scheduler, and TaskScheduler.Default itself).
+        test <@ findings.Length = 10 @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-TIME-001 stays silent outside the simulated modules`` () =
+    withAnalyzerGate (fun () ->
+        test <@ (timingFindings "Daemon.fs" directTiming).IsEmpty @>
+        test <@ (timingFindings "AsyncRuntime.fs" directTiming).IsEmpty @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-TIME-001 stays silent on timing taken from the runtime`` () =
+    withAnalyzerGate (fun () ->
+        let findings =
+            timingFindings
+                "DebouncedWork.fs"
+                [ "module Temp"
+                  "open System"
+                  "open System.Threading"
+                  "open System.Threading.Tasks"
+                  "type Runtime = { Scheduler: TaskScheduler; Delay: TimeSpan -> Task }"
+                  "let go (runtime: Runtime) (t: Task) ="
+                  "    t.ContinueWith((fun (_: Task) -> ()), CancellationToken.None, TaskContinuationOptions.None, runtime.Scheduler) |> ignore"
+                  "    Task.Factory.StartNew((fun () -> ()), CancellationToken.None, TaskCreationOptions.DenyChildAttach, runtime.Scheduler) |> ignore"
+                  "    runtime.Delay(TimeSpan.FromSeconds 1.0)" ]
+
+        test <@ findings.IsEmpty @>)
+
 
 // ---------------------------------------------------------------------------
 // FSHW-WALK-001 — a recursive directory walk that can follow a directory symlink.
