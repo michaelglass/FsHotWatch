@@ -227,3 +227,39 @@ module TestBinary =
 
     /// A file beside the running test assembly. `relative` does not climb out.
     let path (relative: string) : string = under (directory ()) [| relative |]
+
+    /// The build configuration this test assembly was built in (`Debug`, `Release`): the
+    /// `bin/<configuration>/<tfm>/` it runs from.
+    let configuration () : string = DirectoryInfo(directory ()).Parent.Name
+
+    /// The target framework this test assembly was built for: the `<tfm>` it runs from.
+    let framework () : string = DirectoryInfo(directory ()).Name
+
+/// The machine's NuGet package cache, read only: packages a test loads as they are
+/// installed (an analyzer shipped in a package).
+[<RequireQualifiedAccess>]
+module NuGetCache =
+
+    /// `$NUGET_PACKAGES`, or `~/.nuget/packages` when it is unset: where restore put them.
+    let root () : string =
+        match Environment.GetEnvironmentVariable "NUGET_PACKAGES" with
+        | null
+        | "" ->
+            // FSHW-ROOT-001 ok: the one place a test reads the user's NuGet package cache.
+            Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".nuget", "packages")
+        | configured -> configured
+
+    /// A package path such as `g-research.fsharp.analyzers/0.25.0/analyzers/dotnet/fs`.
+    let path (relative: string) : string = under (root ()) [| relative |]
+
+/// This repository's build output, read only: what the solution build produced beside the
+/// test assembly, in the same configuration and target framework.
+[<RequireQualifiedAccess>]
+module BuildOutput =
+
+    /// `<projectDirectory>/bin/<configuration>/<tfm>/<file>` in the repository, for
+    /// `projectDirectory` such as `src/FsHotWatch.Cli`.
+    let path (projectDirectory: string) (file: string) : string =
+        RepositoryTree.path (
+            Path.Combine(projectDirectory, "bin", TestBinary.configuration (), TestBinary.framework (), file)
+        )
