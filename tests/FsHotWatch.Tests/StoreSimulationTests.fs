@@ -24,12 +24,16 @@ let private firstSeed =
     | true, n -> n
     | _ -> 1
 
+let private band = [ firstSeed .. firstSeed + histories - 1 ]
+
 let private report (violations: Violation list) =
     violations |> List.truncate 3 |> List.map describe |> String.concat "\n\n"
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``the store keeps its contract over every history`` () =
-    let violations, census = explore Subject.Current firstSeed histories false
+    // The band, then every seed the checked-in regression list holds for the store.
+    let seeds = SimRegressions.storeSeeds firstSeed histories (SimRegressions.load ())
+    let violations, census = explore Subject.Current seeds false
 
     if not violations.IsEmpty then
         failwith $"%d{violations.Length} violation(s):\n%s{report violations}"
@@ -55,7 +59,7 @@ let ``every planted defect is caught`` (name: string) =
         | "duplicate-delivery" -> Mutant.DuplicateDelivery
         | other -> failwith $"no mutant named %s{other}"
 
-    let violations, _ = explore (Subject.Mutated mutant) firstSeed histories true
+    let violations, _ = explore (Subject.Mutated mutant) band true
     test <@ not violations.IsEmpty @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -69,7 +73,7 @@ let ``a history is a function of its seed`` () =
 let ``a violation reproduces from its seed`` () =
     let subject = Subject.Mutated Mutant.ReceiptBeforePublication
 
-    match explore subject firstSeed histories true with
+    match explore subject band true with
     | first :: _, _ ->
         let again, _ = execute subject first.Seed (generate first.Seed HistoryLength)
 
@@ -100,3 +104,31 @@ let ``a change that waits on its own store is reported as a deadlock, not hung o
     raises<SimDeadlock> <@ store.Change(row, waitsOnItsOwnStore) @>
 
     test <@ sim.Faults |> List.exists (fun f -> f.IsDeadlock) @>
+
+/// The checked-in regression list parses: a malformed line fails here, not silently in CI.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the checked-in regression list parses`` () = SimRegressions.load () |> ignore
+
+/// A listed seed is run by the gate even when it lies outside the band: with an empty band, the
+/// only history the planted defect can be caught in is the listed one.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a seed on the regression list runs beside the band`` () =
+    let listed =
+        match SimRegressions.parse "# found by a nightly\nstore 987654 PublicationBeforeReceipt AUTOMATION-0\n" with
+        | Ok entries -> entries
+        | Error e -> failwith e
+
+    test <@ SimRegressions.storeSeeds 1 3 listed = [ 1; 2; 3; 987654 ] @>
+    test <@ SimRegressions.storeSeeds 1 3 (listed @ listed) = [ 1; 2; 3; 987654 ] @>
+
+    match explore (Subject.Mutated Mutant.ReceiptBeforePublication) (SimRegressions.storeSeeds 1 0 listed) true with
+    | caught :: _, _ -> test <@ caught.Seed = 987654 @>
+    | [], _ -> failwith "the listed seed did not run"
+
+[<Theory(Timeout = SyncHangBackstopMs)>]
+[<InlineData("store x Order T-1", "line 1: 'x' is not a seed")>]
+[<InlineData("store 5 Nonsense T-1", "line 1: the store simulation has no theorem 'Nonsense'")>]
+[<InlineData("queue 5 Order T-1", "line 1: no simulated component 'queue'")>]
+[<InlineData("# ok\nstore 5 Order", "line 2: expected '<component> <seed> <theorem> <ticket>', got 'store 5 Order'")>]
+let ``a malformed regression line is refused, naming its line`` (text: string, error: string) =
+    test <@ SimRegressions.parse text = Error error @>
