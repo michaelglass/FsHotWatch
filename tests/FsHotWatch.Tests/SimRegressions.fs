@@ -17,6 +17,7 @@ open System.IO
 type Entry =
     | Store of seed: int * theorem: StoreSimulation.Theorem * ticket: string
     | SupervisedWork of seed: int * theorem: SupervisedWorkSimulation.Theorem * ticket: string
+    | DebouncedWork of seed: int * theorem: DebouncedWorkSimulation.Theorem * ticket: string
 
 let private storeTheorems =
     [ StoreSimulation.Theorem.PublicationBeforeReceipt
@@ -34,6 +35,14 @@ let private supervisedTheorems =
       SupervisedWorkSimulation.Theorem.Settlement
       SupervisedWorkSimulation.Theorem.State
       SupervisedWorkSimulation.Theorem.Runtime ]
+
+let private debouncedTheorems =
+    [ DebouncedWorkSimulation.Theorem.Order
+      DebouncedWorkSimulation.Theorem.Barrier
+      DebouncedWorkSimulation.Theorem.Outcome
+      DebouncedWorkSimulation.Theorem.HonestRest
+      DebouncedWorkSimulation.Theorem.Settlement
+      DebouncedWorkSimulation.Theorem.Runtime ]
 
 /// The theorem named `name` among `theorems`, by its case name.
 let private named (theorems: 'T list) (name: string) =
@@ -57,6 +66,11 @@ let private parseLine (number: int) (line: string) : Result<Entry option, string
         | (true, s), Some t -> Ok(Some(Entry.SupervisedWork(s, t, ticket)))
         | (false, _), _ -> Error $"line %d{number}: '%s{seed}' is not a seed"
         | _, None -> Error $"line %d{number}: the supervised-work simulation has no theorem '%s{theorem}'"
+    | [| "debounced-work"; seed; theorem; ticket |] ->
+        match Int32.TryParse seed, named debouncedTheorems theorem with
+        | (true, s), Some t -> Ok(Some(Entry.DebouncedWork(s, t, ticket)))
+        | (false, _), _ -> Error $"line %d{number}: '%s{seed}' is not a seed"
+        | _, None -> Error $"line %d{number}: the debounced-work simulation has no theorem '%s{theorem}'"
     | [| name; _; _; _ |] -> Error $"line %d{number}: no simulated component '%s{name}'"
     | _ -> Error $"line %d{number}: expected '<component> <seed> <theorem> <ticket>', got '%s{line.Trim()}'"
 
@@ -93,7 +107,8 @@ let storeSeeds (first: int) (count: int) (entries: Entry list) : int list =
     |> List.choose (fun entry ->
         match entry with
         | Entry.Store(seed, _, _) -> Some seed
-        | Entry.SupervisedWork _ -> None)
+        | Entry.SupervisedWork _
+        | Entry.DebouncedWork _ -> None)
     |> band first count
 
 /// The seeds CI runs for supervised work: the band, then every listed supervised-work seed.
@@ -102,7 +117,18 @@ let supervisedWorkSeeds (first: int) (count: int) (entries: Entry list) : int li
     |> List.choose (fun entry ->
         match entry with
         | Entry.SupervisedWork(seed, _, _) -> Some seed
-        | Entry.Store _ -> None)
+        | Entry.Store _
+        | Entry.DebouncedWork _ -> None)
+    |> band first count
+
+/// The seeds CI runs for debounced work: the band, then every listed debounced-work seed.
+let debouncedWorkSeeds (first: int) (count: int) (entries: Entry list) : int list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | Entry.DebouncedWork(seed, _, _) -> Some seed
+        | Entry.Store _
+        | Entry.SupervisedWork _ -> None)
     |> band first count
 
 /// N histories per component per run, a FIXED band from the first seed, so the interleavings
