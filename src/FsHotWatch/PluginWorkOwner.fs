@@ -479,6 +479,10 @@ type Store(runtime: AsyncRuntime.Runtime) =
 
     member _.Snapshot: HostSnapshot = Volatile.Read(&published)
 
+    /// The timing sources of this store, and of the work queues built on it: one host, one
+    /// runtime, so a simulated store never drives work on the real pool.
+    member _.Runtime: AsyncRuntime.Runtime = runtime
+
     /// Publish a model observation whose checkable membership is not known.
     member _.PublishProjectModel(observation: ProjectModel.Observation) =
         change (fun _ snapshot ->

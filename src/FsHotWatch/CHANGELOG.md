@@ -9,6 +9,15 @@
   is today's behaviour: a thread-pool work item and this thread's own wait. No behaviour change; no record or cache
   key changes.
 
+- refactor: `SupervisedWork` takes every timing source from its store's `AsyncRuntime.Runtime` (AUTOMATION-1695).
+  Its worker tasks (`Task.Run`), fault and cancellation continuations (`ContinueWith` on the default scheduler), the
+  cancellation request itself (`CancelAsync`), deadline timers, the worker's blocking run of its work
+  (`Async.RunSynchronously`) and its bounded waits now go through `Runtime.Scheduler`, `Runtime.Cancel`,
+  `Runtime.Schedule`, `Runtime.RunSynchronously` and `Runtime.Wait`. `Queue` loses its `scheduleDeadline` argument
+  (its store's runtime arms deadlines), `execute` takes the runtime in place of a scheduler, and `waitWithin` takes
+  the runtime whose wait keeps its bound. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache
+  key changes.
+
 - test(rules): FSHW-ROOT-001 — a test touches disk only under a root it alone owns (AUTOMATION-1775).
   Three flakes in one week had one shape: a test touched a place another test, or the build, was changing at the
   same time (a repo-wide walk racing TestPrune.Trace.Tests' scratch, AUTOMATION-1671; a leftover daemon rebuilding
