@@ -73,7 +73,9 @@ type Census =
         /// Times the host was at rest while a receipt was still unsettled, its value already
         /// handed to the worker (or refused as closed): a cohort's receipts settle one
         /// continuation after the request they became retires. Counted, not a violation: the
-        /// documented contract is that INPUT is never mistaken for rest (AUTOMATION-1695 reports it).
+        /// documented contract is that INPUT is never mistaken for rest. AUTOMATION-1780 decides whether
+        /// rest also waits for receipts; until then this is counted, and the count is pinned as a
+        /// function of the seed, so the decision can turn it into a theorem.
         RestBeforeReceipt: int
         /// Cohorts that merged more than one post.
         Coalesced: int

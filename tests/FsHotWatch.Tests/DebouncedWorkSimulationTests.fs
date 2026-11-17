@@ -58,3 +58,13 @@ let ``a violation reproduces from its seed`` () =
                 |> List.contains (first.Step, first.Theorem, first.Detail, first.Choices)
             @>
     | [], _ -> failwith "the mutant was not caught, so there is nothing to replay"
+
+/// AUTOMATION-1780's reproducer: rest reported while a receipt is unsettled is counted, not a
+/// violation, and the count is a function of the seed: the same histories give the same count,
+/// and it is not zero, so the contract 1780 decides can be asserted over exactly these histories.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``rest before a receipt is counted, and the count is reproducible by seed`` () =
+    let _, first = explore Subject.Current band false
+    let _, again = explore Subject.Current band false
+    test <@ first.RestBeforeReceipt > 0 @>
+    test <@ again.RestBeforeReceipt = first.RestBeforeReceipt @>
