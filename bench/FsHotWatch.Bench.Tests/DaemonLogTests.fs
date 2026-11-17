@@ -157,7 +157,7 @@ let ``sessions that checked different file counts are a parity failure`` () =
 
 [<Fact>]
 let ``test totals are summed from the last complete cycle's output logs`` () =
-    let dir = Directory.CreateTempSubdirectory("fshw-bench-")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-bench"
 
     try
         let out = Path.Combine(dir.FullName, "P.output.log")

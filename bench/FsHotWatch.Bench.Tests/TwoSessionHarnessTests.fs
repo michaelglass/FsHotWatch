@@ -15,19 +15,8 @@ open System.Text.RegularExpressions
 open Xunit
 open Swensen.Unquote
 
-let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: FsHotWatch.slnx is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "FsHotWatch.slnx")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
-
 let private scriptLines () =
-    File.ReadAllLines(Path.Combine(repoRoot (), "bench", "two-session", "run.sh"))
+    File.ReadAllLines(FsHotWatch.TestRoots.RepositoryTree.path "bench/two-session/run.sh")
     |> Array.toList
 
 /// Lines that run the frozen fshw binary — every `"$fshw"` that is not its assignment.

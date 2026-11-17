@@ -288,8 +288,7 @@ let ``reading a ledger skips a line torn by an interruption and keeps every whol
 
 [<Fact>]
 let ``appending to a ledger file and reading it back resumes after the last whole step`` () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-replay-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-replay"
 
     Directory.CreateDirectory dir |> ignore
 
@@ -530,7 +529,7 @@ let ``the gate's exit code is 0 for agreement, 1 for a disagreement and 3 for no
 
 [<Fact>]
 let ``replay-gate reads the ledger in an out directory and answers with the gate's exit code`` () =
-    let dir = Directory.CreateTempSubdirectory "replay-gate"
+    let dir = FsHotWatch.TestRoots.TestRoot.freshDirectory "replay-gate"
 
     try
         let ledger = Path.Combine(dir.FullName, "ledger.jsonl")
@@ -547,7 +546,7 @@ let ``replay-gate reads the ledger in an out directory and answers with the gate
 let ``a command the harness must run says what it printed to stderr when it fails`` () =
     // On the first scheduled run, `jj workspace add` failed and the error named only the exit
     // code: the harness had thrown its stderr away.
-    let dir = Directory.CreateTempSubdirectory "replay-must"
+    let dir = FsHotWatch.TestRoots.TestRoot.freshDirectory "replay-must"
 
     try
         let ex =
@@ -600,7 +599,7 @@ let ``steps whose replay answered nothing from records agree vacuously, so the g
 let ``a run's step directory keeps every CTRF receipt its verdict names, after the workspace prunes them`` () =
     // AUTOMATION-1475: a flipped test is classified from its assertion text, which lives only in
     // the per-project CTRF receipts; the workspace prunes `.fshw/test-runs` as later runs land.
-    let root = Directory.CreateTempSubdirectory "replay-ctrf"
+    let root = FsHotWatch.TestRoots.TestRoot.freshDirectory "replay-ctrf"
 
     try
         let workspace = Path.Combine(root.FullName, "ws")
@@ -658,8 +657,7 @@ let ``a forced re-check under a clean home keeps records on and points the cache
 
 [<Fact>]
 let ``a clean home is emptied before each forced run, and a foreign directory is never emptied`` () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-clean-home-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-clean-home"
 
     try
         let home = Path.Combine(dir, "home")
