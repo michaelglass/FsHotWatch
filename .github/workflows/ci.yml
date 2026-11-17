@@ -119,6 +119,34 @@ jobs:
       - name: Integration tests
         run: dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build
 
+  # A NEWER-major .NET SDK installed beside the pinned one (AUTOMATION-1631). GitHub rolls runner
+  # images without notice: ubuntu-26.04 image 20261111.196 added SDK 11.0.100, and every scratch
+  # repository with no global.json then resolved it. The daemon loaded an MSBuild its runtime could
+  # not host (AUTOMATION-1621) and three fixtures restored a tool under one SDK and ran it under
+  # another. Which image a job draws is chance, so this job installs the newer SDK itself and runs
+  # every suite, so the next image roll cannot be the first to find the next such defect. When
+  # FsHotWatch moves to a new major (AUTOMATION-1622), the second version becomes the major after it.
+  newer-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          # The pinned band (global.json), and the next major beside it.
+          dotnet-version: '10.0.4xx'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '11.0.100'
+      - run: dotnet --list-sdks
+      - run: bash scripts/install-jj.sh
+      - run: dotnet tool restore
+      - run: dotnet restore
+      - run: dotnet build --no-restore
+      - run: dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj --no-build
+      - run: dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj --no-build
+      - run: dotnet test --project tests/TestPrune.Tests/TestPrune.Tests.fsproj --no-build
+
   # This is a public repository. Refuse commit messages that carry private references
   # (agent-session links, private hostnames, tracker URLs) in the commits this push or
   # pull request adds. jj runs no hooks, so this and the `check-commit-messages` task
