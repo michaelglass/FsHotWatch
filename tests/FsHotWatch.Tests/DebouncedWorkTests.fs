@@ -565,3 +565,111 @@ let ``a supervised request that has already failed settles its cohort with the f
         Assert.Same(failure, Assert.Throws<InvalidOperationException>(fun () -> finish receipt))
     finally
         input.Close()
+
+// AUTOMATION-1601: every store change a debounce queue awaits (the input publication, the
+// expiry, the worker's admission, the cohort's retirement, the closing change) has two arms:
+// still queued when awaited, or already published. A pool writer decides which; a store whose
+// writer publishes inside the post makes it the second, provided no other writer is running.
+// The worker is held until the cohort's input has retired (`awaitReceipt` runs right after),
+// so it publishes nothing while the queue admits.
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``with an inline store writer, every change a debounced cohort awaits is already published`` () =
+    let store = Store(fun write -> write ())
+    use retired = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+
+    let worker =
+        SupervisedWork.Queue(
+            store,
+            "changes",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (_: int list) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state values _ _ ->
+                async {
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
+                    return state + List.sum values
+                })
+        )
+
+    let input =
+        DebouncedWork.Queue(
+            store,
+            "changes",
+            worker,
+            (@),
+            delayTask = (fun _ -> Task.CompletedTask),
+            awaitReceipt =
+                (fun receipt ->
+                    retired.Set()
+                    receipt)
+        )
+
+    try
+        let receipt = input.Post([ 1; 2 ], TimeSpan.FromSeconds 5.0)
+        Assert.True(retired.Wait(FsHotWatch.Tests.TestHelpers.HangWait), "the cohort's input must retire")
+        Assert.False(receipt.IsCompleted, "the held worker still owns the cohort")
+        release.Set()
+        finish receipt
+        Assert.Equal(3, worker.State)
+    finally
+        release.Set()
+        input.Close()
+
+    Assert.False(store.Snapshot.IsBusy)
+
+// Coalescing restarts the debounce with the longer of the pending and new delays: both arms of
+// that choice, each seen as the delay the restarted timer is armed with (AUTOMATION-1601: the
+// rest of this suite posts only equal or zero delays, so one arm had only an incidental caller).
+[<Theory(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+[<InlineData(1.0, 5.0, 5.0)>]
+[<InlineData(5.0, 1.0, 5.0)>]
+let ``coalesced input restarts the debounce with the longer delay`` (first: float) (second: float) (longer: float) =
+    let store = Store()
+    let armed = Collections.Concurrent.ConcurrentQueue<TimeSpan>()
+    let timers = Collections.Concurrent.ConcurrentQueue<TaskCompletionSource>()
+
+    let worker =
+        SupervisedWork.Queue(
+            store,
+            "changes",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (_: int list) -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state values _ _ -> async { return state + List.sum values })
+        )
+
+    // Timers that never fire on their own, so the second post always coalesces into the first.
+    let input =
+        DebouncedWork.Queue(
+            store,
+            "changes",
+            worker,
+            (@),
+            delayTask =
+                (fun delay ->
+                    armed.Enqueue delay
+                    let timer = TaskCompletionSource()
+                    timers.Enqueue timer
+                    timer.Task)
+        )
+
+    let receipts =
+        [ input.Post([ 1 ], TimeSpan.FromSeconds first)
+          input.Post([ 2 ], TimeSpan.FromSeconds second) ]
+
+    try
+        Assert.Equal<TimeSpan list>([ TimeSpan.FromSeconds first; TimeSpan.FromSeconds longer ], List.ofSeq armed)
+    finally
+        input.Close()
+
+        for timer in timers do
+            timer.TrySetResult() |> ignore
+
+    // Close settled the coalesced cohort; its two posts share that outcome.
+    for receipt in receipts do
+        Assert.Throws<ObjectDisposedException>(fun () -> finish receipt) |> ignore
