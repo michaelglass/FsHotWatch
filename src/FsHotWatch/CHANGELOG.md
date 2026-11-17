@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **behaviour change:** rest now implies every debounced receipt has settled (AUTOMATION-1780). A `DebouncedWork`
+  cohort stays owned (the host reads busy) until its receipts are set: a cohort the supervisor owns is held in a new
+  `Settling` list until its request's outcome is set on its receipts, and a refused, abandoned or closed cohort's
+  receipts are set in the same transition that takes it out of input. Until now a cohort's receipts settled one
+  continuation after its request retired, so `WaitForRest`, `WaitForComplete` or idle exit could see rest with a
+  receipt still unsettled (482 times over the async simulation's 1,000 histories): a caller that waited for rest and
+  then read its receipt could find it pending. No current consumer did; the simulation now asserts the contract. A
+  receipt is set before the publication that reads as rest, so the reverse holds too: a caller woken by its receipt
+  finds the cohort retired (on the pool, but for the statement between the last receipt and the writer's publish).
+  No record or cache key changes.
+
 - refactor: `PluginWorkOwner.Store` takes its timing sources as one capability, `AsyncRuntime.Runtime` (AUTOMATION-1695).
   The store's posted writer was dispatched through a constructor function and its synchronous caller's wait was a
   direct `GetResult`; both now go through `Runtime.Dispatch` and `Runtime.Wait`, so a deterministic simulation can
