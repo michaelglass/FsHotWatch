@@ -1646,6 +1646,13 @@
         "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value rounded down, the same on both platforms. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-17 on main a0658598): line 12/12, branch 2/2; and on Linux by CI run 39059935111 (commit 3cd92ed9, coverage-thresholds artifact): line 100%, branch 100%."
       }
     ],
+    "AsyncRuntime.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1695, the host's timing sources as one capability). Explicit so that a report which drops this file fails coverage-check instead of passing. Floor = the 100% default for new files, the same on both platforms. Each edge is reached deterministically by AsyncRuntimeTests: the wait's settled-task arm (a completed task), its waiting arm with a zero bound on a task nothing settles, and dispatched work. Measured 2026-11-17 on macOS (AsyncRuntimeTests + PluginWorkOwnerTests with coverage): line 12/12, branch 2/2."
+      }
+    ],
     "HostLifecycle.fs": [
       {
         "line": 100,

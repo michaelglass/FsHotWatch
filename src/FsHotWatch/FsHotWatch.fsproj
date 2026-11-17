@@ -96,6 +96,7 @@
     <Compile Include="SdkChoice.fs" />
     <Compile Include="NamespaceReclaim.fs" />
     <Compile Include="CacheResidency.fs" />
+    <Compile Include="AsyncRuntime.fs" />
     <Compile Include="PluginWorkOwner.fs" />
     <Compile Include="RunClaim.fs" />
     <Compile Include="SupervisedWork.fs" />

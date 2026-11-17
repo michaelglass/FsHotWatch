@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor: `PluginWorkOwner.Store` takes its timing sources as one capability, `AsyncRuntime.Runtime` (AUTOMATION-1695).
+  The store's posted writer was dispatched through a constructor function and its synchronous caller's wait was a
+  direct `GetResult`; both now go through `Runtime.Dispatch` and `Runtime.Wait`, so a deterministic simulation can
+  decide every writer interleaving and report a wait that could never settle instead of hanging. `AsyncRuntime.pool`
+  is today's behaviour: a thread-pool work item and this thread's own wait. No behaviour change; no record or cache
+  key changes.
+
 - feat: a lookup that misses because GC evicted its key now says so in the daemon log, per record kind (AUTOMATION-1765).
   Until now an evicted key and a never-filed one missed alike: GC logged counts per kind and no key names, and the
   TestPrune analysis lookup logged nothing, so how many evicted testprune-analysis keys were looked up again could not

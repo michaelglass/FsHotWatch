@@ -1226,7 +1226,12 @@ type private HeldWriters() =
 let ``an async change whose writer publishes before the poster awaits returns an already-published task`` () =
     // The writer runs inside the post, so the reply is complete when changeAsync reaches its
     // await: the already-complete arm, which a pool writer takes only when it wins the race.
-    let store = Store(fun write -> write ())
+    let store =
+        Store(
+            { AsyncRuntime.pool with
+                Dispatch = fun write -> write () }
+        )
+
     let row = store.Register("inline writer", 0, fun _ -> idle ())
 
     let change = store.ChangeAsync(row, (fun _ n -> (n + 1, n + 1)))
@@ -1239,7 +1244,13 @@ let ``an async change whose writer publishes before the poster awaits returns an
 let ``an async change whose writer has not started is pending at the await, then publishes`` () =
     task {
         let writers = HeldWriters()
-        let store = Store(writers.Dispatch)
+
+        let store =
+            Store(
+                { AsyncRuntime.pool with
+                    Dispatch = writers.Dispatch }
+            )
+
         let row = store.Register("held writer", 0, fun _ -> idle ())
 
         // The writer is held, so the reply is incomplete when changeAsync reaches its await:
@@ -1258,7 +1269,13 @@ let ``an async change whose writer has not started is pending at the await, then
 let ``a second async change posted before the first one's writer starts joins that writer`` () =
     task {
         let writers = HeldWriters()
-        let store = Store(writers.Dispatch)
+
+        let store =
+            Store(
+                { AsyncRuntime.pool with
+                    Dispatch = writers.Dispatch }
+            )
+
         let row = store.Register("one posted writer", ([]: int list), fun _ -> idle ())
 
         // The `writerPosted` arm of `post`: a writer is posted and has not started, so the
@@ -1278,7 +1295,13 @@ let ``a second async change posted before the first one's writer starts joins th
 let ``a posted writer that starts while a synchronous caller is writing leaves the queue to that caller`` () =
     task {
         let writers = HeldWriters()
-        let store = Store(writers.Dispatch)
+
+        let store =
+            Store(
+                { AsyncRuntime.pool with
+                    Dispatch = writers.Dispatch }
+            )
+
         let outer = store.Register("synchronous writer", 0, fun _ -> idle ())
         let inner = store.Register("async change", 0, fun _ -> idle ())
 
