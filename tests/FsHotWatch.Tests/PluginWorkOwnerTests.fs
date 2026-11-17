@@ -1124,10 +1124,11 @@ let ``async changes posted back to back publish in posting order through the one
     let store = Store()
     let row = store.Register("back-to-back", ([]: int list), fun _ -> idle ())
 
-    // Each round posts two changes with nothing between them, so the second arrives while
-    // the writer the first posted to the pool has not started: it joins that writer's
-    // queue instead of posting another (the `writerPosted` arm of `post`, otherwise reached
-    // only by chance). Each round waits for both, so rounds rarely find a writer running.
+    // Each round posts two changes with nothing between them, so the second usually arrives
+    // while the writer the first posted to the pool has not started, and joins its queue.
+    // Each round waits for both, so rounds rarely find a writer running. This pins posting
+    // order on the real pool; the `writerPosted` arm itself is reached deterministically by
+    // the held-writer test below.
     for round in 0..199 do
         let first = store.ChangeAsync(row, fun _ seen -> (2 * round) :: seen, ())
         let second = store.ChangeAsync(row, fun _ seen -> (2 * round + 1) :: seen, ())
@@ -1209,4 +1210,110 @@ let ``an async change whose transition throws OperationCanceledException ends Ca
 
         let! _ = Assert.ThrowsAnyAsync<OperationCanceledException>(fun () -> change :> Task)
         Assert.True(change.IsCanceled, $"status was %A{change.Status}")
+    }
+
+// --- AUTOMATION-1601: every writer interleaving, chosen by the test's writer dispatch ---
+
+/// A writer dispatch that holds each posted writer until the test runs it, so the test
+/// decides what happens between a post and its writer starting.
+type private HeldWriters() =
+    let held = Collections.Generic.Queue<unit -> unit>()
+    member _.Dispatch(write: unit -> unit) = held.Enqueue write
+    member _.Count = held.Count
+    member _.RunNext() = held.Dequeue () ()
+
+[<Fact(Timeout = 60000)>]
+let ``an async change whose writer publishes before the poster awaits returns an already-published task`` () =
+    // The writer runs inside the post, so the reply is complete when changeAsync reaches its
+    // await: the already-complete arm, which a pool writer takes only when it wins the race.
+    let store = Store(fun write -> write ())
+    let row = store.Register("inline writer", 0, fun _ -> idle ())
+
+    let change = store.ChangeAsync(row, (fun _ n -> (n + 1, n + 1)))
+
+    Assert.True(change.IsCompletedSuccessfully, $"status was %A{change.Status}")
+    Assert.Equal(1, change.Result)
+    Assert.Equal(1, store.Read row)
+
+[<Fact(Timeout = 60000)>]
+let ``an async change whose writer has not started is pending at the await, then publishes`` () =
+    task {
+        let writers = HeldWriters()
+        let store = Store(writers.Dispatch)
+        let row = store.Register("held writer", 0, fun _ -> idle ())
+
+        // The writer is held, so the reply is incomplete when changeAsync reaches its await:
+        // the suspend arm.
+        let change = store.ChangeAsync(row, (fun _ n -> (n + 1, n + 1)))
+        Assert.False(change.IsCompleted, "the change must wait for its writer")
+        Assert.Equal(1, writers.Count)
+
+        writers.RunNext()
+        let! published = change
+        Assert.Equal(1, published)
+        Assert.Equal(1, store.Read row)
+    }
+
+[<Fact(Timeout = 60000)>]
+let ``a second async change posted before the first one's writer starts joins that writer`` () =
+    task {
+        let writers = HeldWriters()
+        let store = Store(writers.Dispatch)
+        let row = store.Register("one posted writer", ([]: int list), fun _ -> idle ())
+
+        // The `writerPosted` arm of `post`: a writer is posted and has not started, so the
+        // second change only queues behind it.
+        let first = store.ChangeAsync(row, (fun _ seen -> 1 :: seen, ()))
+        let second = store.ChangeAsync(row, (fun _ seen -> 2 :: seen, ()))
+        Assert.Equal(1, writers.Count)
+        Assert.Equal(2, store.PendingChanges)
+
+        writers.RunNext()
+        do! first
+        do! second
+        Assert.Equal<int list>([ 2; 1 ], store.Read row)
+    }
+
+[<Fact(Timeout = 60000)>]
+let ``a posted writer that starts while a synchronous caller is writing leaves the queue to that caller`` () =
+    task {
+        let writers = HeldWriters()
+        let store = Store(writers.Dispatch)
+        let outer = store.Register("synchronous writer", 0, fun _ -> idle ())
+        let inner = store.Register("async change", 0, fun _ -> idle ())
+
+        // The first async change posts a writer, which is held. The synchronous caller then
+        // becomes the writer and publishes that change ahead of its own (posting order).
+        let first = store.ChangeAsync(inner, (fun _ m -> (m + 1, m + 1)))
+        let mutable second: Task<int> = null
+        let mutable pendingAfterPostedWriter = -1
+
+        // While the synchronous caller's transition runs, a second async change only queues
+        // (a writer is running), and the posted writer starting then finds that writer and
+        // claims nothing: the second change is still queued when it returns.
+        store.Change(
+            outer,
+            fun _ n ->
+                second <- store.ChangeAsync(inner, (fun _ m -> (m + 1, m + 1)))
+                writers.RunNext()
+                pendingAfterPostedWriter <- store.PendingChanges
+                (n + 1, ())
+        )
+
+        Assert.Equal(1, pendingAfterPostedWriter)
+        Assert.Equal(0, writers.Count)
+
+        // The synchronous writer published the second change after its own.
+        let! firstPublished = first
+        let! secondPublished = second
+        Assert.Equal(1, firstPublished)
+        Assert.Equal(2, secondPublished)
+        Assert.Equal(1, store.Read outer)
+
+        // The posted writer cleared its mark, so the next async change posts a writer again.
+        let next = store.ChangeAsync(inner, (fun _ m -> (m + 1, m + 1)))
+        Assert.Equal(1, writers.Count)
+        writers.RunNext()
+        let! republished = next
+        Assert.Equal(3, republished)
     }
