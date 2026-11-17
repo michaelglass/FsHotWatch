@@ -26,7 +26,7 @@ let fxTestsDir = built "tests" "FxTests"
 /// repository at tests/TraceFixtures/bin-scratch/<guid>. The one place a test writes into the
 /// repository tree (AUTOMATION-1775 allow-list).
 ///
-// FSHW-ROOT-001 ok: the copies must sit under the traced repository root. The recorder notes a
+// FSHW-ROOT-001 ok: the copies must sit under the traced repository root (ADR-077). The recorder notes a
 // file input only under that root (TESTPRUNE_TRACE_REPO_ROOT), the fixture suites find their
 // root by walking up from their binary to mise.toml / src/FxLib/FxLib.fsproj, and the PDBs
 // join to the real sources relative to it; a copy elsewhere records none of the repository
