@@ -876,16 +876,19 @@ let ``nothing in the daemon reads symbol uses, so background resolutions stay of
     // off while that remains true. If a rename, find-references or semantic-
     // highlight feature lands, this test fails and whoever adds it has to turn the
     // retention back on deliberately and measure what it costs.
+    //
+    // The daemon's sources are `<root>/src`, so that is the tree walked. Walking the whole
+    // repository and keeping paths that contain `/src/` also swept in fixture and example
+    // sources (tests/TraceFixtures/src, examples/SampleSolution/src) and every test's
+    // scratch area, and lost a full-suite run to TestPrune.Trace.Tests deleting
+    // `tests/TraceFixtures/bin-scratch/<guid>` mid-walk (AUTOMATION-1671). `bin`/`obj`
+    // are pruned by `SourceExcludedDirs`.
     let sources =
-        filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" (FsHotWatch.Tests.RepoTasks.repoRoot ())
-        |> Seq.filter (fun path ->
-            let normalized = path.Replace('\\', '/')
-
-            normalized.Contains "/src/"
-            && not (normalized.Contains "/obj/")
-            && not (normalized.Contains "/bin/")
-            && not (isTestPruneSource normalized))
-        |> Seq.toList
+        filesUnder
+            FsHotWatch.SafeWalk.SourceExcludedDirs
+            "*.fs"
+            (Path.Combine(FsHotWatch.Tests.RepoTasks.repoRoot (), "src"))
+        |> List.filter (isTestPruneSource >> not)
 
     test <@ not (List.isEmpty sources) @>
 
