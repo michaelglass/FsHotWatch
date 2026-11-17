@@ -184,6 +184,12 @@ module TestRoot =
     // this process's root), and whatever the test leaves is removed with that root when
     // the process exits.
 
+    /// The base for paths a test only computes with and never touches (a cache key, a
+    /// relative-path rule): absolute, under this process's root, and never created. One
+    /// base, so two paths built from it stay siblings the way two under the temp directory
+    /// were. A test that writes needs `create` or `freshPath` instead.
+    let pathOnlyBase: string = Path.Combine(processRoot.Value, "path-only")
+
     let private freshName (prefix: string) =
         Path.Combine(processRoot.Value, prefix + "-" + Guid.NewGuid().ToString "N")
 
