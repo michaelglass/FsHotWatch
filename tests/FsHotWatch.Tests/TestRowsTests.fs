@@ -346,30 +346,30 @@ let ``a red run and a later green one on the same tree and tool are reported fla
         let report =
             FsHotWatch.Cli.OutcomeAnalytics.analyze
                 None
-                (OutcomeStore.readAll root)
-                (OutcomeStore.readAllTestRows root)
-                (TestRowsLog.read root)
+                (FsHotWatch.Cli.OutcomeAnalytics.readStores
+                    { Head = FsHotWatch.Cli.OutcomeAnalytics.StoreSource.ofPath root
+                      Tail = [] })
                 (FsHotWatch.Cli.OutcomeAnalytics.readShadowLogs [])
 
         test
             <@
                 report.FlakyTests
-                |> List.map (fun f -> f.Test, f.Outcomes, f.RedRun, f.GreenRun, f.Tree, f.Tool) = [ "A.bad",
-                                                                                                    [ TestRows.Outcome.Passed,
-                                                                                                      1
-                                                                                                      TestRows.Outcome.Failed,
-                                                                                                      1 ],
-                                                                                                    "run-red",
-                                                                                                    "run-green",
-                                                                                                    "sha256:tree",
-                                                                                                    "fshw 1"
-                                                                                                    "A.slow",
-                                                                                                    [ TestRows.Outcome.Passed,
-                                                                                                      1
-                                                                                                      TestRows.Outcome.TimedOut,
-                                                                                                      1 ],
-                                                                                                    "run-red",
-                                                                                                    "run-green",
-                                                                                                    "sha256:tree",
-                                                                                                    "fshw 1" ]
+                |> List.map (fun f -> f.Test, f.Outcomes, f.Red.RunId, f.Green.RunId, f.Tree, f.Tool) = [ "A.bad",
+                                                                                                          [ TestRows.Outcome.Passed,
+                                                                                                            1
+                                                                                                            TestRows.Outcome.Failed,
+                                                                                                            1 ],
+                                                                                                          "run-red",
+                                                                                                          "run-green",
+                                                                                                          "sha256:tree",
+                                                                                                          "fshw 1"
+                                                                                                          "A.slow",
+                                                                                                          [ TestRows.Outcome.Passed,
+                                                                                                            1
+                                                                                                            TestRows.Outcome.TimedOut,
+                                                                                                            1 ],
+                                                                                                          "run-red",
+                                                                                                          "run-green",
+                                                                                                          "sha256:tree",
+                                                                                                          "fshw 1" ]
             @>)

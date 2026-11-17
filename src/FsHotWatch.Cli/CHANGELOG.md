@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- feat!: `fshw analytics` reads several outcome stores (AUTOMATION-1744): `--store` repeats, and the stores are
+  analysed as a union, each named by its directory (`OutcomeAnalytics.StoreSource`). With no `--store` it reads this
+  repository's box-wide store, as before. A flaky test pairs a red and a green across stores and machines (grouped by
+  test, tree and tool, with no key and no machine); each side names its run, machine and the store(s) it was read from,
+  and the finding gives its red-of-runs rate per store and per machine, so a red only one machine sees stays visible.
+  A run several stores hold (the same run id, project and machine, as in a daily log copied between stores) counts
+  once; so does a record several stores hold. The input-set flaky section, reds later green and reuse group by key,
+  so they stay per store. Breaking for `--json` consumers: the schema is now `fshw-analytics-v2`; the per-store sections
+  and counts move under `stores`, each finding carries `grouping` (`key` or `test-tree-tool`), and a flaky test's
+  `redRun`/`greenRun` strings become `red`/`green` objects (`runId`, `machine`, `from`), with `byStore` and
+  `byMachine`; `sources` items are `{store, via}`. `OutcomeAnalytics.analyze` takes the stores' reads
+  (`readStores`) in place of one store's scan, rows and log.
+
 - feat: `fshw analytics` reads flaky tests from the daily test-row log too (AUTOMATION-1744), so a flake whose red
   record the store has since evicted is still found. A run read from both the index beside its record and the log
   counts once (by run id and project); each flaky test names its sources, `index` (the strict same-key join), `log`, or

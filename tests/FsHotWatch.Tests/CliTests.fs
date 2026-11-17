@@ -4095,7 +4095,7 @@ let ``insights takes --json and --run, and aims the report at that run`` () =
 // --- analytics (AUTOMATION-1368) ---
 
 [<Fact(Timeout = 15000)>]
-let ``parse analytics accepts its json, since, top, store and repeatable shadow-log flags`` () =
+let ``parse analytics accepts its json, since, top, repeatable store and repeatable shadow-log flags`` () =
     test
         <@
             CommandTree.parse
@@ -4108,6 +4108,8 @@ let ``parse analytics accepts its json, since, top, store and repeatable shadow-
                    "3"
                    "--store"
                    "/s"
+                   "--store"
+                   "/t"
                    "--shadow-log"
                    "/a.jsonl"
                    "--shadow-log"
@@ -4117,6 +4119,7 @@ let ``parse analytics accepts its json, since, top, store and repeatable shadow-
                       AnalyticsFlag.Since 7
                       AnalyticsFlag.Top 3
                       AnalyticsFlag.Store "/s"
+                      AnalyticsFlag.Store "/t"
                       AnalyticsFlag.ShadowLog "/a.jsonl"
                       AnalyticsFlag.ShadowLog "/b.jsonl" ]
             )
@@ -4130,10 +4133,16 @@ let ``analytics is the verb's own output, spelled analytics`` () =
     test <@ commandToken (Analytics []) = "analytics" @>
 
 [<Fact(Timeout = 15000)>]
-let ``analytics reads this repository's box-wide store and discovers the shadow logs by default`` () =
+let ``analytics reads this repository's box-wide store and discovers the shadow logs by default; --store repeats, in order``
+    ()
+    =
     let now = DateTimeOffset(2026, 10, 29, 12, 0, 0, TimeSpan.Zero)
     let defaults = analyticsSetup now "/repo" []
-    test <@ defaults.StoreDir = FsHotWatch.OutcomeStore.directoryFor "/repo" @>
+
+    let boxWide =
+        OutcomeAnalytics.StoreSource.ofPath (FsHotWatch.OutcomeStore.directoryFor "/repo")
+
+    test <@ FsHotWatch.Core.NonEmpty.toList defaults.Stores = [ boxWide ] @>
     test <@ defaults.ShadowLogs = None && defaults.Since = None @>
     test <@ defaults.Top = 10 && not defaults.Json @>
 
@@ -4142,13 +4151,21 @@ let ``analytics reads this repository's box-wide store and discovers the shadow 
             now
             "/repo"
             [ AnalyticsFlag.Store "elsewhere/store"
+              AnalyticsFlag.Store "server/store"
+              AnalyticsFlag.Store "elsewhere/store"
               AnalyticsFlag.ShadowLog "a.jsonl"
               AnalyticsFlag.ShadowLog "b.jsonl"
               AnalyticsFlag.Since 7
               AnalyticsFlag.Top 3
               AnalyticsFlag.Json ]
 
-    test <@ chosen.StoreDir = Path.GetFullPath "elsewhere/store" @>
+    // Every --store, in the order given, each named by its full path; a store named twice is read once.
+    test
+        <@
+            FsHotWatch.Core.NonEmpty.toList chosen.Stores |> List.map _.Path = [ Path.GetFullPath "elsewhere/store"
+                                                                                 Path.GetFullPath "server/store" ]
+        @>
+
     test <@ chosen.ShadowLogs = Some [ Path.GetFullPath "a.jsonl"; Path.GetFullPath "b.jsonl" ] @>
     let weekAgo = now.AddDays -7.0
     test <@ chosen.Since = Some weekAgo @>

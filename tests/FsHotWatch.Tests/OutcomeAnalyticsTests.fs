@@ -77,9 +77,24 @@ let private noLog: TestRowsLog.LogRead =
       UnreadableFiles = 0
       UnreadableLines = 0 }
 
+/// The store every single-store test reads.
+let private storeA = StoreSource.ofPath "/stores/a"
+
+/// One store, `storeA`, as the only store analysed.
+let private one (scan: Scan) (rows: TestRowsScan) (log: TestRowsLog.LogRead) : FsHotWatch.Core.NonEmpty<StoreRead> =
+    { Head =
+        { Source = storeA
+          Scan = scan
+          Rows = rows
+          Log = log }
+      Tail = [] }
+
+/// The one store's part of a single-store report.
+let private home (r: Report) = r.Stores.Head
+
 let private analyzeFixture (since: DateTimeOffset option) =
     withLog shadowLines (fun path ->
-        analyze since { Records = fixture; Unreadable = 1 } noRows noLog (readShadowLogs [ path ]))
+        analyze since (one { Records = fixture; Unreadable = 1 } noRows noLog) (readShadowLogs [ path ]))
 
 [<Fact>]
 let ``a shadow line is read back by its fields, and anything else is not a line`` () =
@@ -111,10 +126,11 @@ let ``shadow logs are read line by line; a missing log is skipped and an unreada
 [<Fact>]
 let ``flaky: an input set recorded both green and red is named, with its counts and when it was last seen`` () =
     let r = analyzeFixture None
+    let h = home r
 
     test
         <@
-            r.Flaky = [ { Kind = "test"
+            h.Flaky = [ { Kind = "test"
                           Subject = "A.Tests"
                           FlakyKeys = 1
                           Keys = 2
@@ -138,16 +154,17 @@ let ``slow: percentiles of the recorded durations per subject, and how many reco
                          MaxMs = 4000L } ]
         @>
 
-    test <@ r.DurationsRecorded = 4 && r.RecordsRead = 6 && r.UnreadableRecords = 1 @>
+    test <@ r.DurationsRecorded = 4 && r.RecordsRead = 6 && (home r).Unreadable = 1 @>
 
 [<Fact>]
 let ``trust: reds later green on identical inputs, and runs a lookup would have answered`` () =
     let r = analyzeFixture None
-    test <@ r.Reds = { Fails = 3; LaterGreen = 1 } @>
+    let h = home r
+    test <@ (home r).Reds = { Fails = 3; LaterGreen = 1 } @>
 
     test
         <@
-            r.Reuse = [ { Kind = "test"
+            h.Reuse = [ { Kind = "test"
                           Keys = 3
                           Records = 6
                           RedundantRuns = 2 } ]
@@ -156,10 +173,11 @@ let ``trust: reds later green on identical inputs, and runs a lookup would have 
 [<Fact>]
 let ``trust over time: the store and the shadow ledger by UTC day`` () =
     let r = analyzeFixture None
+    let h = home r
 
     test
         <@
-            r.StoreDays = [ { Day = "2026-10-27"
+            h.StoreDays = [ { Day = "2026-10-27"
                               Records = 5
                               Fails = 2
                               LaterGreen = 1 }
@@ -198,8 +216,8 @@ let ``cache hits: a shadowed verdict read is satisfied by the store or missing``
 let ``--since leaves out every record and shadow line older than it`` () =
     let r = analyzeFixture (Some(t0.AddMinutes 90.0))
     test <@ r.RecordsRead = 2 @>
-    test <@ List.isEmpty r.Flaky @>
-    test <@ r.Reds = { Fails = 1; LaterGreen = 0 } @>
+    test <@ List.isEmpty (home r).Flaky @>
+    test <@ (home r).Reds = { Fails = 1; LaterGreen = 0 } @>
     test <@ r.ShadowDays |> List.sumBy _.Lines = 3 @>
 
 [<Fact>]
@@ -209,10 +227,11 @@ let ``what the store does not record is reported as a gap, never as a zero`` () 
     let r =
         analyze
             None
-            { Records = noDurations
-              Unreadable = 0 }
-            noRows
-            noLog
+            (one
+                { Records = noDurations
+                  Unreadable = 0 }
+                noRows
+                noLog)
             (readShadowLogs [])
 
     test <@ List.isEmpty r.Slow @>
@@ -237,7 +256,7 @@ let ``the human report names each section and its numbers`` () =
 [<Fact>]
 let ``an empty store renders as empty, not as a failure`` () =
     let text =
-        render 10 (analyze None { Records = []; Unreadable = 0 } noRows noLog (readShadowLogs []))
+        render 10 (analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs []))
         |> String.concat "\n"
 
     test <@ text.Contains "0 records" @>
@@ -247,8 +266,14 @@ let ``an empty store renders as empty, not as a failure`` () =
 let ``the JSON report carries every section under a versioned schema`` () =
     use doc = JsonDocument.Parse(toJson (analyzeFixture None))
     let root = doc.RootElement
-    let flaky = root.GetProperty("flaky")[0]
+    // The strict same-key sections are per store; the rest are over the union.
+    let store = root.GetProperty("stores")[0]
+    let flaky = store.GetProperty("flaky")[0]
+    let storeTrust = store.GetProperty("trust")
     let trust = root.GetProperty("trust")
+    let storePath = store.GetProperty("path").GetString()
+    let storeRecords = store.GetProperty("records").GetInt32()
+    let grouping = flaky.GetProperty("grouping").GetString()
     // JsonElement is a struct, which a quotation cannot call into: read the values first.
     let schema = root.GetProperty("schema").GetString()
     let records = root.GetProperty("records").GetInt32()
@@ -256,19 +281,20 @@ let ``the JSON report carries every section under a versioned schema`` () =
     let lastSeen = flaky.GetProperty("lastSeen").GetString()
     let expectedLastSeen = (t0.AddHours 2.0).ToString("o")
     let p90 = (root.GetProperty("slow")[0]).GetProperty("p90Ms").GetInt64()
-    let laterGreen = trust.GetProperty("reds").GetProperty("laterGreen").GetInt32()
+    let laterGreen = storeTrust.GetProperty("reds").GetProperty("laterGreen").GetInt32()
 
     let redundant =
-        (trust.GetProperty("reuse")[0]).GetProperty("redundantRuns").GetInt32()
+        (storeTrust.GetProperty("reuse")[0]).GetProperty("redundantRuns").GetInt32()
 
     let satisfied = trust.GetProperty("lookupReads").GetProperty("satisfied").GetInt32()
 
     let stricter =
         (trust.GetProperty("shadowDays")[0]).GetProperty("directions").GetProperty("stricter").GetInt32()
 
-    let storeDays = trust.GetProperty("storeDays").GetArrayLength()
+    let storeDays = storeTrust.GetProperty("storeDays").GetArrayLength()
     let gaps = root.GetProperty("gaps").GetArrayLength()
-    test <@ schema = "fshw-analytics-v1" && records = 6 @>
+    test <@ schema = "fshw-analytics-v2" && records = 6 @>
+    test <@ storePath = storeA.Path && storeRecords = 6 && grouping = "key" @>
     test <@ subject = "A.Tests" && lastSeen = expectedLastSeen @>
     test <@ p90 = 4000L && laterGreen = 1 && redundant = 2 && satisfied = 1 @>
     test <@ stricter = 1 && storeDays = 2 && gaps >= 1 @>
@@ -297,14 +323,22 @@ let ``the shadow logs read by default are this checkout's and those of every wor
 
 // --- AUTOMATION-1744: flaky TESTS, from the per-test rows filed beside each test record ---
 
-let private runOf (project: string) (runId: string) (tree: string) (tool: string) (at: DateTimeOffset) rows =
+let private runOn
+    (machine: string)
+    (project: string)
+    (runId: string)
+    (tree: string)
+    (tool: string)
+    (at: DateTimeOffset)
+    rows
+    =
     ({ Run =
         { Key = (key project tree).Value
           Project = project
           RunId = runId
           Tree = tree
           Tool = tool
-          Machine = "box"
+          Machine = machine
           RecordedAt = at }
        Rows =
          (rows
@@ -317,8 +351,19 @@ let private runOf (project: string) (runId: string) (tree: string) (tool: string
              .Value }
     : TestRows.Index)
 
-let private indexOnly =
-    FsHotWatch.Core.NonEmpty.ofList [ RowSource.Index ] |> Option.get
+let private runOf = runOn "box"
+
+let private nonEmpty (items: 'T list) =
+    (FsHotWatch.Core.NonEmpty.ofList items).Value
+
+let private from (store: StoreSource) (via: RowSource) : Origin = { Store = store; Via = via }
+
+let private seen (runId: string) (machine: string) (origins: Origin list) : RunSeen =
+    { RunId = runId
+      Machine = machine
+      From = nonEmpty origins }
+
+let private indexOnly = nonEmpty [ from storeA RowSource.Index ]
 
 /// A.flaky failed, passed and timed out on one tree and tool; A.skippy was skipped once and
 /// passed once; A.split failed on one tree and passed on another, and passed under another
@@ -340,7 +385,10 @@ let private rowRuns =
       runOf "B.Tests" "r8" "t2" "f1" (t0.AddHours 4.0) [ "B.c", TestRows.Outcome.Passed ] ]
 
 let private analyzeRows (since: DateTimeOffset option) =
-    analyze since { Records = fixture; Unreadable = 0 } { Indexes = rowRuns; Unreadable = 2 } noLog (readShadowLogs [])
+    analyze
+        since
+        (one { Records = fixture; Unreadable = 0 } { Indexes = rowRuns; Unreadable = 2 } noLog)
+        (readShadowLogs [])
 
 [<Fact>]
 let ``flaky test: one test on one tree and tool recorded passed and red, with each outcome counted and both runs`` () =
@@ -353,10 +401,12 @@ let ``flaky test: one test on one tree and tool recorded passed and red, with ea
                                Tree = "t2"
                                Tool = "f1"
                                Outcomes = [ TestRows.Outcome.Passed, 1; TestRows.Outcome.Cancelled, 1 ]
-                               RedRun = "r7"
-                               GreenRun = "r8"
+                               Red = seen "r7" "box" [ from storeA RowSource.Index ]
+                               Green = seen "r8" "box" [ from storeA RowSource.Index ]
                                LastSeen = t0.AddHours 4.0
-                               Sources = indexOnly }
+                               Sources = indexOnly
+                               ByStore = nonEmpty [ storeA, { Red = 1; Passed = 1 } ]
+                               ByMachine = nonEmpty [ "box", { Red = 1; Passed = 1 } ] }
                              { Project = "A.Tests"
                                Test = "A.flaky"
                                Tree = "t1"
@@ -365,13 +415,15 @@ let ``flaky test: one test on one tree and tool recorded passed and red, with ea
                                  [ TestRows.Outcome.Passed, 1
                                    TestRows.Outcome.Failed, 1
                                    TestRows.Outcome.TimedOut, 1 ]
-                               RedRun = "r3"
-                               GreenRun = "r2"
+                               Red = seen "r3" "box" [ from storeA RowSource.Index ]
+                               Green = seen "r2" "box" [ from storeA RowSource.Index ]
                                LastSeen = t0.AddHours 2.0
-                               Sources = indexOnly } ]
+                               Sources = indexOnly
+                               ByStore = nonEmpty [ storeA, { Red = 2; Passed = 1 } ]
+                               ByMachine = nonEmpty [ "box", { Red = 2; Passed = 1 } ] } ]
         @>
 
-    test <@ r.TestRowRuns = 8 && r.UnreadableTestRows = 2 @>
+    test <@ r.TestRowRuns = 8 && (home r).UnreadableTestRows = 2 @>
 
 [<Fact>]
 let ``flaky test: --since leaves out the rows of runs older than it`` () =
@@ -381,37 +433,48 @@ let ``flaky test: --since leaves out the rows of runs older than it`` () =
     test <@ r.TestRowRuns = 6 @>
 
 [<Fact>]
-let ``flaky test: the human and JSON reports name each flaky test, its counts and both runs`` () =
+let ``flaky test: the human and JSON reports name each flaky test, its counts, both runs and its rates`` () =
     let r = analyzeRows None
     let text = render 10 r |> String.concat "\n"
-
-    test
-        <@
-            text.Contains "Flaky tests"
-            && text.Contains "8 run(s) of per test rows, 2 unreadable"
-        @>
+    let a = storeA.Path
 
     test
         <@
             text.Contains
-                "A.flaky [A.Tests]: 1 passed, 1 failed, 1 timedOut; red in run r3, passed in run r2; tree t1, tool f1"
+                "Flaky tests (grouping: test, tree and tool, across stores and machines; 8 run(s) of per test rows"
         @>
 
+    test
+        <@ text.Contains $"store %s{a}: 6 records, 0 unreadable; per test rows: 8 run(s) beside records, 2 unreadable" @>
+
+    test
+        <@
+            text.Contains(
+                $"A.flaky [A.Tests]: 1 passed, 1 failed, 1 timedOut; red in run r3 on box (%s{a}: index), "
+                + $"passed in run r2 on box (%s{a}: index); tree t1, tool f1; from %s{a}: index; last"
+            )
+        @>
+
+    test <@ text.Contains $"      per store: %s{a} red 2 of 3 (66.7%%)" @>
+    test <@ text.Contains "      per machine: box red 2 of 3 (66.7%)" @>
     test <@ not (r.Gaps |> List.exists (fun g -> g.StartsWith "flaky tests:")) @>
 
     use doc = JsonDocument.Parse(toJson r)
     let first = doc.RootElement.GetProperty("flakyTests")[1]
     let testName = first.GetProperty("test").GetString()
+    let grouping = first.GetProperty("grouping").GetString()
     let timedOut = first.GetProperty("outcomes").GetProperty("timedOut").GetInt32()
-    let red = first.GetProperty("redRun").GetString()
-    let green = first.GetProperty("greenRun").GetString()
+    let red = first.GetProperty("red").GetProperty("runId").GetString()
+    let redMachine = first.GetProperty("red").GetProperty("machine").GetString()
+    let green = first.GetProperty("green").GetProperty("runId").GetString()
     let runs = doc.RootElement.GetProperty("testRowRuns").GetInt32()
-    test <@ testName = "A.flaky" && timedOut = 1 && red = "r3" && green = "r2" && runs = 8 @>
+    test <@ testName = "A.flaky" && grouping = "test-tree-tool" && timedOut = 1 @>
+    test <@ red = "r3" && redMachine = "box" && green = "r2" && runs = 8 @>
 
 [<Fact>]
 let ``flaky test: no rows is a gap and an empty section, never a zero rate`` () =
     let r =
-        analyze None { Records = []; Unreadable = 0 } noRows noLog (readShadowLogs [])
+        analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs [])
 
     test <@ List.isEmpty r.FlakyTests @>
     test <@ r.Gaps |> List.exists (fun g -> g.StartsWith "flaky tests:") @>
@@ -419,17 +482,18 @@ let ``flaky test: no rows is a gap and an empty section, never a zero rate`` () 
 
 // --- AUTOMATION-1744: the daily test-row log, a second source of rows that outlives its records ---
 
-let private sourcesOf (f: FlakyTest) =
-    FsHotWatch.Core.NonEmpty.toList f.Sources
+let private viasOf (f: FlakyTest) =
+    FsHotWatch.Core.NonEmpty.toList f.Sources |> List.map _.Via
 
 let private analyzeSources (indexed: TestRows.Index list) (logged: TestRows.Index list) =
     analyze
         None
-        { Records = []; Unreadable = 0 }
-        { Indexes = indexed; Unreadable = 0 }
-        { Runs = logged
-          UnreadableFiles = 1
-          UnreadableLines = 2 }
+        (one
+            { Records = []; Unreadable = 0 }
+            { Indexes = indexed; Unreadable = 0 }
+            { Runs = logged
+              UnreadableFiles = 1
+              UnreadableLines = 2 })
         (readShadowLogs [])
 
 let private red =
@@ -443,14 +507,16 @@ let ``flaky test: a run in both the index and the log counts once, and the findi
     let r = analyzeSources [ red; green ] [ red; green ]
     let flake = List.exactlyOne r.FlakyTests
     test <@ flake.Outcomes = [ TestRows.Outcome.Passed, 1; TestRows.Outcome.Failed, 1 ] @>
-    test <@ sourcesOf flake = [ RowSource.Index; RowSource.DailyLog ] @>
+    test <@ viasOf flake = [ RowSource.Index; RowSource.DailyLog ] @>
+    test <@ flake.Red = seen "r1" "box" [ from storeA RowSource.Index; from storeA RowSource.DailyLog ] @>
+    test <@ flake.ByStore = nonEmpty [ storeA, { Red = 1; Passed = 1 } ] @>
 
     test
         <@
             r.TestRowRuns = 2
-            && r.LogRuns = 2
-            && r.UnreadableLogFiles = 1
-            && r.UnreadableLogLines = 2
+            && (home r).LogRuns = 2
+            && (home r).UnreadableLogFiles = 1
+            && (home r).UnreadableLogLines = 2
         @>
 
 [<Fact>]
@@ -462,48 +528,218 @@ let ``flaky test: a run of the same id in another project is another run`` () =
 
 [<Fact>]
 let ``flaky test: a finding from the log alone names the log, and one from the index alone the index`` () =
-    test <@ (analyzeSources [] [ red; green ]).FlakyTests |> List.map sourcesOf = [ [ RowSource.DailyLog ] ] @>
-    test <@ (analyzeSources [ red; green ] []).FlakyTests |> List.map sourcesOf = [ [ RowSource.Index ] ] @>
+    test <@ (analyzeSources [] [ red; green ]).FlakyTests |> List.map viasOf = [ [ RowSource.DailyLog ] ] @>
+    test <@ (analyzeSources [ red; green ] []).FlakyTests |> List.map viasOf = [ [ RowSource.Index ] ] @>
 
 [<Fact>]
 let ``flaky test: --since leaves out logged runs older than it`` () =
     let r =
         analyze
             (Some(t0.AddMinutes 30.0))
-            { Records = []; Unreadable = 0 }
-            noRows
-            { Runs = [ red; green ]
-              UnreadableFiles = 0
-              UnreadableLines = 0 }
+            (one
+                { Records = []; Unreadable = 0 }
+                noRows
+                { Runs = [ red; green ]
+                  UnreadableFiles = 0
+                  UnreadableLines = 0 })
             (readShadowLogs [])
 
-    test <@ List.isEmpty r.FlakyTests && r.LogRuns = 1 && r.TestRowRuns = 1 @>
+    test <@ List.isEmpty r.FlakyTests && (home r).LogRuns = 1 && r.TestRowRuns = 1 @>
 
 [<Fact>]
 let ``flaky test: the human and JSON reports name each finding's sources and the log's counts`` () =
     let r = analyzeSources [ green ] [ red; green ]
     let text = render 10 r |> String.concat "\n"
+    let a = storeA.Path
 
     test
         <@
             text.Contains
-                "2 run(s) of per test rows, 0 unreadable; 1 beside records, 2 in the daily log, 1 unreadable log file(s), 2 unreadable log line(s)"
+                "per test rows: 1 run(s) beside records, 0 unreadable; 2 in the daily log, 1 unreadable log file(s), 2 unreadable log line(s)"
         @>
 
-    test <@ text.Contains "tree t1, tool f1; from index and daily log; last" @>
+    test <@ text.Contains $"tree t1, tool f1; from %s{a}: index and daily log; last" @>
 
     let logOnly = render 10 (analyzeSources [] [ red; green ]) |> String.concat "\n"
-    test <@ logOnly.Contains "; from daily log; last" @>
+    test <@ logOnly.Contains $"; from %s{a}: daily log; last" @>
 
     use doc = JsonDocument.Parse(toJson r)
     let flake = doc.RootElement.GetProperty("flakyTests")[0]
 
     let sources =
         flake.GetProperty("sources").EnumerateArray()
-        |> Seq.map (fun s -> s.GetString())
+        |> Seq.map (fun s -> s.GetProperty("store").GetString(), s.GetProperty("via").GetString())
         |> List.ofSeq
 
-    test <@ sources = [ "index"; "log" ] @>
-    test <@ doc.RootElement.GetProperty("testRowLogRuns").GetInt32() = 2 @>
-    test <@ doc.RootElement.GetProperty("unreadableTestRowLogLines").GetInt32() = 2 @>
-    test <@ doc.RootElement.GetProperty("unreadableTestRowLogFiles").GetInt32() = 1 @>
+    let store = doc.RootElement.GetProperty("stores")[0]
+    let logRuns = store.GetProperty("testRowLogRuns").GetInt32()
+    let logLines = store.GetProperty("unreadableTestRowLogLines").GetInt32()
+    let logFiles = store.GetProperty("unreadableTestRowLogFiles").GetInt32()
+    test <@ sources = [ a, "index"; a, "log" ] @>
+    test <@ logRuns = 2 && logLines = 2 && logFiles = 1 @>
+
+// --- AUTOMATION-1744 requirement 1: several stores, as a union, each record keeping its store ---
+
+let private server = StoreSource.ofPath "/stores/server"
+let private laptop = StoreSource.ofPath "/stores/laptop"
+
+let private storeOf (source: StoreSource) (records: Record list) (indexed: TestRows.Index list) logged : StoreRead =
+    { Source = source
+      Scan = { Records = records; Unreadable = 0 }
+      Rows = { Indexes = indexed; Unreadable = 0 }
+      Log =
+        { Runs = logged
+          UnreadableFiles = 0
+          UnreadableLines = 0 } }
+
+let private analyzeStores (stores: StoreRead list) =
+    analyze None (nonEmpty stores) (readShadowLogs [])
+
+let private onServer = runOn "server" "A.Tests"
+let private onLaptop = runOn "laptop" "A.Tests"
+let private outcome (o: TestRows.Outcome) = [ "A.flaky", o ]
+
+/// The server failed A.flaky twice and passed it once; the laptop passed it twice; one tree, one tool.
+let private underLoad =
+    [ storeOf
+          server
+          []
+          [ onServer "s1" "t1" "f1" t0 (outcome TestRows.Outcome.Failed)
+            onServer "s2" "t1" "f1" (t0.AddHours 1.0) (outcome TestRows.Outcome.Failed)
+            onServer "s3" "t1" "f1" (t0.AddHours 2.0) (outcome TestRows.Outcome.Passed) ]
+          []
+      storeOf
+          laptop
+          []
+          []
+          [ onLaptop "l1" "t1" "f1" (t0.AddHours 3.0) (outcome TestRows.Outcome.Passed)
+            onLaptop "l2" "t1" "f1" (t0.AddHours 4.0) (outcome TestRows.Outcome.Passed) ] ]
+
+[<Fact>]
+let ``several stores: a red on the server and a green on the laptop pair, each side naming its run, machine and store``
+    ()
+    =
+    let r = analyzeStores underLoad
+    let flake = List.exactlyOne r.FlakyTests
+    test <@ flake.Red = seen "s2" "server" [ from server RowSource.Index ] @>
+    test <@ flake.Green = seen "l2" "laptop" [ from laptop RowSource.DailyLog ] @>
+    test <@ flake.Outcomes = [ TestRows.Outcome.Passed, 3; TestRows.Outcome.Failed, 2 ] @>
+    test <@ flake.Sources = nonEmpty [ from server RowSource.Index; from laptop RowSource.DailyLog ] @>
+    test <@ r.TestRowRuns = 5 @>
+    test <@ r.Stores |> FsHotWatch.Core.NonEmpty.toList |> List.map _.Source = [ server; laptop ] @>
+
+[<Fact>]
+let ``several stores: rates per store and per machine keep a red only the server saw visible`` () =
+    let flake = List.exactlyOne (analyzeStores underLoad).FlakyTests
+
+    test <@ flake.ByStore = nonEmpty [ server, { Red = 2; Passed = 1 }; laptop, { Red = 0; Passed = 2 } ] @>
+
+    test <@ flake.ByMachine = nonEmpty [ "laptop", { Red = 0; Passed = 2 }; "server", { Red = 2; Passed = 1 } ] @>
+
+[<Fact>]
+let ``several stores: one run seen in two stores counts once, and names both stores`` () =
+    let s1 = onServer "s1" "t1" "f1" t0 (outcome TestRows.Outcome.Failed)
+    let s2 = onServer "s2" "t1" "f1" (t0.AddHours 1.0) (outcome TestRows.Outcome.Passed)
+    let l1 = onLaptop "l1" "t1" "f1" (t0.AddHours 2.0) (outcome TestRows.Outcome.Passed)
+
+    // The laptop holds a copy of the server's daily log, beside its own run.
+    let r =
+        analyzeStores [ storeOf server [] [ s1; s2 ] []; storeOf laptop [] [] [ s1; s2; l1 ] ]
+
+    let flake = List.exactlyOne r.FlakyTests
+    test <@ r.TestRowRuns = 3 @>
+    test <@ flake.Outcomes = [ TestRows.Outcome.Passed, 2; TestRows.Outcome.Failed, 1 ] @>
+    test <@ flake.Red = seen "s1" "server" [ from server RowSource.Index; from laptop RowSource.DailyLog ] @>
+    // Each store's rate is over the runs it holds; each machine's counts every run once.
+    test <@ flake.ByStore = nonEmpty [ server, { Red = 1; Passed = 1 }; laptop, { Red = 1; Passed = 2 } ] @>
+    test <@ flake.ByMachine = nonEmpty [ "laptop", { Red = 0; Passed = 1 }; "server", { Red = 1; Passed = 1 } ] @>
+
+[<Fact>]
+let ``several stores: one run id and project on another machine is another run`` () =
+    let r =
+        analyzeStores
+            [ storeOf server [] [ onServer "x" "t1" "f1" t0 (outcome TestRows.Outcome.Failed) ] []
+              storeOf laptop [] [ onLaptop "x" "t1" "f1" t0 (outcome TestRows.Outcome.Passed) ] [] ]
+
+    let flake = List.exactlyOne r.FlakyTests
+    test <@ r.TestRowRuns = 2 @>
+    test <@ flake.Red.Machine = "server" && flake.Green.Machine = "laptop" @>
+
+[<Fact>]
+let ``several stores: the strict same-key grouping stays within one store, and a record in two stores counts once`` () =
+    let shared = record kB "B.Tests" Outcome.Pass t0 None "/w"
+
+    let r =
+        analyzeStores
+            [ storeOf server [ record kA "A.Tests" Outcome.Pass (t0.AddHours 2.0) None "/w"; shared ] [] []
+              storeOf
+                  laptop
+                  [ record kA "A.Tests" Outcome.Fail (t0.AddHours 1.0) None "/w"
+                    shared
+                    record kA2 "A.Tests" Outcome.Pass (t0.AddHours 2.0) None "/w"
+                    record kA2 "A.Tests" Outcome.Fail (t0.AddHours 3.0) None "/w" ]
+                  []
+                  [] ]
+
+    let serverPart, laptopPart = r.Stores.Head, List.exactlyOne r.Stores.Tail
+    // kA passed on one store and failed on the other: not one input set seen both ways.
+    test <@ List.isEmpty serverPart.Flaky @>
+    test <@ laptopPart.Flaky |> List.map (fun f -> f.Subject, f.FlakyKeys, f.Keys) = [ "A.Tests", 1, 2 ] @>
+    // ...nor a red later green: the green is in another store.
+    test <@ laptopPart.Reds = { Fails = 2; LaterGreen = 0 } @>
+    test <@ serverPart.Records = 2 && laptopPart.Records = 4 && r.RecordsRead = 5 @>
+
+[<Fact>]
+let ``several stores: the human and JSON reports name each store, the grouping and the rates per store and machine``
+    ()
+    =
+    let r = analyzeStores underLoad
+    let text = render 10 r |> String.concat "\n"
+    let s, l = server.Path, laptop.Path
+
+    test <@ text.Contains "Outcome stores: 2; 0 records" @>
+
+    test
+        <@
+            text.Contains $"  store %s{s}: 0 records"
+            && text.Contains $"  store %s{l}: 0 records"
+        @>
+
+    test <@ text.Contains "Flaky (one input set recorded both pass and fail; grouping: same key, within one store):" @>
+
+    test <@ text.Contains($"red in run s2 on server (%s{s}: index), passed in run l2 on laptop (%s{l}: daily log)") @>
+
+    test <@ text.Contains $"      per store: %s{s} red 2 of 3 (66.7%%); %s{l} red 0 of 2 (0%%)" @>
+    test <@ text.Contains "      per machine: laptop red 0 of 2 (0%); server red 2 of 3 (66.7%)" @>
+
+    use doc = JsonDocument.Parse(toJson r)
+    let flake = doc.RootElement.GetProperty("flakyTests")[0]
+    let redFrom = flake.GetProperty("red").GetProperty("from")[0]
+    let redStore = redFrom.GetProperty("store").GetString()
+    let redVia = redFrom.GetProperty("via").GetString()
+    let laptopRate = flake.GetProperty("byStore")[1]
+    let serverRate = flake.GetProperty("byMachine")[1]
+    let laptopStore = laptopRate.GetProperty("store").GetString()
+    let laptopRed = laptopRate.GetProperty("red").GetInt32()
+    let laptopPassed = laptopRate.GetProperty("passed").GetInt32()
+    let serverMachine = serverRate.GetProperty("machine").GetString()
+    let serverRed = serverRate.GetProperty("red").GetInt32()
+    let serverPassed = serverRate.GetProperty("passed").GetInt32()
+    let stores = doc.RootElement.GetProperty("stores").GetArrayLength()
+    test <@ redStore = s && redVia = "index" && stores = 2 @>
+    test <@ laptopStore = l && laptopRed = 0 && laptopPassed = 2 @>
+    test <@ serverMachine = "server" && serverRed = 2 && serverPassed = 1 @>
+
+[<Fact>]
+let ``a store is read from its directory, which names it; an absent directory is an empty store`` () =
+    withTempDir "analytics-store" (fun dir ->
+        let source = StoreSource.ofPath (Path.Combine(dir, "absent"))
+        let read = (readStores { Head = source; Tail = [] }).Head
+        test <@ read.Source = source && source.Path = Path.Combine(dir, "absent") @>
+
+        test
+            <@
+                List.isEmpty read.Scan.Records
+                && List.isEmpty read.Rows.Indexes
+                && List.isEmpty read.Log.Runs
+            @>)

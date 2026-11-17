@@ -265,14 +265,15 @@ type InsightsFlag =
 /// Flags for `fshw analytics`. See `OutcomeAnalytics`.
 [<RequireQualifiedAccess>]
 type AnalyticsFlag =
-    | [<CmdFlag(Description = "Print the report as one fshw-analytics-v1 JSON object")>] Json
+    | [<CmdFlag(Description = "Print the report as one fshw-analytics-v2 JSON object")>] Json
     | [<CmdFlag(Description = "Only records and shadow lines from the last N days (default: everything the store keeps)")>] Since of
         int
     | [<CmdFlag(Description = "Flaky and slow subjects listed (default 10)")>] Top of int
-    | [<CmdFlag(Description = "Read the outcome store from this directory instead of this repository's box-wide one")>] Store of
-        string
     | [<CmdFlag(Description =
-                    "Read this shadow ledger (repeatable). Default: this checkout's, and that of every worktree the store names",
+                    "Read the outcome store in this directory (repeatable: the stores are read as a union, each finding naming its store). Default: this repository's box-wide one",
+                Repeatable = true)>] Store of string
+    | [<CmdFlag(Description =
+                    "Read this shadow ledger (repeatable). Default: this checkout's, and that of every worktree the stores name",
                 Name = "shadow-log",
                 Repeatable = true)>] ShadowLog of string
 
@@ -527,8 +528,8 @@ let internal insightsSetup
 /// What `fshw analytics` reads and how it reports.
 type internal AnalyticsSetup =
     {
-        /// The outcome store: `--store`, else this repository's box-wide one.
-        StoreDir: string
+        /// The outcome stores: every `--store`, in order, each once; else this repository's box-wide one.
+        Stores: FsHotWatch.Core.NonEmpty<OutcomeAnalytics.StoreSource>
         /// `--shadow-log`s; `None` discovers them from the store (`shadowLogsFor`).
         ShadowLogs: string list option
         /// `--since N`: `now` minus N days.
@@ -544,12 +545,16 @@ let internal analyticsSetup (now: DateTimeOffset) (repoRoot: string) (flags: Ana
             | AnalyticsFlag.ShadowLog p -> Some(Path.GetFullPath p)
             | _ -> None)
 
-    { StoreDir =
+    { Stores =
         flags
-        |> List.tryPick (function
-            | AnalyticsFlag.Store d -> Some(Path.GetFullPath d)
+        |> List.choose (function
+            | AnalyticsFlag.Store d -> Some(OutcomeAnalytics.StoreSource.ofPath d)
             | _ -> None)
-        |> Option.defaultWith (fun () -> FsHotWatch.OutcomeStore.directoryFor repoRoot)
+        |> List.distinct
+        |> FsHotWatch.Core.NonEmpty.ofList
+        |> Option.defaultWith (fun () ->
+            { Head = OutcomeAnalytics.StoreSource.ofPath (FsHotWatch.OutcomeStore.directoryFor repoRoot)
+              Tail = [] })
       ShadowLogs = if logs.IsEmpty then None else Some logs
       Since =
         flags
@@ -4718,28 +4723,24 @@ let private executeCommandRendered
 
             0
         | Analytics flags ->
-            // A pure read of the outcome store and the shadow ledgers: no daemon, no IPC,
+            // A pure read of the outcome stores and the shadow ledgers: no daemon, no IPC,
             // no run, and nothing quarantined.
             let setup = analyticsSetup DateTimeOffset.UtcNow repoRoot flags
-            let scan = FsHotWatch.OutcomeStore.readAll setup.StoreDir
+            let stores = OutcomeAnalytics.readStores setup.Stores
 
             let logs =
                 setup.ShadowLogs
-                |> Option.defaultWith (fun () -> OutcomeAnalytics.shadowLogsFor repoRoot scan.Records)
+                |> Option.defaultWith (fun () ->
+                    FsHotWatch.Core.NonEmpty.toList stores
+                    |> List.collect _.Scan.Records
+                    |> OutcomeAnalytics.shadowLogsFor repoRoot)
 
             let report =
-                OutcomeAnalytics.analyze
-                    setup.Since
-                    scan
-                    (FsHotWatch.OutcomeStore.readAllTestRows setup.StoreDir)
-                    (FsHotWatch.TestRowsLog.read setup.StoreDir)
-                    (OutcomeAnalytics.readShadowLogs logs)
+                OutcomeAnalytics.analyze setup.Since stores (OutcomeAnalytics.readShadowLogs logs)
 
             if setup.Json then
                 printfn "%s" (OutcomeAnalytics.toJson report)
             else
-                printfn "store: %s" setup.StoreDir
-
                 for line in OutcomeAnalytics.render setup.Top report do
                     printfn "%s" line
 

@@ -692,9 +692,12 @@ let ``analytics finds a flake whose red record was evicted, from the daily log a
         let analyze (log: TestRowsLog.LogRead) =
             FsHotWatch.Cli.OutcomeAnalytics.analyze
                 None
-                (OutcomeStore.readAll root)
-                (OutcomeStore.readAllTestRows root)
-                log
+                { Head =
+                    { Source = FsHotWatch.Cli.OutcomeAnalytics.StoreSource.ofPath root
+                      Scan = OutcomeStore.readAll root
+                      Rows = OutcomeStore.readAllTestRows root
+                      Log = log }
+                  Tail = [] }
                 (FsHotWatch.Cli.OutcomeAnalytics.readShadowLogs [])
 
         // The index alone has only the green: no flake.
@@ -710,13 +713,19 @@ let ``analytics finds a flake whose red record was evicted, from the daily log a
 
         let report = analyze (TestRowsLog.read root)
         let flake = List.exactlyOne report.FlakyTests
-        test <@ flake.Test = "A.one" && flake.RedRun = "run-red" && flake.GreenRun = "run-green" @>
 
         test
             <@
-                NonEmpty.toList flake.Sources = [ FsHotWatch.Cli.OutcomeAnalytics.RowSource.Index
-                                                  FsHotWatch.Cli.OutcomeAnalytics.RowSource.DailyLog ]
+                flake.Test = "A.one"
+                && flake.Red.RunId = "run-red"
+                && flake.Green.RunId = "run-green"
+            @>
+
+        test
+            <@
+                NonEmpty.toList flake.Sources |> List.map _.Via = [ FsHotWatch.Cli.OutcomeAnalytics.RowSource.Index
+                                                                    FsHotWatch.Cli.OutcomeAnalytics.RowSource.DailyLog ]
             @>
 
         // The green run is in both sources and counted once.
-        test <@ report.TestRowRuns = 2 && report.LogRuns = 2 @>)
+        test <@ report.TestRowRuns = 2 && report.Stores.Head.LogRuns = 2 @>)
