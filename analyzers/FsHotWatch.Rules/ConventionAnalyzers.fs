@@ -53,6 +53,11 @@
 ///   FSHW-WALL-001 — in TEST sources: no sleeps, stopwatch upper bounds or short literal
 ///   asserted waits; inject a clock or a fake host, or allowlist with
 ///   `[<WallClock("reason")>]`. It lives in its own file, `WallClockAnalyzer.fs`.
+///
+///   FSHW-TIME-001 — in the modules the deterministic simulation drives
+///   (`PluginWorkOwner`, `SupervisedWork`, `DebouncedWork`): no timing source reached
+///   directly. Each takes the pool, timers, schedulers and blocking waits from its store's
+///   `AsyncRuntime.Runtime`, so the simulation decides every interleaving (AUTOMATION-1695).
 module FsHotWatch.Rules.ConventionAnalyzers
 
 open FSharp.Analyzers.SDK
@@ -408,6 +413,52 @@ module Detect =
             | _ -> None
         | _ -> None
 
+    /// FSHW-TIME-001 material: a timing source reached directly rather than through the
+    /// module's `AsyncRuntime.Runtime`. The paths: `Task.Run`, `Task.Delay`,
+    /// `TaskScheduler.Default`, anything on `ThreadPool`, the `Async` starters and
+    /// `RunSynchronously`, `Thread.Sleep`, `CancelAsync` and `CancelAfter`, a `Timer`
+    /// constructed, and a `ContinueWith` that does not name `runtime.Scheduler`.
+    let private isDirectTimingPath (ids: Ident list) =
+        match List.rev ids |> List.map (fun i -> i.idText) with
+        | ("Run" | "Delay") :: "Task" :: _
+        | "Default" :: "TaskScheduler" :: _
+        | _ :: "ThreadPool" :: _
+        | ("RunSynchronously" | "Start" | "StartAsTask" | "StartImmediate" | "StartImmediateAsTask") :: "Async" :: _
+        | "Sleep" :: "Thread" :: _ -> true
+        | ("CancelAsync" | "CancelAfter") :: _ :: _ -> true
+        | _ -> false
+
+    let rec private namesRuntimeScheduler (e: SynExpr) : bool =
+        match unwrapParen e with
+        | SynExpr.Tuple(exprs = exprs) -> exprs |> List.exists namesRuntimeScheduler
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+            match List.rev ids |> List.map (fun i -> i.idText) with
+            | "Scheduler" :: "runtime" :: _ -> true
+            | _ -> false
+        | _ -> false
+
+    let private isTimerType (t: SynType) =
+        match t with
+        | SynType.LongIdent(SynLongIdent(id = ids)) -> lastIs "Timer" ids
+        | _ -> false
+
+    let private directTimingInExpr (e: SynExpr) : range option =
+        match e with
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when isDirectTimingPath ids -> Some e.Range
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when lastIs "CancelAsync" ids || lastIs "CancelAfter" ids ->
+            Some e.Range
+        | SynExpr.New(targetType = t) when isTimerType t -> Some e.Range
+        | SynExpr.App(funcExpr = f; argExpr = arg) ->
+            match unwrapParen f with
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids))
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                lastIs "ContinueWith" ids && not (namesRuntimeScheduler arg)
+                ->
+                Some e.Range
+            | SynExpr.Ident id when id.idText = "Timer" -> Some e.Range
+            | _ -> None
+        | _ -> None
+
     let private rangeContains (outer: range) (inner: range) =
         posLeq (outer.StartLine, outer.StartColumn) (inner.StartLine, inner.StartColumn)
         && posLeq (inner.EndLine, inner.EndColumn) (outer.EndLine, outer.EndColumn)
@@ -449,6 +500,10 @@ module Detect =
         /// collector cannot see, so the filtering lives in `unboundedAgentReplies`.
         member val UnboundedReplies = ResizeArray<range>()
 
+        /// FSHW-TIME-001 material: every timing source reached directly. Whether one is a
+        /// FINDING depends on the file, so the filtering lives in `directTimingSources`.
+        member val DirectTiming = ResizeArray<range>()
+
         override this.WalkExpr(_path, expr) =
             match discardedClaimInExpr expr with
             | Some r -> this.DiscardedClaims.Add r
@@ -460,6 +515,10 @@ module Detect =
 
             match unboundedReplyInExpr expr with
             | Some r -> this.UnboundedReplies.Add r
+            | None -> ()
+
+            match directTimingInExpr expr with
+            | Some r -> this.DirectTiming.Add r
             | None -> ()
 
             match threadSleepCall expr with
@@ -693,6 +752,25 @@ module Detect =
             |> List.ofSeq
             |> List.filter (fun spawn -> not (optedOut spawn))
 
+    /// The modules the deterministic simulation drives (AUTOMATION-1695). Every timing source
+    /// in them comes from their store's `AsyncRuntime.Runtime`; one reached directly is a
+    /// pool-timing dependence the simulation cannot see, which is the flake class it exists
+    /// to remove. `AsyncRuntime.fs` itself is not among them: it is where the pool lives.
+    let SimulatedSources =
+        [ "PluginWorkOwner.fs"; "SupervisedWork.fs"; "DebouncedWork.fs" ]
+
+    /// FSHW-TIME-001. Ranges where a simulated module reaches a timing source directly.
+    let directTimingSources (fileName: string) (input: ParsedInput) : range list =
+        let normalized = fileName.Replace('\\', '/')
+
+        if
+            SimulatedSources
+            |> List.exists (fun name -> normalized.EndsWith("/" + name, System.StringComparison.Ordinal))
+        then
+            (collect input).DirectTiming |> List.ofSeq
+        else
+            []
+
     /// FSHW-WAIT-002. Ranges where a production source waits on an agent reply
     /// with no timeout.
     ///
@@ -863,6 +941,27 @@ let unboundedAgentReplyAnalyzer: Analyzer<CliContext> =
                          returning an empty result would turn a wedged ledger into a green verdict. If waiting forever is \
                          genuinely correct here, say so with a `FSHW-WAIT-002 ok: <reason>` comment on the call or the lines above it."
                       Code = "FSHW-WAIT-002"
+                      Severity = Severity.Error
+                      Range = range
+                      Fixes = [] })
+        }
+
+[<CliAnalyzer("DirectTimingAnalyzer",
+              "In the simulated modules: forbids reaching the pool, a timer or a blocking wait except through AsyncRuntime.Runtime")>]
+let directTimingAnalyzer: Analyzer<CliContext> =
+    fun (context: CliContext) ->
+        async {
+            return
+                Detect.directTimingSources context.FileName context.ParseFileResults.ParseTree
+                |> List.map (fun range ->
+                    { Type = "Timing source reached directly"
+                      Message =
+                        "this module is driven by the deterministic simulation (AUTOMATION-1695), and this reaches the thread pool, \
+                         a timer, a scheduler or a blocking wait directly instead of through its store's AsyncRuntime.Runtime \
+                         (Dispatch, Scheduler, Schedule, Delay, Cancel, RunSynchronously, Wait). The pool then decides which arm \
+                         of an await runs and when a callback fires, the simulation cannot reach that interleaving, and tests and \
+                         coverage floors over it flake. Take the timing source from the runtime (add a field to Runtime if none fits)."
+                      Code = "FSHW-TIME-001"
                       Severity = Severity.Error
                       Range = range
                       Fixes = [] })
