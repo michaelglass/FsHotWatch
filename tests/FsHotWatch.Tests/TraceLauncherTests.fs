@@ -20,7 +20,7 @@ let private request exe args timeout : Launch.LaunchRequest =
     { Exe = exe
       Args = args
       Env = []
-      WorkDir = Path.GetTempPath()
+      WorkDir = FsHotWatch.TestRoots.TestBinary.directory ()
       Timeout = timeout }
 
 /// A verify child that would run for 30 seconds.

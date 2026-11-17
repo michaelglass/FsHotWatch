@@ -57,7 +57,7 @@ let ``the recorded socket path is absolute, so it does not depend on the reader'
     if not (OperatingSystem.IsWindows()) then
         let socket = DaemonEndpoint.socketPath "fshw-0123456789ab"
         test <@ Path.IsPathRooted socket @>
-        test <@ socket = Path.Combine(Path.GetTempPath(), "CoreFxPipe_fshw-0123456789ab") @>
+        test <@ socket = Path.Combine(FsHotWatch.TestRoots.systemTemp.Value, "CoreFxPipe_fshw-0123456789ab") @>
         // A rooted name is already a socket path; .NET uses it as is.
         test <@ DaemonEndpoint.socketPath "/tmp/x" = "/tmp/x" @>
 

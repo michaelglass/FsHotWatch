@@ -31,7 +31,7 @@ let private throwawayDll (dir: string) (name: string) (bytes: byte array) =
 let ``fsc records a checksum for every source document in the portable PDB`` () =
     // Both the house-rules PDB and this test host's own: the property is the
     // compiler's, not one project's.
-    let testHostPdb = Path.Combine(AppContext.BaseDirectory, "FsHotWatch.Tests.pdb")
+    let testHostPdb = FsHotWatch.TestRoots.TestBinary.path "FsHotWatch.Tests.pdb"
 
     for pdb in [ Path.ChangeExtension(rulesDll, ".pdb"); testHostPdb ] do
         let sources =
@@ -147,11 +147,7 @@ let ``a sidecar PDB that is not the one the build wrote is PdbMismatch`` () =
     withTempDir "az-id-wrongpdb" (fun root ->
         let dll = relocate root
         // This test host's own PDB, wearing the analyzer's name: a stale sidecar.
-        File.Copy(
-            Path.Combine(AppContext.BaseDirectory, "FsHotWatch.Tests.pdb"),
-            Path.ChangeExtension(dll, ".pdb"),
-            true
-        )
+        File.Copy(FsHotWatch.TestRoots.TestBinary.path "FsHotWatch.Tests.pdb", Path.ChangeExtension(dll, ".pdb"), true)
 
         test <@ identityOf (Some root) dll = Error(Refusal.PdbMismatch(dll, Path.ChangeExtension(dll, ".pdb"))) @>)
 

@@ -106,7 +106,7 @@ let ``an evaluation in flight when a test moves back cannot leave the process in
     // with the process standing in it. Every relative path and `Process.Start` in the test
     // host fails after that, in whichever test runs next.
     withProcessWorkingDirectory None (fun () ->
-        let original = Directory.GetCurrentDirectory()
+        let original = Directory.GetCurrentDirectory() // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
         let mutable afterEvaluation = ""
 
         withTempDir "eval-inflight" (fun root ->
@@ -156,7 +156,7 @@ let ``an evaluation in flight when a test moves back cannot leave the process in
                     run)
 
             test <@ evaluation.Wait(HangWait) @>
-            afterEvaluation <- Directory.GetCurrentDirectory())
+            afterEvaluation <- Directory.GetCurrentDirectory()) // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
 
         test <@ processWorkingDirectoryExists () @>
         test <@ afterEvaluation = original @>)
@@ -167,7 +167,7 @@ let ``a read at a settled working directory waits out an evaluation in flight`` 
     // read that daemon's scratch project, not its own. The evaluation is held standing in
     // its project; the read must see where the process stood before it, not the project.
     withProcessWorkingDirectory None (fun () ->
-        let original = Directory.GetCurrentDirectory()
+        let original = Directory.GetCurrentDirectory() // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
 
         withTempDir "eval-read" (fun root ->
             let projectDir = repository root "reader"
@@ -199,7 +199,7 @@ let ``a read at a settled working directory waits out an evaluation in flight`` 
             let seen = ref ""
 
             let reader =
-                Thread(ThreadStart(fun () -> seen.Value <- atSettledWorkingDirectory Directory.GetCurrentDirectory))
+                Thread(ThreadStart(fun () -> seen.Value <- atSettledWorkingDirectory Directory.GetCurrentDirectory)) // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
 
             reader.Start()
 
@@ -244,7 +244,7 @@ let ``deleting a scratch tree the process stands in fails the test that did it a
 [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``after a test that leaves the process in a deleted directory, the guard fails it and moves the process out`` () =
     withProcessWorkingDirectory None (fun () ->
-        let gone = Path.Combine(Path.GetTempPath(), $"fshw-gone-{Guid.NewGuid():N}")
+        let gone = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-gone"
         Directory.CreateDirectory gone |> ignore
         standLikeTheHostVerb gone
         Directory.Delete gone

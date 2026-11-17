@@ -259,7 +259,7 @@ let ``a file with too many symbols to rank says so`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``a path is named as the index names it, relative to the repository`` () =
-    let root = Path.Combine(Path.GetTempPath(), "explain-root")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "explain-root")
     test <@ Explain.relativeTo root "src/Lib.fs" = "src/Lib.fs" @>
     test <@ Explain.relativeTo root (Path.Combine(root, "src", "Lib.fs")) = "src/Lib.fs" @>
     test <@ Explain.relativeTo root "./src/../src/Lib.fs" = "src/Lib.fs" @>

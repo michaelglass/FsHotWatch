@@ -68,7 +68,7 @@ let ``hash format is lowercase hex with no dashes`` () =
 [<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let tempFile = Path.GetTempFileName()
+    let tempFile = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
     File.WriteAllText(tempFile, "test content")
 
     try
@@ -83,7 +83,7 @@ let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
 [<Fact(Timeout = 20000)>]
 let ``cache key is content-addressed: same bytes + different mtime → same hash`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let tempFile = Path.GetTempFileName()
+    let tempFile = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
     File.WriteAllText(tempFile, "stable content")
 
     try
@@ -104,7 +104,7 @@ let ``cache key is content-addressed: same bytes + different mtime → same hash
 [<Fact(Timeout = 20000)>]
 let ``TimestampCacheKeyProvider returns different hash after file modification`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let tempFile = Path.GetTempFileName()
+    let tempFile = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
     File.WriteAllText(tempFile, "original content")
 
     try
@@ -227,7 +227,7 @@ let ``FileContentHasher reads an existing file whose stamp cannot be read on eve
 [<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns Some lowercase hex hash for readable file`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let tempFile = Path.GetTempFileName()
+    let tempFile = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
     File.WriteAllText(tempFile, "x")
 
     try
@@ -255,7 +255,11 @@ let ``makeCacheKey returns None when file is unreadable`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let opts, _ =
-        scriptProjectOptions (checker, Path.GetTempFileName(), FSharp.Compiler.Text.SourceText.ofString "module A")
+        scriptProjectOptions (
+            checker,
+            (FsHotWatch.TestRoots.TestRoot.freshFile "tmp"),
+            FSharp.Compiler.Text.SourceText.ofString "module A"
+        )
         |> Async.RunSynchronously
 
     let key = makeCacheKey provider "/nonexistent/missing-makeCacheKey.fs" opts
@@ -264,8 +268,8 @@ let ``makeCacheKey returns None when file is unreadable`` () =
 [<Fact(Timeout = 15000)>]
 let ``makeCacheKey produces different keys for different files`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let tempFile1 = Path.GetTempFileName()
-    let tempFile2 = Path.GetTempFileName()
+    let tempFile1 = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
+    let tempFile2 = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
     File.WriteAllText(tempFile1, "content1")
     File.WriteAllText(tempFile2, "content2")
 

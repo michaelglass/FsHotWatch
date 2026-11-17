@@ -65,8 +65,7 @@ let ``children are counted and timed by command, and an exited child keeps what 
         @>
 
 let private tempRunDir () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-profile-children-tests", Guid.NewGuid().ToString "N")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-profile-children-tests"
 
     Directory.CreateDirectory dir |> ignore
     dir

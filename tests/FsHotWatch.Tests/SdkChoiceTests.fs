@@ -74,7 +74,7 @@ let ``a resolved version with no installed SDK at or above it is refused, as Ion
 /// SDK, unchanged — global.json and its rollForward still decide.
 [<Fact>]
 let ``positive control: a real global.json's rollForward still decides the SDK`` () =
-    let dir = Directory.CreateTempSubdirectory "fshw-sdkchoice-"
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-sdkchoice")
 
     try
         File.WriteAllText(
@@ -102,7 +102,7 @@ let ``positive control: a real global.json's rollForward still decides the SDK``
 /// evaluation under some other SDK.
 [<Fact>]
 let ``a global.json pinning an SDK that is not installed is refused, naming the checkout`` () =
-    let dir = Directory.CreateTempSubdirectory "fshw-sdkchoice-missing-"
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-sdkchoice-missing")
 
     try
         File.WriteAllText(

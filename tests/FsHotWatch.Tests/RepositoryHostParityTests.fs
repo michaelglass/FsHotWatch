@@ -40,6 +40,10 @@ open FsHotWatch.Tests.TestHelpers
 ///   checker's bootstrap counts, and `scope`: a host reports its own totals, and its
 ///   sessions share a checker.
 ///   Every other field of each record must agree.
+/// Where a hang's evidence goes: a place this process alone owns, which outlives the
+/// worktree a test captures from (AUTOMATION-1775).
+let private evidenceHome = FsHotWatch.TestRoots.TestRoot.freshPath "hang-evidence"
+
 let private modeOwned =
     {| Files = set [ "host-session.json"; "heartbeat"; VanishedRoot.WitnessFile ]
        ScanMetricsFields =
@@ -166,7 +170,7 @@ let private writeWorktree (root: string) : bool =
         with
         | ProcessHelper.Succeeded _ -> true
         | ProcessHelper.TimedOut _ as timedOut ->
-            let evidence = HangEvidence.capture "restore" [ root ]
+            let evidence = HangEvidence.capture evidenceHome "restore" [ root ]
             failwith $"restore failed: %A{timedOut} — evidence captured in %s{evidence}"
         | other -> failwith $"restore failed: %A{other}"
 
@@ -248,7 +252,7 @@ let private drive
     (transitions: ConcurrentQueue<string * string>)
     =
     let settle () =
-        HangEvidence.onExpiry "settle" (fun () -> [ root ]) (fun () ->
+        HangEvidence.onExpiry evidenceHome "settle" (fun () -> [ root ]) (fun () ->
             (config.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait())
 
     let mutable seen = 0
@@ -661,7 +665,7 @@ let private runHostedBesideASibling (root: string) =
 
     test <@ waitUntilTrue (fun () -> siblingSession.Daemon.GetScanGeneration() > 0L) 300000 @>
 
-    HangEvidence.onExpiry "sibling-settle" (fun () -> [ sibling; root ]) (fun () ->
+    HangEvidence.onExpiry evidenceHome "sibling-settle" (fun () -> [ sibling; root ]) (fun () ->
         (siblingConfig.WaitForAllTerminal(TimeSpan.FromMinutes 3.0)).Wait())
 
     // Sharing is exercised, not merely configured: before the observed session starts,

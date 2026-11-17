@@ -445,7 +445,7 @@ let ``parseConfig refuses a scope for an unconfigured path, or one that is not e
 
 [<Fact>]
 let ``a scoped analyzer path runs only on the files its scope admits`` () =
-    let root = Path.Combine(Path.GetTempPath(), "scope-root")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "scope-root")
     let file (relative: string) = Path.Combine(root, relative)
 
     let runsOn =

@@ -14,8 +14,7 @@ open FsHotWatch.ProcessHelper
 open FsHotWatch.Build.BuildPlugin
 
 let private tempDir () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-sidelog-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-sidelog"
 
     Directory.CreateDirectory dir |> ignore
     dir
@@ -66,7 +65,7 @@ let ``each build's side log gets its own directory, outside the fshw state direc
     let first = sideLogDir ()
     let second = sideLogDir ()
     test <@ first <> second @>
-    test <@ first.StartsWith(Path.GetTempPath()) @>
+    test <@ first.StartsWith(FsHotWatch.TestRoots.systemTemp.Value) @>
     test <@ not (first.Contains ".fshw") @>
 
 [<Fact>]
@@ -79,8 +78,7 @@ let ``discarding a side log deletes its directory and everything in it`` () =
 
 [<Fact>]
 let ``discarding a side log that was never written, or never attached, does nothing`` () =
-    let missing =
-        Path.Combine(Path.GetTempPath(), "fshw-sidelog-missing-" + Guid.NewGuid().ToString("N"))
+    let missing = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-sidelog-missing"
 
     discardSideLog (SideLog.Attached missing)
     discardSideLog (SideLog.NotAttached "no")

@@ -256,8 +256,7 @@ let ``parallelWithin runs one at a time when asked for none`` () =
 
 /// The core library's source, next to this test project.
 let private coreSources () =
-    let dir =
-        IO.Path.GetFullPath(IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "src", "FsHotWatch"))
+    let dir = FsHotWatch.TestRoots.RepositoryTree.path "src/FsHotWatch"
 
     IO.Directory.GetFiles(dir, "*.fs")
 

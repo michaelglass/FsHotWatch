@@ -22,7 +22,7 @@ let scriptProjectOptions (checker: FSharpChecker, script: string, source: FSharp
     checker.GetProjectOptionsFromScript(script, source, assumeDotNetFramework = false)
 
 let private fixtureFile =
-    Path.Combine(Path.GetTempPath(), "fshw-fixture", "Fixture.fsx")
+    Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-fixture", "Fixture.fsx")
 
 let private fixtureSource =
     FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value = 1\n"
@@ -805,7 +805,7 @@ let private deleteTempDirResilient (tmpDir: string) =
 /// deleted one throws, which is how every relative path and `Process.Start` then fails.
 let processWorkingDirectory () : string option =
     try
-        let cwd = Directory.GetCurrentDirectory()
+        let cwd = Directory.GetCurrentDirectory() // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
         if Directory.Exists cwd then Some cwd else None
     with :? FileNotFoundException ->
         None
@@ -814,8 +814,8 @@ let processWorkingDirectory () : string option =
 /// directory, and say where: for a test host left standing in a directory that is gone,
 /// or about to go.
 let moveProcessToRefuge () : string =
-    let refuge = AppContext.BaseDirectory
-    Directory.SetCurrentDirectory refuge
+    let refuge = FsHotWatch.TestRoots.TestBinary.directory ()
+    Directory.SetCurrentDirectory refuge // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
     refuge
 
 /// `path` with every symlink resolved, the way `getcwd` already answers the process
@@ -886,14 +886,14 @@ let deleteWhileWritten (dir: string) (timeoutMs: int) : bool =
 let withProcessWorkingDirectory (dir: string option) (body: unit -> 'a) : 'a =
     let original =
         FsHotWatch.Daemon.whileNoEvaluationRuns (fun () ->
-            let found = Directory.GetCurrentDirectory()
-            dir |> Option.iter Directory.SetCurrentDirectory
+            let found = Directory.GetCurrentDirectory() // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
+            dir |> Option.iter Directory.SetCurrentDirectory // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
             found)
 
     try
         body ()
     finally
-        FsHotWatch.Daemon.whileNoEvaluationRuns (fun () -> Directory.SetCurrentDirectory original)
+        FsHotWatch.Daemon.whileNoEvaluationRuns (fun () -> Directory.SetCurrentDirectory original) // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
 
 /// Run `body`, which reads the process working directory or resolves a relative path
 /// against it, while no in-process evaluation runs (AUTOMATION-1411). An evaluation
@@ -907,15 +907,15 @@ let atSettledWorkingDirectory (body: unit -> 'a) : 'a =
 /// the directory it noted, which a concurrent evaluation may have moved it to. Run
 /// inside `withProcessWorkingDirectory`, which restores the real one.
 let evaluateInProjectDirectory (projectDir: string) (meanwhile: unit -> unit) : unit =
-    let found = Directory.GetCurrentDirectory()
-    Directory.SetCurrentDirectory projectDir
+    let found = Directory.GetCurrentDirectory() // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
+    Directory.SetCurrentDirectory projectDir // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
     meanwhile ()
-    Directory.SetCurrentDirectory found
+    Directory.SetCurrentDirectory found // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
 
 /// What `fshw host` does to the process it runs in (`runHostVerb`): stand it in `dir`,
 /// its control directory, and never move it back. Run inside
 /// `withProcessWorkingDirectory`, which does.
-let standLikeTheHostVerb (dir: string) : unit = Directory.SetCurrentDirectory dir
+let standLikeTheHostVerb (dir: string) : unit = Directory.SetCurrentDirectory dir // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
 
 /// Whether the directory the process stands in still exists.
 let processWorkingDirectoryExists () : bool = (processWorkingDirectory ()).IsSome

@@ -658,7 +658,7 @@ let ``executeCommand Completions returns 0 and writes only under XDG_CONFIG_HOME
         // to whatever it was before" is, and it holds whether or not it exists.
         let realPath =
             Path.Combine(
-                Environment.GetFolderPath Environment.SpecialFolder.UserProfile,
+                Environment.GetFolderPath Environment.SpecialFolder.UserProfile, // FSHW-ROOT-001 ok: names the real home only to assert it is untouched or is the fallback
                 ".config",
                 "fish",
                 "completions",
@@ -710,7 +710,7 @@ let ``fishCompletionsDir prefers XDG_CONFIG_HOME over the home-directory fallbac
 [<Fact(Timeout = 15000)>]
 let ``fishCompletionsDir falls back to the home directory when XDG_CONFIG_HOME is unset`` () =
     withEnv "XDG_CONFIG_HOME" None (fun () ->
-        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+        let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile // FSHW-ROOT-001 ok: names the real home only to assert it is untouched or is the fallback
         test <@ fishCompletionsDir () = Ok(Path.Combine(home, ".config", "fish", "completions")) @>)
 
 // --- Start command singleton guarantee ---
@@ -1282,8 +1282,7 @@ let ``a daemon-side corrupted-frame OOM reaches the SAME self-heal hint as a loc
 
 [<Fact(Timeout = 15000)>]
 let ``tryDeleteForCleanup returns Some on successful delete`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), $"fshw-cleanup-{System.Guid.NewGuid()}.tmp")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-cleanup" + ".tmp"
 
     File.WriteAllText(path, "x")
     let r = tryDeleteForCleanup path

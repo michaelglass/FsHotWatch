@@ -768,8 +768,12 @@ let private sampleOutputs (root: string) : CheckOutputs =
 
 [<Fact>]
 let ``outputs name in-repository paths relatively and are read back in the reading checkout`` () =
-    let rootA = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "fshw-records-a"))
-    let rootB = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "fshw-records-b"))
+    let rootA =
+        Path.GetFullPath(Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-records-a"))
+
+    let rootB =
+        Path.GetFullPath(Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-records-b"))
+
     let text = CheckRecords.CheckOutputs.toJson (Some rootA) (sampleOutputs rootA)
     test <@ not (text.Contains rootA) @>
     test <@ CheckRecords.CheckOutputs.tryOfJson (Some rootA) text = Some(sampleOutputs rootA) @>

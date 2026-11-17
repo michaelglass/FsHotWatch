@@ -694,9 +694,7 @@ let private runAt (root: string) (setup: Setup) =
 [<Fact(Timeout = 2 * RealCheckTestCapMs)>]
 let ``a confirm's run is observably the run check makes to earn its baseline`` () =
     // One root for both, so absolute paths, and every hash over them, agree.
-    let root =
-        Path.Combine(Path.GetTempPath(), "fshw-parity-" + Guid.NewGuid().ToString("N"))
-        |> Path.GetFullPath
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-parity" |> Path.GetFullPath
 
     let cold = runAt root (setup Check [ BootScan ])
     let confirm = runAt root (setup Confirm [ BootScan ])

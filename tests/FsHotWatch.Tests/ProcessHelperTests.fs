@@ -549,8 +549,7 @@ let ``runProcess inherits the parent process environment (no scrubbing)`` () =
 /// received — a stand-in the wrapper tests put first on PATH, so "the descendant dotnet
 /// received it" is observed on a real descendant without running a real build.
 let private withFakeDotnet (body: string -> unit) =
-    let dir =
-        IO.Path.Combine(IO.Path.GetTempPath(), "fshw-fake-dotnet-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-fake-dotnet"
 
     IO.Directory.CreateDirectory dir |> ignore
     let exe = IO.Path.Combine(dir, "dotnet")
@@ -650,8 +649,7 @@ let ``runProcess strip respects caller-supplied MSBUILD_EXE_PATH override`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess resolves DOTNET_HOST_PATH symlink to its realpath`` () =
-    let tmp =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-{Guid.NewGuid():N}")
+    let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-hostpath"
 
     System.IO.Directory.CreateDirectory(tmp) |> ignore
 
@@ -669,8 +667,7 @@ let ``runProcess resolves DOTNET_HOST_PATH symlink to its realpath`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess leaves DOTNET_HOST_PATH unchanged when target is not a symlink`` () =
-    let tmp =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-{Guid.NewGuid():N}")
+    let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-hostpath"
 
     System.IO.Directory.CreateDirectory(tmp) |> ignore
 
@@ -700,8 +697,7 @@ let ``runProcess does not set DOTNET_HOST_PATH when inherited env did not have i
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess resolves DOTNET_HOST_PATH symlink chain to final target`` () =
-    let tmp =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-chain-{Guid.NewGuid():N}")
+    let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-hostpath-chain"
 
     System.IO.Directory.CreateDirectory(tmp) |> ignore
 

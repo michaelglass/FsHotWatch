@@ -153,8 +153,14 @@ let ``parseOutput maps needs-formatting lines back to the requested absolute pat
 [<Fact>]
 let ``parseOutput resolves a workDir-relative echo`` () =
     // The tool echoes paths as given; a relative invocation gets relative echoes.
-    let a = Path.Combine(Path.GetTempPath(), "w", "Bad.fs") |> Path.GetFullPath
-    let workDir = Path.Combine(Path.GetTempPath(), "w") |> Path.GetFullPath
+    let a =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "w", "Bad.fs")
+        |> Path.GetFullPath
+
+    let workDir =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "w")
+        |> Path.GetFullPath
+
     let report = parseOutput workDir [ a ] "Bad.fs needs formatting"
     test <@ report.NeedsFormatting = [ a ] @>
 

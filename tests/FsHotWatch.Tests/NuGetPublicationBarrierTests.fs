@@ -13,15 +13,7 @@ type private BarrierResult =
       Stderr: string }
 
 let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: scripts/wait-for-nuget.fsx is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "scripts", "wait-for-nuget.fsx")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 let private writeProject path packageIds versions =
     let elements name values =

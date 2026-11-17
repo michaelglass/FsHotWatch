@@ -3979,8 +3979,7 @@ let ``the key's description and envelope hold for the edge shapes`` () =
     // A root that is not there lists no neighbours, a key with declared
     // inputs that all matched says so without an absent list, and a report with no
     // tree to judge carries no `key` at all.
-    let missingRoot =
-        Path.Combine(Path.GetTempPath(), "fshw-no-such-root-" + Guid.NewGuid().ToString "N")
+    let missingRoot = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-no-such-root"
 
     let walked: TreeHash.Walked =
         { Files = [ "docs/a.md", "h" ]

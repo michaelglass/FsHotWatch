@@ -76,8 +76,7 @@ let ``loadConfig on a repo with no .fshw.json applies the baked-in default timeo
     // The primary wedge cure: with no config at all the bound must be finite, not
     // Infinite. This is the production path (defaultConfigFor), distinct from
     // parseConfig's "inherit the caller's defaults" fallback.
-    let tmp =
-        Path.Combine(Path.GetTempPath(), $"fshw-noconfig-{System.Guid.NewGuid():N}")
+    let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-noconfig"
 
     Directory.CreateDirectory(tmp) |> ignore
 
@@ -1909,7 +1908,8 @@ let ``coverageArgsTemplateFor expands {repoRoot} to the absolute repo root and k
     // ("Provided settings file doesn't exist or is invalid"), aborting the host with
     // exit 5 and no report. {repoRoot} lets a template name the file absolutely
     // without hard-coding a machine-specific path.
-    let root = Path.Combine(Path.GetTempPath(), "fshw-repo-root-placeholder")
+    let root =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-repo-root-placeholder")
 
     let template =
         "--coverage --coverage-settings \"{repoRoot}/.coverage-settings.xml\" --coverage-output \"{output}\""
@@ -1936,7 +1936,7 @@ let ``coverageArgsTemplateFor makes a relative repo root absolute and drops a tr
 
 [<Fact(Timeout = 15000)>]
 let ``coverageArgsTemplateFor leaves a template without {repoRoot} unchanged and defaults to the MTP template`` () =
-    let root = Path.GetTempPath()
+    let root = FsHotWatch.TestRoots.TestRoot.pathOnlyBase
     let custom = "--altcover --out \"{output}\""
 
     test <@ coverageArgsTemplateFor root (Some custom) = custom @>

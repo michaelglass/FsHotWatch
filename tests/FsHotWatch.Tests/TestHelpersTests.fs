@@ -70,8 +70,7 @@ let ``withTempDir cleanup tolerates a daemon still writing into the dir`` () =
 /// The `.fs` sources of this test project, read from the tree rather than the build
 /// output: `AppContext.BaseDirectory` is `bin/<config>/<tfm>` under the project.
 let private testProjectSources () =
-    let projectDir =
-        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../"))
+    let projectDir = FsHotWatch.TestRoots.RepositoryTree.path "tests/FsHotWatch.Tests"
 
     Directory.GetFiles(projectDir, "*.fs")
     |> Array.map (fun path -> Path.GetFileName path, File.ReadAllLines path)
@@ -118,8 +117,7 @@ let ``no test clears the process-wide SQLite pool`` () =
 
     // Every test project in the repository, not only this one: TestPrune's suites open
     // SQLite databases in parallel too (AUTOMATION-1022).
-    let testsDir =
-        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."))
+    let testsDir = FsHotWatch.TestRoots.RepositoryTree.path "tests"
 
     let offenders =
         filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" testsDir
@@ -410,7 +408,7 @@ let ``every wait for a daemon to serve IPC goes through awaitServing`` () =
 // writer. A writer that stops must always find the tree gone afterwards.
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``deleteTempDir outlasts a writer that keeps the tree busy for longer than a moment`` () =
-    let root = Path.Combine(Path.GetTempPath(), $"fshw-busy-delete-{Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-busy-delete"
     let logs = Path.Combine(root, ".fshw", "logs")
     Directory.CreateDirectory logs |> ignore
     use writing = new ManualResetEventSlim(false)

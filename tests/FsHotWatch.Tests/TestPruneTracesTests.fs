@@ -48,7 +48,7 @@ let private project (root: string) name : TraceProject =
       TraceWeave = None }
 
 let private tempRoot () =
-    Directory.CreateTempSubdirectory("fshw-traces-").FullName
+    (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-traces").FullName
 
 let private emptyManifest: Manifest =
     { Rows = [||]

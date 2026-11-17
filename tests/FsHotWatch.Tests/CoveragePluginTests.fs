@@ -1736,7 +1736,7 @@ let private terminalStatus (host: PluginHost) =
 
 [<Fact(Timeout = 5000)>]
 let ``a run-scoped floor set reads each project's report from that run's own directory`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
     let runId = Guid.NewGuid()
     let runDir = FsHotWatch.Ctrf.runDir root runId
 

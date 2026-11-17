@@ -73,7 +73,7 @@ let ``GetTopologicalOrder returns deps before dependents`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``RegisterFromFsproj parses real fsproj`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-test-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "graph-test"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     File.WriteAllText(
@@ -250,7 +250,7 @@ let ``RegisterProject does not duplicate dependent when registered twice`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``RegisterFromFsproj ignores Compile elements without Include attribute`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noinclude-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "graph-noinclude"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     File.WriteAllText(
@@ -275,7 +275,7 @@ let ``RegisterFromFsproj ignores Compile elements without Include attribute`` ()
 
 [<Fact(Timeout = 15000)>]
 let ``RegisterFromFsproj ignores ProjectReference elements without Include attribute`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noref-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "graph-noref"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     File.WriteAllText(
@@ -380,7 +380,7 @@ let ``extractTargetFramework returns None when neither tag present`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``RegisterFromFsproj captures TargetFramework`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-tfm-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "graph-tfm"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
@@ -404,7 +404,7 @@ let ``GetTargetFramework returns None for unregistered project`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``PrepareForRediscovery clears TargetFramework`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-tfm-clear-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "graph-tfm-clear"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
@@ -499,7 +499,7 @@ let ``without a recorded output the path is inferred from the TargetFramework`` 
     // plugin fixture. `RegisterFromFsproj` has no production callers, so this is the
     // only registration that still reaches the inference — and an untested fallback
     // is how the primary path came to be the one nothing exercised.
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-infer-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "graph-infer"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
@@ -542,7 +542,7 @@ let ``without a recorded output the path is inferred from the TargetFramework`` 
 /// the way `Daemon.fs` registers — `RegisterProject` + `RegisterProjectOutput`,
 /// never `RegisterFromFsproj`.
 let private withGeneratedSourceProject (label: string) (body: ProjectGraph * string * string -> 'a) : 'a =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-%s{label}-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath ("graph-" + label)
     let objDir = Path.Combine(tmpDir, "obj", "Debug", "net10.0")
     Directory.CreateDirectory(objDir) |> ignore
 
@@ -604,7 +604,7 @@ let ``a repo nested under a directory named obj still reads its own sources`` ()
     // same silence, arrived at by being more thorough. `isBuildOutput` asks
     // relative to the project directory for exactly this reason.
     let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"graph-nested-{Guid.NewGuid():N}", "obj", "checkout", "MyLib")
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.freshPath "graph-nested", "obj", "checkout", "MyLib")
 
     Directory.CreateDirectory(tmpDir) |> ignore
 

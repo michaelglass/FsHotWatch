@@ -206,7 +206,7 @@ let ``parse coverage refresh-baseline returns Coverage RefreshBaseline`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``refreshCoverageBaseline deletes baseline and partial cobertura across configured projects`` () =
-    let tmp = Path.Combine(Path.GetTempPath(), $"fshw-cov-refresh-{Guid.NewGuid():N}")
+    let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-cov-refresh"
 
     Directory.CreateDirectory(tmp) |> ignore
 
@@ -708,7 +708,7 @@ let ``findRepoRoot finds jj repo`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``shutdown via IPC stops the daemon`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-shutdown-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "cli-shutdown"
     Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
@@ -764,7 +764,7 @@ let ``computePipeName has expected length`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``CLI status query works against running daemon`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "cli-inttest"
     Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
@@ -802,7 +802,7 @@ let ``CLI status query works against running daemon`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``CLI plugin status query works against running daemon`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "cli-inttest"
     Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
@@ -859,7 +859,7 @@ let ``CLI plugin status query works against running daemon`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``CLI command proxying works against running daemon`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "cli-inttest"
     Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
@@ -3866,8 +3866,7 @@ let ``a zero-match project reports its real total of zero, beside the refusal`` 
 module ``beforeRun failure reporting`` =
 
     let private tmpRepo () =
-        let suffix = Guid.NewGuid().ToString("N")
-        let dir = Path.Combine(Path.GetTempPath(), $"fshw-hook-%s{suffix}")
+        let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-hook"
         Directory.CreateDirectory dir |> ignore
         dir
 

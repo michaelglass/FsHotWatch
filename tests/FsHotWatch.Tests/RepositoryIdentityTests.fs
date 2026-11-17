@@ -674,7 +674,7 @@ let ``the state home reads the process environment through the same precedence``
         FsHwPaths.stateHomeFrom
             (Environment.GetEnvironmentVariable FsHwPaths.StateHomeEnvVar)
             (Environment.GetEnvironmentVariable "XDG_STATE_HOME")
-            (Environment.GetFolderPath Environment.SpecialFolder.UserProfile)
+            (Environment.GetFolderPath Environment.SpecialFolder.UserProfile) // FSHW-ROOT-001 ok: compares the product against the real home read-only
 
     test <@ FsHwPaths.stateHome () = expected @>
 

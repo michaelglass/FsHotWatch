@@ -57,8 +57,7 @@ let ``no production source clears the process-wide SQLite pool`` () =
     // Spelled in halves so this guard is not itself a match for what it forbids.
     let processWideClear = "ClearAll" + "Pools"
 
-    let src =
-        System.IO.Path.GetFullPath(System.IO.Path.Combine(System.AppContext.BaseDirectory, "../../../../../src"))
+    let src = FsHotWatch.TestRoots.RepositoryTree.path "src"
 
     let offenders =
         Directory.GetDirectories src

@@ -1561,8 +1561,7 @@ let ``WaitForComplete client observes failure when daemon is shut down mid-wait`
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``repeated scan force via IPC increments generation each time`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-rescan-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-rescan"
 
     System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
     |> ignore
@@ -1614,8 +1613,7 @@ let ``WaitForScan client observes failure when daemon is shut down mid-wait`` ()
     // triggered), then the daemon's CTS is cancelled. Without the shutdown-token race
     // in WaitForScanGeneration the RPC could resolve cleanly during teardown and
     // `fshw scan --wait` would exit 0 after the daemon went away.
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-scanwait-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-scanwait"
 
     System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
     |> ignore

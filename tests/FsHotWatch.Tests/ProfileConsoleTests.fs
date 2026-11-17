@@ -14,8 +14,7 @@ let private at (seconds: float) =
     DateTime(2026, 10, 21, 3, 0, 0, DateTimeKind.Utc).AddSeconds seconds
 
 let private tempRunDir () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-profile-console-tests", Guid.NewGuid().ToString "N")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-profile-console-tests"
 
     Directory.CreateDirectory dir |> ignore
     dir

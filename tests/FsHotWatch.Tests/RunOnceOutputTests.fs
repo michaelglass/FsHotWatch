@@ -104,8 +104,7 @@ let private minimalWorkspaceProject (projectPath: string) : Types.ProjectOptions
 
 [<Fact(Timeout = 15000)>]
 let ``detectStalePluginInputs flags plugins whose args are newer than last run`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let cfg = System.IO.Path.Combine(tmpDir, "cfg.json")
@@ -137,8 +136,7 @@ let ``detectStalePluginInputs flags plugins whose args are newer than last run``
 
 [<Fact(Timeout = 15000)>]
 let ``detectStalePluginInputs omits plugins with no stale files`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let cfg = System.IO.Path.Combine(tmpDir, "cfg.json")

@@ -203,8 +203,7 @@ let private inTree (t: Tree) (path: string) : FileStamp.Stamp voption =
 let private untilFileClockReachesNow () =
     let now = DateTime.UtcNow
 
-    let probe =
-        Path.Combine(Path.GetTempPath(), "fshw-file-clock-" + Guid.NewGuid().ToString("N"))
+    let probe = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-file-clock"
 
     let deadline = Deadline.After(TimeSpan.FromSeconds 5.0)
 

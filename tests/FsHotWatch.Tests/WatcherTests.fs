@@ -133,14 +133,13 @@ let ``classifyChange routes assets.json identically to .fsproj (so processBatch 
 [<Fact(Timeout = 15000)>]
 let ``hasContentChanged returns true for file that does not exist`` () =
     let fakePath =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-nonexistent-{Guid.NewGuid():N}.fs")
+        FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-nonexistent" + ".fs"
 
     test <@ hasContentChanged fakePath = true @>
 
 [<Fact(Timeout = 15000)>]
 let ``hasContentChanged returns true on first check of existing file`` () =
-    let tmpFile =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-first-{Guid.NewGuid():N}.fs")
+    let tmpFile = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-first" + ".fs"
 
     try
         File.WriteAllText(tmpFile, "let x = 1")
@@ -150,8 +149,7 @@ let ``hasContentChanged returns true on first check of existing file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``hasContentChanged returns false when content is unchanged`` () =
-    let tmpFile =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-same-{Guid.NewGuid():N}.fs")
+    let tmpFile = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-same" + ".fs"
 
     try
         File.WriteAllText(tmpFile, "let x = 1")
@@ -162,8 +160,7 @@ let ``hasContentChanged returns false when content is unchanged`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``hasContentChanged returns true when content changes`` () =
-    let tmpFile =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-changed-{Guid.NewGuid():N}.fs")
+    let tmpFile = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-changed" + ".fs"
 
     try
         File.WriteAllText(tmpFile, "let x = 1")
@@ -175,8 +172,7 @@ let ``hasContentChanged returns true when content changes`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``hasContentChanged returns true and removes from cache when file is deleted`` () =
-    let tmpFile =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-deleted-{Guid.NewGuid():N}.fs")
+    let tmpFile = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-deleted" + ".fs"
 
     File.WriteAllText(tmpFile, "let x = 1")
     hasContentChanged tmpFile |> ignore // stores hash
@@ -187,8 +183,7 @@ let ``hasContentChanged returns true and removes from cache when file is deleted
 let ``hasContentChanged returns true on IOException`` () =
     // A directory, not a file: reading it as a file raises IOException on most
     // platforms.
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-ioerr-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-ioerr"
 
     Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -1001,7 +996,7 @@ type RealFileWatcherTests() =
 
     [<Fact(Timeout = 150000)>]
     member _.``watcher detects file changes in src directory``() =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-test"
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         let changes = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
@@ -1260,8 +1255,7 @@ let ``portable watcher with literal filename pattern fires only for matching fil
 
 [<Fact(Timeout = 15000)>]
 let ``Tracker first observation reports changed even when another tracker already saw the file`` () =
-    let tmpFile =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-xinstance-{Guid.NewGuid():N}.fs")
+    let tmpFile = FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-xinstance" + ".fs"
 
     try
         File.WriteAllText(tmpFile, "let x = 1")
@@ -1279,7 +1273,7 @@ let ``Tracker first observation reports changed even when another tracker alread
 [<Fact(Timeout = 15000)>]
 let ``Tracker tracks its own state independently`` () =
     let tmpFile =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-instance-state-{Guid.NewGuid():N}.fs")
+        FsHotWatch.TestRoots.TestRoot.freshPath "fshotwatch-instance-state" + ".fs"
 
     try
         File.WriteAllText(tmpFile, "let x = 1")
@@ -1343,7 +1337,7 @@ let private assetsJson (restoreExtra: string) (dependencyVersion: string) =
 }"""
 
 let private withAssetsFile (body: string -> unit) =
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-assets-{Guid.NewGuid():N}", "obj")
+    let dir = Path.Combine(FsHotWatch.TestRoots.TestRoot.freshPath "fshw-assets", "obj")
     Directory.CreateDirectory dir |> ignore
     let path = Path.Combine(dir, "project.assets.json")
 
@@ -1775,7 +1769,7 @@ let ``test daemons choose their run mode through TestHelpers`` () =
     // run. A test daemon names `oneShotDaemonOptions` or, when its watcher is the
     // subject, `watchingDaemonOptions`.
     let offenders =
-        Directory.GetFiles(__SOURCE_DIRECTORY__, "*.fs")
+        Directory.GetFiles(FsHotWatch.TestRoots.RepositoryTree.path "tests/FsHotWatch.Tests", "*.fs")
         |> Array.filter (fun file ->
             let name = Path.GetFileName file
 
@@ -1792,8 +1786,8 @@ let ``tests move the process working directory only through TestHelpers`` () =
     // every test, until the process moves. `withProcessWorkingDirectory` always moves it
     // back; a test that moves it itself leaves it wherever it was when the test timed out.
     let testDirs =
-        [ __SOURCE_DIRECTORY__
-          Path.Combine(__SOURCE_DIRECTORY__, "..", "FsHotWatch.IntegrationTests") ]
+        [ FsHotWatch.TestRoots.RepositoryTree.path "tests/FsHotWatch.Tests"
+          FsHotWatch.TestRoots.RepositoryTree.path "tests/FsHotWatch.IntegrationTests" ]
 
     let moves (text: string) =
         text.Contains("SetCurrent" + "Directory")

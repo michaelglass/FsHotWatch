@@ -143,8 +143,13 @@ let private lintKeyOf (repoRoot: string) (file: string) (source: string) =
 
 [<Fact(Timeout = 15000)>]
 let ``lint key is identical in a second checkout with identical content`` () =
-    let a = Path.Combine(Path.GetTempPath(), "lint-a") |> Path.GetFullPath
-    let b = Path.Combine(Path.GetTempPath(), "lint-b") |> Path.GetFullPath
+    let a =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "lint-a")
+        |> Path.GetFullPath
+
+    let b =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "lint-b")
+        |> Path.GetFullPath
 
     let keyA = lintKeyOf a (Path.Combine(a, "src", "A.fs")) "let x = 1\n"
     let keyB = lintKeyOf b (Path.Combine(b, "src", "A.fs")) "let x = 1\n"
@@ -154,8 +159,13 @@ let ``lint key is identical in a second checkout with identical content`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``lint key differs across checkouts when the source differs`` () =
-    let a = Path.Combine(Path.GetTempPath(), "lint-src-a") |> Path.GetFullPath
-    let b = Path.Combine(Path.GetTempPath(), "lint-src-b") |> Path.GetFullPath
+    let a =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "lint-src-a")
+        |> Path.GetFullPath
+
+    let b =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "lint-src-b")
+        |> Path.GetFullPath
 
     test
         <@
@@ -308,7 +318,9 @@ let ``an entry naming a file outside the repository is refused in another checko
             let writer =
                 FsHotWatch.FileTaskCache.FileTaskCache(store, repoRoot = a) :> ITaskCache
 
-            let outside = Path.Combine(Path.GetTempPath(), "outside.fs") |> Path.GetFullPath
+            let outside =
+                Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "outside.fs")
+                |> Path.GetFullPath
 
             writer.Set (compositeFor a (Path.Combine(a, "A.fs"))) key (entryFor key outside)
 
@@ -909,8 +921,7 @@ let ``a checkout whose directory name is not filesystem-plain still gets a names
     // The name is a convenience for whoever lists the cache directory; the DIGEST is
     // the identity, so an awkward repository name is dropped rather than escaped.
     let awkward =
-        Path.Combine(Path.GetTempPath(), $"fshw awkward {Guid.NewGuid():N}")
-        |> Path.GetFullPath
+        FsHotWatch.TestRoots.TestRoot.freshPath "fshw awkward" |> Path.GetFullPath
 
     Directory.CreateDirectory awkward |> ignore
 

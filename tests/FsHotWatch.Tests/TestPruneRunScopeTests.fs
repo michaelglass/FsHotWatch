@@ -1131,8 +1131,7 @@ let ``a filtered re-run that PASSES retires the red it re-ran — and only that 
     // re-runs it and it passes — and the red STAYS, because the launch records every
     // project as `ProjectInFull` and the raw filter string's reach is unknowable. Sticky
     // forever; it blocked a production deploy three times.
-    let repoRoot =
-        Path.Combine(Path.GetTempPath(), "fshw-" + Guid.NewGuid().ToString("N"))
+    let repoRoot = FsHotWatch.TestRoots.TestRoot.freshPath "fshw"
 
     Directory.CreateDirectory(repoRoot) |> ignore
 
@@ -1203,8 +1202,7 @@ let ``a filtered re-run that PASSES retires the red it re-ran — and only that 
 let ``a filtered re-run whose report is missing or garbage retires NOTHING`` () =
     // Fail closed at the top of the stack too: a defect here must cost a stuck red, never
     // a false green.
-    let repoRoot =
-        Path.Combine(Path.GetTempPath(), "fshw-closed-" + Guid.NewGuid().ToString("N"))
+    let repoRoot = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-closed"
 
     Directory.CreateDirectory(repoRoot) |> ignore
 
@@ -4638,8 +4636,7 @@ let ``a write the watcher would have seen is revoked as the test run writing int
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``an edit the watcher saw during the run stays a plain MOVED`` () =
     withReceiptSource (fun repoRoot source ->
-        let handshake =
-            Path.Combine(Path.GetTempPath(), "fshw-edit-" + Guid.NewGuid().ToString("N"))
+        let handshake = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-edit"
 
         let started = handshake + ".started"
         let release = handshake + ".release"

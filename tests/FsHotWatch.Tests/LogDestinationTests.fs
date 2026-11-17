@@ -367,7 +367,7 @@ let ``a repo's daemon log resolves through the configured logDir`` () =
 
 /// Every `.fs` file under `src/`, as (path relative to the repo, text).
 let private sourceFiles () =
-    let repo = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", ".."))
+    let repo = FsHotWatch.TestRoots.RepositoryTree.root ()
     let src = Path.Combine(repo, "src")
 
     filesUnder FsHotWatch.SafeWalk.SourceExcludedDirs "*.fs" src

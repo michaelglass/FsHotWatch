@@ -491,7 +491,7 @@ let ``a statx reply reads as the identity at its documented offsets`` () =
 let ``the cache lives in the checkout's own .fshw directory`` () =
     // Per checkout: a file's identity is per filesystem object, so another checkout's cache
     // describes other files.
-    let root = Path.Combine(Path.GetTempPath(), "some-checkout")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "some-checkout")
 
     test <@ FsHwPaths.contentHashCacheFile root = Path.Combine(FsHwPaths.root root, "content-hash-cache") @>
 

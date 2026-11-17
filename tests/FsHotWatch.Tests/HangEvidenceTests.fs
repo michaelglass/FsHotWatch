@@ -36,7 +36,7 @@ let private realRun: HangEvidence.Runner =
             ProcessHelper.runProcess
                 command
                 args
-                (Path.GetTempPath())
+                (FsHotWatch.TestRoots.TestBinary.directory ())
                 []
                 (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 20.0))
         with

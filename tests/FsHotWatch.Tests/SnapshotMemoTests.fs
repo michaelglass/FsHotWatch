@@ -39,7 +39,9 @@ type private Tree =
           Text = $"// %s{Path.GetFileName path}" }
 
 let private tree (n: int) =
-    let dir = Path.Combine(Path.GetTempPath(), "fshw-snapshot-memo")
+    let dir =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-snapshot-memo")
+
     let aDll = Path.Combine(dir, "A", "bin", "A.dll")
 
     let a =

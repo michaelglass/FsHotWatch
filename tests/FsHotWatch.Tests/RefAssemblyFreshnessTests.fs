@@ -52,7 +52,14 @@ let ``pairsOf finds a runtime-specific pair one level deeper`` () =
 let ``pairsOf skips an intermediate with no published copy, and a project with no obj`` () =
     withPair "ref-pairs-none" (Path.Combine("Debug", "net10.0")) "v2" None (fun (project, _, _) ->
         test <@ List.isEmpty (pairsOf project) @>
-        test <@ List.isEmpty (pairsOf (Path.Combine(Path.GetTempPath(), "nowhere", "Missing.fsproj"))) @>
+
+        test
+            <@
+                List.isEmpty (
+                    pairsOf (Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "nowhere", "Missing.fsproj"))
+                )
+            @>
+
         test <@ List.isEmpty (pairsOf "Bare.fsproj") @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]

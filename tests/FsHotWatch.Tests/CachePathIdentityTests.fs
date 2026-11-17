@@ -12,8 +12,8 @@ let private under (root: string) (relative: string) =
 [<Fact>]
 let ``the same repo-relative file has the same portable key in different roots`` () =
     let roots =
-        [ Path.Combine(Path.GetTempPath(), "checkout-a")
-          Path.Combine(Path.GetTempPath(), "checkout-b") ]
+        [ Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "checkout-a")
+          Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "checkout-b") ]
 
     let keys =
         roots
@@ -26,9 +26,9 @@ let ``the same repo-relative file has the same portable key in different roots``
 [<Fact>]
 let ``relative-path identity is invariant across roots for varied path shapes`` () =
     let roots =
-        [ Path.Combine(Path.GetTempPath(), "checkout-a")
-          Path.Combine(Path.GetTempPath(), "checkout-b")
-          Path.Combine(Path.GetTempPath(), "nested", "checkout-c") ]
+        [ Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "checkout-a")
+          Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "checkout-b")
+          Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "nested", "checkout-c") ]
 
     let relativePaths =
         [ "File.fs"
@@ -46,8 +46,11 @@ let ``relative-path identity is invariant across roots for varied path shapes`` 
 
 [<Fact>]
 let ``portable keys round-trip and rebind beneath another root`` () =
-    let sourceRoot = Path.Combine(Path.GetTempPath(), "source-checkout")
-    let targetRoot = Path.Combine(Path.GetTempPath(), "target-checkout")
+    let sourceRoot =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "source-checkout")
+
+    let targetRoot =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "target-checkout")
 
     let key =
         CachePathIdentity.ofPath sourceRoot (under sourceRoot "src/App.fs")
@@ -62,11 +65,11 @@ let ``portable keys round-trip and rebind beneath another root`` () =
 
 [<Fact>]
 let ``outside and segment-prefix paths are not portable across roots`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
 
     let cases =
-        [ Path.Combine(Path.GetTempPath(), "outside", "File.fs")
-          Path.Combine(Path.GetTempPath(), "repo-other", "File.fs") ]
+        [ Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "outside", "File.fs")
+          Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo-other", "File.fs") ]
 
     for path in cases do
         let identity = CachePathIdentity.ofPath root path
@@ -75,7 +78,7 @@ let ``outside and segment-prefix paths are not portable across roots`` () =
 
 [<Fact>]
 let ``dot-dot is normalized before containment is decided`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
     let inside = under root "src/../src/File.fs"
     let outside = under root "../outside/File.fs"
 
@@ -108,7 +111,7 @@ let ``codec rejects malformed and escaping repo-relative keys`` () =
 
 [<Fact>]
 let ``distinct relative paths remain distinct and case is preserved`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
     let relativePaths = [ "src/A.fs"; "src/a.fs"; "src/nested/A.fs" ]
 
     let keys =
@@ -119,7 +122,7 @@ let ``distinct relative paths remain distinct and case is preserved`` () =
 
 [<Fact>]
 let ``checkout root itself has a portable identity`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
     let identity = CachePathIdentity.ofPath root root
 
     test <@ CachePathIdentity.toKey identity = "repo:." @>
@@ -127,7 +130,7 @@ let ``checkout root itself has a portable identity`` () =
 
 [<Fact>]
 let ``valid portable path corpus round-trips without key collisions`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
 
     let segments =
         [ "a"; "A"; "a-b"; "a_b"; "a b"; "λ"; "日本語"; "file.fs"; "name.with.dots" ]
@@ -152,7 +155,7 @@ let ``valid portable path corpus round-trips without key collisions`` () =
 [<Fact>]
 let ``Unix backslash filename cannot collide with a directory separator`` () =
     if Path.DirectorySeparatorChar = '/' then
-        let root = Path.Combine(Path.GetTempPath(), "repo")
+        let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
 
         let backslashName =
             CachePathIdentity.ofPath root (Path.Combine(root, "src", "a\\b.fs"))
@@ -168,7 +171,10 @@ let ``a directory named with a trailing separator has the same portable key as w
     // `.fshw.json` analyzer paths are written `tools/x/bin/Debug/net10.0/`; the
     // separator made the key fall back to the absolute path, so two checkouts never
     // agreed on the `analyzer-paths` slot.
-    let root = Path.Combine(Path.GetTempPath(), "trailing") |> Path.GetFullPath
+    let root =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "trailing")
+        |> Path.GetFullPath
+
     let bare = CachePathIdentity.keyOf (Some root) "tools/shim/bin/Debug/net10.0"
     let trailing = CachePathIdentity.keyOf (Some root) "tools/shim/bin/Debug/net10.0/"
 

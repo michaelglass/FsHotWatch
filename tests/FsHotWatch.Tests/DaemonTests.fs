@@ -5263,7 +5263,7 @@ let ``dumpProjectOptions handles empty options`` () =
 let ``dumpProjectOptions swallows IO errors`` () =
     // logDir does not exist and is not a directory — WriteAllLines will fail.
     let bogusDir =
-        Path.Combine(Path.GetTempPath(), "does-not-exist-" + string (Guid.NewGuid()), "nope")
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.freshPath "does-not-exist", "nope")
 
     let opts = makeProjectOptions "/tmp/X.fsproj" [] [ "-r:/a.dll" ]
     // Should not throw — errors are logged at debug level.

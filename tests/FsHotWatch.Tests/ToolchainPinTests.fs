@@ -105,7 +105,7 @@ let ``no project in the repository floats FCS or FSharp.Core`` () =
 let ``the CLI bundles exactly the pinned FCS and FSharp.Core`` () =
     // The CLI is a project reference of this test project, so its deps.json is copied
     // beside the test binary: the same resolution `dotnet pack` puts in the tool package.
-    let depsJson = Path.Combine(AppContext.BaseDirectory, "FsHotWatch.Cli.deps.json")
+    let depsJson = FsHotWatch.TestRoots.TestBinary.path "FsHotWatch.Cli.deps.json"
     test <@ File.Exists depsJson @>
 
     use deps = JsonDocument.Parse(File.ReadAllText depsJson)

@@ -102,8 +102,7 @@ let ``local ci checks the unpushed commits`` () =
 
 /// A stand-in `jj` first on PATH: prints `records` for `jj log`, or fails with `exitCode`.
 let private runGuardWithFakeJj (exitCode: int) (records: string) =
-    let bin =
-        Path.Combine(Path.GetTempPath(), "fshw-fakejj-" + string (System.Guid.NewGuid()))
+    let bin = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-fakejj"
 
     Directory.CreateDirectory bin |> ignore
     let fake = Path.Combine(bin, "jj")
@@ -193,8 +192,7 @@ let private runGuardIn (dir: string) (args: string list) =
 
 /// A throwaway repository: a base commit, then a clean commit and one carrying `last`.
 let private historyEndingWith (last: string) =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-commitguard-" + string (System.Guid.NewGuid()))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-commitguard"
 
     Directory.CreateDirectory dir |> ignore
     git dir [ "init"; "-q" ] |> ignore
@@ -269,8 +267,7 @@ let ``--git-base with no usable base and no origin/main refuses to guess`` () =
 
 [<Fact>]
 let ``--git-base outside a git checkout says SKIPPED rather than passing silently`` () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-commitguard-" + string (System.Guid.NewGuid()))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-commitguard"
 
     Directory.CreateDirectory dir |> ignore
 

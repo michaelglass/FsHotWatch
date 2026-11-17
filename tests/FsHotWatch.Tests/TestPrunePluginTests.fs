@@ -2792,7 +2792,7 @@ let ``formatFailureReport dumps the output tail when no failed line parses (back
 /// assertion and stack, and the last twelve (the artifacts and the coloured summary).
 /// The four thousand lines of passing tests between them are left out.
 let private ciRunOutput () =
-    File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "MtpOutput", "ci-confirm-one-assertion-failure.output.log"))
+    File.ReadAllText(FsHotWatch.TestRoots.TestBinary.path "MtpOutput/ci-confirm-one-assertion-failure.output.log")
 
 let private ciFailingClass = "FsHotWatch.Tests.TestPrunePluginTests"
 
@@ -3891,7 +3891,7 @@ let ``looksLikeSchemaDrift rejects unrelated errors`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift deletes the DB when the error looks like schema drift`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-repair"
     Directory.CreateDirectory(tmpDir) |> ignore
     let dbPath = Path.Combine(tmpDir, "testprune.db")
     File.WriteAllText(dbPath, "stale-cache-contents")
@@ -3910,7 +3910,7 @@ let ``tryRepairSchemaDrift deletes WAL and SHM sidecars alongside the main DB`` 
     // DB alongside stale -wal/-shm yields a 0-byte main DB with garbage recovery state,
     // and subsequent inserts hit "no such column: parent_symbol_id" because the schema
     // DDL never fully applied. Observed in production after a drift-recovery pass.
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-wal-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-repair-wal"
     Directory.CreateDirectory(tmpDir) |> ignore
     let dbPath = Path.Combine(tmpDir, "testprune.db")
     let walPath = dbPath + "-wal"
@@ -3932,7 +3932,7 @@ let ``tryRepairSchemaDrift deletes WAL and SHM sidecars alongside the main DB`` 
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-noop-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-repair-noop"
     Directory.CreateDirectory(tmpDir) |> ignore
     let dbPath = Path.Combine(tmpDir, "testprune.db")
     File.WriteAllText(dbPath, "healthy-cache")
@@ -3947,8 +3947,7 @@ let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
-    let missingPath =
-        Path.Combine(Path.GetTempPath(), $"tp-missing-{Guid.NewGuid():N}.db")
+    let missingPath = FsHotWatch.TestRoots.TestRoot.freshPath "tp-missing" + ".db"
 
     tryRepairSchemaDrift missingPath (exn "no such column: source")
     test <@ not (File.Exists missingPath) @>

@@ -147,7 +147,7 @@ let ``a host killed at its timeout still gets class lines from the results it pr
 [<InlineData(true)>]
 [<InlineData(false)>]
 let ``a real xUnit host killed at its timeout still gets per-class lines`` (nameHungTests: bool) =
-    let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+    let repoRoot = FsHotWatch.TestRoots.RepositoryTree.root ()
     let fixtureDir = Path.Combine(repoRoot, "tests", "Fixtures", "Xunit4RunnerFixture")
     let fixtureProject = Path.Combine(fixtureDir, "Xunit4RunnerFixture.fsproj")
 
@@ -218,7 +218,7 @@ let ``a real xUnit host killed at its timeout still gets per-class lines`` (name
 // The host passes in well under a second; the timeout only ends a hang.
 [<Fact(Timeout = 300_000)>]
 let ``fshw's default launch of a real xUnit host holds none of its thread-pool threads`` () =
-    let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+    let repoRoot = FsHotWatch.TestRoots.RepositoryTree.root ()
     let fixtureDir = Path.Combine(repoRoot, "tests", "Fixtures", "Xunit4RunnerFixture")
     let fixtureProject = Path.Combine(fixtureDir, "Xunit4RunnerFixture.fsproj")
 

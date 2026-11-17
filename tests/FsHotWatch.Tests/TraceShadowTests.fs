@@ -33,7 +33,8 @@ let private settings select : TraceSettings =
 /// A repository root holding a trace store with one recorded run of project P: test
 /// `C.a` executed `N.f`, test `C.b` executed `N.g`.
 let private withStore (f: string -> unit) =
-    let root = Directory.CreateTempSubdirectory("fshw-trace-shadow-").FullName
+    let root =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-trace-shadow").FullName
 
     try
         do
@@ -116,7 +117,8 @@ let ``with select off nothing is read, logged or stored`` () =
 
 [<Fact>]
 let ``an unreadable store is one log line and no reading, never an exception`` () =
-    let root = Directory.CreateTempSubdirectory("fshw-trace-shadow-bad-").FullName
+    let root =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-trace-shadow-bad").FullName
 
     try
         File.WriteAllText(Path.Combine(root, "traces.db"), "not a database")
@@ -159,7 +161,8 @@ let ``a failure's key is its project, class and method`` () =
 
 [<Fact>]
 let ``with no reading, completion opens nothing and stores nothing`` () =
-    let root = Directory.CreateTempSubdirectory("fshw-trace-shadow-none-").FullName
+    let root =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-trace-shadow-none").FullName
 
     try
         let lines = ResizeArray<string>()
@@ -293,7 +296,8 @@ let ``at completion the rows go to the shadow store, never the checkout's trace 
 
 [<Fact>]
 let ``two checkouts' runs count in one shadow store`` () =
-    let shared = Directory.CreateTempSubdirectory("fshw-trace-shadow-shared-").FullName
+    let shared =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-trace-shadow-shared").FullName
 
     try
         let sharedDb = Path.Combine(shared, "box", "shadow.db")
@@ -569,7 +573,7 @@ let ``a prediction the run then contradicts is a safe miss when nothing was stor
 
 [<Fact>]
 let ``a project's fingerprint is predicted from its build output, with its own DOTNET_ROOT and roll-forward first`` () =
-    let root = Directory.CreateTempSubdirectory("fshw-predict-").FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-predict").FullName
 
     try
         let projectDir = Path.Combine(root, "app")

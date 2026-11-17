@@ -76,7 +76,8 @@ let ``nothing is owed when no project takes part`` () =
 
 [<Fact>]
 let ``check reads a missing trace database as a run that stored nothing`` () =
-    let root = Directory.CreateTempSubdirectory("fshw-confirm-traces-").FullName
+    let root =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-confirm-traces").FullName
 
     try
         let warning =
@@ -89,7 +90,9 @@ let ``check reads a missing trace database as a run that stored nothing`` () =
 
 [<Fact>]
 let ``check reads the graded run's rows from the trace database`` () =
-    let root = Directory.CreateTempSubdirectory("fshw-confirm-traces-").FullName
+    let root =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-confirm-traces").FullName
+
     let dbPath = Path.Combine(root, ".fshw", "test-traces.db")
     Directory.CreateDirectory(Path.GetDirectoryName dbPath) |> ignore
 
@@ -119,7 +122,9 @@ let ``an every-run graded run that recorded a project owes nothing`` () =
 
 [<Fact>]
 let ``check names a trace database it cannot read`` () =
-    let root = Directory.CreateTempSubdirectory("fshw-confirm-traces-").FullName
+    let root =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-confirm-traces").FullName
+
     let dbPath = Path.Combine(root, ".fshw", "test-traces.db")
     Directory.CreateDirectory(Path.GetDirectoryName dbPath) |> ignore
     File.WriteAllText(dbPath, "not a sqlite database")

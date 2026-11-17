@@ -10,7 +10,9 @@ open Swensen.Unquote
 open FsHotWatch.SnapshotEpoch
 open FsHotWatch.Tests.TestHelpers
 
-let private root = Path.Combine(Path.GetTempPath(), "snapshot-root")
+let private root =
+    Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "snapshot-root")
+
 let private at (relative: string) = Path.Combine(root, relative)
 
 /// A reader over a fixed table that records every path it was asked for.
@@ -126,13 +128,15 @@ let ``a path is named relative to the root with forward slashes`` () =
 
     // The watcher reports real paths (`/private/var/…` for a macOS `/var/…`), a
     // preprocessor its own form: each is named against the root it lies under.
-    let real = Path.Combine(Path.GetTempPath(), "real-root")
+    let real = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "real-root")
     test <@ Manifest.relativePath [ root; real ] (Path.Combine(real, "src", "A.fs")) = "src/A.fs" @>
     test <@ Manifest.relativePath [ root; real ] (Path.Combine(root, "src", "A.fs")) = "src/A.fs" @>
     // Under neither: named against the configured root, the first.
     test
         <@
-            Manifest.relativePath [ root; real ] (Path.Combine(Path.GetTempPath(), "elsewhere", "A.fs")) = "../elsewhere/A.fs"
+            Manifest.relativePath
+                [ root; real ]
+                (Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "elsewhere", "A.fs")) = "../elsewhere/A.fs"
         @>
 
 [<Fact>]
@@ -228,7 +232,7 @@ let ``a file removed at a later epoch refuses any earlier read of it`` () =
 
 [<Fact>]
 let ``a later change is matched under either spelling of the root`` () =
-    let real = Path.Combine(Path.GetTempPath(), "real-root")
+    let real = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "real-root")
     let ledger = Ledger([ root; real ], fun _ -> ContentRead.Read("x", 1L))
     let captured = ledger.Current.Epoch
     ledger.Advance [ at "A.fs" ] |> ignore

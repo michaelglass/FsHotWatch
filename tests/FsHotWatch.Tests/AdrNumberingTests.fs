@@ -8,8 +8,7 @@ open System.Text.RegularExpressions
 open Xunit
 open Swensen.Unquote
 
-let private docsDir =
-    Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "docs"))
+let private docsDir = FsHotWatch.TestRoots.RepositoryTree.path "docs"
 
 /// Each `adr-NNN-*.md` file's number, from its name and from its `# ADR-NNN:` title.
 let private adrs () =

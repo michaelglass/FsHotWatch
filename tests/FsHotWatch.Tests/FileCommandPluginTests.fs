@@ -14,8 +14,7 @@ open FsHotWatch.Tests.TestHelpers
 /// match-everything pattern would hash the whole of `/tmp` on every event.
 let private emptyRoot =
     lazy
-        (let dir =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fc-empty-root-" + Guid.NewGuid().ToString("N"))
+        (let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fc-empty-root"
 
          System.IO.Directory.CreateDirectory(dir) |> ignore
          dir)
@@ -862,8 +861,7 @@ let private runEnvProbeAs
     (trigger: CommandTrigger)
     (drive: PluginHost -> unit)
     : string =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let outFile = System.IO.Path.Combine(tmpDir, "out")
@@ -1408,8 +1406,7 @@ let ``cache key is independent of commit_id`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``cache key changes when content of a path-arg file changes`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let configPath = System.IO.Path.Combine(tmpDir, "config.json")
@@ -1438,8 +1435,7 @@ let ``single handler: cache key reflects current file content per event`` () =
     // The salt must be re-evaluated per event, or mid-session edits to a config file
     // never invalidate the cache. A "compute once at create" optimisation reintroduces
     // the original bug.
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let configPath = System.IO.Path.Combine(tmpDir, "config.json")
@@ -1467,8 +1463,7 @@ let ``cache key changes when the content of the file that matched the pattern ch
     // The defect: a FileChanged run was keyed by command, args and arg-file contents
     // only. The file that matched `pattern` is the input the command was fired for, and
     // was not in the key, so a breaking second edit replayed "succeeded (cached)".
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let watched = System.IO.Path.Combine(tmpDir, "schema.sql")
@@ -1493,8 +1488,7 @@ let ``cache key changes when the content of the file that matched the pattern ch
 
 [<Fact>]
 let ``a matched file that was deleted keys differently, and one that cannot be read gives no key`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let watched = System.IO.Path.Combine(tmpDir, "schema.sql")
@@ -1550,8 +1544,7 @@ let ``cache key changes when command changes`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectArgFiles returns absolute path of an existing relative arg`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
@@ -1568,8 +1561,7 @@ let ``collectArgFiles returns absolute path of an existing relative arg`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectArgFiles ignores non-file tokens`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -1585,8 +1577,7 @@ let ``collectArgFiles ignores non-file tokens`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``collectArgFiles accepts absolute paths`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
@@ -1607,8 +1598,7 @@ let ``collectArgFiles accepts absolute paths`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``argsStalerThan flags files modified after the reference time`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
@@ -1665,8 +1655,7 @@ let ``events a file command does not act on leave its state alone`` () =
 let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some`` () =
     // computeArgsSalt's Option.map None branch is reached when a path passes File.Exists
     // in collectArgFiles but tryHashFile returns None — injectable, unlike the real race.
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let p = System.IO.Path.Combine(tmpDir, "config.json")
@@ -1779,8 +1768,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``argsStalerThan returns empty when files are older than reference`` () =
-    let tmpDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     System.IO.Directory.CreateDirectory(tmpDir) |> ignore
     let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")

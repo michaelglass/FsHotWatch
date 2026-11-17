@@ -7,8 +7,9 @@
 /// nothing more. `onExpiry` captures, before the timeout propagates, what is needed to
 /// answer that: this process's child tree, each child's stacks (`sample` on macOS for
 /// native frames, `createdump --triage` for managed ones), and the logs the fixture
-/// names, into `.fshw/diagnostics/` of the repository under test, which outlives the
-/// temp directory. The timeout's message then names where the evidence is.
+/// names, into a directory the CALLER names, which outlives the worktree it captures from.
+/// It used to be `.fshw/diagnostics/` of the real repository, the live daemon's state
+/// directory (AUTOMATION-1775). The timeout's message names where the evidence is.
 ///
 /// Capture is best-effort and never masks the timeout: a step that fails is recorded in
 /// `capture-errors.txt` and the rest go on.
@@ -156,7 +157,7 @@ let private realRunner: Runner =
             ProcessHelper.runProcess
                 command
                 args
-                (Path.GetTempPath())
+                (FsHotWatch.TestRoots.TestBinary.directory ())
                 []
                 (ProcessHelper.ProcessBounds.silent (TimeSpan.FromSeconds 20.0))
         with
@@ -171,24 +172,11 @@ let private running (pid: int) =
     with :? ArgumentException ->
         false
 
-/// `.fshw/diagnostics/` of the repository the test binary was built from, or the temp
-/// directory when it cannot be found.
-let private diagnosticsHome () =
-    let rec up (dir: DirectoryInfo) =
-        if isNull dir then
-            Path.GetTempPath()
-        elif File.Exists(Path.Combine(dir.FullName, "FsHotWatch.slnx")) then
-            Path.Combine(dir.FullName, ".fshw", "diagnostics")
-        else
-            up dir.Parent
-
-    up (DirectoryInfo AppContext.BaseDirectory)
-
-/// Capture this process's child tree and `keep` under a fresh directory named for
-/// `label`, and return that directory.
-let capture (label: string) (keep: string list) : string =
+/// Capture this process's child tree and `keep` under a fresh directory in `home` named
+/// for `label`, and return that directory.
+let capture (home: string) (label: string) (keep: string list) : string =
     let dir =
-        Path.Combine(diagnosticsHome (), $"""hang-%s{DateTime.UtcNow.ToString "yyyyMMddTHHmmss"}-%s{label}""")
+        Path.Combine(home, $"""hang-%s{DateTime.UtcNow.ToString "yyyyMMddTHHmmss"}-%s{label}""")
 
     captureTo realRunner running dir Environment.ProcessId keep |> ignore
     dir
@@ -212,6 +200,7 @@ let onExpiryWith
         let dir = captureWith label (keep ())
         raise (TimeoutException($"%s{ex.Message} — evidence captured in %s{dir}", ex))
 
-/// Run `work`; if it times out, capture evidence (`capture label (keep ())`) first and
-/// rethrow as a `TimeoutException` naming where it is.
-let onExpiry (label: string) (keep: unit -> string list) (work: unit -> 'T) : 'T = onExpiryWith capture label keep work
+/// Run `work`; if it times out, capture evidence into `home` (`capture home label (keep ())`)
+/// first and rethrow as a `TimeoutException` naming where it is.
+let onExpiry (home: string) (label: string) (keep: unit -> string list) (work: unit -> 'T) : 'T =
+    onExpiryWith (capture home) label keep work

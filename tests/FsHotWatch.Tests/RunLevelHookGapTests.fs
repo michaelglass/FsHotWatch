@@ -38,16 +38,14 @@ open FsHotWatch.Tests.TestHelpers
 /// is an invocation now, and an invocation hashes its repo tree and leaves a verdict
 /// under `.fshw/` in it.
 let private tmpRoot =
-    let id = Guid.NewGuid().ToString("N")
-    let path = Path.Combine(Path.GetTempPath(), $"fshw-runhooks-tests-%s{id}")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-runhooks-tests"
     Directory.CreateDirectory path |> ignore
     path
 
 /// A fresh absolute sentinel path. A hook `touch <sentinel>` creates it iff the
 /// hook actually fired; `File.Exists` is then a pure observation of "the hook ran".
 let private freshSentinel () =
-    let id = Guid.NewGuid().ToString("N")
-    Path.Combine(Path.GetTempPath(), $"fshw-runhook-%s{id}.sentinel")
+    FsHotWatch.TestRoots.TestRoot.freshPath "fshw-runhook" + ".sentinel"
 
 let private touch (path: string) = "touch '" + path + "'"
 

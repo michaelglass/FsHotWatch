@@ -41,8 +41,7 @@ let private ctrfOf (rows: (string * string * float * int) list) =
                tests = tests |} |}
 
 let private tempRunDir () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-profile-tests", Guid.NewGuid().ToString "N")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-profile-tests"
 
     Directory.CreateDirectory dir |> ignore
     dir

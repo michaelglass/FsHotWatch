@@ -12,7 +12,7 @@ open FsHotWatch.TestPrune.DependencyFanout
 // blocks directly.
 
 let private writeTempProject (body: string) =
-    let dir = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString())
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
     Directory.CreateDirectory(dir) |> ignore
     let p = Path.Combine(dir, "Proj.fsproj")
     File.WriteAllText(p, body)
@@ -274,7 +274,7 @@ module ``fingerprint inputs`` =
           Resource: string }
 
     let private layout () =
-        let root = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString())
+        let root = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
         let lib = Path.Combine(root, "Lib")
         let tests = Path.Combine(root, "Tests")
 

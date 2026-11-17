@@ -527,7 +527,12 @@ let ``solutionNameFor names the authority, or says there is none to name`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``solutionCandidates on a directory that is not there is empty, not a throw`` () =
-    test <@ List.isEmpty (solutionCandidates (Path.Combine(Path.GetTempPath(), "fshw-no-such-dir-158"))) @>
+    test
+        <@
+            List.isEmpty (
+                solutionCandidates (Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-no-such-dir-158"))
+            )
+        @>
 
 [<Theory>]
 [<InlineData("../tests/Fixture.fsproj", "../tests/Fixture.fsproj")>]
@@ -684,7 +689,7 @@ let ``dot relative exclusion aliases preserve the actual project owner`` () =
 
 [<Fact>]
 let ``no declared exclusions need neither solution nor discovered inventory`` () =
-    let missing = Path.Combine(Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+    let missing = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
     let resolver =
         createExclusionResolver missing None [] (fun () -> failwith "inventory must not be consulted")

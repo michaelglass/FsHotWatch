@@ -11,15 +11,7 @@ open System.Text.RegularExpressions
 
 /// Walk up from the test binary to the directory that holds `mise.toml`.
 let repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: mise.toml is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "mise.toml")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 let miseToml root =
     File.ReadAllText(Path.Combine(root, "mise.toml"))

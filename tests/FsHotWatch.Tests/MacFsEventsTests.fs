@@ -437,8 +437,7 @@ type MacFsEventsTests() =
         if not isMacOS then
             Assert.Skip("macOS only")
         else
-            let tmpRoot =
-                Path.Combine(Path.GetTempPath(), $"fshw-fsevents-multi-{Guid.NewGuid():N}")
+            let tmpRoot = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-fsevents-multi"
 
             let srcDir = Path.Combine(tmpRoot, "src")
             let testDir = Path.Combine(tmpRoot, "tests")

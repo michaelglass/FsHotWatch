@@ -25,8 +25,7 @@ open FsHotWatch.Tests.TestHelpers
 // without a NuGet cache in the loop.
 
 /// This checkout's root — the manifest the pinned-repo fixtures copy.
-let private thisRepoRoot =
-    Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", ".."))
+let private thisRepoRoot = FsHotWatch.TestRoots.RepositoryTree.root ()
 
 /// The version this repository pins, read the same way the plugin reads it.
 let private thisRepoPin =

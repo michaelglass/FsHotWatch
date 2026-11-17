@@ -171,8 +171,7 @@ let ``CheckFile returns None when no project registered for the file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``RegisterProject makes CheckFile find the project for its source files`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{System.Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-pipeline"
 
     Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -229,8 +228,7 @@ let ``CheckProject returns None for unregistered project`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``CheckProject returns results for all registered source files`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-checkproj-{System.Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-checkproj"
 
     Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -377,7 +375,7 @@ let ``CancelPreviousCheck links to caller token`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``CheckFile assigns increasing version numbers`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-version-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-version"
 
     Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -416,8 +414,7 @@ let ``InvalidateFile with cache backend calls Invalidate for registered file`` (
 
     // F7: real on-disk file so makeCacheKeyFast returns Some and Invalidate
     // is actually called.
-    let tempDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-inv-{System.Guid.NewGuid():N}")
+    let tempDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-inv"
 
     Directory.CreateDirectory(tempDir) |> ignore
     let invFile = Path.Combine(tempDir, "Inv.fs")
@@ -788,8 +785,7 @@ let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
 
     // A real on-disk file: since F7, makeCacheKey returns None for an unreadable
     // file and the cache lookup is bypassed, so the hit path needs a hashable file.
-    let tempDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-cachehit-{System.Guid.NewGuid():N}")
+    let tempDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-cachehit"
 
     Directory.CreateDirectory(tempDir) |> ignore
     let hotFile = Path.Combine(tempDir, "Hot.fs")
@@ -824,8 +820,7 @@ let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () 
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
 
     // F7: real file on disk so makeCacheKey returns Some.
-    let tempDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-invalidate-{System.Guid.NewGuid():N}")
+    let tempDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-invalidate"
 
     Directory.CreateDirectory(tempDir) |> ignore
     let invFile = Path.Combine(tempDir, "Inv2.fs")

@@ -73,7 +73,7 @@ type RelativePathResolution() =
     [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
     member _.``absolute paths resolve a relative path against the process working directory``() =
         atSettledWorkingDirectory (fun () ->
-            let cwd = Directory.GetCurrentDirectory()
+            let cwd = Directory.GetCurrentDirectory() // FSHW-ROOT-001 ok: the process working directory IS the subject here (LogGlobal, serialized)
             test <@ AbsFilePath.value (AbsFilePath.create "Lib.fs") = Path.Combine(cwd, "Lib.fs") @>
 
             test <@ AbsProjectPath.value (AbsProjectPath.create "Lib.fsproj") = Path.Combine(cwd, "Lib.fsproj") @>)
@@ -372,7 +372,9 @@ let private cwdGone () =
 
 [<Fact(Timeout = 15000)>]
 let ``a relative path after the working directory is deleted fails naming that directory`` () =
-    let stood = Path.Combine(Path.GetTempPath(), "fshw-stood-here")
+    let stood =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "fshw-stood-here")
+
     let mutable vanished = false
 
     let reader =
@@ -415,7 +417,7 @@ let ``a rooted path resolves without asking for the working directory`` () =
             asked <- asked + 1
             raise (cwdGone ()))
 
-    let root = Path.GetPathRoot(Path.GetTempPath())
+    let root = Path.GetPathRoot(FsHotWatch.TestRoots.TestRoot.pathOnlyBase)
     let file = Path.Combine(root, "repo", "src", "Lib.fs")
 
     test <@ reader.Resolve file = file @>

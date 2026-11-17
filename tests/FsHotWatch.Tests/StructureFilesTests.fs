@@ -9,11 +9,7 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact(Timeout = 15000)>]
 let ``the packed CLI uses the exact restore and build checked by the dependency guard`` () =
     let workflow =
-        File.ReadAllLines(
-            Path.GetFullPath(
-                Path.Combine(System.AppContext.BaseDirectory, "../../../../../.github/workflows/release.yml")
-            )
-        )
+        File.ReadAllLines(Path.GetFullPath(FsHotWatch.TestRoots.RepositoryTree.path ".github/workflows/release.yml"))
         |> Array.filter (fun line -> not (line.TrimStart().StartsWith("#")))
 
     let jobStarts =

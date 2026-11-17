@@ -73,7 +73,7 @@ let private runOnce (config: TestConfig) : string * string =
     status, runDir
 
 let private markerIn () =
-    Path.Combine(Path.GetTempPath(), $"fshw-starved-marker-{Guid.NewGuid():N}")
+    FsHotWatch.TestRoots.TestRoot.freshPath "fshw-starved-marker"
 
 [<Fact(Timeout = 120_000)>]
 let ``a declared project that timed out on a starved box is re-run alone, and its second result is reported`` () =
@@ -356,8 +356,7 @@ let private timedOutResult =
 let private passedResult = TestsPassed("ok", false, TimeSpan.FromSeconds 1.0)
 
 let private inTempRunDir (body: string -> unit) =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-1524-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-1524"
 
     Directory.CreateDirectory dir |> ignore
 

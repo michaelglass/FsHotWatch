@@ -85,7 +85,7 @@ let ``an unresolvable base runs the step and says why`` () =
 
 /// A stand-in `jj` first on PATH: prints `stdout` for any call and exits `exitCode`.
 let private withFakeJj (exitCode: int) (stdout: string) body =
-    let bin = Path.Combine(Path.GetTempPath(), "fshw-fakejj-" + string (Guid.NewGuid()))
+    let bin = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-fakejj"
 
     Directory.CreateDirectory bin |> ignore
     let fake = Path.Combine(bin, "jj")

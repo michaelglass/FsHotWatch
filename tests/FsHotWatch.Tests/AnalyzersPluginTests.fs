@@ -109,8 +109,7 @@ let ``analyzer with non-existent path skips loading`` () =
 
 [<Fact(Timeout = 20000)>]
 let ``analyzer with mix of valid and invalid paths`` () =
-    let emptyDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-empty-{System.Guid.NewGuid():N}")
+    let emptyDir = FsHotWatch.TestRoots.TestRoot.freshPath "az-empty"
 
     System.IO.Directory.CreateDirectory(emptyDir) |> ignore
 
@@ -152,8 +151,7 @@ let ``configured non-existent analyzer path loads zero (guard input)`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``configured empty analyzer dir loads zero (guard input)`` () =
-    let emptyDir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-guard-empty-{System.Guid.NewGuid():N}")
+    let emptyDir = FsHotWatch.TestRoots.TestRoot.freshPath "az-guard-empty"
 
     System.IO.Directory.CreateDirectory(emptyDir) |> ignore
 
@@ -299,8 +297,7 @@ let ``cache key reflects file content when getCommitId is unavailable`` () =
 // ---------------------------------------------------------------------------
 
 let private analyzerBinWith (name: string) (bytes: byte array) =
-    let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-id-{System.Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "az-id"
 
     System.IO.Directory.CreateDirectory(dir) |> ignore
     System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, $"{name}.dll"), bytes)
@@ -582,7 +579,7 @@ let ``a refusal that changes cause is re-noticed; the key stays absent throughou
         // PdbMismatch: a sidecar that is not this build's. The snapshot is retaken
         // every event while refused, so the new cause is seen without a byte moving.
         System.IO.File.Copy(
-            System.IO.Path.Combine(AppContext.BaseDirectory, "FsHotWatch.Tests.pdb"),
+            FsHotWatch.TestRoots.TestBinary.path "FsHotWatch.Tests.pdb",
             System.IO.Path.ChangeExtension(dll, ".pdb")
         )
 
@@ -1390,8 +1387,7 @@ let private gResearchAnalyzerDir =
     let root =
         Environment.GetEnvironmentVariable "NUGET_PACKAGES"
         |> Option.ofObj
-        |> Option.defaultWith (fun () ->
-            IO.Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".nuget", "packages"))
+        |> Option.defaultWith (fun () -> FsHotWatch.TestRoots.NuGetCache.root ())
 
     IO.Path.Combine(root, "g-research.fsharp.analyzers", "0.25.0", "analyzers", "dotnet", "fs")
 
@@ -1400,7 +1396,7 @@ let private gResearchAnalyzerDir =
 /// the probe references the copy this test project ships beside itself.
 let private gResearchPlants =
     let logging =
-        IO.Path.Combine(AppContext.BaseDirectory, "Microsoft.Extensions.Logging.Abstractions.dll")
+        FsHotWatch.TestRoots.TestBinary.path "Microsoft.Extensions.Logging.Abstractions.dll"
 
     $"#r @\"{logging}\"\n"
     + "open System\n"

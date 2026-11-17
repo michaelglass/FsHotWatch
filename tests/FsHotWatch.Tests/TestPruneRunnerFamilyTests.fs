@@ -354,7 +354,7 @@ let ``run-tests gives an xUnit 4 runner its v4 flags and reads the report from t
 // the cap sits above it.
 [<Fact(Timeout = 300_000)>]
 let ``run-tests invokes the real xUnit 4 runner and verifies its CTRF report`` () =
-    let repoRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+    let repoRoot = FsHotWatch.TestRoots.RepositoryTree.root ()
 
     let fixtureProject =
         Path.Combine(repoRoot, "tests", "Fixtures", "Xunit4RunnerFixture", "Xunit4RunnerFixture.fsproj")

@@ -159,7 +159,7 @@ let ``this process resolves a root that holds a runtime`` () =
 
 [<Fact>]
 let ``a DOTNET_HOST_PATH symlink is read as its final target`` () =
-    let dir = Directory.CreateTempSubdirectory("tl-host-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tl-host").FullName
 
     try
         let real = Path.Combine(dir, "dotnet")
@@ -176,7 +176,7 @@ let ``a DOTNET_HOST_PATH symlink is read as its final target`` () =
 
 [<Fact>]
 let ``a DOTNET_HOST_PATH that is not a link, or is missing, is read as is`` () =
-    let dir = Directory.CreateTempSubdirectory("tl-host-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tl-host").FullName
 
     try
         let plain = Path.Combine(dir, "dotnet")

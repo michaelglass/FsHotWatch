@@ -849,8 +849,7 @@ let ``applyDepsGate: RecoveredOk proceeds and clears prior diagnostic`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-groups"
 
     Directory.CreateDirectory dir |> ignore
     let lockPath = Path.Combine(dir, "paket.lock")
@@ -863,8 +862,7 @@ let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``paketGroupsFromLock: explicit GROUP headers are returned after Main`` () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-groups"
 
     Directory.CreateDirectory dir |> ignore
     let lockPath = Path.Combine(dir, "paket.lock")
@@ -1189,7 +1187,7 @@ let ``depRelevantSignature covers the ProjectReference closure`` () =
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``describeStaleness names each input written after the assets`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = Path.Combine(FsHotWatch.TestRoots.TestRoot.pathOnlyBase, "repo")
     let assets = DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc)
     let props = Path.Combine(root, "Directory.Build.props")
     let fsproj = Path.Combine(root, "P", "P.fsproj")

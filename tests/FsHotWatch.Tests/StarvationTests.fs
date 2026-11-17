@@ -224,7 +224,7 @@ let ``a platform with no load average yields no samples`` () =
 
 [<Fact>]
 let ``the record round-trips, and says starved-then-passed-alone apart from a clean pass`` () =
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-starved-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-starved"
     Directory.CreateDirectory dir |> ignore
 
     try
@@ -267,7 +267,7 @@ let ``a rerun that is still red says so`` () =
 
 [<Fact>]
 let ``setting the first attempt aside moves its artifacts out of the run directory's report set`` () =
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-starved-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-starved"
     Directory.CreateDirectory dir |> ignore
 
     try
@@ -410,7 +410,7 @@ let ``no samples is described as such`` () =
 
 [<Fact>]
 let ``a record that is absent, unreadable or has no outcome reads as none`` () =
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-starved-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-starved"
     Directory.CreateDirectory dir |> ignore
 
     try
@@ -551,7 +551,7 @@ let ``a timeout in classes the declaration does not cover names the load and the
 [<Fact>]
 let ``a not-re-run record that cannot be written loses the explanation, never the run`` () =
     // A file where the run directory should be: the write is refused by the filesystem.
-    let notADirectory = Path.GetTempFileName()
+    let notADirectory = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
 
     try
         Starvation.writeNotRerun everyClass notADirectory "Slow.Tests" "not starved" quiet
