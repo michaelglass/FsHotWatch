@@ -15,6 +15,7 @@ All optional, set in `.fshw.json`:
 | `pressureIdleFloorMin` | `int \| false` | `2` | Under memory pressure, shorten an already-eligible idle-exit window to this many minutes. See [Pressure-shortened idle exit](#pressure-shortened-idle-exit). |
 | `fsEventsLatencyMs` | `int` | `250` | macOS only: the FSEvents coalescing window in milliseconds. Higher = more event coalescing and lower `fseventsd` load per change, at the cost of slightly higher change-to-rebuild latency. `0` disables coalescing; ignored off macOS. |
 | `checker.cacheSizeFactor` | `int` | `100` | Scales the FCS TransparentCompiler caches (FCS's own default is 100; FsAutoComplete uses 10). The factor sets how many ENTRIES are kept, not bytes: a smaller factor holds less memory and re-typechecks more. It does not bound the per-file type-checks of the files being checked: the daemon keeps every current one, because a project whose upstream files' type-checks were released while downstream ones were kept reports its own types as incompatible with themselves. Must be a positive integer. The daemon logs the effective value at startup as `[config] checker: cacheSizeFactor=N`. |
+| `checker.maxConcurrentChecks` | `int` | *processor count* | How many files the daemon type-checks at once. Lower it to leave processors for work running beside the daemon, such as a test suite, without shrinking every other processor-sized pool the way `DOTNET_PROCESSOR_COUNT` does. Must be a positive integer; anything else refuses the config. A repository host's sessions share one bound, taken from the worktree the host was launched from. The daemon logs the bound in effect at startup as `[config] checker: maxConcurrentChecks=N`. See [Bounded checks](#bounded-checks). |
 | `timeoutSec` | `int` | — | Global default per-task timeout in seconds, used when a task has no per-entry override. See [Per-task timeouts](#per-task-timeouts). |
 
 ## Garbage collection
@@ -39,9 +40,9 @@ per process with `DOTNET_gcServer=0` or `DOTNET_GCDynamicAdaptationMode=0`.
 
 ## Bounded checks
 
-The daemon type-checks at most as many files at once as the machine has processors,
-and the project snapshots a check needs are built once per project and shared by every
-check of it. A scan logs both, e.g.
+The daemon type-checks at most as many files at once as the machine has processors
+(`checker.maxConcurrentChecks` sets another bound), and the project snapshots a check
+needs are built once per project and shared by every check of it. A scan logs both, e.g.
 `Check concurrency peak 12 of 12; project snapshots built so far: 24`. A snapshot count
 near the number of files, rather than the number of projects, means sharing broke.
 

@@ -69,7 +69,12 @@ let ``no more checks run at once than the pipeline's bound, however many are ask
         let sink = BlockingChecks(hold = 150)
 
         let pipeline =
-            CheckPipeline(checker, activity = sink, repoRoot = dir, maxConcurrentChecks = 2)
+            CheckPipeline(
+                checker,
+                activity = sink,
+                repoRoot = dir,
+                maxConcurrentChecks = (WorkScheduler.CheckConcurrency.tryCreate 2 |> Option.get)
+            )
 
         let files = manyFiles checker pipeline dir 12
 
@@ -87,7 +92,12 @@ let ``a waiting check whose caller gives up leaves without taking a slot`` () =
         let sink = BlockingChecks(hold = 300)
 
         let pipeline =
-            CheckPipeline(checker, activity = sink, repoRoot = dir, maxConcurrentChecks = 1)
+            CheckPipeline(
+                checker,
+                activity = sink,
+                repoRoot = dir,
+                maxConcurrentChecks = (WorkScheduler.CheckConcurrency.tryCreate 1 |> Option.get)
+            )
 
         let files = manyFiles checker pipeline dir 3
         use cts = new CancellationTokenSource()

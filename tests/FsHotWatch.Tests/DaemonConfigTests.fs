@@ -200,6 +200,56 @@ let ``parseConfig checker cacheSizeFactor that is not a positive integer is a Co
 
     test <@ ex.message.Contains "checker" @>
 
+// --- parseConfig: checker.maxConcurrentChecks (AUTOMATION-1779) ---
+
+let private checkBound (config: DaemonConfiguration) : int =
+    FsHotWatch.WorkScheduler.CheckConcurrency.value config.MaxConcurrentChecks
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig checker maxConcurrentChecks absent is one check per processor, as before the key`` () =
+    test <@ checkBound (parseConfig "{}" defaults) = System.Environment.ProcessorCount @>
+
+    test
+        <@
+            checkBound (parseConfig """{"checker": {"cacheSizeFactor": 10}}""" defaults) = System.Environment.ProcessorCount
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig checker maxConcurrentChecks positive value is used`` () =
+    let config = parseConfig """{"checker": {"maxConcurrentChecks": 3}}""" defaults
+    test <@ checkBound config = 3 @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("""{"checker": {"maxConcurrentChecks": 0}}""")>]
+[<InlineData("""{"checker": {"maxConcurrentChecks": -2}}""")>]
+[<InlineData("""{"checker": {"maxConcurrentChecks": 2.5}}""")>]
+[<InlineData("""{"checker": {"maxConcurrentChecks": "4"}}""")>]
+[<InlineData("""{"checker": {"maxConcurrentChecks": null}}""")>]
+[<InlineData("""{"checker": {"maxConcurrentChecks": 99999999999}}""")>]
+let ``parseConfig checker maxConcurrentChecks that is not a positive integer is a ConfigErrorException``
+    (json: string)
+    =
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.message.Contains "checker.maxConcurrentChecks" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a repository host admits checks at its launch worktree's configured bound`` () =
+    withTempDir "cfg-host-checks" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, ".fshw.json"), """{"checker": {"maxConcurrentChecks": 2}}""")
+        test <@ FsHotWatch.WorkScheduler.CheckConcurrency.value (hostCheckConcurrency dir) = 2 @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a repository host whose launch config is refused admits one check per processor`` () =
+    withTempDir "cfg-host-checks-bad" (fun dir ->
+        File.WriteAllText(Path.Combine(dir, ".fshw.json"), """{"checker": {"maxConcurrentChecks": 0}}""")
+
+        test
+            <@
+                FsHotWatch.WorkScheduler.CheckConcurrency.value (hostCheckConcurrency dir) = System.Environment.ProcessorCount
+            @>)
+
 // --- parseConfig: run-level hooks ---
 
 [<Fact(Timeout = 15000)>]

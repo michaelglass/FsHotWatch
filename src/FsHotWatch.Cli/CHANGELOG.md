@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feature: `.fshw.json` key `checker.maxConcurrentChecks` bounds how many files the daemon type-checks at once
+  (AUTOMATION-1779). A positive whole number; `0`, a negative, a fraction, a string or `null` refuses the config with
+  `checker.maxConcurrentChecks must be a positive whole number`. Absent, the bound is one check per processor, as
+  before. It was fixed at the processor count with no key, so the only lever, `DOTNET_PROCESSOR_COUNT`, also shrank
+  MSBuild nodes, test threads and every other processor-sized pool. The daemon logs the bound in effect at startup as
+  `[config] checker: maxConcurrentChecks=N`. A repository host's sessions share one bound: its launch worktree's.
+
 ## 0.14.0-alpha.154 - 2026-11-18
 
 - fix: `fshw audit --store <a cache home's outcome store>` audits test evidence (AUTOMATION-1767). It read VACUOUS

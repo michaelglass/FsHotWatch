@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- api: `DaemonOptions.MaxConcurrentChecks: WorkScheduler.CheckConcurrency` sets how many checks a per-worktree daemon
+  admits at once (AUTOMATION-1779); `DaemonOptions.defaults` keeps one per processor. `CheckConcurrency` is a positive
+  count, built only by `CheckConcurrency.tryCreate` or as `CheckConcurrency.processorCount`. **Breaking:**
+  `CheckPipeline`'s optional `maxConcurrentChecks` is now a `CheckConcurrency` instead of an `int` clamped to at least 1.
+
 ## 0.10.0-alpha.121 - 2026-11-18
 
 - **behaviour change:** a `SupervisedWork` request's receipt is set by the writer right after the publication that
