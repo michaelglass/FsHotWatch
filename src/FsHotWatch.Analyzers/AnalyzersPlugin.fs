@@ -189,6 +189,23 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
             | None -> AnalyzeRecords.fileIfAbsent w.Store root relPath key entries |> ignore
         | _ -> ()
 
+/// The analyzer set as a handler loaded it at construction (AUTOMATION-1706).
+[<RequireQualifiedAccess>]
+type AnalyzerSetLoad =
+    /// Per configured path, in configured order, how many analyzers it contributed. The
+    /// count is 0 when the path doesn't exist OR exists but contains no analyzer DLLs —
+    /// both are silent-skip cases the fail-loud guard catches.
+    | Loaded of byPath: (string * int) list
+    /// Refused whole, before any of it loaded: the analyzer SDK or an analyzer DLL was
+    /// compiled against another FSharp.Compiler.Service band than the host runs. Every
+    /// run is red with `AnalyzerLoad.describeFcsRefusal` of these until a reload lifts it.
+    | RefusedFcsMismatch of AnalyzerLoad.FcsMismatch * AnalyzerLoad.FcsMismatch list
+
+/// The ledger key a refused analyzer set reports under: one entry for the set, never
+/// one per file. Angle brackets mark it as no file (`PluginHost.PruneVanishedErrors`).
+[<Literal>]
+let FcsRefusalLedgerKey = "<analyzer-set>"
+
 type AnalyzersState =
     {
         /// Every entry this plugin reported to the ledger for each file: the analyzers'
@@ -197,11 +214,8 @@ type AnalyzersState =
         /// The analyzers that crashed on each file, replaced per file like
         /// `DiagnosticsByFile` so a file that stops crashing drops out of the tally.
         CrashesByFile: Map<AbsFilePath, AnalyzerCrash list>
-        LoadedCount: int
-        /// Per-path analyzer load result, in the order paths were configured. The
-        /// count is 0 when the path doesn't exist OR exists but contains no
-        /// analyzer DLLs — both are silent-skip cases the fail-loud guard catches.
-        LoadedByPath: (string * int) list
+        /// The analyzer set as this handler loaded it at construction.
+        Load: AnalyzerSetLoad
         RunAnalyzed: int
         /// The inputs each file's `DiagnosticsByFile` entry was computed from — what
         /// `fshw findings` compares with the disk before it trusts the entry. A file
@@ -212,6 +226,12 @@ type AnalyzersState =
         /// See `AnalyzeRecordBook`.
         Records: AnalyzeRecordBook
     }
+
+    /// How many analyzers this handler loaded at construction: none from a refused set.
+    member this.LoadedCount: int =
+        match this.Load with
+        | AnalyzerSetLoad.Loaded byPath -> byPath |> List.sumBy snd
+        | AnalyzerSetLoad.RefusedFcsMismatch _ -> 0
 
     // Out-of-repo compile items are never analyzed (see the `FileChecked` arm).
     interface ISkipsOutOfRepoFiles
@@ -775,40 +795,57 @@ let internal createShadowedWithSeams
     // picks up a newly-added analyzer, and can never replay a now-removed/changed
     // analyzer instance — or the statics it built from a config since edited. Volatile
     // per the plugin's thread-safety convention.
-    let loadOne =
-        AnalyzerLoad.loadPath (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes)
+    //
+    // Every load is held to the host's FSharp.Compiler.Service band first: a set with an
+    // assembly built against another band is refused whole, before any of it loads, and
+    // reports that once per run instead of crashing on every file (AUTOMATION-1706).
+    let exclude = isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes
 
-    let mutable loaded = analyzerPaths |> List.map loadOne
+    let loadAll () =
+        let set = AnalyzerLoad.loadSet AnalyzerLoad.hostFcs exclude analyzerPaths
+
+        match set with
+        | AnalyzerLoad.AnalyzerSet.Loaded paths ->
+            info "analyzers" $"Loaded %d{paths |> List.sumBy _.Count} analyzers from %d{analyzerPaths.Length} paths"
+        | AnalyzerLoad.AnalyzerSet.RefusedFcsMismatch(first, rest) ->
+            error "analyzers" (AnalyzerLoad.describeFcsRefusal first rest)
+
+        set
+
+    let mutable loaded = loadAll ()
 
     // Per-path load result (path, count). A non-existent path counts 0 without
     // touching the loader; both 0-cases are silent-skips the fail-loud guard
     // turns RED.
-    let loadedByPath =
-        loaded
-        |> List.map (fun (path: AnalyzerLoad.LoadedPath) -> path.Path, path.Count)
-
-    let loadedCount = loadedByPath |> List.sumBy snd
+    let initialLoad =
+        match loaded with
+        | AnalyzerLoad.AnalyzerSet.Loaded paths ->
+            AnalyzerSetLoad.Loaded(paths |> List.map (fun path -> path.Path, path.Count))
+        | AnalyzerLoad.AnalyzerSet.RefusedFcsMismatch(first, rest) -> AnalyzerSetLoad.RefusedFcsMismatch(first, rest)
 
     /// Load the paths `stale` selects again, swap the fresh Clients in, and unload the
     /// ones they replace. Returns how many analyzers the reloaded paths now hold.
     let reloadWhere (stale: AnalyzerLoad.LoadedPath -> bool) : int =
-        let next =
-            Volatile.Read(&loaded)
-            |> List.map (fun path ->
-                if stale path then
-                    Some path, loadOne path.Path
-                else
-                    None, path)
+        let reload =
+            AnalyzerLoad.reloadWhere AnalyzerLoad.hostFcs exclude stale (Volatile.Read(&loaded))
 
-        Volatile.Write(&loaded, next |> List.map snd)
+        Volatile.Write(&loaded, reload.Set)
+        reload.Retired |> List.iter AnalyzerLoad.unload
+        reload.Reloaded
 
-        next
-        |> List.iter (fun (retired, _) -> retired |> Option.iter AnalyzerLoad.unload)
+    /// Load the whole set again through the band check (which a refused set can pass
+    /// once its analyzers are rebuilt), swap it in, and unload what it replaces.
+    /// Returns how many analyzers the set now holds.
+    let reloadAll () : int =
+        let retired = AnalyzerLoad.loadedPaths (Volatile.Read(&loaded))
+        let next = loadAll ()
+        Volatile.Write(&loaded, next)
+        retired |> List.iter AnalyzerLoad.unload
+        AnalyzerLoad.loadedPaths next |> List.sumBy _.Count
 
-        next
-        |> List.sumBy (fun (retired, path) -> if retired.IsSome then path.Count else 0)
-
-    info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
+    // The refusal the ledger holds under `FcsRefusalLedgerKey`, so the first event of a
+    // set that loads again clears it, and no other event writes the ledger for it.
+    let mutable reportedRefusal: string option = None
 
     // A long-lived (warm) daemon loads analyzers ONCE at construction, so when a
     // downstream repo ADDS an analyzer and the gate's build refreshes the DLL on
@@ -888,7 +925,7 @@ let internal createShadowedWithSeams
         if onDisk <> current.Materialization then
             // Load the current set into FRESH clients and swap them in, so the added
             // analyzer is live (and any removed/changed one is gone) before we analyze.
-            let reloadedCount = reloadWhere (fun _ -> true)
+            let reloadedCount = reloadAll ()
 
             info
                 "analyzers"
@@ -967,8 +1004,7 @@ let internal createShadowedWithSeams
       Init =
         { DiagnosticsByFile = Map.empty
           CrashesByFile = Map.empty
-          LoadedCount = loadedCount
-          LoadedByPath = loadedByPath
+          Load = initialLoad
           RunAnalyzed = 0
           AnalyzedByFile = Map.empty
           Stamps = stamps
@@ -1033,8 +1069,30 @@ let internal createShadowedWithSeams
                         // here only this way (`CanAnswer`), so it is never demanded live. The
                         // record's entries are what the live analysis reported, failures
                         // included: a cached red stays red.
-                        match recordBook.Answer result with
-                        | Some entries ->
+                        // A refused set (AUTOMATION-1706) analyses nothing: the run is red with the
+                        // refusal, one ledger entry for the set, and no file is analysed or answered.
+                        // The first event of a set that loads again clears that entry.
+                        let clearRefusal () =
+                            if (Volatile.Read(&reportedRefusal)).IsSome then
+                                Volatile.Write(&reportedRefusal, None)
+                                ctx.ClearErrors FcsRefusalLedgerKey
+
+                        match Volatile.Read(&loaded), recordBook.Answer result with
+                        | AnalyzerLoad.AnalyzerSet.RefusedFcsMismatch(first, rest), _ ->
+                            let elapsed = PluginCtxHelpers.beginRun ctx
+                            let refusal = AnalyzerLoad.describeFcsRefusal first rest
+                            Volatile.Write(&reportedRefusal, Some refusal)
+                            ctx.ReportErrors FcsRefusalLedgerKey [ ErrorEntry.error refusal ]
+
+                            PluginCtxHelpers.failedWith
+                                ctx
+                                refusal
+                                "analyzer set refused: built against another FSharp.Compiler.Service"
+                                (elapsed ())
+
+                            return state
+                        | AnalyzerLoad.AnalyzerSet.Loaded _, Some entries ->
+                            clearRefusal ()
                             let elapsed = PluginCtxHelpers.beginRun ctx
                             PluginCtxHelpers.reportOrClearFile ctx fileStr entries
                             let updated = state.DiagnosticsByFile |> Map.add result.File entries
@@ -1055,7 +1113,8 @@ let internal createShadowedWithSeams
                                     DiagnosticsByFile = updated
                                     CrashesByFile = crashesByFile
                                     AnalyzedByFile = state.AnalyzedByFile |> Map.add result.File (stamp ()) }
-                        | None ->
+                        | AnalyzerLoad.AnalyzerSet.Loaded paths, None ->
+                            clearRefusal ()
 
                             let checkResultsObj =
                                 match result.CheckResults with
@@ -1103,7 +1162,7 @@ let internal createShadowedWithSeams
                                                             // A scoped path's analyzers run only on the files its
                                                             // scope admits (`analyzers.scope`).
                                                             let activeClients =
-                                                                Volatile.Read(&loaded)
+                                                                paths
                                                                 |> List.filter (fun path -> admits path.Path fileStr)
                                                                 |> List.map _.Client
 
@@ -1317,7 +1376,7 @@ let internal createShadowedWithSeams
       PrepareCommit = None
       Commands =
         [ "diagnostics",
-          PluginCommand.Observe(fun _ctx state _args ->
+          PluginCommand.Observe(fun _ctx (state: AnalyzersState) _args ->
               async {
                   let totalDiags =
                       state.DiagnosticsByFile
@@ -1335,7 +1394,7 @@ let internal createShadowedWithSeams
           // model says must be accounted for, and the analyzer set on disk NOW — read, not
           // reloaded, so observing changes nothing the next analysis will see.
           FsHotWatch.Analyzers.AnalyzerFindings.CommandName,
-          PluginCommand.Observe(fun ctx state _args ->
+          PluginCommand.Observe(fun ctx (state: AnalyzersState) _args ->
               async {
                   let generation, expected =
                       match ctx.ProjectGraph.ObserveCheckableFiles() with
@@ -1442,9 +1501,12 @@ let internal createShadowedWithSeams
                 let chain = refreshConfigs file
 
                 let key =
-                    match (Volatile.Read(&snapshot)).Inputs with
-                    | Result.Error _ -> None
-                    | Result.Ok analyzerInputs ->
+                    // A refused set analyses nothing, so it files and replays nothing: every
+                    // event reaches `Update`, which reports the refusal.
+                    match (Volatile.Read(&snapshot)).Inputs, Volatile.Read(&loaded) with
+                    | Result.Error _, _
+                    | _, AnalyzerLoad.AnalyzerSet.RefusedFcsMismatch _ -> None
+                    | Result.Ok analyzerInputs, AnalyzerLoad.AnalyzerSet.Loaded _ ->
                         Volatile.Write(&replayPending, box result)
                         let configDigest = analyzerConfigHash chain
                         // A hit on this key replays the analysis it names; its stamp is this.
@@ -1553,7 +1615,8 @@ let internal createShadowedWithSeams
             // A handler replaced by a config reload must not keep its analyzers loaded.
             // Unloading is cooperative too: a still-running analyzer keeps its context
             // alive until it returns.
-            Volatile.Read(&loaded) |> List.iter AnalyzerLoad.unload) }
+            AnalyzerLoad.loadedPaths (Volatile.Read(&loaded))
+            |> List.iter AnalyzerLoad.unload) }
 
 /// `createShadowedWithSeams` with this process's shadow: disagreements logged at warning
 /// under the `analyzers` tag, the oracles answered live for the repository.

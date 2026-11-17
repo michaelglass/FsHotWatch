@@ -7,6 +7,10 @@
   green run ids, from the per-test rows the store files beside each test record. Skipped is neither. `--json` carries
   them under `flakyTests`, with `testRowRuns` and `unreadableTestRows`; a window with no rows is named as a gap.
 
+- fix: an analyzer set refused for its FSharp.Compiler.Service band no longer trips the zero-analyzer startup guard:
+  the daemon starts and every run is red with the refusal, which names each assembly, its FCS and the host's
+  (AUTOMATION-1706). `DaemonConfig.analyzerLoadFailure` decides it from the handler's `AnalyzerSetLoad`.
+
 ## 0.14.0-alpha.152 - 2026-11-16
 
 - feat(trace): mutate --judge static measures fshw's static selection recall (AUTOMATION-1688)

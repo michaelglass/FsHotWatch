@@ -2899,6 +2899,32 @@ let ``analyzerPathFailures silent when every configured path loads at least one`
 let ``analyzerPathFailures silent when analyzers unconfigured`` () =
     test <@ (analyzerPathFailures []).IsNone @>
 
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``analyzerLoadFailure counts a configured path the plugin never loaded as zero`` () =
+    let load =
+        FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzerSetLoad.Loaded [ "/repo/a/bin", 2 ]
+
+    let failure =
+        analyzerLoadFailure (fun _ -> None) [ "/repo/a/bin"; "/repo/dropped/bin" ] load
+
+    test <@ failure.IsSome @>
+    test <@ failure.Value.Contains "/repo/dropped/bin" @>
+    test <@ not (failure.Value.Contains "/repo/a/bin") @>
+    test <@ (analyzerLoadFailure (fun _ -> None) [ "/repo/a/bin" ] load).IsNone @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``analyzerLoadFailure lets a set refused for its FCS band start, to be red on every run`` () =
+    // Every path loads 0 when the set is refused; that is the refusal, not a missing build.
+    let mismatch: FsHotWatch.Analyzers.AnalyzerLoad.FcsMismatch =
+        { Assembly = "/repo/a/bin/A.Analyzer.dll"
+          Built = System.Version(43, 12, 400, 0)
+          Host = System.Version(43, 13, 101, 0) }
+
+    let load =
+        FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzerSetLoad.RefusedFcsMismatch(mismatch, [])
+
+    test <@ (analyzerLoadFailure (fun _ -> None) [ "/repo/a/bin" ] load).IsNone @>
+
 // --- loadConfig: the test scope must cover the solution ---
 //
 // THE END-TO-END REGRESSION TEST, at the boundary that matters: a dummy test

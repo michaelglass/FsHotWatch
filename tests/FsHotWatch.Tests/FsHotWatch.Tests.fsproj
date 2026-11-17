@@ -253,6 +253,7 @@
     <Compile Include="AnalyzerFindingsTests.fs" />
     <Compile Include="FindingsCommandTests.fs" />
     <Compile Include="AnalyzerReloadTests.fs" />
+    <Compile Include="AnalyzerFcsBandTests.fs" />
     <Compile Include="LintPluginTests.fs" />
     <Compile Include="LintConfigShapeTests.fs" />
     <Compile Include="FantomasToolTests.fs" />

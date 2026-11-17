@@ -270,8 +270,9 @@ let ``analyzers load guard does not fire when a real analyzer loads`` () =
 
     test <@ handler.Init.LoadedCount >= 1 @>
 
-    // LoadedByPath is the genuine per-path result of the real load, not a stub.
-    test <@ (FsHotWatch.Cli.DaemonConfig.analyzerPathFailures handler.Init.LoadedByPath).IsNone @>
+    // Load is the genuine per-path result of the real load, not a stub.
+    test
+        <@ (FsHotWatch.Cli.DaemonConfig.analyzerLoadFailure (fun _ -> None) [ analyzerPath ] handler.Init.Load).IsNone @>
 
 // Pins the partial silent-skip the earlier aggregate (total == 0) guard missed: when
 // one path loads ≥1 and others load 0, registerPlugins must still raise, naming only

@@ -137,7 +137,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
             ()
 
 // Guard inputs: a configured analyzer path that loads zero must produce LoadedCount = 0,
-// which DaemonConfig.analyzersLoadFailure turns into a RED gate. The two shapes that hit
+// which DaemonConfig.analyzerLoadFailure turns into a RED gate. The two shapes that hit
 // it are a missing path (the actual CI bug — bin built in the wrong config) and an
 // existing path with no analyzer DLLs.
 
@@ -148,7 +148,7 @@ let ``configured non-existent analyzer path loads zero (guard input)`` () =
 
     test <@ handler.Init.LoadedCount = 0 @>
     // Recorded per-path, so the guard can name the offender rather than just the total.
-    test <@ handler.Init.LoadedByPath = [ path, 0 ] @>
+    test <@ handler.Init.Load = AnalyzerSetLoad.Loaded [ path, 0 ] @>
 
 [<Fact(Timeout = 15000)>]
 let ``configured empty analyzer dir loads zero (guard input)`` () =
@@ -160,7 +160,7 @@ let ``configured empty analyzer dir loads zero (guard input)`` () =
     try
         let handler = create None [ emptyDir ] None DiagnosticSeverity.Hint
         test <@ handler.Init.LoadedCount = 0 @>
-        test <@ handler.Init.LoadedByPath = [ emptyDir, 0 ] @>
+        test <@ handler.Init.Load = AnalyzerSetLoad.Loaded [ emptyDir, 0 ] @>
     finally
         try
             System.IO.Directory.Delete(emptyDir, true)
@@ -232,7 +232,7 @@ let ``empty analyzer paths still creates working handler`` () =
     let handler = create None [] None DiagnosticSeverity.Hint
     test <@ handler.Init.LoadedCount = 0 @>
     // No configured paths ⇒ empty per-path list ⇒ the per-path guard stays silent.
-    test <@ List.isEmpty handler.Init.LoadedByPath @>
+    test <@ handler.Init.Load = AnalyzerSetLoad.Loaded [] @>
     test <@ handler.Init.DiagnosticsByFile = Map.empty @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
 

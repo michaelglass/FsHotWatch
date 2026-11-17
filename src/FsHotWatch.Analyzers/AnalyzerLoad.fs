@@ -16,12 +16,13 @@
 /// The discovery rules are the SDK's own: the same file glob and filters, the same
 /// SDK-version gate, and the SDK's internal `analyzersFromType`, reached by
 /// reflection, to find the analyzer members. Only the load context differs.
-module internal FsHotWatch.Analyzers.AnalyzerLoad
+module FsHotWatch.Analyzers.AnalyzerLoad
 
 open System
 open System.Collections.Concurrent
 open System.IO
 open System.Reflection
+open System.Reflection.PortableExecutable
 open System.Runtime.Loader
 open System.Text.RegularExpressions
 open FSharp.Analyzers.SDK
@@ -165,3 +166,161 @@ let internal loadPath (exclude: string -> bool) (path: string) : LoadedPath =
 /// token) keeps its context alive until it returns, never the reverse.
 let internal unload (loaded: LoadedPath) : unit =
     loaded.Loaders |> List.iter (fun loader -> loader.Dispose())
+
+// ---- The FSharp.Compiler.Service band (AUTOMATION-1706) ----------------------------
+//
+// An analyzer reads the typed tree through FCS's own types, and the host shares ITS FCS
+// with every analyzer (see the module comment). An analyzer compiled against another FCS
+// API therefore binds members that may not exist in the host's: FCS 43.13 renamed
+// `recordFields` to `recordFieldsAndSpreads`, and analyzers built against 43.12 then
+// threw MissingMethodException on every file they analysed, while producing nothing.
+// Such a set is refused before anything in it is loaded.
+
+[<Literal>]
+let private FcsAssemblyName = "FSharp.Compiler.Service"
+
+/// An assembly compiled against an FSharp.Compiler.Service outside the host's band.
+type FcsMismatch =
+    {
+        /// The analyzer DLL's path, or for the analyzer SDK, its assembly name.
+        Assembly: string
+        /// The FCS AssemblyVersion its metadata references.
+        Built: Version
+        /// The FCS AssemblyVersion this process runs.
+        Host: Version
+    }
+
+/// The analyzer paths, loaded, or refused whole because an assembly they depend on
+/// was compiled against another FCS band than the host's.
+[<RequireQualifiedAccess>]
+type internal AnalyzerSet =
+    | Loaded of LoadedPath list
+    | RefusedFcsMismatch of FcsMismatch * FcsMismatch list
+
+/// The FCS this process runs, as its AssemblyVersion carries it. FCS stamps the full
+/// release there (package 43.12.402 is AssemblyVersion 43.12.402.0), so the version
+/// says more than the band the rule compares.
+let internal hostFcs: Version =
+    typeof<FSharp.Compiler.Text.Range>.Assembly.GetName().Version
+
+/// Whether an assembly compiled against FCS `built` may run under FCS `host`: the same
+/// major.minor. A patch release keeps its band's API (FSharp.Analyzers.SDK 0.39.2
+/// references 43.12.400 and runs under 43.12.402); a minor release is where FCS
+/// renames what analyzers read.
+let internal sameFcsBand (host: Version) (built: Version) : bool =
+    host.Major = built.Major && host.Minor = built.Minor
+
+/// The assemblies among `builtAgainst` (name, FCS it references) outside `host`'s band.
+let internal fcsMismatches (host: Version) (builtAgainst: (string * Version) list) : FcsMismatch list =
+    builtAgainst
+    |> List.filter (fun (_, built) -> not (sameFcsBand host built))
+    |> List.map (fun (assembly, built) ->
+        { Assembly = assembly
+          Built = built
+          Host = host })
+
+/// The FCS `dll` was compiled against, read from its metadata without loading it, or
+/// None when it references none or is not a managed assembly (the loader skips those).
+let internal fcsReferenceOf (dll: string) : Version option =
+    try
+        use stream = File.OpenRead dll
+        use pe = new PEReader(stream)
+        let reader = Metadata.PEReaderExtensions.GetMetadataReader pe
+
+        reader.AssemblyReferences
+        |> Seq.map reader.GetAssemblyReference
+        |> Seq.tryFind (fun reference -> reader.GetString reference.Name = FcsAssemblyName)
+        |> Option.map _.Version
+    with
+    | :? BadImageFormatException
+    | :? InvalidOperationException -> None
+
+/// The FCS the analyzer SDK this host runs was compiled against: every analyzer runs
+/// through it, so it is held to the same band.
+let private sdkFcsReference: (string * Version) list =
+    let sdk = typeof<CliContext>.Assembly.GetName()
+
+    typeof<CliContext>.Assembly.GetReferencedAssemblies()
+    |> Array.filter (fun reference -> reference.Name = FcsAssemblyName)
+    |> Array.map (fun reference -> sdk.Name, reference.Version)
+    |> Array.toList
+
+/// What every DLL the loader would open under `paths` references of FCS.
+let private builtAgainstUnder (paths: string list) : (string * Version) list =
+    paths
+    |> List.filter Directory.Exists
+    |> List.collect analyzerDlls
+    |> List.choose (fun dll -> fcsReferenceOf dll |> Option.map (fun built -> dll, built))
+
+/// The SDK's and `paths`' assemblies outside `host`'s FCS band, as a refusal, or None.
+let private refusalUnder (host: Version) (paths: string list) : AnalyzerSet option =
+    match fcsMismatches host (sdkFcsReference @ builtAgainstUnder paths) with
+    | [] -> None
+    | first :: rest -> Some(AnalyzerSet.RefusedFcsMismatch(first, rest))
+
+/// Load every path, or refuse the set whole, before loading any of it, when the SDK or
+/// a DLL under the paths was compiled against another FCS band than `host`.
+let internal loadSet (host: Version) (exclude: string -> bool) (paths: string list) : AnalyzerSet =
+    refusalUnder host paths
+    |> Option.defaultWith (fun () -> AnalyzerSet.Loaded(paths |> List.map (loadPath exclude)))
+
+/// The paths `set` holds loaded: none when it was refused.
+let internal loadedPaths (set: AnalyzerSet) : LoadedPath list =
+    match set with
+    | AnalyzerSet.Loaded paths -> paths
+    | AnalyzerSet.RefusedFcsMismatch _ -> []
+
+/// What reloading part of a set did.
+type internal Reload =
+    {
+        /// The set to use from now on.
+        Set: AnalyzerSet
+        /// The paths it replaced, for the caller to `unload`.
+        Retired: LoadedPath list
+        /// How many analyzers the reloaded paths now hold.
+        Reloaded: int
+    }
+
+/// Load the paths of `set` that `stale` selects again, each into a fresh Client, keeping
+/// the others. A refused set has nothing loaded to reload. A reload is a load, so it is
+/// held to the band too: a stale path whose DLLs left it refuses the whole set.
+let internal reloadWhere
+    (host: Version)
+    (exclude: string -> bool)
+    (stale: LoadedPath -> bool)
+    (set: AnalyzerSet)
+    : Reload =
+    match set with
+    | AnalyzerSet.RefusedFcsMismatch _ ->
+        { Set = set
+          Retired = []
+          Reloaded = 0 }
+    | AnalyzerSet.Loaded paths ->
+        let retired = paths |> List.filter stale
+
+        match refusalUnder host (retired |> List.map _.Path) with
+        | Some refused ->
+            { Set = refused
+              Retired = paths
+              Reloaded = 0 }
+        | None ->
+            let next =
+                paths
+                |> List.map (fun path -> if stale path then loadPath exclude path.Path else path)
+
+            { Set = AnalyzerSet.Loaded next
+              Retired = retired
+              Reloaded =
+                List.zip paths next
+                |> List.sumBy (fun (before, after) -> if stale before then after.Count else 0) }
+
+/// The one message a refused set reports: each refused assembly with the FCS it was
+/// built against and the FCS this host runs, then what to do about it.
+let describeFcsRefusal (first: FcsMismatch) (rest: FcsMismatch list) : string =
+    let named =
+        first :: rest
+        |> List.map (fun mismatch ->
+            $"%s{mismatch.Assembly} was compiled against FSharp.Compiler.Service %O{mismatch.Built}, but this fshw runs %O{mismatch.Host}")
+        |> String.concat "; "
+
+    $"Analyzer set refused, no analyzer ran: %s{named}. An analyzer runs only under the FSharp.Compiler.Service major.minor it was built against: rebuild the analyzers against FSharp.Compiler.Service %d{first.Host.Major}.%d{first.Host.Minor}, or run an fshw built on theirs."

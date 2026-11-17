@@ -306,6 +306,25 @@ let analyzerPathFailuresWith (hintFor: string -> string option) (loadedByPath: (
 let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
     analyzerPathFailuresWith (fun _ -> None) loadedByPath
 
+/// Why the daemon must not start over the analyzers handler's `load` of `configuredPaths`
+/// (absolute, as configured), or None: the fail-loud guard over each configured path, a
+/// path dropped before loading counting 0. A set refused for its FSharp.Compiler.Service
+/// band is NOT a startup failure: the handler registers, and every run is red with the
+/// refusal, which names each assembly, its FCS and the host's (AUTOMATION-1706).
+let analyzerLoadFailure
+    (hintFor: string -> string option)
+    (configuredPaths: string list)
+    (load: FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzerSetLoad)
+    : string option =
+    match load with
+    | FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzerSetLoad.RefusedFcsMismatch _ -> None
+    | FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzerSetLoad.Loaded byPath ->
+        let countByPath = Map.ofList byPath
+
+        configuredPaths
+        |> List.map (fun path -> path, (Map.tryFind path countByPath |> Option.defaultValue 0))
+        |> analyzerPathFailuresWith hintFor
+
 
 /// Default global per-operation timeout (seconds) applied when neither a
 /// per-entry `timeoutSec` nor the global `.fshw.json` `timeoutSec` is set.
@@ -2968,7 +2987,7 @@ let registerPluginsIn
 
         // Build the handler unconditionally (even when resolvedPaths is empty) so
         // its per-path load result is known: that is what the fail-loud guard
-        // inspects. The factory loads analyzers eagerly, so Init.LoadedByPath is
+        // inspects. The factory loads analyzers eagerly, so Init.Load is
         // the real per-path result.
         let scopeByAbsolutePath =
             a.Scopes
@@ -3010,21 +3029,13 @@ let registerPluginsIn
                 config.TimeoutSec
                 a.FailOnSeverity
 
-        // Map every ORIGINAL configured path to its contributed analyzer count:
-        // 0 if it was dropped during resolution (missing after retry), else the
-        // plugin's per-path count (0 if it resolved but loaded no analyzer DLLs).
-        let countByResolvedPath = handler.Init.LoadedByPath |> Map.ofList
-
-        let loadedByOriginalPath =
-            absolutePaths
-            |> List.map (fun p -> p, (Map.tryFind p countByResolvedPath |> Option.defaultValue 0))
-
-        // Fail-loud — see `analyzerPathFailures`.
-        match analyzerPathFailuresWith (fun p -> Map.tryFind p hintByAbsolutePath) loadedByOriginalPath with
+        // Fail-loud — see `analyzerLoadFailure`. Every ORIGINAL configured path counts: 0 if
+        // it was dropped during resolution (missing after retry), else the plugin's count.
+        match analyzerLoadFailure (fun p -> Map.tryFind p hintByAbsolutePath) absolutePaths handler.Init.Load with
         | Some message -> raise (ConfigErrorException message)
         | None ->
-            // Every configured path loaded ≥1 here: we are inside `Some a`, so paths
-            // were given, and the guard above only passes when none contributed 0.
+            // Every configured path loaded ≥1 here, or the set was refused for its FCS band
+            // (0 loaded; the plugin logged the refusal and turns every run red with it).
             let loadedCount = handler.Init.LoadedCount
 
             Logging.info

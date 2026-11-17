@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix!: an analyzer set with an assembly compiled against another FSharp.Compiler.Service band than the host runs
+  is refused at load, before any of it loads, instead of crashing on every file it analyses (AUTOMATION-1706). The
+  band is major.minor: FCS stamps its full release in its AssemblyVersion (package 43.12.402 is 43.12.402.0), and the
+  SDK 0.39.2 references 43.12.400 while running under 43.12.402, so an exact rule would refuse a working setup. Each
+  analyzer DLL and the FSharp.Analyzers.SDK are read from metadata (`AnalyzerLoad.fcsReferenceOf`), nothing executed.
+  A refused set reports ONE error under the ledger key `<analyzer-set>` (`FcsRefusalLedgerKey`) naming each
+  assembly, its FCS and the host's, and every run fails with it until a rebuild lifts it; it has no cache key. A
+  per-path reload is held to the same band. Breaking: `AnalyzersState.LoadedByPath` is replaced by
+  `Load: AnalyzerSetLoad` (`Loaded of byPath | RefusedFcsMismatch`); `LoadedCount` is now a member derived from it.
+
 ## 0.7.0-alpha.58 - 2026-11-16
 
 - build: `FsHotWatch.Core.dll` is no longer in this package's `lib/`: it ships in the FsHotWatch package, which this
