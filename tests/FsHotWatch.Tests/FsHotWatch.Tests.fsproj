@@ -101,6 +101,8 @@
     <Compile Include="AsyncRuntimeTests.fs" />
     <Compile Include="SimRuntime.fs" />
     <Compile Include="SimRuntimeTests.fs" />
+    <Compile Include="StoreSimulation.fs" />
+    <Compile Include="StoreSimulationTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="WorkLedgerPropertyTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
