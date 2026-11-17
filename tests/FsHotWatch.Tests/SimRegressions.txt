@@ -2,5 +2,5 @@
 # them on every run, beside the fixed band 1..N. Append one line per failing nightly seed, with
 # the theorem it violated and the ticket filed for it; never remove one.
 #
-# <component> <seed> <theorem> <ticket>   (component: store, supervised-work, debounced-work)
+# <component> <seed> <theorem> <ticket>   (component: store, supervised-work, debounced-work, frames)
 # e.g. store 48213 Order AUTOMATION-NNNN

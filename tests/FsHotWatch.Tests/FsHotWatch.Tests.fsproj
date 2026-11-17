@@ -105,10 +105,12 @@
     <Compile Include="StoreSimulation.fs" />
     <Compile Include="SupervisedWorkSimulation.fs" />
     <Compile Include="DebouncedWorkSimulation.fs" />
+    <Compile Include="FrameSimulation.fs" />
     <Compile Include="SimRegressions.fs" />
     <Compile Include="StoreSimulationTests.fs" />
     <Compile Include="SupervisedWorkSimulationTests.fs" />
     <Compile Include="DebouncedWorkSimulationTests.fs" />
+    <Compile Include="FrameSimulationTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="WorkLedgerPropertyTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
