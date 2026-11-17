@@ -15,12 +15,18 @@
   the incident) that nobody asked for. Each change batch is now classified by the checkout's VCS position, read
   from files and never by running `jj`/`git`: for jj, the operation that last updated THIS workspace's working
   copy (`.jj/working_copy/checkout`), not the repository's op head, which every workspace moves; for git, `HEAD`
-  and the commit its branch names (loose or packed). An edit checks at once, as before. A batch after the position
-  moved is held, with every later one, and logged once (`a VCS operation moved the tree (X -> Y); waiting for a
-  client before checking`); the next `Scan` request (`fshw check`) checks everything held. A move to a jj
-  `snapshot working copy` operation is an edit: it recorded edits already on disk. A position that cannot be read
-  checks the batch. `VcsPosition` (the detectors) and `VcsQuiet` (the gate) are new. BREAKING: `DaemonOptions` gains
-  `VcsProbe` (default `VcsPosition.probeFor`), the seam a test moves the position through.
+  and the commit its branch names (loose or packed). An edit checks at once, as before. The batch that arrives with
+  a moved position is held and logged (`a VCS operation moved the tree (X -> Y); waiting for a client before
+  checking what it rewrote`); a later operation joins it. A save after the operation is an edit and checks at once:
+  each batch is compared with the position the previous one left. The next `Scan` request (`fshw check`) checks
+  everything held, before the wait it grades after returns, so the first check answers for the tree the operation
+  left; a check that arrives while the operation's batch is still debouncing gets one request carrying both, whose
+  changes are admitted before the client wakes the gate (`VcsQuiet.decide`). A move to a jj `snapshot working copy`
+  operation is an edit: it recorded edits already on disk. A position that cannot be read checks the batch.
+  `GetDiagnostics` carries the gate as `vcs` (`{"state":"checking"}`, or `"waiting"` with `before`, `after` and
+  `held`), so `status` can say a waiting daemon is not a hung one. `VcsPosition` (the detectors) and `VcsQuiet` (the
+  gate and its `Notice`) are new. BREAKING: `DaemonOptions` gains `VcsProbe` (default `VcsPosition.probeFor`), the
+  seam a test moves the position through, and `DaemonRpcConfig` gains `GetVcs`.
 
 - feat: a daily test-row log that outlives the outcome store's keys (AUTOMATION-1744). Each run's per-test rows
   are also written to a file of their own, `<store root>/test-rows/<yyyy-mm-dd>.<run>.<project>.jsonl.gz`: the run's

@@ -35,9 +35,11 @@ say), FsHotWatch waits for things to settle and processes them in one batch.
 
 A rebase or checkout is not a save. When a batch arrives after a VCS operation moved
 the checkout (this jj workspace's working-copy operation, or git `HEAD` and the
-branch it names), a running daemon checks and tests nothing on its own: it holds the
-batch, and every later one, until the next `fshw check`. A jj snapshot of your own
-edits is not such an operation.
+branch it names), a running daemon checks and tests nothing it rewrote on its own: it
+holds that batch until the next `fshw check`, which checks it before it answers.
+`fshw status` meanwhile says `vcs: tree changed by a VCS operation (…); waiting for a
+client`, naming the operation. A save after the operation still checks at once, and a
+jj snapshot of your own edits is not an operation.
 
 ## Quick start
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `fshw status` says when the daemon is waiting for a client after a VCS operation (AUTOMATION-1705), with a
+  line such as "vcs: tree changed by a VCS operation (X -> Y); waiting for a client", naming the operations, read
+  from the daemon's `vcs` reply (`IpcParsing.vcsOf`). A daemon that sends none prints nothing.
+
 - feat!: `fshw analytics` reads several outcome stores (AUTOMATION-1744): `--store` repeats, and the stores are
   analysed as a union, each named by its directory (`OutcomeAnalytics.StoreSource`). With no `--store` it reads this
   repository's box-wide store, as before. A flaky test pairs a red and a green across stores and machines (grouped by

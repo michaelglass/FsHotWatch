@@ -36,6 +36,7 @@ let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonR
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
       GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
       GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
+      GetVcs = fun () -> FsHotWatch.VcsQuiet.Notice.Checking
       Context = None }
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host

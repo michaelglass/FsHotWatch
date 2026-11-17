@@ -4340,6 +4340,11 @@ let private executeCommandRendered
                     IpcParsing.snapshotOf json
                     |> Option.iter (IpcOutput.snapshotLine >> eprintfn "%s")
 
+                    // A daemon waiting for a client after a VCS operation is not a hung one.
+                    IpcParsing.vcsOf json
+                    |> Option.bind FsHotWatch.VcsQuiet.Notice.line
+                    |> Option.iter (eprintfn "%s")
+
                     // Same nudge as `check`/`confirm`: when a machine is reading, name the
                     // files rather than leaving it to scrape a display built for a human.
                     if not UI.isInteractive then

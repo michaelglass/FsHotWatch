@@ -71,6 +71,8 @@
     <Compile Include="Restart.fs" />
     <Compile Include="PidFile.fs" />
     <Compile Include="SnapshotEpoch.fs" />
+    <Compile Include="VcsPosition.fs" />
+    <Compile Include="VcsQuiet.fs" />
     <Compile Include="FileStamp.fs" />
     <Compile Include="Interruption.fs" />
     <Compile Include="PathToken.fs" />
@@ -144,8 +146,6 @@
     <Compile Include="PluginWedge.fs" />
     <Compile Include="HookStep.fs" />
     <Compile Include="ScanMetrics.fs" />
-    <Compile Include="VcsPosition.fs" />
-    <Compile Include="VcsQuiet.fs" />
     <Compile Include="Daemon.fs" />
     <Compile Include="SessionRegistry.fs" />
     <Compile Include="HostLifecycle.fs" />

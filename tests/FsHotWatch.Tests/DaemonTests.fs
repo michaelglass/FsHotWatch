@@ -1279,6 +1279,7 @@ let private scanStatusAnswered (state: ScanState) : string * string list =
                   GetProjectModel = fun () -> Observation.Unobserved
                   GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
                   GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
+                  GetVcs = fun () -> FsHotWatch.VcsQuiet.Notice.Checking
                   Context = None }
             )
 

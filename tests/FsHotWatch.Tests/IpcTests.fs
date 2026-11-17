@@ -48,6 +48,7 @@ let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
       GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
       GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
+      GetVcs = fun () -> FsHotWatch.VcsQuiet.Notice.Checking
       Context = None }
 
 /// A CLI that sees the pipe listening decides a daemon is there. So once the server's
@@ -2551,3 +2552,22 @@ let ``status carries the daemon's snapshot epoch, and a reply without one reads 
         <@
             FsHotWatch.Cli.IpcOutput.snapshotLine snapshot = "snapshot: epoch 4 (manifest 0123456789ab), 3 stale publication(s) refused (they checked bytes a later save replaced)"
         @>
+
+// AUTOMATION-1705: `status` says when a daemon waits for a client after a VCS operation.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``status carries the daemon's VCS gate, and a reply without one reads as none`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let waiting =
+        FsHotWatch.VcsQuiet.Notice.Waiting("jj op aaaaaaaaaaaa", "jj op bbbbbbbbbbbb", 2)
+
+    let target =
+        DaemonRpcTarget(
+            { defaultRpcConfig host with
+                GetVcs = fun () -> waiting }
+        )
+
+    test <@ FsHotWatch.Cli.IpcParsing.vcsOf (target.GetDiagnostics "") = Some waiting @>
+    test <@ FsHotWatch.Cli.IpcParsing.vcsOf """{"count":0}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.vcsOf """{"vcs":{"state":"waiting"}}""" = None @>
+    test <@ FsHotWatch.Cli.IpcParsing.vcsOf "not json" = None @>

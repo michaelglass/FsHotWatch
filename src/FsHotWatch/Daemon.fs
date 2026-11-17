@@ -3728,6 +3728,8 @@ type Daemon
         // Posts a client request to the change-batch worker: it wakes a daemon a VCS
         // operation quieted (`VcsQuiet`). Resolves once the worker has run it.
         clientAsked: string -> Task<unit>,
+        // What `status` reports about the VCS gate (`VcsQuiet.Notice`).
+        vcsNotice: unit -> VcsQuiet.Notice,
         // The checker this daemon checks through: its own, or its partition's in a host.
         checker: FSharpChecker,
         // This session's snapshot epoch and manifest (ADR-045), shared with its change batches.
@@ -4008,6 +4010,9 @@ type Daemon
     /// held (`VcsQuiet`). Resolves once the change worker has run the request.
     member internal _.ClientAsked(request: string) : Task<unit> = clientAsked request
 
+    /// Whether change batches check as they arrive, or wait for a client after a VCS operation.
+    member internal _.VcsNotice() : VcsQuiet.Notice = vcsNotice ()
+
     /// Note that the watcher reported these changes (`editedFiles`).
     member internal _.NoteEdited(changes: FileChangeKind list) = editedFiles.Note changes
 
@@ -4280,6 +4285,7 @@ type Daemon
                       GetProjectModel = this.ProjectModel
                       GetPublications = this.Publications
                       GetSnapshot = fun () -> snapshots.Status
+                      GetVcs = vcsNotice
                       // Captured here, with this daemon's process scope installed: in a
                       // repository host the session's endpoint is served from the host's
                       // context, and the session's RPCs still run in the session's.
@@ -5909,6 +5915,9 @@ module Daemon =
                 | RunMode.Watching -> VcsQuiet.start (opts.VcsProbe repoRoot)
                 | RunMode.OneShot -> VcsQuiet.Gate.Ungated
 
+            // What `status` reports about the gate; the change worker is its only writer.
+            let vcsNotice = ref (VcsQuiet.Notice.ofGate initialGate)
+
             let changeWorker =
                 SupervisedWork.Queue(
                     host.WorkStore,
@@ -5925,16 +5934,12 @@ module Daemon =
                     ignore,
                     (fun state request ct _ ->
                         async {
-                            // A client request wakes a quiet gate, which hands back what it held.
-                            let woken, released =
-                                request.ClientRequests
-                                |> List.fold
-                                    (fun (gate, released) asked ->
-                                        let gate, more = VcsQuiet.wake gate asked
-                                        gate, released @ more)
-                                    (state.Gate, [])
+                            // The request's changes meet the gate first; a client request in
+                            // it then wakes the gate, which hands back what it held.
+                            let gate, admission =
+                                VcsQuiet.decide state.Gate request.Changes request.ClientRequests
 
-                            let gate, admission = VcsQuiet.admit woken (released @ request.Changes)
+                            vcsNotice.Value <- VcsQuiet.Notice.ofGate gate
 
                             // Held, a failed batch's owed changes stay owed: they run when a
                             // client wakes the gate, with what it held.
@@ -6170,6 +6175,7 @@ module Daemon =
                 processRegistry,
                 changeInput.Close,
                 clientAsked,
+                (fun () -> vcsNotice.Value),
                 checker,
                 snapshots,
                 beforeScanPublication

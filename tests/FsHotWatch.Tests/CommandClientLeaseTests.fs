@@ -103,6 +103,7 @@ let private config (host: PluginHost) (invocationReleased: string -> Cancellatio
       GetProjectModel = fun () -> FsHotWatch.ProjectModel.Observation.Unobserved
       GetPublications = fun () -> FsHotWatch.ProjectModel.Publications.none
       GetSnapshot = fun () -> FsHotWatch.SnapshotEpoch.Ledger([ "/" ]).Status
+      GetVcs = fun () -> FsHotWatch.VcsQuiet.Notice.Checking
       Context = None }
 
 let private hostWith (probe: Probe) =

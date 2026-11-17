@@ -2,6 +2,7 @@
 [<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.VcsQuietTests
 
+open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -11,6 +12,9 @@ open FsHotWatch.VcsQuiet
 let private at (commit: char) =
     Position.GitBranch("refs/heads/main", GitRef.Points(System.String(commit, 40)))
 
+let private jjAt (seed: char) (kind: JjOperationKind) =
+    Position.JjWorkingCopy(System.String(seed, 128), kind)
+
 /// A probe whose position the test moves.
 let private movable (start: Result<Position, string>) =
     let current = ref start
@@ -19,9 +23,9 @@ let private movable (start: Result<Position, string>) =
 let private edit name =
     SourceChanged [ $"/repo/src/{name}.fs" ]
 
-let private isQuiet gate =
+let private isWaiting gate =
     match gate with
-    | Gate.Quiet _ -> true
+    | Gate.Waiting _ -> true
     | Gate.Ungated
     | Gate.Unanchored _
     | Gate.Live _ -> false
@@ -32,7 +36,8 @@ let ``an untracked checkout checks every batch`` () =
     let gate, admission = admit gate [ edit "A" ]
 
     test <@ admission = Admission.Check [ edit "A" ] @>
-    test <@ not (isQuiet gate) @>
+    test <@ not (isWaiting gate) @>
+    test <@ Notice.ofGate gate = Notice.Checking @>
 
 [<Fact>]
 let ``an edit at a still position checks at once`` () =
@@ -42,25 +47,92 @@ let ``an edit at a still position checks at once`` () =
     test <@ admission = Admission.Check [ edit "A" ] @>
 
 [<Fact>]
-let ``a VCS operation holds its batch and every later one until a client asks, then checks them all`` () =
+let ``a VCS operation holds what it rewrote until a client asks, then releases it`` () =
     let probe, position = movable (Ok(at 'a'))
     let gate = start probe
     position.Value <- Ok(at 'b')
 
-    let gate, first = admit gate [ edit "A" ]
-    test <@ first = Admission.Hold @>
-    test <@ isQuiet gate @>
-
-    let gate, second = admit gate [ edit "B" ]
-    test <@ second = Admission.Hold @>
+    let gate, rewritten = admit gate [ edit "A" ]
+    test <@ rewritten = Admission.Hold @>
+    test <@ isWaiting gate @>
+    test <@ Notice.ofGate gate = Notice.Waiting(Position.describe (at 'a'), Position.describe (at 'b'), 1) @>
 
     let gate, released = wake gate (ClientAsked "check")
-    test <@ released = [ edit "A"; edit "B" ] @>
-    test <@ not (isQuiet gate) @>
+    test <@ released = [ edit "A" ] @>
+    test <@ not (isWaiting gate) @>
+    test <@ Notice.ofGate gate = Notice.Checking @>
 
     // Woken at the new position: the next edit checks at once.
     let _, after = admit gate [ edit "C" ]
     test <@ after = Admission.Check [ edit "C" ] @>
+
+[<Fact>]
+let ``a save after the operation is an edit and checks at once, while the operation's batch stays held`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+    position.Value <- Ok(at 'b')
+    let gate, _ = admit gate [ edit "Rebased" ]
+
+    let gate, save = admit gate [ edit "Saved" ]
+
+    test <@ save = Admission.Check [ edit "Saved" ] @>
+    test <@ isWaiting gate @>
+
+    let _, released = wake gate (ClientAsked "check")
+    test <@ released = [ edit "Rebased" ] @>
+
+[<Fact>]
+let ``a second operation while waiting joins what is held and moves the reported position`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+    position.Value <- Ok(at 'b')
+    let gate, _ = admit gate [ edit "A" ]
+    position.Value <- Ok(at 'c')
+
+    let gate, second = admit gate [ edit "B" ]
+
+    test <@ second = Admission.Hold @>
+    test <@ Notice.ofGate gate = Notice.Waiting(Position.describe (at 'a'), Position.describe (at 'c'), 2) @>
+
+    let _, released = wake gate (ClientAsked "check")
+    test <@ released = [ edit "A"; edit "B" ] @>
+
+[<Fact>]
+let ``a jj snapshot while waiting is an edit that moves the baseline, not the reported operation`` () =
+    let probe, position = movable (Ok(jjAt 'a' JjOperationKind.Rewrite))
+    let gate = start probe
+    position.Value <- Ok(jjAt 'b' JjOperationKind.Rewrite)
+    let gate, _ = admit gate [ edit "Rebased" ]
+    position.Value <- Ok(jjAt 'c' JjOperationKind.Snapshot)
+
+    let gate, saved = admit gate [ edit "Saved" ]
+    test <@ saved = Admission.Check [ edit "Saved" ] @>
+
+    let reported =
+        Notice.Waiting(
+            Position.describe (jjAt 'a' JjOperationKind.Rewrite),
+            Position.describe (jjAt 'b' JjOperationKind.Rewrite),
+            1
+        )
+
+    test <@ Notice.ofGate gate = reported @>
+
+    // The baseline is the snapshot: a save at that position still checks.
+    let _, again = admit gate [ edit "Again" ]
+    test <@ again = Admission.Check [ edit "Again" ] @>
+
+[<Fact>]
+let ``an unreadable position while waiting checks the batch and keeps what is held`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+    position.Value <- Ok(at 'b')
+    let gate, _ = admit gate [ edit "A" ]
+    position.Value <- Error "HEAD.lock"
+
+    let gate, unreadable = admit gate [ edit "B" ]
+
+    test <@ unreadable = Admission.Check [ edit "B" ] @>
+    test <@ isWaiting gate @>
 
 [<Fact>]
 let ``a client asking while nothing is held releases nothing`` () =
@@ -68,7 +140,7 @@ let ``a client asking while nothing is held releases nothing`` () =
     let gate, released = wake (start probe) (ClientAsked "check")
 
     test <@ List.isEmpty released @>
-    test <@ not (isQuiet gate) @>
+    test <@ not (isWaiting gate) @>
 
 [<Fact>]
 let ``a position unreadable at start checks, and anchors once it reads`` () =
@@ -81,8 +153,10 @@ let ``a position unreadable at start checks, and anchors once it reads`` () =
             | Gate.Unanchored _ -> true
             | Gate.Ungated
             | Gate.Live _
-            | Gate.Quiet _ -> false
+            | Gate.Waiting _ -> false
         @>
+
+    test <@ Notice.ofGate gate = Notice.Checking @>
 
     let gate, unanchored = admit gate [ edit "A" ]
     test <@ unanchored = Admission.Check [ edit "A" ] @>
@@ -130,7 +204,7 @@ let ``a client waking a gate whose position no longer reads leaves it unanchored
             | Gate.Unanchored _ -> true
             | Gate.Ungated
             | Gate.Live _
-            | Gate.Quiet _ -> false
+            | Gate.Waiting _ -> false
         @>
 
 [<Fact>]
@@ -142,4 +216,74 @@ let ``a client asking an ungated or unanchored daemon releases nothing`` () =
     let unanchored, fromUnanchored = wake (start probe) (ClientAsked "check")
 
     test <@ List.isEmpty fromUngated && List.isEmpty fromUnanchored @>
-    test <@ not (isQuiet ungated) && not (isQuiet unanchored) @>
+    test <@ not (isWaiting ungated) && not (isWaiting unanchored) @>
+
+// ---- the notice `status` reports ---------------------------------------------------
+
+let private readBack (notice: Notice) =
+    use doc = JsonDocument.Parse((Notice.payload notice).ToJsonString())
+    Notice.tryRead doc.RootElement
+
+let private readJson (json: string) =
+    use doc = JsonDocument.Parse json
+    Notice.tryRead doc.RootElement
+
+[<Fact>]
+let ``a notice travels and reads back as itself`` () =
+    let waiting = Notice.Waiting("jj op aaaaaaaaaaaa", "jj op bbbbbbbbbbbb", 3)
+
+    test <@ readBack Notice.Checking = Some Notice.Checking @>
+    test <@ readBack waiting = Some waiting @>
+
+[<Fact>]
+let ``a notice that is not one this build writes reads as none`` () =
+    test <@ readJson "[]" = None @>
+    test <@ readJson """{"state":"sleeping"}""" = None @>
+    test <@ readJson """{"held":1}""" = None @>
+    test <@ readJson """{"state":"waiting","before":"a","after":"b"}""" = None @>
+    test <@ readJson """{"state":"waiting","before":"a","after":"b","held":-1}""" = None @>
+
+[<Fact>]
+let ``status says a waiting daemon is waiting, with the operation, and says nothing while checking`` () =
+    test <@ Notice.line Notice.Checking = None @>
+
+    let line =
+        "vcs: tree changed by a VCS operation (jj op aaaaaaaaaaaa -> jj op bbbbbbbbbbbb); waiting for a client. Not hung: the next `fshw check` checks the 3 change(s) it rewrote"
+
+    test <@ Notice.line (Notice.Waiting("jj op aaaaaaaaaaaa", "jj op bbbbbbbbbbbb", 3)) = Some line @>
+
+// ---- one change request: changes first, then the client --------------------------
+
+[<Fact>]
+let ``a client asking in the same request as the operation's changes is answered for them`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+    position.Value <- Ok(at 'b')
+
+    let gate, admission = decide gate [ edit "Rebased" ] [ ClientAsked "scan" ]
+
+    test <@ admission = Admission.Check [ edit "Rebased" ] @>
+    test <@ not (isWaiting gate) @>
+
+[<Fact>]
+let ``a client asking while waiting releases what was held beside the request's own edits`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+    position.Value <- Ok(at 'b')
+    let gate, _ = decide gate [ edit "Rebased" ] []
+
+    let gate, admission = decide gate [ edit "Saved" ] [ ClientAsked "scan" ]
+
+    test <@ admission = Admission.Check [ edit "Rebased"; edit "Saved" ] @>
+    test <@ Notice.ofGate gate = Notice.Checking @>
+
+[<Fact>]
+let ``a request without a client admits as admit does`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+    position.Value <- Ok(at 'b')
+
+    let gate, admission = decide gate [ edit "Rebased" ] []
+
+    test <@ admission = Admission.Hold @>
+    test <@ isWaiting gate @>
