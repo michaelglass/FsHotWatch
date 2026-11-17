@@ -322,7 +322,9 @@ type HostSnapshot =
 
 [<NoComparison; NoEquality>]
 type private Mutation =
-    | Mutation of change: (WorkId -> HostSnapshot -> HostSnapshot * obj) * reply: TaskCompletionSource<obj>
+    | Mutation of
+        change: (WorkId -> HostSnapshot -> HostSnapshot * obj * (unit -> unit)) *
+        reply: TaskCompletionSource<obj>
 
 /// The single writer. Each change receives a freshly minted `WorkId` it may use for a
 /// new obligation. A change that throws publishes nothing and fails only its own reply.
@@ -368,8 +370,9 @@ type Store(runtime: AsyncRuntime.Runtime) =
         let version = current.Published + 1L
 
         try
-            let next, result = change (WorkId(identity, version)) current
+            let next, result, after = change (WorkId(identity, version)) current
             Volatile.Write(&published, { next with Published = version })
+            after ()
             reply.TrySetResult(result) |> ignore
         with failure ->
             reply.TrySetException(failure) |> ignore
@@ -408,15 +411,18 @@ type Store(runtime: AsyncRuntime.Runtime) =
         if claimed then
             publishQueued ()
 
-    let post (synchronous: bool) (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : Task<obj> =
+    let post
+        (synchronous: bool)
+        (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result * (unit -> unit))
+        : Task<obj> =
         let reply =
             TaskCompletionSource<obj>(TaskCreationOptions.RunContinuationsAsynchronously)
 
         let mutation =
             Mutation(
                 (fun fresh snapshot ->
-                    let next, result = change fresh snapshot
-                    next, box result),
+                    let next, result, after = change fresh snapshot
+                    next, box result, after),
                 reply
             )
 
@@ -442,7 +448,13 @@ type Store(runtime: AsyncRuntime.Runtime) =
 
         reply.Task
 
-    let changeAsync (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : Task<'Result> =
+    // A change with nothing to run after its publication.
+    let plain (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result) =
+        fun fresh snapshot ->
+            let next, result = change fresh snapshot
+            next, result, ignore
+
+    let changeAsyncThen (change: WorkId -> HostSnapshot -> HostSnapshot * 'Result * (unit -> unit)) : Task<'Result> =
         let published = post false change
 
         task {
@@ -454,14 +466,16 @@ type Store(runtime: AsyncRuntime.Runtime) =
     // waiting could not roll the queued change back, and would lose its effects. It waits
     // on the reply itself, which a writer that is already running completes: a
     // continuation would need a pool thread to run.
-    let change (transition: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : 'Result =
+    let changeThen (transition: WorkId -> HostSnapshot -> HostSnapshot * 'Result * (unit -> unit)) : 'Result =
         let reply = post true transition
         runtime.Wait Timeout.InfiniteTimeSpan reply |> ignore
         reply.GetAwaiter().GetResult() |> unbox<'Result>
 
-    let rowChange (handle: RowHandle<'T>) (transition: WorkId -> 'T -> 'T * 'Result) =
+    let change (transition: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : 'Result = changeThen (plain transition)
+
+    let rowChangeThen (handle: RowHandle<'T>) (transition: WorkId -> 'T -> 'T * 'Result * (unit -> unit)) =
         fun fresh (snapshot: HostSnapshot) ->
-            let next, result = transition fresh (snapshot.Row handle)
+            let next, result, after = transition fresh (snapshot.Row handle)
             let row = Map.find handle.Key snapshot.Rows
 
             { snapshot with
@@ -472,7 +486,13 @@ type Store(runtime: AsyncRuntime.Runtime) =
                             Value = box next
                             Status = handle.Project next }
                         snapshot.Rows },
-            result
+            result,
+            after
+
+    let rowChange (handle: RowHandle<'T>) (transition: WorkId -> 'T -> 'T * 'Result) =
+        rowChangeThen handle (fun fresh value ->
+            let next, result = transition fresh value
+            next, result, ignore)
 
     /// A store whose posted writer runs on the thread pool.
     new() = Store(AsyncRuntime.pool)
@@ -538,10 +558,19 @@ type Store(runtime: AsyncRuntime.Runtime) =
 
     /// Resolves once the change is published, independent of any caller's wait bound.
     member _.ChangeAsync(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : Task<'Result> =
-        changeAsync (rowChange handle transition)
+        changeAsyncThen (rowChange handle transition)
 
     member _.Change(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result) : 'Result =
-        change (rowChange handle transition)
+        changeThen (rowChange handle transition)
+
+    /// `ChangeAsync`, with an effect that runs on the writer right after this change's publication is
+    /// visible and before its reply settles or anything else runs. For an effect a reader woken by
+    /// it must find published, and that must be done by the time a later publication can be read:
+    /// setting a receipt (AUTOMATION-1780). It must not throw or wait.
+    member _.ChangeAsyncThen
+        (handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result * (unit -> unit))
+        : Task<'Result> =
+        changeAsyncThen (rowChangeThen handle transition)
 
     /// Take a client-observation lease: the host is being watched. The lease inhibits
     /// idle exit and counts as no work at all. Disposing it twice releases it once — a
