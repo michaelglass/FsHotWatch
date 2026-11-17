@@ -829,6 +829,80 @@ let ``Daemon.create logs the effective cache size factor as one key=value config
 
         test <@ lines.Length = 1 @>)
 
+/// The checks the daemon's pipeline admits at once, observed: `bound` acquisitions through its
+/// admission lane are granted at once, the next waits, and a release hands it the freed slot.
+/// No sleep: every acquisition below the bound is granted synchronously, and the one above it
+/// is queued before `StartImmediateAsTask` returns.
+let private observedCheckBound (daemon: Daemon) (bound: int) =
+    let lane = daemon.Pipeline.Admission
+
+    for _ in 1..bound do
+        test <@ lane.Acquire CancellationToken.None |> Async.RunSynchronously @>
+
+    let waiting = Async.StartImmediateAsTask(lane.Acquire CancellationToken.None)
+
+    test <@ lane.Scheduler.Running = bound @>
+    test <@ lane.Scheduler.Queued = 1 @>
+    test <@ not waiting.IsCompleted @>
+    lane.Release()
+    test <@ waiting.Wait HangWait && waiting.Result @>
+    test <@ lane.Scheduler.Running = bound @>
+
+    for _ in 1..bound do
+        lane.Release()
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a daemon admits no more checks at once than its configured maxConcurrentChecks`` () =
+    withTempDir "daemon-check-bound" (fun tmpDir ->
+        let bound = WorkScheduler.CheckConcurrency.tryCreate 2 |> Option.get
+
+        use daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { oneShotDaemonOptions with
+                    MaxConcurrentChecks = bound }
+
+        test <@ daemon.Pipeline.CheckConcurrencyBound = 2 @>
+        observedCheckBound daemon 2)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a daemon with no configured maxConcurrentChecks admits one check per processor, as before`` () =
+    withTempDir "daemon-check-bound-default" (fun tmpDir ->
+        use daemon = Daemon.createWith nullChecker tmpDir oneShotDaemonOptions
+
+        test <@ daemon.Pipeline.CheckConcurrencyBound = Environment.ProcessorCount @>
+        observedCheckBound daemon Environment.ProcessorCount)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``Daemon.create logs the effective check bound as one key=value config line`` () =
+    withTempDir "daemon-check-bound-log" (fun tmpDir ->
+        let originalErr = Console.Error
+        let originalLevel = Logging.logLevel
+        use sw = new StringWriter()
+        Console.SetError sw
+        Logging.setLogLevel Logging.LogLevel.Info
+
+        try
+            use _daemon =
+                Daemon.createUsing
+                    (fun _ -> nullChecker)
+                    tmpDir
+                    { oneShotDaemonOptions with
+                        MaxConcurrentChecks = WorkScheduler.CheckConcurrency.tryCreate 3 |> Option.get }
+
+            ()
+        finally
+            Console.SetError originalErr
+            Logging.setLogLevel originalLevel
+
+        let lines =
+            sw.ToString().Split('\n')
+            |> Array.filter (fun l ->
+                Text.RegularExpressions.Regex.IsMatch(l, @"^  \[config\] \S+ checker: maxConcurrentChecks=3\r?$"))
+
+        test <@ lines.Length = 1 @>)
+
 [<Fact(Timeout = 15000)>]
 let ``DaemonOptions default cache size factor is the FCS default`` () =
     test <@ oneShotDaemonOptions.CheckerCacheSizeFactor = Daemon.DefaultCheckerCacheSizeFactor @>

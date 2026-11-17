@@ -520,7 +520,13 @@ let private checkUnderTwoProjects (tmpDir: string) =
     let checker =
         FSharpChecker.Create(projectCacheSize = 2, keepAssemblyContents = true)
 
-    let pipeline = CheckPipeline(checker, activity = sink, maxConcurrentChecks = 4)
+    let pipeline =
+        CheckPipeline(
+            checker,
+            activity = sink,
+            maxConcurrentChecks = (WorkScheduler.CheckConcurrency.tryCreate 4 |> Option.get)
+        )
+
     let sourceFile = Path.GetFullPath(Path.Combine(tmpDir, "Shared.fs"))
     File.WriteAllLines(sourceFile, [| "module Shared"; "let x = 1" |])
 

@@ -591,6 +591,11 @@ type DaemonConfiguration =
         /// A positive integer; anything else is a `ConfigErrorException`. Absent →
         /// `Daemon.DefaultCheckerCacheSizeFactor` (FCS's own default, 100).
         CheckerCacheSizeFactor: int
+        /// How many checks the daemon admits at once, from `checker.maxConcurrentChecks`.
+        /// A positive integer; anything else is a `ConfigErrorException`. Absent →
+        /// one per processor (`CheckConcurrency.processorCount`), resolved here so the
+        /// daemon only ever sees a concrete bound.
+        MaxConcurrentChecks: FsHotWatch.WorkScheduler.CheckConcurrency
         /// Run-level `beforeRun` hook, from the top-level
         /// `beforeRun` key. A shell command run ONCE at the very start of a
         /// `check`/`confirm` run — BEFORE the daemon is contacted — as a
@@ -666,6 +671,7 @@ let private defaultConfig () =
       PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent
       FsEventsLatencyMs = 250
       CheckerCacheSizeFactor = FsHotWatch.Daemon.Daemon.DefaultCheckerCacheSizeFactor
+      MaxConcurrentChecks = FsHotWatch.WorkScheduler.CheckConcurrency.processorCount
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None
@@ -2011,20 +2017,45 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     // `checker.cacheSizeFactor`: a positive integer, else a hard ConfigErrorException — a
     // mistyped factor silently falling back would make a benchmark row measure the
     // default while claiming otherwise.
-    let checkerCacheSizeFactor =
-        let refuse () =
-            raise (ConfigErrorException "checker.cacheSizeFactor must be a positive whole number, e.g. 10")
+    //
+    // `checker.maxConcurrentChecks` (AUTOMATION-1779): how many checks the daemon admits at
+    // once, the same way: a positive integer, else refused, and absent → one per processor.
+    let checkerCacheSizeFactor, maxConcurrentChecks =
+        /// `checker.<key>`, a whole number `parse` accepts: `absent` when the key is not set,
+        /// and a ConfigErrorException naming the key and `example` for anything else.
+        let positiveKey
+            (checker: JsonElement)
+            (key: string)
+            (example: int)
+            (absent: 'T)
+            (parse: int -> 'T option)
+            : 'T =
+            let parsed =
+                match checker.TryGetProperty key with
+                | false, _ -> Some absent
+                | true, f when f.ValueKind = JsonValueKind.Number ->
+                    match f.TryGetInt32() with
+                    | true, n -> parse n
+                    | false, _ -> None
+                | true, _ -> None
+
+            match parsed with
+            | Some value -> value
+            | None ->
+                raise (
+                    ConfigErrorException("checker." + key + " must be a positive whole number, e.g. " + string example)
+                )
 
         match root.TryGetProperty("checker") with
-        | false, _ -> defaults.CheckerCacheSizeFactor
+        | false, _ -> defaults.CheckerCacheSizeFactor, defaults.MaxConcurrentChecks
         | true, v when v.ValueKind = JsonValueKind.Object ->
-            match v.TryGetProperty("cacheSizeFactor") with
-            | false, _ -> defaults.CheckerCacheSizeFactor
-            | true, f when f.ValueKind = JsonValueKind.Number ->
-                match f.TryGetInt32() with
-                | true, n when n > 0 -> n
-                | _ -> refuse ()
-            | true, _ -> refuse ()
+            positiveKey v "cacheSizeFactor" 10 defaults.CheckerCacheSizeFactor (fun n -> if n > 0 then Some n else None),
+            positiveKey
+                v
+                "maxConcurrentChecks"
+                4
+                defaults.MaxConcurrentChecks
+                FsHotWatch.WorkScheduler.CheckConcurrency.tryCreate
         | true, _ -> raise (ConfigErrorException "checker must be an object, e.g. {\"cacheSizeFactor\": 10}")
 
     // Parse a `number | false` tristate, shared by the two idle-exit windows:
@@ -2161,6 +2192,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       PressureIdleFloorMin = pressureIdleFloorMin
       FsEventsLatencyMs = fsEventsLatencyMs
       CheckerCacheSizeFactor = checkerCacheSizeFactor
+      MaxConcurrentChecks = maxConcurrentChecks
       BeforeRun = beforeRun
       AfterRun = afterRun
       RunHookTimeoutSec = runHookTimeoutSec
@@ -2350,6 +2382,21 @@ let loadConfigWithSource (repoRoot: string) : DaemonConfiguration * string =
 /// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
 /// Raises ConfigErrorException on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration = loadConfigWithSource repoRoot |> fst
+
+/// The bound a repository host admits checks at, across all its sessions: the
+/// `checker.maxConcurrentChecks` of the worktree it was launched from. A config that cannot
+/// be loaded leaves one check per processor and is logged; the session that loads it
+/// refuses it with its own message.
+let hostCheckConcurrency (launchRoot: string) : FsHotWatch.WorkScheduler.CheckConcurrency =
+    try
+        (loadConfig launchRoot).MaxConcurrentChecks
+    with ConfigErrorException message ->
+        Logging.warn
+            "config"
+            ("host checks: one per processor, the launch worktree's config was refused: "
+             + message)
+
+        FsHotWatch.WorkScheduler.CheckConcurrency.processorCount
 
 /// The plugins a green requires of `json`, a `.fshw.json`'s text, each with what its outcome is a
 /// function of: `RequiredConfig.ofJson`, the ONE definition (AUTOMATION-1695, AUTOMATION-1577), so

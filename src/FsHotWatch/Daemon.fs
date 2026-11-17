@@ -5481,6 +5481,10 @@ module Daemon =
             /// (ADR-054). A check whose result would exceed it waits to publish.
             /// `LiveResults.DefaultBound` by default; `FSHW_LIVE_RESULTS` overrides it.
             LiveResultBound: int
+            /// How many checks a per-worktree daemon admits at once, from `.fshw.json`'s
+            /// `checker.maxConcurrentChecks`; one per processor by default. A repository
+            /// host's sessions share the host's bound instead (`DaemonHosting`).
+            MaxConcurrentChecks: WorkScheduler.CheckConcurrency
             /// Whether checks are filed as `check` records and answered from them across
             /// restarts (ADR-059 §17, AUTOMATION-1361). OFF by default: `"checkRecords": true`.
             CheckRecords: bool
@@ -5518,6 +5522,7 @@ module Daemon =
               Hosting = DaemonHosting.standalone ()
               Restore = DepsFreshness.productionRestoreRunner
               LiveResultBound = LiveResults.DefaultBound
+              MaxConcurrentChecks = WorkScheduler.CheckConcurrency.processorCount
               CheckRecords = false
               OptionsRecords = false
               OptionsPortable = OptionsPortable.Mode.Off
@@ -5749,9 +5754,15 @@ module Daemon =
             let fcsSink = host.ActivitySinkFor(PluginActivity.FcsPluginName)
 
             // This daemon's turn at the checks its host admits; a per-worktree daemon
-            // admits its own, bounded as `CheckPipeline` bounds them by default.
+            // admits its own, `opts.MaxConcurrentChecks` at once (AUTOMATION-1779).
             let checks =
-                (seams.Checks(WorkScheduler.Scheduler Environment.ProcessorCount)).Lane repoRoot
+                (seams.Checks(WorkScheduler.Scheduler(WorkScheduler.CheckConcurrency.value opts.MaxConcurrentChecks)))
+                    .Lane
+                    repoRoot
+
+            // The bound in effect, which in a repository host is the host's, not this
+            // worktree's: the line an operator reads to see what `checker.maxConcurrentChecks` did.
+            Logging.info "config" $"checker: maxConcurrentChecks=%d{checks.Scheduler.Capacity}"
 
             // ADR-059 §17: the box-wide outcome store, when check records are on.
             let checkRecordStore =

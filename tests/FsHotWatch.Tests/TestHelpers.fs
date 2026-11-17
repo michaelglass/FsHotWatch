@@ -725,6 +725,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent
       FsEventsLatencyMs = 250
       CheckerCacheSizeFactor = FsHotWatch.Daemon.Daemon.DefaultCheckerCacheSizeFactor
+      MaxConcurrentChecks = FsHotWatch.WorkScheduler.CheckConcurrency.processorCount
       BeforeRun = None
       AfterRun = None
       RunHookTimeoutSec = None
