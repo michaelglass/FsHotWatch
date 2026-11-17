@@ -711,6 +711,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       OptionsRecords = false
       AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
       OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
+      AfterVcsOperation = FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -1556,3 +1557,9 @@ module VerdictFixtures =
     /// The `scope` object `.fshw/verdict.json` records for a check graded from `report`.
     let scopeOnTheWire (report: FsHotWatch.Cli.IpcParsing.TestRunReport) : System.Text.Json.Nodes.JsonNode =
         (System.Text.Json.Nodes.JsonNode.Parse(FsHotWatch.Cli.Verdict.serialize (checkVerdict report))).["scope"]
+
+/// The bound on one real `git` or `jj` command (`RealTools.run`): it ends a command that
+/// hangs. Each fact that makes real commands is capped above the bounds of all of them.
+/// Here, not in `RealTools.fs`, so the wait-floor scan reads it by name in every suite.
+[<Literal>]
+let RealCommandMs = 20_000

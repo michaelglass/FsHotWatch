@@ -287,3 +287,71 @@ let ``a request without a client admits as admit does`` () =
 
     test <@ admission = Admission.Hold @>
     test <@ isWaiting gate @>
+
+// ---- the setting: `afterVcsOperation` ---------------------------------------------------
+
+[<Fact>]
+let ``a repository that checks unasked never holds a VCS operation's batch, and reads no layout to decide it`` () =
+    let gate =
+        startFor AfterVcsOperation.CheckUnasked (fun () -> failwith "a repository that checks unasked reads no layout")
+
+    let gate, admission = admit gate [ edit "Rebased" ]
+
+    test <@ admission = Admission.Check [ edit "Rebased" ] @>
+    test <@ Notice.ofGate gate = Notice.Checking @>
+
+[<Fact>]
+let ``a repository that waits for a client holds what a VCS operation rewrote`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = startFor AfterVcsOperation.WaitForClient (fun () -> probe)
+    position.Value <- Ok(at 'b')
+
+    let gate, admission = admit gate [ edit "Rebased" ]
+
+    test <@ admission = Admission.Hold @>
+    test <@ isWaiting gate @>
+
+[<Fact>]
+let ``the setting reads its two spellings and nothing else`` () =
+    test <@ AfterVcsOperation.tryParse "checkUnasked" = Some AfterVcsOperation.CheckUnasked @>
+    test <@ AfterVcsOperation.tryParse "waitForClient" = Some AfterVcsOperation.WaitForClient @>
+    test <@ AfterVcsOperation.tryParse "WaitForClient" = None @>
+    test <@ AfterVcsOperation.tryParse "true" = None @>
+
+// ---- known limit --------------------------------------------------------------------------
+
+/// Pins today's behaviour, not a wish: a VCS writes its position after the files, so the
+/// part of an operation the debounce window closes on before that write is an edit.
+[<Fact>]
+let ``known limit: an operation slower than the debounce window has its first part checked as an edit`` () =
+    let probe, position = movable (Ok(at 'a'))
+    let gate = start probe
+
+    // The operation has rewritten its first files; its position is not written yet.
+    let gate, first = admit gate [ edit "WrittenFirst" ]
+    test <@ first = Admission.Check [ edit "WrittenFirst" ] @>
+    test <@ not (isWaiting gate) @>
+
+    // It finishes and writes its position: only what followed the move is held.
+    position.Value <- Ok(at 'b')
+    let gate, rest = admit gate [ edit "WrittenLast" ]
+    test <@ rest = Admission.Hold @>
+    test <@ Notice.ofGate gate = Notice.Waiting(Position.describe (at 'a'), Position.describe (at 'b'), 1) @>
+
+/// Pins today's behaviour, not a wish: an operation that rewrites no file (`jj commit`,
+/// `jj describe`, jj importing a git commit) makes no batch, but it moves the position, so
+/// the next save is held as if the operation had made it.
+[<Fact>]
+let ``known limit: the first save after an operation that rewrote no file is held`` () =
+    let probe, position = movable (Ok(jjAt 'a' JjOperationKind.Rewrite))
+    let gate = start probe
+
+    // `jj describe`: the position moves, and no file changes, so no batch comes.
+    position.Value <- Ok(jjAt 'b' JjOperationKind.Rewrite)
+
+    let gate, save = admit gate [ edit "Saved" ]
+    test <@ save = Admission.Hold @>
+
+    // Held once: the save after it is compared with the moved position, and checks.
+    let _, next = admit gate [ edit "SavedAgain" ]
+    test <@ next = Admission.Check [ edit "SavedAgain" ] @>

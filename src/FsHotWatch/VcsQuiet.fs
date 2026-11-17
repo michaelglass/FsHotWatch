@@ -9,12 +9,58 @@
 /// client request (`fshw check`) wakes the daemon. A save after the operation is an edit
 /// again: the gate compares the next batch with the position the operation left, so it
 /// checks at once, while what the operation rewrote stays held.
+///
+/// A repository opts in with `afterVcsOperation` (`AfterVcsOperation`); by default every
+/// batch checks as it arrives.
+///
+/// Known limits, each pinned by a test:
+/// - The position is read when a batch is decided, and a VCS writes it after the files.
+///   An operation slower than the debounce window can have its first part decided while
+///   the position has not moved yet: that part checks as an edit, and only what follows
+///   the move is held.
+/// - An operation that rewrites no file (`jj commit`, `jj describe`, jj importing a git
+///   commit) makes no batch but moves the position, so the next save is held once, as if
+///   the operation had made it.
+/// - In a colocated jj+git checkout the jj position is read, and a git command moves it
+///   only when the next jj command imports it: a `git checkout` checks as an edit.
 module FsHotWatch.VcsQuiet
 
 open System.Text.Json
 open System.Text.Json.Nodes
 open FsHotWatch.Events
 open FsHotWatch.VcsPosition
+
+/// What a warm daemon does with the changes a VCS operation (a rebase, checkout or
+/// `jj new`) rewrote: `.fshw.json` `afterVcsOperation`, decided per repository.
+///
+/// The trade, measured on AUTOMATION-1705: waiting takes the run a rebase started on its
+/// own from 1 to 0; a check after the daemon has settled, which answered in 24-40 ms from
+/// the run already made, then pays for that run itself (about 5 minutes for a suite the
+/// size of intelligence's); a check made right after the rebase costs the same either way.
+/// It suits a repository whose gates rebase and then check, where the run should happen
+/// inside the gate's own admission rather than beside it.
+[<RequireQualifiedAccess>]
+type AfterVcsOperation =
+    /// Check them at once, as an edit is checked (`"checkUnasked"`, the default).
+    | CheckUnasked
+    /// Hold them until a client asks (`"waitForClient"`): `fshw check` wakes the daemon,
+    /// and `status` says it waits.
+    | WaitForClient
+
+module AfterVcsOperation =
+    /// The `.fshw.json` key.
+    [<Literal>]
+    let ConfigKey = "afterVcsOperation"
+
+    /// Every value the key takes, as `.fshw.json` spells it.
+    let spellings: (string * AfterVcsOperation) list =
+        [ "checkUnasked", AfterVcsOperation.CheckUnasked
+          "waitForClient", AfterVcsOperation.WaitForClient ]
+
+    /// The setting `text` spells, or `None` for any other text.
+    let tryParse (text: string) : AfterVcsOperation option =
+        spellings
+        |> List.tryPick (fun (spelling, value) -> if spelling = text then Some value else None)
 
 /// Reads the checkout's position now.
 type Reader = unit -> Result<Position, string>
@@ -32,7 +78,8 @@ type QuietSpell =
 /// Whether change batches check at once.
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
 type Gate =
-    /// The checkout has no VCS position to read: every batch is an edit.
+    /// Every batch checks: the repository checks unasked after a VCS operation, or its
+    /// checkout has no VCS position to read.
     | Ungated
     /// The position has not been readable yet, so there is nothing to compare with:
     /// batches check, and the first readable position anchors the gate.
@@ -69,6 +116,13 @@ let start (probe: Probe) : Gate =
         Logging.info Tag $"no VCS position to watch ({reason}); every change batch checks"
         Gate.Ungated
     | Probe.Tracked read -> anchor read
+
+/// The gate a repository's setting gives: one that never holds anything when it checks
+/// unasked, without reading the checkout's layout; otherwise `start` on what `probe` finds.
+let startFor (setting: AfterVcsOperation) (probe: unit -> Probe) : Gate =
+    match setting with
+    | AfterVcsOperation.CheckUnasked -> Gate.Ungated
+    | AfterVcsOperation.WaitForClient -> start (probe ())
 
 /// The position now, or `None` (logged) when it cannot be read: the batch then checks.
 let private positionNow (read: Reader) : Position option =

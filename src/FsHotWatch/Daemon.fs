@@ -5492,6 +5492,10 @@ module Daemon =
             /// evaluation compared with what such a record would have replayed (AUTOMATION-1602 (b)).
             /// OFF by default; `Shadow` never serves a replay. Only with `OptionsRecords`.
             OptionsPortable: OptionsPortable.Mode
+            /// What a `Watching` daemon does with the changes a VCS operation rewrote: check them at
+            /// once (`CheckUnasked`, the default) or hold them until a client asks (`WaitForClient`).
+            /// `.fshw.json` `afterVcsOperation` (`VcsQuiet`, AUTOMATION-1705).
+            AfterVcsOperation: VcsQuiet.AfterVcsOperation
             /// How a `Watching` daemon reads its checkout's VCS position between change batches, so
             /// a batch a VCS operation caused is held until a client asks (`VcsQuiet`,
             /// AUTOMATION-1705). Given the repository root. A seam: tests move the position by hand.
@@ -5517,6 +5521,7 @@ module Daemon =
               CheckRecords = false
               OptionsRecords = false
               OptionsPortable = OptionsPortable.Mode.Off
+              AfterVcsOperation = VcsQuiet.AfterVcsOperation.CheckUnasked
               VcsProbe = VcsPosition.probeFor }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
@@ -5908,11 +5913,11 @@ module Daemon =
             // Change batches run one at a time under a supervisor. The worker's state is
             // the set of paths preprocessors wrote, whose watcher echoes are suppressed, the
             // changes a failed batch still owes, which run ahead of the next request, and the
-            // VCS gate: a batch a VCS operation caused waits for a client (`VcsQuiet`). Only a
-            // watching daemon has batches to gate.
+            // VCS gate: in a repository that waits for a client after a VCS operation
+            // (`VcsQuiet`), a batch one caused waits. Only a watching daemon has batches to gate.
             let initialGate =
                 match opts.RunMode with
-                | RunMode.Watching -> VcsQuiet.start (opts.VcsProbe repoRoot)
+                | RunMode.Watching -> VcsQuiet.startFor opts.AfterVcsOperation (fun () -> opts.VcsProbe repoRoot)
                 | RunMode.OneShot -> VcsQuiet.Gate.Ungated
 
             // What `status` reports about the gate; the change worker is its only writer.

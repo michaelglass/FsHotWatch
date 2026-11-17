@@ -609,6 +609,30 @@ let ``parseConfig optionsRecordsPortable is off unless shadow, and refuses on un
     raises<ConfigErrorException> <@ parseConfig """{"optionsRecordsPortable": true}""" defaults @>
 
 [<Fact(Timeout = 15000)>]
+let ``parseConfig afterVcsOperation checks unasked unless a repository waits for a client, and refuses anything else``
+    ()
+    =
+    let parsed (json: string) =
+        (parseConfig json defaults).AfterVcsOperation
+
+    test <@ parsed "{}" = FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked @>
+    test <@ defaults.AfterVcsOperation = FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked @>
+    test <@ parsed """{"afterVcsOperation": "checkUnasked"}""" = FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked @>
+    test <@ parsed """{"afterVcsOperation": "waitForClient"}""" = FsHotWatch.VcsQuiet.AfterVcsOperation.WaitForClient @>
+
+    // Not a bool, and no other spelling: a typo must fail the load, not pick a behaviour.
+    for bad in [ """true"""; """false"""; """null"""; "\"wait\""; "\"WaitForClient\"" ] do
+        let error =
+            Assert.Throws<ConfigErrorException>(fun () ->
+                parseConfig $"""{{"afterVcsOperation": %s{bad}}}""" defaults |> ignore)
+
+        test
+            <@
+                error.message.Contains "afterVcsOperation"
+                && error.message.Contains "\"waitForClient\""
+            @>
+
+[<Fact(Timeout = 15000)>]
 let ``FSHW_OPTIONS_PORTABLE overrides the configured optionsRecordsPortable, and anything else keeps it`` () =
     let env (value: string) : string -> string =
         fun name -> if name = "FSHW_OPTIONS_PORTABLE" then value else null

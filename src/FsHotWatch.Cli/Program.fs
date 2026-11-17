@@ -3344,6 +3344,15 @@ let internal renderRepositoryStatus (json: string) : string list =
 
           yield
               $"  %s{root}  %s{state}, scan generation %d{generation}%s{attached}%s{publications}%s{snapshot}%s{admission}"
+
+          // A session waiting for a client after a VCS operation is not a hung one
+          // (AUTOMATION-1705). A host older than that gate sends no `vcs`.
+          match
+              IpcParsing.vcsOf (s.ToJsonString())
+              |> Option.bind FsHotWatch.VcsQuiet.Notice.line
+          with
+          | Some line -> yield $"    %s{line}"
+          | None -> ()
       match node["watch"] with
       | null -> ()
       | watch ->
@@ -3475,6 +3484,7 @@ let internal daemonWith
             CheckRecords = resolveCheckRecords config.CheckRecords Environment.GetEnvironmentVariable
             OptionsRecords = resolveOptionsRecords config.OptionsRecords Environment.GetEnvironmentVariable
             OptionsPortable = resolveOptionsPortable config.OptionsPortable Environment.GetEnvironmentVariable
+            AfterVcsOperation = config.AfterVcsOperation
             ExtraWatchPatterns = extraWatchPatterns
             FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
             IdleExitMin = idleExit.ThresholdMin

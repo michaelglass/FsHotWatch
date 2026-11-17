@@ -47,11 +47,11 @@ type private Witness =
     { Told: ConcurrentQueue<string * string>
       Runs: int ref }
 
-/// A daemon over `root` with `probe` as its VCS position, a watcher the test drives by
-/// hand, and a witness plugin whose every run takes `runCost`, standing in for a test
+/// A daemon over `root` that does what `setting` says after a VCS operation, with `probe` as
+/// its VCS position, a watcher the test drives by hand, and a witness plugin whose every run takes `runCost`, standing in for a test
 /// run. Not yet scanned.
 [<WallClock("simulated work: a run's cost stands in for a test suite's, so a check that waits for the run measurably waits; every outcome is awaited by an event, not by the sleep")>]
-let private gatedDaemonWith (runCost: TimeSpan) (probe: Probe) (root: string) =
+let private daemonWith (setting: VcsQuiet.AfterVcsOperation) (runCost: TimeSpan) (probe: Probe) (root: string) =
     let callback = ref None
 
     let watcher: Daemon.WatcherFactory =
@@ -66,6 +66,7 @@ let private gatedDaemonWith (runCost: TimeSpan) (probe: Probe) (root: string) =
             nullChecker
             root
             { watchingDaemonOptions with
+                AfterVcsOperation = setting
                 VcsProbe = fun _ -> probe }
             (NoProjects())
             (fun _ -> [])
@@ -103,8 +104,9 @@ let private gatedDaemonWith (runCost: TimeSpan) (probe: Probe) (root: string) =
 
     daemon, Option.get callback.Value, witness
 
+/// A daemon in a repository that waits for a client after a VCS operation.
 let private gatedDaemon (root: string) (position: Result<Position, string> ref) =
-    gatedDaemonWith TimeSpan.Zero (tracking position) root
+    daemonWith VcsQuiet.AfterVcsOperation.WaitForClient TimeSpan.Zero (tracking position) root
 
 /// `gatedDaemon` after its cold scan: warm, so every later batch is a change batch.
 let private warmDaemon (root: string) (position: Result<Position, string> ref) =
@@ -315,18 +317,17 @@ type private Cycle =
 /// A warm daemon, a rebase, the daemon left to react, then `fshw check` (scan request and
 /// the wait it grades after), timed from the request to the answer.
 [<WallClock("measurement: the latency of the first check after a rebase is the quantity AUTOMATION-1705 asks for, reported in the log and never asserted")>]
-let private rebaseThenCheck (runCost: TimeSpan) (settleFirst: bool) (gated: bool) (root: string) : Cycle =
+let private rebaseThenCheck
+    (runCost: TimeSpan)
+    (settleFirst: bool)
+    (setting: VcsQuiet.AfterVcsOperation)
+    (root: string)
+    : Cycle =
     let source = sourceIn root "Rebased" "module Rebased\nlet value = 1\n"
     let position = ref (Ok(at 'a'))
 
-    let probe =
-        if gated then
-            tracking position
-        else
-            // The behaviour before AUTOMATION-1705: every batch checks.
-            Probe.Untracked "measuring the ungated daemon"
-
-    let daemon, deliver, witness = gatedDaemonWith runCost probe root
+    // The position moves in both: `CheckUnasked` is the behaviour before AUTOMATION-1705.
+    let daemon, deliver, witness = daemonWith setting runCost (tracking position) root
     use _ = daemon
 
     served daemon (fun pipeName ->
@@ -352,8 +353,12 @@ let private rebaseThenCheck (runCost: TimeSpan) (settleFirst: bool) (gated: bool
 [<WallClock("measurement: logs the latency of the first check after a rebase, gated and ungated; asserts only the run counts, which do not depend on the box")>]
 let ``a rebase starts a run on its own only without the gate, and the first check pays for the run instead`` () =
     let runCost = TimeSpan.FromSeconds 2.0
-    let ungated = withTempDir "vcs-measure-ungated" (rebaseThenCheck runCost true false)
-    let gated = withTempDir "vcs-measure-gated" (rebaseThenCheck runCost true true)
+
+    let ungated =
+        withTempDir "vcs-measure-ungated" (rebaseThenCheck runCost true VcsQuiet.AfterVcsOperation.CheckUnasked)
+
+    let gated =
+        withTempDir "vcs-measure-gated" (rebaseThenCheck runCost true VcsQuiet.AfterVcsOperation.WaitForClient)
 
     Logging.info
         "vcs-measure"
@@ -368,12 +373,58 @@ let ``a check right after a rebase runs once, gated or not`` () =
     let runCost = TimeSpan.FromSeconds 2.0
 
     let ungated =
-        withTempDir "vcs-measure-now-ungated" (rebaseThenCheck runCost false false)
+        withTempDir "vcs-measure-now-ungated" (rebaseThenCheck runCost false VcsQuiet.AfterVcsOperation.CheckUnasked)
 
-    let gated = withTempDir "vcs-measure-now-gated" (rebaseThenCheck runCost false true)
+    let gated =
+        withTempDir "vcs-measure-now-gated" (rebaseThenCheck runCost false VcsQuiet.AfterVcsOperation.WaitForClient)
 
     Logging.info
         "vcs-measure"
         $"check at once, run cost %d{int runCost.TotalMilliseconds} ms | ungated: %d{ungated.TotalRuns} run(s), first check %d{int ungated.CheckLatency.TotalMilliseconds} ms | gated: %d{gated.TotalRuns} run(s), first check %d{int gated.CheckLatency.TotalMilliseconds} ms"
 
     test <@ ungated.TotalRuns = 1 && gated.TotalRuns = 1 @>
+
+// ---- the setting: `afterVcsOperation`, `checkUnasked` unless a repository asks ---------
+
+/// A daemon in a repository that checks unasked after a VCS operation, as one that does not
+/// set `afterVcsOperation` does.
+let private defaultDaemon (root: string) (position: Result<Position, string> ref) =
+    daemonWith watchingDaemonOptions.AfterVcsOperation TimeSpan.Zero (tracking position) root
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``by default a VCS operation's batch checks at once, unasked, as it always has`` () =
+    withTempDir "vcs-default-unasked" (fun root ->
+        let source = sourceIn root "Rebased" "module Rebased\nlet value = 1\n"
+        let position = ref (Ok(at 'a'))
+        let daemon, deliver, witness = defaultDaemon root position
+        use _ = daemon
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        rebase position source "module Rebased\nlet value = 2\n" deliver
+
+        waitUntilOr "the operation's batch to be checked" (fun () -> told witness source) HangWaitMs
+        test <@ seen witness source = [ "module Rebased\nlet value = 2\n" ] @>
+        test <@ daemon.VcsNotice() = VcsQuiet.Notice.Checking @>)
+
+/// In a repository that checks unasked, a check that arrives while an edit is still
+/// debouncing is answered with that edit. This held before the gate (the debouncing batch
+/// is already owned work the check waits for); the test pins that the gate kept it so.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``by default a check that arrives while a batch is still debouncing is answered with that batch`` () =
+    withTempDir "vcs-default-debouncing" (fun root ->
+        let after = "module Edited\nlet value = 2\n"
+        let source = sourceIn root "Edited" "module Edited\nlet value = 1\n"
+        let position = ref (Ok(at 'a'))
+        let daemon, deliver, witness = defaultDaemon root position
+        use _ = daemon
+
+        served daemon (fun pipeName ->
+            File.WriteAllText(source, after)
+            deliver (SourceChanged [ source ])
+
+            // `fshw check` at once, inside the edit's debounce window.
+            let ipc = FsHotWatch.Cli.Program.defaultIpcOps
+            FsHotWatch.Cli.Program.forceScanAndWait ipc pipeName None |> ignore
+            ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously |> ignore
+
+            test <@ seen witness source = [ after ] @>))

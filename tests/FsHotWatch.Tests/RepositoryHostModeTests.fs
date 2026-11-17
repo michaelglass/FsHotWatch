@@ -189,6 +189,20 @@ let ``the repository status names each session's snapshot epoch`` () =
                                             "  /s  serving, scan generation 1" ]
         @>
 
+[<Fact(Timeout = 5000)>]
+let ``the repository status says a session waits for a client after a VCS operation, so it does not read as hung`` () =
+    let json =
+        """{"hostPid":7,"endpoint":"e","sessions":[{"root":"/r","serving":true,"scanGeneration":3,"vcs":{"state":"waiting","before":"jj op 0123456789ab","after":"jj op ba9876543210","held":2}},{"root":"/s","serving":true,"scanGeneration":1,"vcs":{"state":"checking"}}]}"""
+
+    test
+        <@
+            renderRepositoryStatus json = [ "Repository host pid 7 on e: 2 session(s)"
+                                            "  /r  serving, scan generation 3"
+                                            "    vcs: tree changed by a VCS operation (jj op 0123456789ab -> jj op ba9876543210); waiting for a client. Not hung: the next `fshw check` checks the 2 change(s) it rewrote"
+                                            "  /s  serving, scan generation 1" ]
+        @>
+
+
 // ---------------------------------------------------------------------------
 // Attaching
 // ---------------------------------------------------------------------------

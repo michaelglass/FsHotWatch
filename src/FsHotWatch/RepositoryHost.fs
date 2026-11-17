@@ -369,6 +369,8 @@ type RepositoryHost
             entry["attachedAt"] <- JsonValue.Create(s.AttachedAt.ToString "o")
             entry["publications"] <- ProjectModelWire.publicationsPayload (s.Daemon.Publications())
             entry["snapshot"] <- SnapshotEpoch.SnapshotStatus.payload (s.Daemon.SnapshotStatus())
+            // AUTOMATION-1705: a session waiting for a client after a VCS operation says so.
+            entry["vcs"] <- VcsQuiet.Notice.payload (s.Daemon.VcsNotice())
             entry["admission"] <- WorkScheduler.LaneStatus.payload (s.Daemon.Pipeline.Admission.Status())
             entry["liveResults"] <- LiveResults.LiveResultsStatus.payload (s.Daemon.Host.LiveResults.Status())
 

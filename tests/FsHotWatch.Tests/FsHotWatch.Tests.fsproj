@@ -158,6 +158,7 @@
     <Compile Include="DaemonIdentityTests.fs" />
     <Compile Include="DaemonEndpointTests.fs" />
     <Compile Include="StoredNameTests.fs" />
+    <Compile Include="RealTools.fs" />
     <Compile Include="RepositoryIdentityTests.fs" />
     <Compile Include="VcsPositionTests.fs" />
     <Compile Include="VcsQuietTests.fs" />

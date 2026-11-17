@@ -1358,3 +1358,66 @@ let ``a host that exits idle says so in its event log`` () =
 
         test <@ last["event"].GetValue<string>() = "hostStopped" @>
         test <@ last["reason"].GetValue<string>() = "idle" @>)
+
+// ---------------------------------------------------------------------------
+// A session waiting after a VCS operation (AUTOMATION-1705)
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 60000)>]
+let ``status --repository shows a session waiting for a client after a VCS operation, never a hung one`` () =
+    let at (commit: char) =
+        VcsPosition.Position.GitBranch("refs/heads/main", VcsPosition.GitRef.Points(String(commit, 40)))
+
+    let position = ref (Ok(at 'a'))
+    let deliver = ref None
+
+    // The host's one watcher, driven by hand: it hands the session's change callback over.
+    let watcher: Daemon.WatcherFactory =
+        fun _ onChange _ _ _ ->
+            deliver.Value <- Some onChange
+
+            { Mode = Watcher.WatcherMode.NativeEvents
+              Disposables = [] }
+
+    let factory: SessionFactory =
+        fun spec ->
+            Daemon.createWithWatcherFactory
+                nullChecker
+                spec.Worktree.Root.Value
+                { watchingDaemonOptions with
+                    Hosting =
+                        FsHotWatch.DaemonHosting.hostedBy watcher (fun _ -> nullChecker) (WorkScheduler.Scheduler 1)
+                        |> FsHotWatch.DaemonHosting.withProcesses hostProcesses
+                    AfterVcsOperation = VcsQuiet.AfterVcsOperation.WaitForClient
+                    VcsProbe = fun _ -> VcsPosition.Probe.Tracked(fun () -> position.Value) }
+                watcher
+
+    withHost settingsFor factory (fun fx host ->
+        attachVia host (requestFrom fx.Primary "a") |> attachedId |> ignore
+
+        let state () =
+            let listed = JsonNode.Parse(host.ListSessions())
+            let session = listed["sessions"].AsArray() |> Seq.exactlyOne
+            let vcs = session["vcs"]
+            vcs["state"].GetValue<string>()
+
+        test <@ state () = "checking" @>
+
+        // A rebase: the position moves and a source file is rewritten.
+        position.Value <- Ok(at 'b')
+        let source = Path.Combine(fx.Primary.Root.Value, "src", "Rebased.fs")
+        File.WriteAllText(source, "module Rebased\n")
+        (Option.get deliver.Value) (Events.SourceChanged [ source ])
+
+        waitUntilOr "the session to wait for a client" (fun () -> state () = "waiting") HangWaitMs
+
+        let lines = FsHotWatch.Cli.Program.renderRepositoryStatus (host.ListSessions())
+
+        test
+            <@
+                lines
+                |> List.exists (fun line ->
+                    line.Contains "waiting for a client"
+                    && line.Contains "Not hung"
+                    && line.Contains(VcsPosition.Position.describe (at 'b')))
+            @>)

@@ -395,3 +395,78 @@ let ``jj: a checkout that is a directory is an error, not a position`` () =
 [<Fact>]
 let ``describe keeps an id shorter than its abbreviation whole`` () =
     test <@ Position.describe (Position.GitDetached "abc") = "git HEAD abc (detached)" @>
+
+// ---- real jj and git, colocated --------------------------------------------------------
+
+/// A colocated jj+git repository driven by the real tools: the jj detector reads it, a jj
+/// operation is recognised, and an edit (even one jj has snapshotted) is not misread.
+/// Also pins two known limits: a git operation is invisible to the jj detector until the
+/// next jj command, and a jj operation that rewrites no file still moves the position.
+[<Fact(Timeout = 9 * RealCommandMs)>]
+let ``real colocated jj and git: the jj detector reads the checkout and tells an operation from an edit`` () =
+    FsHotWatch.Tests.RealTools.requireTools [ "jj"; "git" ]
+    let run = FsHotWatch.Tests.RealTools.run
+
+    withTempDir "vcs-colocated" (fun parent ->
+        let dir = Path.Combine(parent, "repo")
+        run parent "jj" [ "git"; "init"; "--colocate"; dir ]
+        let jj args = run dir "jj" ([ "-R"; dir ] @ args)
+
+        let git args =
+            run
+                dir
+                "git"
+                ([ "-c"
+                   "user.email=t@example.com"
+                   "-c"
+                   "user.name=t"
+                   "-c"
+                   "commit.gpgsign=false" ]
+                 @ args)
+
+        let gitHead () =
+            File.ReadAllText(Path.Combine(dir, ".git", "HEAD")).Trim()
+
+        let started = positionOf dir
+
+        test
+            <@
+                match started with
+                | Position.JjWorkingCopy(_, JjOperationKind.Rewrite) -> true
+                | _ -> false
+            @>
+
+        // An edit no jj command has seen: the position stands still.
+        File.WriteAllText(Path.Combine(dir, "a.txt"), "one\n")
+        let edited = positionOf dir
+        test <@ classify started edited = BatchOrigin.Edit edited @>
+
+        // `jj commit`: a jj operation, recognised. It moves git HEAD too.
+        let headBefore = gitHead ()
+        jj [ "commit"; "-m"; "x" ]
+        let committed = positionOf dir
+        test <@ isVcsOperation (classify edited committed) @>
+        test <@ gitHead () <> headBefore @>
+
+        // An edit jj snapshotted: the op moved, but it only recorded what was on disk.
+        File.AppendAllText(Path.Combine(dir, "a.txt"), "two\n")
+        jj [ "status" ]
+        let snapshotted = positionOf dir
+        test <@ classify committed snapshotted = BatchOrigin.Edit snapshotted @>
+
+        // Known limit: a git commit moves git HEAD and nothing the jj detector reads.
+        let headBeforeGit = gitHead ()
+        git [ "commit"; "-q"; "-am"; "y" ]
+        let afterGit = positionOf dir
+        test <@ gitHead () <> headBeforeGit @>
+        test <@ classify snapshotted afterGit = BatchOrigin.Edit afterGit @>
+
+        // The next jj command imports it as an operation that rewrites no file, and the
+        // position moves: the next save is classified as a VCS operation.
+        jj [ "status" ]
+        let imported = positionOf dir
+        test <@ isVcsOperation (classify afterGit imported) @>
+
+        // `jj new`: a jj operation, recognised.
+        jj [ "new" ]
+        test <@ isVcsOperation (classify imported (positionOf dir)) @>)

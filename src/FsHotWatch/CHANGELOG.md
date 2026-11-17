@@ -10,9 +10,17 @@
   (`CheckCache.PriorDeclaration`); a record of the bytes on disk now says nothing about what the later files were
   typed against, so the batch re-checks them.
 
-- feat: a warm daemon that sees a VCS operation move its tree goes quiet until a client asks (AUTOMATION-1705). A
-  rebase or checkout in a workspace whose daemon is running used to start checks and test runs (a full suite, in
-  the incident) that nobody asked for. Each change batch is now classified by the checkout's VCS position, read
+- feat: a warm daemon in a repository that asks for it goes quiet after a VCS operation until a client asks
+  (AUTOMATION-1705). OFF by default: `.fshw.json` `"afterVcsOperation"` is `"checkUnasked"` (every batch checks as it
+  arrives, as before) or `"waitForClient"` (what follows), decided per repository, with no environment override; any
+  other value, a bool included, refuses the config. The trade, measured: waiting takes the runs a rebase starts
+  unasked from 1 to 0; a check made after the daemon had settled, which answered in 24-40 ms from the run already
+  made, then pays for that run itself (about 5 minutes for intelligence's full suite); a check made right after the
+  rebase costs the same either way. intelligence will turn it on when it pins this alpha: its gates run on the
+  server, where rebase-then-gate is the normal shape, and the run then happens inside the gate's heavy-run admission.
+  FsHotWatch's own repository leaves it off. With it on, a rebase or checkout in a workspace whose daemon is running
+  no longer starts checks and test runs (a full suite, in the incident) that nobody asked for. Each change batch is
+  classified by the checkout's VCS position, read
   from files and never by running `jj`/`git`: for jj, the operation that last updated THIS workspace's working
   copy (`.jj/working_copy/checkout`), not the repository's op head, which every workspace moves; for git, `HEAD`
   and the commit its branch names (loose or packed). An edit checks at once, as before. The batch that arrives with
@@ -24,9 +32,17 @@
   changes are admitted before the client wakes the gate (`VcsQuiet.decide`). A move to a jj `snapshot working copy`
   operation is an edit: it recorded edits already on disk. A position that cannot be read checks the batch.
   `GetDiagnostics` carries the gate as `vcs` (`{"state":"checking"}`, or `"waiting"` with `before`, `after` and
-  `held`), so `status` can say a waiting daemon is not a hung one. `VcsPosition` (the detectors) and `VcsQuiet` (the
-  gate and its `Notice`) are new. BREAKING: `DaemonOptions` gains `VcsProbe` (default `VcsPosition.probeFor`), the
-  seam a test moves the position through, and `DaemonRpcConfig` gains `GetVcs`.
+  `held`), and so does each session of a repository host's `ListSessions`, so `status` and `status --repository` can
+  say a waiting daemon is not a hung one. Known limits, each pinned by a test: an operation slower than the debounce
+  window can have its first part checked as an edit, since a VCS writes its position after the files; an operation
+  that rewrites no file (`jj commit`, `jj describe`, jj importing a git commit) moves the position without a batch,
+  so the next save is held once; in a colocated jj+git checkout the jj position is read, and a git command moves it
+  only when the next jj command imports it, so a `git checkout` checks as an edit. In a repository that checks
+  unasked, a check that arrives while a batch is still debouncing was already answered with that batch (the batch is
+  owned work the check waits for), and a test now pins it; the `Scan` request's wake only spares that check the rest
+  of the debounce window. `VcsPosition` (the detectors) and `VcsQuiet` (the gate, `AfterVcsOperation` and `Notice`)
+  are new. BREAKING: `DaemonOptions` gains `AfterVcsOperation` (default `CheckUnasked`) and `VcsProbe` (default
+  `VcsPosition.probeFor`), the seam a test moves the position through, and `DaemonRpcConfig` gains `GetVcs`.
 
 - feat: a daily test-row log that outlives the outcome store's keys (AUTOMATION-1744). Each run's per-test rows
   are also written to a file of their own, `<store root>/test-rows/<yyyy-mm-dd>.<run>.<project>.jsonl.gz`: the run's

@@ -516,6 +516,10 @@ type DaemonConfiguration =
         /// (AUTOMATION-1602 (b)). Only with `optionsRecords`. `"off"` when absent; `"on"` is refused
         /// until the shadow period has run.
         OptionsPortable: FsHotWatch.OptionsPortable.Mode
+        /// `"afterVcsOperation"`: `"checkUnasked"` checks what a VCS operation rewrote at once, as an
+        /// edit; `"waitForClient"` holds it until a client asks (`VcsQuiet.AfterVcsOperation`,
+        /// AUTOMATION-1705). `"checkUnasked"` when absent.
+        AfterVcsOperation: FsHotWatch.VcsQuiet.AfterVcsOperation
         Analyzers:
             {| Paths: string list
                FailOnSeverity: DiagnosticSeverity
@@ -648,6 +652,7 @@ let private defaultConfig () =
       OptionsRecords = false
       AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
       OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
+      AfterVcsOperation = FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -1085,6 +1090,7 @@ let resolveFormatRecords (configured: bool) (env: string -> string) : bool =
 let internal KnownTopLevelKeys =
     set
         [ "afterRun"
+          FsHotWatch.VcsQuiet.AfterVcsOperation.ConfigKey
           "agent"
           "analyzerRecords"
           "analyzers"
@@ -1259,6 +1265,27 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v ->
             raise (ConfigErrorException $"optionsRecordsPortable: %s{describeValue v} is not \"off\" or \"shadow\"")
         | false, _ -> FsHotWatch.OptionsPortable.Mode.Off
+
+    // Two named behaviours, never a bool: `true` would not say which one it turns on.
+    let afterVcsOperation =
+        let key = FsHotWatch.VcsQuiet.AfterVcsOperation.ConfigKey
+
+        match root.TryGetProperty key with
+        | false, _ -> FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked
+        | true, v ->
+            let parsed =
+                if v.ValueKind = JsonValueKind.String then
+                    FsHotWatch.VcsQuiet.AfterVcsOperation.tryParse (v.GetString())
+                else
+                    None
+
+            match parsed with
+            | Some setting -> setting
+            | None ->
+                refuseUnknown
+                    key
+                    (describeValue v)
+                    (FsHotWatch.VcsQuiet.AfterVcsOperation.spellings |> List.map fst |> jsonStrings)
 
     let cache =
         let refuse (detail: string) =
@@ -2120,6 +2147,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       OptionsRecords = optionsRecords
       AnalyzerRecords = analyzerRecords
       OptionsPortable = optionsPortable
+      AfterVcsOperation = afterVcsOperation
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands

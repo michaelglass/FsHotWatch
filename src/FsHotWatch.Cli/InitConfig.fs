@@ -103,6 +103,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       OptionsRecords = false
       AnalyzerRecords = FsHotWatch.Analyzers.AnalyzeRecords.RecordMode.Default
       OptionsPortable = FsHotWatch.OptionsPortable.Mode.Off
+      AfterVcsOperation = FsHotWatch.VcsQuiet.AfterVcsOperation.CheckUnasked
       Analyzers = None
       Tests =
         if testProjects.IsEmpty then
