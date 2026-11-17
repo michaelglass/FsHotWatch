@@ -20,6 +20,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- First: the one place a test resolves a shared location (AUTOMATION-1775). Every
+         scratch directory is a TestRoot under this process's own root. See the file. -->
+    <Compile Include="TestRoot.fs" />
     <!-- Before QuotationStaticInit: its pipeline startup points every shared cache /
          state home at a per-run temp directory, which this defines. See the file. -->
     <Compile Include="UserHomeIsolation.fs" />
@@ -43,6 +46,7 @@
          that watches a directory. -->
     <Compile Include="WatchedDir.fs" />
     <Compile Include="TestHelpersTests.fs" />
+    <Compile Include="TestRootTests.fs" />
     <Compile Include="TraceFcsReadsTests.fs" />
     <Compile Include="HangEvidence.fs" />
     <Compile Include="HangEvidenceTests.fs" />

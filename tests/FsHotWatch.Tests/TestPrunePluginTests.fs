@@ -51,39 +51,19 @@ open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.Tests.TestPrunePluginTestSupport
 
-// === isolated roots do not fill the shared temp directory ===
+// === isolated roots live under this process's own root ===
 
 [<Fact(Timeout = 15000)>]
-let ``isolated roots share one parent instead of filling the temp directory`` () =
-    // Every entry directly in the temp directory slows each path lookup under it:
-    // canonicalizing lists a component's parent to find its stored name.
+let ``isolated roots live under this process's root, never directly in the shared temp directory`` () =
+    // Every entry directly in the temp directory slows each path lookup under it
+    // (canonicalizing lists a component's parent to find its stored name), and a root
+    // there would need a sweep of the SHARED directory to remove it (AUTOMATION-1775).
     let a = isolatedRoot ()
     let b = isolatedRoot ()
-    let temp = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()))
     test <@ a <> b @>
-    test <@ Path.GetDirectoryName a = Path.GetDirectoryName b @>
-    test <@ Path.GetDirectoryName(Path.GetDirectoryName a) = temp @>
-
-[<Fact(Timeout = SyncHangBackstopMs)>]
-let ``pruning removes isolated roots older than the cutoff and keeps fresh ones`` () =
-    withTempDir "tp-prune" (fun parent ->
-        let stale = Path.Combine(parent, "tp-stale")
-        let fresh = Path.Combine(parent, "tp-fresh")
-        Directory.CreateDirectory(Path.Combine(stale, ".fshw")) |> ignore
-        Directory.CreateDirectory fresh |> ignore
-        Directory.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddDays -2.0)
-
-        let unrelated = Path.Combine(parent, "other")
-        Directory.CreateDirectory unrelated |> ignore
-        Directory.SetLastWriteTimeUtc(unrelated, DateTime.UtcNow.AddDays -2.0)
-        Directory.SetLastWriteTimeUtc(fresh, DateTime.UtcNow)
-
-        pruneStaleRoots parent "tp-*" (TimeSpan.FromDays 1.0)
-
-        test <@ not (Directory.Exists stale) @>
-        test <@ Directory.Exists fresh @>
-        // Only the entries the pattern names are candidates, however old.
-        test <@ Directory.Exists unrelated @>)
+    test <@ Directory.Exists a && Directory.Exists b @>
+    test <@ Path.GetDirectoryName a = FsHotWatch.TestRoots.processRoot.Value @>
+    test <@ Path.GetDirectoryName b = FsHotWatch.TestRoots.processRoot.Value @>
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =

@@ -20,6 +20,7 @@
   <ItemGroup>
     <!-- First: points every shared cache / state home at a per-run temp directory,
          installed by the pipeline startup below, before any test runs. -->
+    <Compile Include="../FsHotWatch.Tests/TestRoot.fs" Link="TestRoot.fs" />
     <Compile Include="../FsHotWatch.Tests/UserHomeIsolation.fs" Link="UserHomeIsolation.fs" />
     <Compile Include="../FsHotWatch.Tests/QuotationWarmup.fs" Link="QuotationWarmup.fs" />
     <Compile Include="UserHomeIsolationStartup.fs" />
