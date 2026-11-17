@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **behaviour change:** a `SupervisedWork` request's receipt is set by the writer right after the publication that
+  retires it, before anything can read that retirement as rest (AUTOMATION-1781). It was set by the finishing worker a
+  few statements later, after the store's writer had moved on, so a reader on another thread could see rest with the
+  receipt still unset: AUTOMATION-1780's class, below the async simulation's atomic step. Requests retired by a worker
+  fault (a successor's failing `beginWork`), and queued requests refused by `Close`, have their receipts set the same
+  way. `PluginWorkOwner.Store` gains `ChangeThen` (the synchronous `ChangeAsyncThen`) and `onPublished`, which sees
+  every publication on the writer after its effect and before its reply settles; production passes `ignore`, and
+  tests check invariants there. No record or cache key changes.
+
 - **behaviour change:** rest now implies every debounced receipt has settled (AUTOMATION-1780). A `DebouncedWork`
   cohort stays owned (the host reads busy) until its receipts are set: a cohort the supervisor owns is held in a new
   `Settling` list until its request's outcome is set on its receipts, and a refused, abandoned or closed cohort's

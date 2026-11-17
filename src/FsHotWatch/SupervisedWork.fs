@@ -287,6 +287,10 @@ type Queue<'State, 'Request>
     let change transition =
         store.Change(handle, fun _ core -> transition core)
 
+    // A change whose effect the writer runs right after its publication (`Store.ChangeThen`).
+    let changeThen transition =
+        store.ChangeThen(handle, fun _ core -> transition core)
+
     // `Task.Run`, on the runtime's scheduler.
     let start (body: unit -> unit) : Task =
         Task.Factory.StartNew(
@@ -338,17 +342,21 @@ type Queue<'State, 'Request>
         Logging.error name $"the supervised worker failed and closed its queue: %O{failure}"
 
         let retired =
-            change (fun core ->
+            changeThen (fun core ->
                 let active, queued = live name request.Id core.Phase
 
                 { core with
                     Phase = Resting
                     Closed = true
                     Failure = Some failure },
-                active :: queued)
+                active :: queued,
+                // Set by the writer right after this publication, so no receipt is unset once it
+                // reads as rest (AUTOMATION-1781).
+                fun () ->
+                    for pending in active :: queued do
+                        pending.Receipt.TrySetException failure |> ignore)
 
         for pending in retired do
-            pending.Receipt.TrySetException failure |> ignore
             pending.Cancellation.Dispose()
 
     let rec start (request: Request<'Request>) (state: 'State) =
@@ -390,10 +398,10 @@ type Queue<'State, 'Request>
                     Logging.error name $"releasing the work deadline failed: %O{failure}"
                     notified |> Result.bind (fun _ -> Error failure)
 
-            // Retirement and the successor's admission are one publication, and both
-            // precede the predecessor's receipt.
-            let successor, final =
-                change (fun core ->
+            // Retirement and the successor's admission are one publication, and the
+            // predecessor's receipt is set inside it.
+            let successor =
+                changeThen (fun core ->
                     let _, queued = live name request.Id core.Phase
 
                     let final =
@@ -415,20 +423,27 @@ type Queue<'State, 'Request>
                                 | Ok _ -> None
                                 | Error failure -> Some failure }
 
-                    match queued with
-                    | [] -> { retired with Phase = Resting }, (None, final)
-                    | next :: rest ->
-                        let begun = beginWork state next.Value
+                    let handedOver, successor =
+                        match queued with
+                        | [] -> { retired with Phase = Resting }, None
+                        | next :: rest ->
+                            let begun = beginWork state next.Value
 
-                        { retired with
-                            State = begun
-                            Phase = Running(next, rest)
-                            Failure = None },
-                        (Some(next, begun), final))
+                            { retired with
+                                State = begun
+                                Phase = Running(next, rest)
+                                Failure = None },
+                            Some(next, begun)
 
-            match final with
-            | Ok _ -> request.Receipt.TrySetResult(()) |> ignore
-            | Error failure -> request.Receipt.TrySetException failure |> ignore
+                    // Set by the writer right after this publication, so it is set before anything can
+                    // read the retirement as rest (AUTOMATION-1781). A successor's `beginWork` that
+                    // throws publishes nothing and leaves it to `faultWorker`, unset.
+                    handedOver,
+                    successor,
+                    fun () ->
+                        match final with
+                        | Ok _ -> request.Receipt.TrySetResult(()) |> ignore
+                        | Error failure -> request.Receipt.TrySetException failure |> ignore)
 
             request.Cancellation.Dispose()
             successor |> Option.iter (fun (next, begun) -> start next begun)
@@ -516,21 +531,26 @@ type Queue<'State, 'Request>
         let closing =
             task {
                 let! active, queued =
-                    store.ChangeAsync(
+                    store.ChangeAsyncThen(
                         handle,
                         fun _ core ->
+                            let active, queued = queueOf core.Phase
+
                             { core with
                                 Closed = true
                                 Phase = withQueue [] core.Phase },
-                            queueOf core.Phase
+                            (active, queued),
+                            // Refused right after the publication that drops them, so no receipt is
+                            // unset once the active request's retirement reads as rest (AUTOMATION-1781).
+                            fun () ->
+                                queued
+                                |> List.iter (fun request ->
+                                    request.Receipt.TrySetException(ObjectDisposedException name) |> ignore)
                     )
 
                 // `List.iter`, not `for`: a `for` in a task CE disposes its enumerator behind a
                 // null check that no list enumerator can take (AUTOMATION-1601).
-                queued
-                |> List.iter (fun request ->
-                    request.Receipt.TrySetException(ObjectDisposedException name) |> ignore
-                    request.Cancellation.Dispose())
+                queued |> List.iter (fun request -> request.Cancellation.Dispose())
 
                 active
                 |> Option.iter (fun request -> requestCancellation runtime name request.Cancellation)

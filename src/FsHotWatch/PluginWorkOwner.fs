@@ -344,7 +344,13 @@ type private Mutation =
 /// only produces by chance (a writer that publishes before the poster awaits, a second post
 /// finding a writer already posted, a posted writer finding another writer running) are
 /// each reached on purpose (AUTOMATION-1601, AUTOMATION-1695).
-type Store(runtime: AsyncRuntime.Runtime) =
+///
+/// `onPublished` sees every publication, on the writer, right after it becomes visible and its
+/// change's effect has run, and before its reply settles or anything else runs: the one point
+/// at which a reader can see a publication that later statements have not caught up with.
+/// Tests check invariants there (AUTOMATION-1781: a row that reads at rest has settled every
+/// receipt it retired). Production passes `ignore`. It must not throw or wait.
+type Store(runtime: AsyncRuntime.Runtime, onPublished: HostSnapshot -> unit) =
     let identity = Guid.NewGuid()
 
     let mutable published =
@@ -371,8 +377,10 @@ type Store(runtime: AsyncRuntime.Runtime) =
 
         try
             let next, result, after = change (WorkId(identity, version)) current
-            Volatile.Write(&published, { next with Published = version })
+            let snapshot = { next with Published = version }
+            Volatile.Write(&published, snapshot)
             after ()
+            onPublished snapshot
             reply.TrySetResult(result) |> ignore
         with failure ->
             reply.TrySetException(failure) |> ignore
@@ -494,8 +502,11 @@ type Store(runtime: AsyncRuntime.Runtime) =
             let next, result = transition fresh value
             next, result, ignore)
 
+    /// A store on `runtime` whose publications nobody observes.
+    new(runtime: AsyncRuntime.Runtime) = Store(runtime, ignore)
+
     /// A store whose posted writer runs on the thread pool.
-    new() = Store(AsyncRuntime.pool)
+    new() = Store(AsyncRuntime.pool, ignore)
 
     member _.Snapshot: HostSnapshot = Volatile.Read(&published)
 
@@ -571,6 +582,10 @@ type Store(runtime: AsyncRuntime.Runtime) =
         (handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result * (unit -> unit))
         : Task<'Result> =
         changeAsyncThen (rowChangeThen handle transition)
+
+    /// `Change`, with an effect run as `ChangeAsyncThen` runs it.
+    member _.ChangeThen(handle: RowHandle<'T>, transition: WorkId -> 'T -> 'T * 'Result * (unit -> unit)) : 'Result =
+        changeThen (rowChangeThen handle transition)
 
     /// Take a client-observation lease: the host is being watched. The lease inhibits
     /// idle exit and counts as no work at all. Disposing it twice releases it once — a
