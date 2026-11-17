@@ -37,19 +37,11 @@ let private reap (proc: Process) =
 [<Fact(Timeout = 60000)>]
 let ``daemon child survives termination of its isolated caller process group`` () =
     withTempDir "launcher-group-survival" (fun root ->
-        // bin/<Configuration>/<tfm>/ of this test project, mirrored by the fixture's.
-        let tfmDir = DirectoryInfo(AppContext.BaseDirectory)
-
+        // The fixture is built beside this test project, in its configuration and tfm.
         let fixture =
-            Path.Combine(
-                tfmDir.Parent.Parent.Parent.Parent.FullName,
-                "Fixtures",
-                "LauncherLifetimeFixture",
-                "bin",
-                tfmDir.Parent.Name,
-                tfmDir.Name,
+            FsHotWatch.TestRoots.BuildOutput.path
+                "tests/Fixtures/LauncherLifetimeFixture"
                 "FsHotWatch.LauncherLifetimeFixture.dll"
-            )
 
         Assert.True(File.Exists fixture, $"the referenced fixture project must be built: %s{fixture}")
 

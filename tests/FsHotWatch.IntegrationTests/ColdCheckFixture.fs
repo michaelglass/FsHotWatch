@@ -71,11 +71,8 @@ let run clock root executable arguments =
         disposeChild child
 
 let private cliAssembly () =
-    let configuration = DirectoryInfo(AppContext.BaseDirectory).Parent.Name
-    let root = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
-
     let assembly =
-        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net10.0", "FsHotWatch.Cli.dll")
+        FsHotWatch.TestRoots.BuildOutput.path "src/FsHotWatch.Cli" "FsHotWatch.Cli.dll"
 
     Assert.True(File.Exists assembly, $"build the real CLI before running this integration test: {assembly}")
     assembly

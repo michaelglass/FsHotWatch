@@ -29,7 +29,7 @@ let private startSleeper () : int * Task =
                 started.SetResult
                 "sleep"
                 "30"
-                (Path.GetTempPath())
+                (FsHotWatch.TestRoots.TestBinary.directory ())
                 []
                 (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
             |> ignore)

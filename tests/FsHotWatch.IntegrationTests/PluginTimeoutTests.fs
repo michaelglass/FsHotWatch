@@ -50,8 +50,7 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
 /// An empty repository root for a FileCommand plugin: its FileChanged key hashes every file
 /// its pattern matches under the root (AUTOMATION-1557), so a root of `/tmp` hashes all of it.
 let private emptyCommandRoot () =
-    let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fc-empty-root-" + System.Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fc-empty-root"
 
     System.IO.Directory.CreateDirectory(dir) |> ignore
     dir
@@ -172,7 +171,7 @@ let ``a descendant that outlives the killed shell is named as a survivor`` () =
             "sh",
             "-c \"sleep 63 & wait\"",
             UseShellExecute = false,
-            WorkingDirectory = System.AppContext.BaseDirectory
+            WorkingDirectory = FsHotWatch.TestRoots.TestBinary.directory ()
         )
 
     use shell = System.Diagnostics.Process.Start psi
@@ -238,8 +237,7 @@ let ``an overrunning quiet dotnet build names the target it was stalled in`` () 
     use _patience =
         FsHotWatch.ProcessHelper.TeardownPatience.install (System.TimeSpan.FromMilliseconds(float HangWaitMs))
 
-    let root =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fshw-stall-" + System.Guid.NewGuid().ToString("N"))
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-stall"
 
     System.IO.Directory.CreateDirectory root |> ignore
 

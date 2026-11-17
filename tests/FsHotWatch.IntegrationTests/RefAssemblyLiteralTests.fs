@@ -58,7 +58,7 @@ let private literal (root: string) (value: string) =
 
 /// The repository's own Directory.Build.targets, the file under test.
 let private repositoryTargets =
-    Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../../Directory.Build.targets"))
+    FsHotWatch.TestRoots.RepositoryTree.path "Directory.Build.targets"
 
 let private dotnet clock (root: string) (args: string list) =
     let code, text = run clock root "dotnet" (args @ [ "--disable-build-servers" ])

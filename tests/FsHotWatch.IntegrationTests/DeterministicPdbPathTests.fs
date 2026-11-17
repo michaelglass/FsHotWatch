@@ -19,15 +19,7 @@ open Xunit
 open Swensen.Unquote
 
 let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: FsHotWatch.slnx is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "FsHotWatch.slnx")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(System.AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 /// The pdb paths an assembly's CodeView debug entries name.
 let private codeViewPaths (assembly: string) =

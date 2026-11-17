@@ -20,15 +20,7 @@ open Swensen.Unquote
 // the nested-MSBuild load the gated inner loop excludes.
 
 let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: scripts/wait-for-nuget.fsx is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "scripts", "wait-for-nuget.fsx")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 type private ProcessResult =
     { ExitCode: int
@@ -43,7 +35,7 @@ let private run executable (arguments: string list) (environment: (string * stri
     // Every argument is an absolute path. An inherited working directory is whatever the
     // test host stands in, and a child started in a deleted one fails in `getcwd` before
     // it reads an argument.
-    start.WorkingDirectory <- AppContext.BaseDirectory
+    start.WorkingDirectory <- FsHotWatch.TestRoots.TestBinary.directory ()
     arguments |> List.iter start.ArgumentList.Add
 
     for key, value in environment do
@@ -83,8 +75,7 @@ let private toolProject =
 /// thread-safe by default, and the scratch tree is removed when the test host exits.
 let private packed =
     lazy
-        (let identity = Guid.NewGuid().ToString "N"
-         let root = Path.Combine(Path.GetTempPath(), $"fshw-tool-oracle-%s{identity}")
+        (let root = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-tool-oracle"
 
          let source = Path.Combine(root, "src")
          let feed = Path.Combine(root, "feed")
@@ -152,10 +143,7 @@ let private probe feedDirectory =
     let _, project, _ = packed.Value
     let root = repoRoot ()
 
-    let identity = Guid.NewGuid().ToString "N"
-
-    let probeParent =
-        Path.Combine(Path.GetTempPath(), $"fshw-tool-oracle-probes-%s{identity}")
+    let probeParent = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-tool-oracle-probes"
 
     try
         let result =

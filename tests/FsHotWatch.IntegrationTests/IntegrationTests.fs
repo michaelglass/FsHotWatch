@@ -49,9 +49,7 @@ open FsHotWatch.Cli
 open FsHotWatch.Daemon
 
 let private findRepoRoot () =
-    let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
-
-    FsHotWatch.Cli.Program.findRepoRoot assemblyDir
+    FsHotWatch.Cli.Program.findRepoRoot (FsHotWatch.TestRoots.TestBinary.directory ())
     |> Option.defaultWith (fun () -> failwith "Could not find repo root")
 
 /// `dir` as a repository with the formatter pinned as the real one pins it. The format check
@@ -104,7 +102,7 @@ let ``a pinned temp repo selects the SDK the repository pins, so its pinned tool
     // had no global.json, so on a runner with SDKs 10.0.404 and 11.0.100 installed, `dotnet`
     // there picked 11.0.100, under which the repository's restored Fantomas does not
     // resolve ("Run dotnet tool restore"), and three format tests waited out their bound.
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-pinned-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-pinned"
     Directory.CreateDirectory dir |> ignore
 
     try
@@ -120,7 +118,7 @@ let ``a pinned temp repo selects the SDK the repository pins, so its pinned tool
 
 [<Fact>]
 let ``integration harness resolves checkout root`` () =
-    let expected = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
+    let expected = FsHotWatch.TestRoots.RepositoryTree.root ()
 
     test <@ findRepoRoot () = expected @>
 
@@ -133,6 +131,11 @@ let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeou
 /// project that the test then deletes. A `dotnet` started in that window dies in its
 /// CLI's `GetCwd` before MSBuild starts (AUTOMATION-1343). The checkout root also carries
 /// the `global.json` that picks the SDK.
+///
+// FSHW-ROOT-001 ok: builds this repository's analyzer projects IN PLACE, writing their
+// bin/ and obj/. A copy outside the repository would lose Directory.Packages.props, the
+// shared build props and global.json, and the gate loads analyzers from these very
+// bins. The solution build has already produced them, so this is normally a no-op.
 let private analyzerBuildStartInfo (dir: string) : ProcessStartInfo =
     let psi = ProcessStartInfo("dotnet", $"""build "{dir}" -v quiet""")
     psi.WorkingDirectory <- findRepoRoot ()
@@ -166,8 +169,7 @@ let private buildAnalyzerProject (label: string) (dir: string) : string =
 [<Fact(Timeout = 120000)>]
 let ``an in-test analyzer build that fails carries MSBuild's own error`` () =
     // AUTOMATION-1343: a failure that said only "build failed" hid its cause for days.
-    let missing =
-        Path.Combine(Path.GetTempPath(), "fshw-no-such-project-" + Guid.NewGuid().ToString("N"))
+    let missing = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-no-such-project"
 
     let ex =
         Assert.Throws<Exception>(fun () -> buildAnalyzerProject "Missing" missing |> ignore)
@@ -205,10 +207,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let customAnalyzerPath = exampleAnalyzerPath.Value
 
     let gResearchPath =
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".nuget/packages/g-research.fsharp.analyzers/0.25.0/analyzers/dotnet/fs"
-        )
+        FsHotWatch.TestRoots.NuGetCache.path "g-research.fsharp.analyzers/0.25.0/analyzers/dotnet/fs"
 
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
@@ -315,7 +314,7 @@ let ``analyzers load guard fires per-path when one of several paths loads zero``
 /// the default `Temp.fs` the rule is out of scope and assertions pass for that reason
 /// rather than the intended one.
 let private withTempFsFileNamed (fileName: string) (content: string) (action: string -> string -> 'a) =
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-test-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-test"
     Directory.CreateDirectory(dir) |> ignore
     let filePath = Path.Combine(dir, fileName)
     File.WriteAllText(filePath, content)
@@ -402,7 +401,7 @@ type AllPluginsTests(warm: AllPluginsWarmup) =
         let sourceFile = warm.SourceFile
         pipeline.RegisterProject("FsHotWatch", warm.ProjectOptions)
 
-        let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
+        let dbPath = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-inttest" + ".db"
 
         let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
 
@@ -664,7 +663,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
 
 [<Fact(Timeout = RealFantomasTestCapMs)>]
 let ``multiple file changes are debounced into one batch by SourceChanged`` () =
-    let dir = Path.Combine(Path.GetTempPath(), $"fshw-debounce-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-debounce"
     Directory.CreateDirectory(dir) |> ignore
 
     try
@@ -1749,7 +1748,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
 // before either wait could decide.
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``TestPrunePlugin with failing test reports failure`` () =
-    let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-tp-fail-{Guid.NewGuid():N}.db")
+    let dbPath = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-tp-fail" + ".db"
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -1818,8 +1817,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
 /// An empty repository root for a FileCommand plugin: its FileChanged key hashes every file
 /// its pattern matches under the root (AUTOMATION-1557), so a root of `/tmp` hashes all of it.
 let private emptyCommandRoot () =
-    let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fc-empty-root-" + System.Guid.NewGuid().ToString("N"))
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "fc-empty-root"
 
     System.IO.Directory.CreateDirectory(dir) |> ignore
     dir
@@ -1925,7 +1923,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
 [<WallClock("real host: a real `sh` child writes the sentinel the test counts; the waits are hang caps on that child and on owned event commits, never the claim")>]
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``rerun re-executes a cached FileCommandPlugin`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-rerun-{Guid.NewGuid():N}")
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-rerun"
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try

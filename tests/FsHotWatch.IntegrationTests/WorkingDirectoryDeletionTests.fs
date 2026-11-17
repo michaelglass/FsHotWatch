@@ -15,7 +15,7 @@ open FsHotWatch.Tests.TestHelpers
 // runtime's `getcwd` in a deleted directory raises `FileNotFoundException`, and
 // `AbsFilePath` turns it into `WorkingDirectoryMissingException` naming the directory.
 
-let private script (fsHotWatchDll: string) =
+let private script (fsHotWatchDll: string) (dir: string) =
     $"""#r @"%s{fsHotWatchDll}"
 open System.IO
 open FsHotWatch.Events
@@ -24,7 +24,7 @@ let say (line: string) =
     stdout.WriteLine line
     stdout.Flush()
 
-let dir = Path.Combine(Path.GetTempPath(), "fshw-cwd-" + System.Guid.NewGuid().ToString "N")
+let dir = @"%s{dir}"
 Directory.CreateDirectory dir |> ignore
 Directory.SetCurrentDirectory dir
 let stood = Directory.GetCurrentDirectory()
@@ -44,20 +44,24 @@ say ("STOOD|" + stood)
 
 [<Fact(Timeout = 180000)>]
 let ``a process whose working directory is deleted names it for a relative path and still resolves a rooted one`` () =
-    let scratch = Path.Combine(Path.GetTempPath(), $"fshw-cwd-child-{Guid.NewGuid():N}")
+    let scratch = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-cwd-child"
 
     Directory.CreateDirectory scratch |> ignore
 
     try
         let scriptPath = Path.Combine(scratch, "deleted-cwd.fsx")
-        File.WriteAllText(scriptPath, script (Path.Combine(AppContext.BaseDirectory, "FsHotWatch.dll")))
+
+        File.WriteAllText(
+            scriptPath,
+            script (FsHotWatch.TestRoots.TestBinary.path "FsHotWatch.dll") (Path.Combine(scratch, "cwd"))
+        )
 
         let start = ProcessStartInfo("dotnet")
         start.UseShellExecute <- false
         start.RedirectStandardOutput <- true
         start.RedirectStandardError <- true
         // Never the test host's own working directory: the child gets one that exists.
-        start.WorkingDirectory <- AppContext.BaseDirectory
+        start.WorkingDirectory <- FsHotWatch.TestRoots.TestBinary.directory ()
         [ "fsi"; "--quiet"; scriptPath ] |> List.iter start.ArgumentList.Add
 
         use child = Process.Start start
@@ -119,7 +123,7 @@ type private HeldLoader
 // still be re-evaluating a project change, so the teardown waits the evaluation out.
 [<Fact(Timeout = InProcessEvaluationTestCapMs)>]
 let ``deleting a scratch tree a daemon is evaluating in waits the evaluation out`` () =
-    let root = Path.Combine(Path.GetTempPath(), $"fshw-eval-delete-{Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-eval-delete"
     let projectDir = Path.Combine(root, "src", "MyProj")
     Directory.CreateDirectory(Path.Combine(projectDir, "obj")) |> ignore
 

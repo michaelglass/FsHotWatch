@@ -24,7 +24,7 @@ open TestPrune.Trace
 /// and macOS's temp directory sits under a symlink (`/var` for the usual `TMPDIR`, `/tmp`
 /// when `TMPDIR` is unset), so the repository root must be spelled the way the build spells it.
 let private scratchRoot () =
-    Directory.CreateTempSubdirectory("fshw-traces-it-").FullName
+    (FsHotWatch.TestRoots.TestRoot.freshDirectory "fshw-traces-it").FullName
     |> FsHotWatch.CommandPreprocessor.realPathOf
 
 let private write (root: string) (rel: string) (text: string) =

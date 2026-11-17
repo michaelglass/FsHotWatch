@@ -35,7 +35,7 @@ let private processState (pid: int) : (string * int * string) option =
         let info = ProcessStartInfo("ps", [ "-o"; "stat=,ppid=,comm="; "-p"; string pid ])
         // The test assembly's directory outlives every test; the inherited one may not
         // (AUTOMATION-1343).
-        info.WorkingDirectory <- AppContext.BaseDirectory
+        info.WorkingDirectory <- FsHotWatch.TestRoots.TestBinary.directory ()
         info.RedirectStandardOutput <- true
         use ps = Process.Start info
         let line = ps.StandardOutput.ReadToEnd().Trim()
@@ -64,11 +64,8 @@ let private describePids (pids: (string * int) list) =
     |> String.concat "; "
 
 let private cliAssembly () =
-    let configuration = DirectoryInfo(AppContext.BaseDirectory).Parent.Name
-    let root = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
-
     let assembly =
-        Path.Combine(root, "src", "FsHotWatch.Cli", "bin", configuration, "net10.0", "FsHotWatch.Cli.dll")
+        FsHotWatch.TestRoots.BuildOutput.path "src/FsHotWatch.Cli" "FsHotWatch.Cli.dll"
 
     Assert.True(File.Exists assembly, $"build the real CLI before running this integration test: %s{assembly}")
     assembly
@@ -92,7 +89,7 @@ let ``a fixture's git init runs in the fixture's own directory`` () =
     // AUTOMATION-1343: a child given no working directory inherits the test host's, which
     // is process-wide and which a parallel daemon test can stand in a scratch project it
     // then deletes.
-    let root = Path.Combine(Path.GetTempPath(), "fshw-git-init-fixture")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "fshw-git-init-fixture"
     test <@ (gitInitStartInfo root).WorkingDirectory = root @>
 
 /// A terminal that closes sends SIGHUP. The run must end the way SIGINT and SIGTERM end
