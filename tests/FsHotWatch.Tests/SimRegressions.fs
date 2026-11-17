@@ -14,7 +14,9 @@ open System.IO
 
 /// One listed seed, of the component whose simulation found it.
 [<RequireQualifiedAccess>]
-type Entry = Store of seed: int * theorem: StoreSimulation.Theorem * ticket: string
+type Entry =
+    | Store of seed: int * theorem: StoreSimulation.Theorem * ticket: string
+    | SupervisedWork of seed: int * theorem: SupervisedWorkSimulation.Theorem * ticket: string
 
 let private storeTheorems =
     [ StoreSimulation.Theorem.PublicationBeforeReceipt
@@ -25,6 +27,18 @@ let private storeTheorems =
       StoreSimulation.Theorem.Version
       StoreSimulation.Theorem.Runtime ]
 
+let private supervisedTheorems =
+    [ SupervisedWorkSimulation.Theorem.Serial
+      SupervisedWorkSimulation.Theorem.HonestRest
+      SupervisedWorkSimulation.Theorem.Outcome
+      SupervisedWorkSimulation.Theorem.Settlement
+      SupervisedWorkSimulation.Theorem.State
+      SupervisedWorkSimulation.Theorem.Runtime ]
+
+/// The theorem named `name` among `theorems`, by its case name.
+let private named (theorems: 'T list) (name: string) =
+    theorems |> List.tryFind (fun t -> $"%A{t}" = name)
+
 let private parseLine (number: int) (line: string) : Result<Entry option, string> =
     let text =
         match line.IndexOf '#' with
@@ -34,10 +48,15 @@ let private parseLine (number: int) (line: string) : Result<Entry option, string
     match text.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries) with
     | [||] -> Ok None
     | [| "store"; seed; theorem; ticket |] ->
-        match Int32.TryParse seed, storeTheorems |> List.tryFind (fun t -> $"%A{t}" = theorem) with
+        match Int32.TryParse seed, named storeTheorems theorem with
         | (true, s), Some t -> Ok(Some(Entry.Store(s, t, ticket)))
         | (false, _), _ -> Error $"line %d{number}: '%s{seed}' is not a seed"
         | _, None -> Error $"line %d{number}: the store simulation has no theorem '%s{theorem}'"
+    | [| "supervised-work"; seed; theorem; ticket |] ->
+        match Int32.TryParse seed, named supervisedTheorems theorem with
+        | (true, s), Some t -> Ok(Some(Entry.SupervisedWork(s, t, ticket)))
+        | (false, _), _ -> Error $"line %d{number}: '%s{seed}' is not a seed"
+        | _, None -> Error $"line %d{number}: the supervised-work simulation has no theorem '%s{theorem}'"
     | [| name; _; _; _ |] -> Error $"line %d{number}: no simulated component '%s{name}'"
     | _ -> Error $"line %d{number}: expected '<component> <seed> <theorem> <ticket>', got '%s{line.Trim()}'"
 
@@ -64,8 +83,38 @@ let load () : Entry list =
     | Ok entries -> entries
     | Error e -> failwith $"SimRegressions.txt: %s{e}"
 
+let private band (first: int) (count: int) (listed: int list) =
+    [ first .. first + count - 1 ] @ listed |> List.distinct
+
 /// The seeds CI runs for the store: the band `first .. first + count - 1`, then every listed
 /// store seed outside it.
 let storeSeeds (first: int) (count: int) (entries: Entry list) : int list =
-    let listed = entries |> List.map (fun (Entry.Store(seed, _, _)) -> seed)
-    [ first .. first + count - 1 ] @ listed |> List.distinct
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | Entry.Store(seed, _, _) -> Some seed
+        | Entry.SupervisedWork _ -> None)
+    |> band first count
+
+/// The seeds CI runs for supervised work: the band, then every listed supervised-work seed.
+let supervisedWorkSeeds (first: int) (count: int) (entries: Entry list) : int list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | Entry.SupervisedWork(seed, _, _) -> Some seed
+        | Entry.Store _ -> None)
+    |> band first count
+
+/// N histories per component per run, a FIXED band from the first seed, so the interleavings
+/// these histories reach, and the coverage they contribute, are the same on every run.
+/// `FSHW_SIM_HISTORIES` raises N (the nightly's 100,000); `FSHW_SIM_SEED` moves the band (the
+/// nightly's fresh seeds), and with N = 1 replays one reported seed.
+let histories =
+    match Int32.TryParse(Environment.GetEnvironmentVariable "FSHW_SIM_HISTORIES") with
+    | true, n when n > 0 -> n
+    | _ -> 1000
+
+let firstSeed =
+    match Int32.TryParse(Environment.GetEnvironmentVariable "FSHW_SIM_SEED") with
+    | true, n -> n
+    | _ -> 1

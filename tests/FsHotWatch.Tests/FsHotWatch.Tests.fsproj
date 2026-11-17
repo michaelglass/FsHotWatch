@@ -107,8 +107,10 @@
     <Compile Include="SimRuntime.fs" />
     <Compile Include="SimRuntimeTests.fs" />
     <Compile Include="StoreSimulation.fs" />
+    <Compile Include="SupervisedWorkSimulation.fs" />
     <Compile Include="SimRegressions.fs" />
     <Compile Include="StoreSimulationTests.fs" />
+    <Compile Include="SupervisedWorkSimulationTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="WorkLedgerPropertyTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />
