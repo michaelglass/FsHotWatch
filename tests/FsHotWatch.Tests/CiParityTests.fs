@@ -157,6 +157,23 @@ let ``the nightly replay installs jj with the same script`` () =
 
     test <@ nightly.Contains "run: bash scripts/install-jj.sh" @>
 
+// AUTOMATION-1695 (ADR-078): CI runs each deterministic simulation on a fixed band of seeds; the
+// nightly explores fresh ones for every one of them, ten batches of 10,000.
+[<Fact>]
+let ``the nightly simulation explores fresh seeds for every simulation CI runs`` () =
+    let nightly =
+        File.ReadAllText(Path.Combine(repoRoot (), ".github", "workflows", "nightly-simulation.yml"))
+
+    for simulation in
+        [ "StoreSimulationTests"
+          "SupervisedWorkSimulationTests"
+          "DebouncedWorkSimulationTests"
+          "FrameSimulationTests" ] do
+        test <@ nightly.Contains("--filter-class FsHotWatch.Tests." + simulation) @>
+
+    test <@ nightly.Contains "FSHW_SIM_SEED=$seed FSHW_SIM_HISTORIES=10000" @>
+    test <@ nightly.Contains "for batch in $(seq 0 9)" @>
+
 // AUTOMATION-1577 (ADR-074 (b)): the nightly audit reports LOOKUP AGREEMENT from the nightly
 // workspace's shadow log, so 0% agreement or a lookup green on a red fails the night.
 [<Fact>]
