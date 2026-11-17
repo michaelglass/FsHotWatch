@@ -107,8 +107,7 @@ let convertsWithDefaults () =
 
     /// Analyse the two files the way a project would see them, in a scratch directory.
     let private withAnalysedFiles (f: string -> AnalysisResult -> AnalysisResult -> unit) =
-        let dir =
-            Path.Combine(Path.GetTempPath(), $"testprune-static-init-{Guid.NewGuid():N}")
+        let dir = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-static-init"
 
         Directory.CreateDirectory dir |> ignore
 
@@ -217,8 +216,7 @@ let convertsWithDefaults () =
     [<Fact>]
     let ``static initialization edges round-trip through the database and drive its selection`` () =
         withAnalysedFiles (fun domainFile domain tests ->
-            let dbPath =
-                Path.Combine(Path.GetTempPath(), $"testprune-static-init-{Guid.NewGuid():N}.db")
+            let dbPath = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-static-init" + ".db"
 
             try
                 let db = Database.create dbPath
@@ -254,7 +252,7 @@ let convertsWithDefaults () =
             test <@ not (reachable.Contains "Domain.Counters.counter") @>
 
             let dbPath =
-                Path.Combine(Path.GetTempPath(), $"testprune-static-init-dead-{Guid.NewGuid():N}.db")
+                FsHotWatch.TestRoots.TestRoot.freshPath "testprune-static-init-dead" + ".db"
 
             try
                 let db = Database.create dbPath

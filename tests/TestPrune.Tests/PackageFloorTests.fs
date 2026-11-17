@@ -13,15 +13,7 @@ open Swensen.Unquote
 // check is shown able to FAIL, and pin its wiring into `mise run ci` and GitHub CI.
 
 let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: scripts/check-package-floors.fsx is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "scripts", "check-package-floors.fsx")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 let private writeProps directory (fsharpCore: string) =
     let path = Path.Combine(directory, "Directory.Packages.props")
@@ -78,8 +70,7 @@ let private runCheck propsPath packageDir =
     child.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult()
 
 let private scratch body =
-    let temp =
-        Path.Combine(Path.GetTempPath(), $"testprune-package-floors-%A{Guid.NewGuid()}")
+    let temp = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-package-floors"
 
     let packages = Path.Combine(temp, "packages")
     Directory.CreateDirectory packages |> ignore

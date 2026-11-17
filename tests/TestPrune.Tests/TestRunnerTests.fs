@@ -8,7 +8,7 @@ open Swensen.Unquote
 open TestPrune.TestRunner
 
 let private withTempDir (f: string -> unit) =
-    let dir = Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "test-prune"
 
     Directory.CreateDirectory(dir) |> ignore
 

@@ -128,7 +128,7 @@ let assertsMessage () =
     [<Fact>]
     let ``an index from before literal edges is rebuilt instead of reused`` () =
         let dbPath =
-            Path.Combine(Path.GetTempPath(), $"testprune-literal-schema-{Guid.NewGuid():N}.db")
+            FsHotWatch.TestRoots.TestRoot.freshPath "testprune-literal-schema" + ".db"
 
         try
             let initial = Database.create dbPath
@@ -468,8 +468,7 @@ type MarkerAttribute(message: string) =
 
         let tests = analyze "/tmp/LiteralDbTests.fsx" "Tests" (testSource oldLiteral)
 
-        let dbPath =
-            Path.Combine(Path.GetTempPath(), $"testprune-literal-{Guid.NewGuid():N}.db")
+        let dbPath = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-literal" + ".db"
 
         try
             let db = Database.create dbPath

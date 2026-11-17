@@ -35,8 +35,7 @@ let private consumerSource =
 /// Analyze the four-file fixture through the real compiler and return each file's
 /// result keyed by file name, with symbol paths relative to the fixture directory.
 let private analyzeFixtureWith (signature: string) =
-    let directory =
-        Path.Combine(Path.GetTempPath(), $"signature-occurrence-{Guid.NewGuid():N}")
+    let directory = FsHotWatch.TestRoots.TestRoot.freshPath "signature-occurrence"
 
     Directory.CreateDirectory directory |> ignore
 

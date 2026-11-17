@@ -12,7 +12,7 @@ open TestPrune
 /// terminates. `Directory.GetFiles(root, "*", SearchOption.AllDirectories)` on
 /// this tree hangs; SafeWalk must return promptly.
 let private withSelfLoopTree (f: string -> unit) =
-    let root = Path.Combine(Path.GetTempPath(), $"safewalk-{System.Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk"
     Directory.CreateDirectory(root) |> ignore
 
     try
@@ -58,7 +58,7 @@ let ``enumerateFiles never yields a file reached through a symlinked directory``
 
 [<Fact>]
 let ``enumerateFiles prunes bin and obj rather than filtering them afterwards`` () =
-    let root = Path.Combine(Path.GetTempPath(), $"safewalk-{System.Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk"
     Directory.CreateDirectory(root) |> ignore
 
     try
@@ -81,8 +81,7 @@ let ``enumerateFiles prunes bin and obj rather than filtering them afterwards`` 
 
 [<Fact>]
 let ``enumerateFiles returns empty for a missing root`` () =
-    let missing =
-        Path.Combine(Path.GetTempPath(), $"safewalk-absent-{System.Guid.NewGuid():N}")
+    let missing = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk-absent"
 
     test <@ SafeWalk.enumerateFiles "*.fs" missing |> List.isEmpty @>
 
@@ -92,8 +91,7 @@ let ``enumerateFiles stops at MaxDepth instead of recursing without bound`` () =
     // check (a bind mount, say), recursion must stop. Build a real tree one
     // level PAST the cap and assert the too-deep file is not returned while the
     // shallow one is.
-    let root =
-        Path.Combine(Path.GetTempPath(), $"safewalk-deep-{System.Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk-deep"
 
     Directory.CreateDirectory(root) |> ignore
 
@@ -125,8 +123,7 @@ let ``enumerateFiles stops at MaxDepth instead of recursing without bound`` () =
 let ``enumerateFiles tolerates an unreadable subdirectory instead of faulting`` () =
     // Enumeration is best-effort: a permission hole must not fault the caller
     // (TestPrune walks repos it does not own every file of).
-    let root =
-        Path.Combine(Path.GetTempPath(), $"safewalk-perm-{System.Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk-perm"
 
     Directory.CreateDirectory(root) |> ignore
 
@@ -161,7 +158,7 @@ let ``enumerateFiles tolerates an unreadable subdirectory instead of faulting`` 
 /// `git worktree add`, a clone) is a different tree; a submodule is part of this one.
 [<Fact>]
 let ``enumerateFiles skips nested working copies but walks submodules`` () =
-    let root = Path.Combine(Path.GetTempPath(), $"safewalk-{System.Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk"
 
     let write (relative: string) (text: string) =
         let path = Path.Combine(root, relative)
@@ -193,7 +190,7 @@ let ``enumerateFiles skips nested working copies but walks submodules`` () =
 /// dropping sources on a guess is the direction that loses tests.
 [<Fact>]
 let ``enumerateFiles walks a directory whose git pointer cannot be read`` () =
-    let root = Path.Combine(Path.GetTempPath(), $"safewalk-{System.Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "safewalk"
     let pointer = Path.Combine(root, "vendor/sub/.git")
 
     try

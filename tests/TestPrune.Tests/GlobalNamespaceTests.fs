@@ -57,8 +57,7 @@ let private globalHook = GlobalNamespaceQualifier + ".StartupHook"
 /// Analyze the three-file fixture through the real compiler; results in file order, with
 /// symbol paths relative to the fixture directory.
 let private analyzeFixture (answer: int) =
-    let directory =
-        Path.Combine(Path.GetTempPath(), $"global-namespace-{Guid.NewGuid():N}")
+    let directory = FsHotWatch.TestRoots.TestRoot.freshPath "global-namespace"
 
     Directory.CreateDirectory directory |> ignore
 

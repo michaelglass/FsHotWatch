@@ -833,8 +833,7 @@ module ``Signature edit soundness`` =
     [<InlineData("type-changed")>]
     [<InlineData("unchanged")>]
     let ``signature edits preserve consumer selection and both file baselines`` (edit: string) =
-        let directory =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"signature-impact-{Guid.NewGuid():N}")
+        let directory = FsHotWatch.TestRoots.TestRoot.freshPath "signature-impact"
 
         System.IO.Directory.CreateDirectory directory |> ignore
         let signature = System.IO.Path.Combine(directory, "Library.fsi")

@@ -330,17 +330,9 @@ let x = 1
 [<Collection("FCS-AnonymousRecord")>]
 module ``Gate wiring`` =
 
-    /// Walk up from the test binary to the repo root — the directory holding `.fshw.json`.
+    /// The repository root, the directory holding `.fshw.json`.
     let private repoRoot () =
-        let rec up (dir: DirectoryInfo) =
-            if isNull (box dir) then
-                failwith "repo root not found: no .fshw.json in any ancestor of the test binary"
-            elif File.Exists(Path.Combine(dir.FullName, ".fshw.json")) then
-                dir.FullName
-            else
-                up dir.Parent
-
-        up (DirectoryInfo(AppContext.BaseDirectory))
+        FsHotWatch.TestRoots.RepositoryTree.root ()
 
     /// The `analyzers.paths` the gate actually loads from, resolved against the repo root.
     let private configuredAnalyzerPaths (root: string) =

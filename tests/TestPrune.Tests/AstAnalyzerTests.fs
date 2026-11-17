@@ -940,11 +940,7 @@ module ``Cross-file dependencies (regression)`` =
         // Regression test: when a type is used in a parameter annotation,
         // getScriptOptions should include related modules in the project context
         // so that cross-file references can be resolved.
-        let tmpDir =
-            System.IO.Path.Combine(
-                System.IO.Path.GetTempPath(),
-                "testprune-cross-file-" + System.Guid.NewGuid().ToString("N")
-            )
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-cross-file"
 
         System.IO.Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -3628,8 +3624,7 @@ type SqliteTests() =
 
     [<Fact>]
     let ``a derived class in another file indexes the test it inherits`` () =
-        let tmpDir =
-            Path.Combine(Path.GetTempPath(), $"testprune-inherited-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-inherited"
 
         Directory.CreateDirectory(tmpDir) |> ignore
 

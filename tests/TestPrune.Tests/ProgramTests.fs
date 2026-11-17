@@ -177,7 +177,7 @@ module ``findRepoRoot`` =
 
     [<Fact>]
     let ``finds repo with .jj directory`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
         let child = Path.Combine(tmp, "a", "b")
 
         try
@@ -190,7 +190,7 @@ module ``findRepoRoot`` =
 
     [<Fact>]
     let ``finds repo with .git directory`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
         let child = Path.Combine(tmp, "sub")
 
         try
@@ -203,7 +203,7 @@ module ``findRepoRoot`` =
 
     [<Fact>]
     let ``returns None when no marker exists`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             Directory.CreateDirectory(tmp) |> ignore
@@ -222,7 +222,7 @@ module ``findProjectFiles`` =
 
     [<Fact>]
     let ``finds fsproj, excludes ones in obj`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             let goodProj = Path.Combine(tmp, "src", "MyProj", "MyProj.fsproj")
@@ -249,7 +249,7 @@ module ``findProjectFiles`` =
 
     [<Fact>]
     let ``handles missing directories`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             Directory.CreateDirectory(tmp) |> ignore
@@ -265,7 +265,7 @@ module ``analyzeChanges`` =
 
     [<Fact>]
     let ``diff error returns Error`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             Directory.CreateDirectory(tmp) |> ignore
@@ -288,7 +288,7 @@ module ``analyzeChanges`` =
 
     [<Fact>]
     let ``empty diff returns empty subset`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             Directory.CreateDirectory(tmp) |> ignore
@@ -310,7 +310,7 @@ module ``analyzeChanges`` =
 
     [<Fact>]
     let ``fsproj change triggers RunAll`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             Directory.CreateDirectory(tmp) |> ignore
@@ -411,7 +411,7 @@ module ``analyzeChanges`` =
 
     [<Fact>]
     let ``parse failure on changed file triggers RunAll with AnalysisFailedFallback`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmp = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
 
         try
             Directory.CreateDirectory(tmp) |> ignore
@@ -474,7 +474,7 @@ module ``showHelp`` =
 module ``runDeadCode`` =
     [<Fact>]
     let ``returns 1 when no index exists`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -484,7 +484,7 @@ module ``runDeadCode`` =
 
     [<Fact>]
     let ``returns 0 with empty database`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         Database.create dbPath |> ignore
@@ -516,7 +516,7 @@ module ``runDeadCode`` =
 
     [<Fact>]
     let ``prints unreachable symbols in non-verbose mode`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         let symbols =
@@ -545,7 +545,7 @@ module ``runDeadCode`` =
 
     [<Fact>]
     let ``verbose mode shows NoIncomingEdges reason`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         let symbols =
@@ -573,7 +573,7 @@ module ``runDeadCode`` =
 
     [<Fact>]
     let ``verbose mode shows DisconnectedFromEntryPoints reason`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         let symbols =
@@ -611,7 +611,7 @@ module ``runDeadCode`` =
 
     [<Fact>]
     let ``verbose mode truncates long incoming edge lists`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         let symbols =
@@ -673,7 +673,7 @@ module ``runStatusWith`` =
 
     [<Fact>]
     let ``returns 1 when no index exists`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let fakeDiff: DiffProvider = fun () -> Ok ""
 
@@ -691,7 +691,7 @@ module ``runStatusWith`` =
 
     [<Fact>]
     let ``returns 0 with empty diff and empty db`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         Database.create dbPath |> ignore
@@ -708,7 +708,7 @@ module ``runStatusWith`` =
 
     [<Fact>]
     let ``returns 1 when diff fails`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         Database.create dbPath |> ignore
@@ -728,7 +728,7 @@ module ``runRunWith`` =
 
     [<Fact>]
     let ``returns 1 when no index exists`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let fakeDiff: DiffProvider = fun () -> Ok ""
         let sw = new StringWriter()
@@ -743,7 +743,7 @@ module ``runRunWith`` =
 
     [<Fact>]
     let ``returns 0 with no changes`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         Database.create dbPath |> ignore
@@ -784,7 +784,7 @@ module ``runStatusWith RunSubset`` =
 
     [<Fact>]
     let ``analyzeChanges returns RunSubset with affected tests`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -853,7 +853,7 @@ module ``runStatusWith RunSubset`` =
 
     [<Fact>]
     let ``RunSubset displays project, class, and method grouping`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -945,7 +945,7 @@ module ``runRunWithExecutor`` =
 
     [<Fact>]
     let ``empty subset returns 0 and prints no tests affected`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         let db = Database.create dbPath
@@ -981,7 +981,7 @@ module ``runRunWithExecutor`` =
 
     [<Fact>]
     let ``RunAll invokes executor RunAllTests on each discovered project`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         Database.create dbPath |> ignore
@@ -1033,7 +1033,7 @@ module ``runRunWithExecutor`` =
 
     [<Fact>]
     let ``RunAll propagates worst exit code`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, ".test-prune.db")
         Database.create dbPath |> ignore
@@ -1084,7 +1084,7 @@ module ``runRunWithExecutor`` =
 
     [<Fact>]
     let ``RunSubset invokes executor RunFilteredTests with correct classes`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -1167,7 +1167,7 @@ module ``runRunWithExecutor`` =
 
     [<Fact>]
     let ``RunSubset propagates worst exit code from multiple projects`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -1257,7 +1257,7 @@ module ``runRunWithExecutor`` =
 
     [<Fact>]
     let ``RunSubset with unknown project prints warning`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -1390,7 +1390,7 @@ module ``runIndexWith`` =
         // `index` must hand the store one AnalysisResult per file. Merged per project, the
         // signature's `val` edge was credited to `Library.fs` (the last file declaring the
         // shared name), and re-indexing `Library.fs` alone would then delete it.
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let projectDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(projectDir) |> ignore
 
@@ -1468,7 +1468,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``a compile item an MSBuild condition excludes is skipped and the project's tests are still indexed`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let projectDir = writeConditionalProject tmpDir
         let sw = new StringWriter()
         let oldErr = Console.Error
@@ -1504,7 +1504,7 @@ module ``runIndexWith`` =
     /// kept an index without the item.
     [<Fact>]
     let ``a condition flip with no source edit re-indexes the project`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let projectDir = Path.Combine(tmpDir, "tests", "F")
         Directory.CreateDirectory(projectDir) |> ignore
 
@@ -1563,7 +1563,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``a file that cannot be analyzed fails the index naming the file and the reason`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let projectDir = writeConditionalProject tmpDir
         let testsFile = Path.Combine(projectDir, "Tests.fs")
 
@@ -1597,7 +1597,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``a loaded project listing none of its compile items fails the index`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         writeConditionalProject tmpDir |> ignore
 
         let noSources: ProjectOptionsProvider =
@@ -1627,7 +1627,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``returns 1 when build fails`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let sw = new StringWriter()
         let oldErr = Console.Error
@@ -1641,7 +1641,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``concurrent index cannot write or complete ahead of the active owner`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         use enteredBuild = new Threading.ManualResetEventSlim(false)
         use releaseBuild = new Threading.ManualResetEventSlim(false)
@@ -1679,7 +1679,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``selection widens when completed index generation changes during its snapshot`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
@@ -1710,7 +1710,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``indexes a simple project with one source file`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -1749,7 +1749,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``analysis failure fails indexing and preserves the last complete project graph`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -1819,7 +1819,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``retry after a failed dependency-forced project bypasses matching cache keys`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let aDir = Path.Combine(tmpDir, "src", "A")
         let bDir = Path.Combine(tmpDir, "src", "B")
         Directory.CreateDirectory(aDir) |> ignore
@@ -1891,7 +1891,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``returns 0 with no projects`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let sw = new StringWriter()
         let oldErr = Console.Error
@@ -1907,7 +1907,7 @@ module ``runIndexWith`` =
     /// condition flip (AUTOMATION-1427), and then skipped: none of its files is analyzed.
     [<Fact>]
     let ``an unchanged project is evaluated and then skipped`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -1956,7 +1956,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``skips unchanged files when project hash changes`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -2022,7 +2022,7 @@ module ``runIndexWith`` =
         // with the unchanged earlier file's results read from the store. Those results had
         // no attributes, and the rebuild deletes the file's attribute rows before writing
         // what it is handed, so a CompositionRoot or Inline barrier vanished.
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -2079,7 +2079,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``prints warning when dropped edges occur`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -2113,7 +2113,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``prints warning when filtered symbols occur`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -2149,7 +2149,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``invalid fsproj fails indexing and retains incomplete marker`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Bad")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -2174,7 +2174,7 @@ module ``runIndexWith`` =
 
     [<Fact>]
     let ``skips missing source files listed in fsproj`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         let srcDir = Path.Combine(tmpDir, "src", "Lib")
         Directory.CreateDirectory(srcDir) |> ignore
 
@@ -2215,7 +2215,7 @@ module ``runCommand`` =
 
     [<Fact>]
     let ``Help command returns 0`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let sw = new StringWriter()
         let oldOut = Console.Out
@@ -2234,7 +2234,7 @@ module ``runCommand`` =
 
     [<Fact>]
     let ``Help command with explicit repo root`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let sw = new StringWriter()
         let oldOut = Console.Out
@@ -2253,7 +2253,7 @@ module ``runCommand`` =
 
     [<Fact>]
     let ``outside any repository returns 1 without exiting the process`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let sw = new StringWriter()
         let oldErr = Console.Error
@@ -2274,7 +2274,7 @@ module ``runCommand`` =
 
     [<Fact>]
     let ``Help outside any repository prints usage and returns 0`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
         Directory.CreateDirectory(tmpDir) |> ignore
         let out = new StringWriter()
         let err = new StringWriter()
@@ -2431,7 +2431,7 @@ module ``Example solution integration`` =
             File.Copy(filePath, filePath.Replace(sourceDir, destDir), true)
 
     let private withExampleCopy (f: string -> unit) =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-example-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-example"
         Directory.CreateDirectory(tmpDir) |> ignore
         copyDir (exampleSource ()) tmpDir
 
@@ -2577,7 +2577,7 @@ module ``runBoundedDiff`` =
     // surfaces fast instead of at 30s.
     [<Fact>]
     let ``a grandchild-wedged drain surfaces as Error, never a silent empty Ok`` () =
-        let script = Path.GetTempFileName()
+        let script = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
         File.WriteAllText(script, "sleep 30 2>/dev/null & echo done\n")
 
         try

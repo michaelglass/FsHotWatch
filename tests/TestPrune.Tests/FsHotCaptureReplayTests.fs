@@ -11,7 +11,7 @@ open TestPrune.AstAnalyzer
 open Xunit
 
 let private archivePath =
-    Path.Combine(__SOURCE_DIRECTORY__, "Fixtures", "FcsTraversal", "FsHotFaithfulCapture.zip")
+    FsHotWatch.TestRoots.RepositoryTree.path "tests/TestPrune.Tests/Fixtures/FcsTraversal/FsHotFaithfulCapture.zip"
 
 let private sha256 path =
     use stream = File.OpenRead path
@@ -202,8 +202,7 @@ type ``faithful FsHot FCS capture``() =
         use archive = ZipFile.OpenRead archivePath
         test <@ archive.Entries |> Seq.forall (fun entry -> entry.LastWriteTime.Year = 1980) @>
 
-        let temp =
-            Path.Combine(Path.GetTempPath(), $"testprune-fshot-capture-{Guid.NewGuid():N}")
+        let temp = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-fshot-capture"
 
         Directory.CreateDirectory temp |> ignore
 
@@ -224,16 +223,7 @@ type ``faithful FsHot FCS capture``() =
                     else
                         findDotnetRoot directory.Parent
 
-                let nugetPackages =
-                    Environment.GetEnvironmentVariable("NUGET_PACKAGES")
-                    |> Option.ofObj
-                    |> Option.defaultValue (
-                        Path.Combine(
-                            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                            ".nuget",
-                            "packages"
-                        )
-                    )
+                let nugetPackages = FsHotWatch.TestRoots.NuGetCache.root ()
 
                 let dotnetRoot =
                     Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()

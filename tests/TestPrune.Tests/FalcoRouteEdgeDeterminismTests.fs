@@ -118,7 +118,7 @@ let private storedRouteEdges (repo: Repo) : Set<string * string> =
 
 /// A fresh repo holding `tree`, analysed in full, with `routes` seeded.
 let private withRepo (tree: TreeFile list) (routes: RouteHandlerEntry list) (body: Repo -> unit) =
-    let root = Path.Combine(Path.GetTempPath(), $"falco-determinism-{Guid.NewGuid():N}")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "falco-determinism"
 
     Directory.CreateDirectory root |> ignore
 

@@ -12,7 +12,7 @@ open TestPrune.Extensions
 open TestPrune.Falco
 
 let private createTempDir () =
-    let dir = Path.Combine(Path.GetTempPath(), $"falco-route-test-%A{Guid.NewGuid()}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "falco-route-test"
     Directory.CreateDirectory(dir) |> ignore
     dir
 
@@ -1710,8 +1710,7 @@ module ``AnalyzeEdges function-scoped routes`` =
               HandlerSourceFile = "src/Handlers/Users.fs"
               HandlerFunction = Some "App.Handlers.Users.getUser" }
 
-        let fileName =
-            Path.Combine(Path.GetTempPath(), $"FalcoDeclaration-{Guid.NewGuid():N}.fsx")
+        let fileName = FsHotWatch.TestRoots.TestRoot.freshPath "FalcoDeclaration" + ".fsx"
 
         let scriptOptions =
             getScriptOptions declarationChecker fileName source |> Async.RunSynchronously
@@ -2273,7 +2272,7 @@ type WidthTests() =
     /// What the edges select through the production walk when the route's handler
     /// changes, over an index holding `deps` as core's own edges.
     let private selectedByHandlerEdit (symbols: SymbolInfo list) (deps: Dependency list) (tests: string list) files =
-        let tempDir = Path.Combine(Path.GetTempPath(), $"falco-walk-%A{Guid.NewGuid()}")
+        let tempDir = FsHotWatch.TestRoots.TestRoot.freshPath "falco-walk"
         let testDir = Path.Combine(tempDir, "tests/IntTests")
         Directory.CreateDirectory testDir |> ignore
 
@@ -3045,7 +3044,7 @@ module ``UnionRouteLinks repo scan`` =
 
     [<Fact>]
     let ``buildLinkMapFromRepo reads route DU files under a directory`` () =
-        let dir = Path.Combine(Path.GetTempPath(), $"url-links-repo-%A{Guid.NewGuid()}")
+        let dir = FsHotWatch.TestRoots.TestRoot.freshPath "url-links-repo"
 
         Directory.CreateDirectory dir |> ignore
 

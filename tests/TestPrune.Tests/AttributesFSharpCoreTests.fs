@@ -16,15 +16,7 @@ open Swensen.Unquote
 // on it rather than on the project file's text.
 
 let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: no TestPrune.slnf in any ancestor of the test binary"
-        elif File.Exists(Path.Combine(directory.FullName, "TestPrune.slnf")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 let private assetsPath () =
     Path.Combine(repoRoot (), "src", "TestPrune.Attributes", "obj", "project.assets.json")

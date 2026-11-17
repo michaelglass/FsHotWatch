@@ -29,7 +29,7 @@ open TestPrune.Falco
 /// The synthetic DU's exact source, copied next to the test dll (see the fsproj `None` item), so
 /// the AST resolver parses precisely the text the reflection oracle compiled — zero drift.
 let private syntheticSource () =
-    File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "SyntheticRoutes.fs"))
+    File.ReadAllText(FsHotWatch.TestRoots.TestBinary.path "SyntheticRoutes.fs")
 
 let private astMap () =
     UnionRouteLinks.buildLinkMap [ ("SyntheticRoutes.fs", syntheticSource ()) ]

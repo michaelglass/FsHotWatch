@@ -29,7 +29,7 @@ type private ScriptedExtension(name: string) =
         member this.AnalyzeEdges _ _ = this.Answer()
 
 let private withDb (body: Database -> unit) =
-    let dir = Path.Combine(Path.GetTempPath(), $"extension-refresh-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "extension-refresh"
 
     Directory.CreateDirectory dir |> ignore
 
@@ -171,8 +171,7 @@ let ``an edge naming a symbol the index does not hold is skipped`` () =
 /// to stand beside the next refresh's answer.
 [<Fact>]
 let ``a v14 index's extension edges do not survive the upgrade`` () =
-    let dir =
-        Path.Combine(Path.GetTempPath(), $"extension-refresh-v14-{Guid.NewGuid():N}")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "extension-refresh-v14"
 
     Directory.CreateDirectory dir |> ignore
     let path = Path.Combine(dir, "index.db")

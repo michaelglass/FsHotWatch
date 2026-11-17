@@ -17,7 +17,7 @@ let scriptProjectOptions
     checker.GetProjectOptionsFromScript(script, source, assumeDotNetFramework = false)
 
 let tempDbPath () =
-    Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}.db")
+    FsHotWatch.TestRoots.TestRoot.freshPath "test-prune" + ".db"
 
 /// Drop the pooled SQLite connections of the database at `dbPath`, and only that one:
 /// `Database` pools under `Data Source=<path>`. `SqliteConnection.ClearAllPools` disposes

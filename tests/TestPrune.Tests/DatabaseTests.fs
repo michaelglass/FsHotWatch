@@ -1457,7 +1457,7 @@ module ``openConnection error handling`` =
 
     [<Fact>]
     let ``creating database with directory as path fails gracefully`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-test"
 
         Directory.CreateDirectory(tmpDir) |> ignore
 
@@ -2364,7 +2364,7 @@ module ``Cache file cleanup`` =
 
     [<Fact>]
     let ``deleteCacheFiles removes main DB plus -wal and -shm sidecars`` () =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-delete-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-delete"
 
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, "x.db")
@@ -2390,8 +2390,7 @@ module ``Cache file cleanup`` =
         // If the consumer has already deleted the main file (e.g. a
         // partial recovery attempt), deleteCacheFiles must still clean up
         // any leftover sidecars without throwing.
-        let tmpDir =
-            Path.Combine(Path.GetTempPath(), $"tp-delete-sidecars-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-delete-sidecars"
 
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, "x.db")
@@ -2420,7 +2419,7 @@ module ``Schema forward compatibility`` =
     /// before any DDL, naming both versions, and leave the file byte-for-byte alone.
 
     let private withFutureDb (setup: string) (f: string -> unit) =
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-fwd-{Guid.NewGuid():N}")
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tp-fwd"
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, "future.db")
 

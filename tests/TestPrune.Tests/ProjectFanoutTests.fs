@@ -200,7 +200,7 @@ module ``end-to-end: CPM dependency bump fans out to dependent test project`` =
 
     /// Build the 3-project fixture; returns (root, opsFsproj, buildFsproj, testsFsproj).
     let private writeFixture (commandTreeVersion: string) =
-        let root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let root = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
         Directory.CreateDirectory(root) |> ignore
 
         let mk (sub: string) (name: string) (body: string) =

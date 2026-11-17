@@ -7,7 +7,7 @@ open Swensen.Unquote
 open TestPrune.ProjectLoader
 
 let private writeTempFsproj (content: string) =
-    let tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
     Directory.CreateDirectory(tmpDir) |> ignore
     let fsprojPath = Path.Combine(tmpDir, "Test.fsproj")
     File.WriteAllText(fsprojPath, content)
@@ -134,7 +134,7 @@ module ``parsePackageReferences`` =
     [<Fact>]
     let ``resolves CPM versions from an ancestor Directory.Packages.props`` () =
         // Project under <tmp>/proj/, CPM props at <tmp>/Directory.Packages.props.
-        let tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
         let projDir = Path.Combine(tmpDir, "proj")
         Directory.CreateDirectory(projDir) |> ignore
 
@@ -170,7 +170,7 @@ module ``parsePackageReferences`` =
     let ``a CPM bump in Directory.Packages.props changes the parsed version`` () =
         // The acceptance mechanism: the same .fsproj resolves a different version
         // after the central props file bumps the package.
-        let tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let tmpDir = FsHotWatch.TestRoots.TestRoot.freshPath "tmp"
         let projDir = Path.Combine(tmpDir, "proj")
         Directory.CreateDirectory(projDir) |> ignore
         let propsPath = Path.Combine(tmpDir, "Directory.Packages.props")

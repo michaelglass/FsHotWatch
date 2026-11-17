@@ -32,18 +32,14 @@ let private transparentChecker =
         useTransparentCompiler = true
     )
 
-/// A scratch directory under the test binary's own folder. Deliberately NOT
-/// `Path.GetTempPath()`: on macOS that resolves through a symlink (/var →
-/// /private/var) and the TransparentCompiler's snapshot keys files by the exact
-/// path string, so a symlinked path makes it fail to find the file at all.
+/// A scratch directory this test alone owns, by its PHYSICAL path: on macOS the temp
+/// directory resolves through a symlink (/var → /private/var) and the TransparentCompiler's
+/// snapshot keys files by the exact path string, so a symlinked path makes it fail to find
+/// the file at all. It used to live under the test binary's own bin/ for that reason, which
+/// wrote into this repository's build output (AUTOMATION-1775). Removed with this process's
+/// root.
 let private scratchDir =
-    let unique = Guid.NewGuid().ToString("n")
-
-    let dir =
-        Path.Combine(AppContext.BaseDirectory, "parse-diagnostic-severity", unique)
-
-    Directory.CreateDirectory dir |> ignore
-    dir
+    (FsHotWatch.TestRoots.TestRoot.create "parse-diagnostic-severity").Physical
 
 /// Analyze `source` as a real compiled file in a real project, through the same
 /// entry point the FsHotWatch plugin calls.

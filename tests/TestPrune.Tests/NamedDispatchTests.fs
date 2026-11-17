@@ -96,8 +96,7 @@ module ``named dispatch edges`` =
         | Error error -> failwith $"Analysis failed for {relative}: {error}"
 
     let private analyzeFixture (purgeUrl: string) =
-        let root =
-            Path.Combine(Path.GetTempPath(), $"testprune-dispatch-{Guid.NewGuid():N}")
+        let root = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-dispatch"
 
         Directory.CreateDirectory root |> ignore
 
@@ -392,8 +391,7 @@ module ``unattributable and malformed input`` =
     /// A repo root holding `Tests.fs` with `testSource`, and a store in which that file
     /// declares two tests, `first` on line 3 and `second` on line 5.
     let private storeWith (testSource: string option) (attributes: SymbolAttribute list) =
-        let root =
-            Path.Combine(Path.GetTempPath(), $"testprune-dispatch-{Guid.NewGuid():N}")
+        let root = FsHotWatch.TestRoots.TestRoot.freshPath "testprune-dispatch"
 
         Directory.CreateDirectory root |> ignore
 

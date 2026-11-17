@@ -8,15 +8,7 @@ open Xunit
 open Swensen.Unquote
 
 let private repoRoot () =
-    let rec find (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: semantic-tagger.json is absent from every ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "semantic-tagger.json")) then
-            directory.FullName
-        else
-            find directory.Parent
-
-    find (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 let private read root path =
     File.ReadAllText(Path.Combine(root, path))

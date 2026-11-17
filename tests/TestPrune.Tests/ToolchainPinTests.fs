@@ -14,15 +14,7 @@ open Swensen.Unquote
 // carries the patch, so an analyzer compiled against any other patch fails to load in the gate.
 
 let private repoRoot () =
-    let rec up (directory: DirectoryInfo) =
-        if isNull (box directory) then
-            failwith "repo root not found: no Directory.Packages.props in any ancestor"
-        elif File.Exists(Path.Combine(directory.FullName, "Directory.Packages.props")) then
-            directory.FullName
-        else
-            up directory.Parent
-
-    up (DirectoryInfo(AppContext.BaseDirectory))
+    FsHotWatch.TestRoots.RepositoryTree.root ()
 
 let private pinnedFcs (root: string) =
     let props = Xml.Linq.XDocument.Load(Path.Combine(root, "Directory.Packages.props"))
