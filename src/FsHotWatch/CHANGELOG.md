@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the portable options shadow compares `MSBuildAllProjects` as a set, sorted on both sides (AUTOMATION-1684).
+  MSBuild puts the most recently modified import first, so the order follows file change times: the 3 cross-checkout
+  key matches the shadow logged on intelligence all disagreed there and nowhere else. No check reads it (Ionide's
+  mapping to FCS options gives equal options for either order, which a test pins). Shadow only: no record and no key
+  changes. A different set of imports still disagrees.
+
 ## 0.10.0-alpha.120 - 2026-11-17
 
 - fix: a change batch re-checks the files after a saved file whose new declarations another check recorded first

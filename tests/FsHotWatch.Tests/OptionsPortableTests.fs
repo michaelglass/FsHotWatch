@@ -698,3 +698,129 @@ let ``the daemon's options loader takes the portable shadow only when asked`` ()
         for mode in [ OptionsPortable.Mode.Off; OptionsPortable.Mode.Shadow ] do
             let loader = Daemon.Daemon.optionsRecordsLoader root mode
             test <@ loader :? OptionsRecords.CachingLoader @>)
+
+// --- AUTOMATION-1684: MSBuildAllProjects is an ordering, and no compile reads it ---
+
+/// `options` naming `imports` in `MSBuildAllProjects`, in that order, as the SDK field and the
+/// property both carry it.
+let private importing (imports: string list) (options: Types.ProjectOptions) =
+    { options with
+        ProjectSdkInfo =
+            { options.ProjectSdkInfo with
+                MSBuildAllProjects = imports }
+        Properties =
+            options.Properties
+            @ [ { Name = "MSBuildAllProjects"
+                  Value = String.concat ";" imports } ] }
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the order of MSBuildAllProjects changes nothing FCS checks with`` () =
+    let t =
+        { Root = "/checkout"
+          Project = "/checkout/src/App/App.fsproj"
+          Assets = "/checkout/src/App/obj/project.assets.json"
+          Generated = "/checkout/src/App/obj/Debug/net10.0/App.AssemblyInfo.fs" }
+
+    let imports =
+        [ "/checkout/Directory.Build.targets"
+          "/checkout/src/App/obj/App.fsproj.nuget.g.props"
+          "/checkout/src/App/App.fsproj" ]
+
+    // fshw hands FCS what Ionide maps (`Daemon`'s `mapManyOptions`).
+    let mapped (imports: string list) =
+        Ionide.ProjInfo.FCS.mapManyOptions [ importing imports (sampleOptions t) ]
+        |> Seq.exactlyOne
+
+    let a = mapped imports
+    let b = mapped (List.rev imports)
+
+    let fields (o: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions) =
+        o.ProjectFileName,
+        o.ProjectId,
+        o.SourceFiles,
+        o.OtherOptions,
+        [ for r in o.ReferencedProjects -> r.OutputFile ],
+        o.IsIncompleteTypeCheckEnvironment,
+        o.UseScriptResolutionRules,
+        o.LoadTime,
+        o.OriginalLoadReferences.Length,
+        o.Stamp
+
+    test <@ fields a = fields b @>
+
+[<Fact(Timeout = 120000)>]
+let ``an evaluation whose imports MSBuild ordered differently in the other checkout agrees`` () =
+    withBox (fun box ->
+        let imports (t: Tree) =
+            [ Path.Combine(t.Root, "Directory.Build.props")
+              Path.Combine(t.Root, "build", "common.props")
+              t.Project ]
+
+        let answer (t: Tree) (order: string list -> string list) () =
+            [ importing (order (imports t)) (sampleOptions t) ]
+
+        loadIn box box.A environment (answer box.A id) ignore (fun () -> None) |> ignore
+
+        loadIn box box.B environment (answer box.B List.rev) ignore (fun () -> None)
+        |> ignore
+
+        let line = lastLine box
+        test <@ bool line "keyMatch" @>
+        test <@ bool line "agree" @>)
+
+[<Fact(Timeout = 120000)>]
+let ``an evaluation that imports another set of files disagrees, naming MSBuildAllProjects`` () =
+    withBox (fun box ->
+        let answer (t: Tree) (extra: string list) () =
+            [ importing ([ t.Project ] @ extra) (sampleOptions t) ]
+
+        loadIn box box.A environment (answer box.A []) ignore (fun () -> None) |> ignore
+
+        loadIn
+            box
+            box.B
+            environment
+            (answer box.B [ Path.Combine(box.B.Root, "Directory.Build.props") ])
+            ignore
+            (fun () -> None)
+        |> ignore
+
+        let line = lastLine box
+        test <@ not (bool line "agree") @>
+
+        test
+            <@
+                [ for d in line["differences"].AsArray() -> str d "pointer" ]
+                |> List.exists (fun p -> p.StartsWith "/sdk/msbuildAllProjects" || p.StartsWith "/properties")
+            @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a filed project without an SDK or properties is compared as it is`` () =
+    let filed =
+        Nodes.JsonNode
+            .Parse("""[{"projectFileName":"${repo}/P.fsproj","sdk":1,"properties":[{"name":1,"value":"b;a"},2]}]""")
+            .AsArray()
+
+    let differences = OptionsPortable.compareProjects "/checkout" filed []
+    test <@ differences |> List.forall (fun d -> d.Project = "${repo}/P.fsproj") @>
+    test <@ not differences.IsEmpty @>
+
+    let bare =
+        Nodes.JsonNode.Parse("""[{"projectFileName":"${repo}/Q.fsproj"}]""").AsArray()
+
+    test <@ not (OptionsPortable.compareProjects "/checkout" bare []).IsEmpty @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a filed project that is no object, or holds an SDK without imports or a property without a value, is compared as it is``
+    ()
+    =
+    let filed =
+        Nodes.JsonNode
+            .Parse(
+                """[1,{"projectFileName":"${repo}/R.fsproj","sdk":{},"properties":[{"name":"MSBuildAllProjects"}]}]"""
+            )
+            .AsArray()
+
+    let differences = OptionsPortable.compareProjects "/checkout" filed []
+    test <@ differences |> List.exists (fun d -> d.Project = "?") @>
+    test <@ differences |> List.exists (fun d -> d.Project = "${repo}/R.fsproj") @>
