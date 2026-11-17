@@ -114,13 +114,13 @@ The violations each defect caused:
   - `PluginFramework`'s `MailboxProcessor`, which F# starts on the pool;
   - the repository endpoint's opener (`CancelAfter`) and its named-pipe client;
   - `SupervisedWork.declare`'s scheduler argument.
-- **A measured finding, not a violation.** The host can report rest while a debounced receipt is
-  still unsettled (482 times in 1,000 histories). A cohort's receipts settle one continuation after
-  the request they became retires. The documented contract, that input is never mistaken for rest,
-  holds. Whether rest should also wait for receipts is AUTOMATION-1780 (filed from this finding:
-  a consumer that waits for rest and then reads results can miss the last receipt, the
-  AUTOMATION-1768 shape). Until it decides, the count stays in the census, pinned as a function of
-  the seed, so the decided contract can become a theorem.
+- **A finding, since fixed.** The host could report rest while a debounced receipt was still
+  unsettled (482 times in 1,000 histories): a cohort's receipts settled one continuation after the
+  request they became retired. Filed as AUTOMATION-1780 (a consumer that waits for rest and then
+  reads results can miss the last receipt, the AUTOMATION-1768 shape) and decided there: rest waits
+  for receipts. DebouncedWork keeps a cohort owned until its receipts are set, and the simulation
+  asserts it as HONEST REST (an unsettled receipt implies busy). SupervisedWork's own receipt is set
+  a statement after its retirement publishes, which the atomic-step limit above leaves unreached.
 
 ## Rejected
 
