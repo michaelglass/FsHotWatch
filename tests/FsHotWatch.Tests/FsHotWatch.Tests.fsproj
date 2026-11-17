@@ -32,6 +32,8 @@
     <Compile Include="QuotationStaticInit.fs" />
     <!-- Before TestHelpers: the FSHW-WALL-001 allowlist attribute, used from there on. -->
     <Compile Include="WallClock.fs" />
+    <!-- AUTOMATION-1753: samples this host's thread pool for the life of the assembly. -->
+    <Compile Include="PoolProbe.fs" />
     <Compile Include="TestHelpers.fs" />
     <!-- After TestHelpers: the one fake clock tests move by hand. -->
     <Compile Include="FakeClock.fs" />
@@ -300,6 +302,7 @@
     <Compile Include="HostKnobKeyTests.fs" />
     <Compile Include="EvaluationEnvironmentTests.fs" />
     <Compile Include="InjectedEnvironmentKeyTests.fs" />
+    <Compile Include="PoolProbeTests.fs" />
     <Compile Include="ChildRuntimeEnvironmentTests.fs" />
     <Compile Include="OptionsPortableTests.fs" />
     <Compile Include="RecordKeyGoldenTests.fs" />
