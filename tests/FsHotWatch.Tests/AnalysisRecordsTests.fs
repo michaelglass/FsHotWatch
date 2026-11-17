@@ -150,3 +150,72 @@ let ``a filed analysis is held for the check it was made from, and for no other`
 
         test <@ AnalysisRecords.keyFor root undescribed = None @>
         test <@ not (AnalysisRecords.holds store root undescribed) @>)
+
+/// What xUnit's `[<Fact>]` and `[<Theory>]` carry: `[CallerFilePath]` fills the source file's
+/// absolute path, and `[CallerLineNumber]` its line (AUTOMATION-1697). Beside them, a string
+/// that only looks like a path under the root `/checkouts/a` (`/checkouts/a2/x`) and one outside it, which
+/// are filed as they are.
+let private xunitAnalysisUnder (root: string) : AnalysisResult =
+    { analysisUnder root with
+        Attributes =
+            [ { SymbolFullName = "P.S0"
+                AttributeName = "Fact"
+                ArgsJson = TestPrune.AttributeArgs.serialize [ box (root + "/tests/P.Tests.fs"); box 12 ] }
+              { SymbolFullName = "P.S1"
+                AttributeName = "DependsOnFile"
+                ArgsJson = TestPrune.AttributeArgs.serialize [ box "/checkouts/a2/x"; box "/elsewhere/y"; box null ] } ] }
+
+[<Fact>]
+let ``an analysis of the same tree files the same bytes under any root, its attributes included`` () =
+    let rootA = "/checkouts/a"
+    let rootB = "/checkouts/somewhere-else"
+    let textA = AnalysisRecords.toJson rootA (xunitAnalysisUnder rootA)
+    let textB = AnalysisRecords.toJson rootB (xunitAnalysisUnder rootB)
+    test <@ textA = textB @>
+
+[<Fact>]
+let ``an analysis filed under one root reads back under another, its attribute paths rebased`` () =
+    let rootA = "/checkouts/a"
+    let rootB = "/checkouts/somewhere-else"
+    let text = AnalysisRecords.toJson rootA (xunitAnalysisUnder rootA)
+    test <@ AnalysisRecords.tryOfJson rootA text = Some(xunitAnalysisUnder rootA) @>
+    test <@ AnalysisRecords.tryOfJson rootB text = Some(xunitAnalysisUnder rootB) @>
+
+[<Fact>]
+let ``a path under the root its relative form would not give back, and an unreadable payload, are filed as they are``
+    ()
+    =
+    let root = "/checkouts/a"
+
+    let analysis =
+        { analysisUnder root with
+            Attributes =
+                [ { SymbolFullName = "P.S0"
+                    AttributeName = "Fact"
+                    ArgsJson = TestPrune.AttributeArgs.serialize [ box (root + "/src/./P.fs"); box (root + "//x") ] }
+                  { SymbolFullName = "P.S1"
+                    AttributeName = "Odd"
+                    ArgsJson = "not-json" } ] }
+
+    let text = AnalysisRecords.toJson root analysis
+    test <@ AnalysisRecords.tryOfJson root text = Some analysis @>
+
+    test
+        <@
+            AnalysisRecords.tryOfJson "/elsewhere" text = Some
+                { analysis with
+                    Symbols = (analysisUnder "/elsewhere").Symbols }
+        @>
+
+[<Fact>]
+let ``a filed path in any other shape is a miss`` () =
+    let text = AnalysisRecords.toJson "/r" (xunitAnalysisUnder "/r")
+    let repoFile = "{\"repo\":\"src/P.fs\"}"
+    test <@ AnalysisRecords.tryOfJson "/r" text <> None @>
+    test <@ AnalysisRecords.tryOfJson "/r" (text.Replace(repoFile, "{\"elsewhere\":\"x\"}")) = None @>
+    test <@ AnalysisRecords.tryOfJson "/r" (text.Replace(repoFile, "{\"repo\":\"../P.fs\"}")) = None @>
+    test <@ AnalysisRecords.tryOfJson "/r" (text.Replace(repoFile, "{\"repo\":null}")) = None @>
+    test <@ AnalysisRecords.tryOfJson "/r" (text.Replace(repoFile, "{}")) = None @>
+    test <@ AnalysisRecords.tryOfJson "/r" (text.Replace(repoFile, "{\"repo\":\"src/P.fs\",\"path\":\"/x\"}")) = None @>
+    // A constant beside another field is no constant, and no path either.
+    test <@ AnalysisRecords.tryOfJson "/r" (text.Replace("{\"json\":\"12\"}", "{\"json\":\"12\",\"x\":1}")) = None @>

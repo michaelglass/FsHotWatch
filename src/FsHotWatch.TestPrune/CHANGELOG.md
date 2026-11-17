@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: testprune-analysis records name every path under the analysed root relative to it, attribute arguments included
+  (AUTOMATION-1697). xUnit's `[<Fact>]` and `[<Theory>]` take `[CallerFilePath]`, so their arguments held the absolute
+  path of the checkout that filed the record, and a record filed in one workspace did not match the same tree analysed in
+  another (1,483 of intelligence's analysis units differed only there). Each string argument and each symbol's file is now
+  parsed once into a repository-relative path when it is under the root, or kept as it is, and rebased onto the reading
+  root when the record is read. **KEY CHANGE:** `AnalysisSchema` is `fshw-testprune-analysis-semantics-v3` and the record
+  format `fshw-testprune-analysis-v2`, so every consumer re-analyses once (ADR-059: one batched re-key).
+
 ## 0.13.0-alpha.119 - 2026-11-17
 
 - feat: a project run files its per-test rows beside its outcome record, at the moment it files the record

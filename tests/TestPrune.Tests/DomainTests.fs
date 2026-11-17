@@ -125,6 +125,25 @@ module ``AttributeArgs round-trip`` =
             | Ok args -> failwith $"%s{payload} parsed as %A{args}"
 
     [<Fact>]
+    let ``write gives back the exact payload serialize wrote, for every kind of argument`` () =
+        let values: obj list =
+            [ "data\\cases.json"
+              "a\"b"
+              "café"
+              "<&>'+"
+              box 42
+              box true
+              null
+              box 2.5m
+              box 1.5f
+              box 'c'
+              box nan ]
+
+        let payload = serialize values
+        test <@ parse payload |> Result.map write = Ok payload @>
+        test <@ write [] = serialize [] @>
+
+    [<Fact>]
     let ``numbers of every width are JSON numbers; a non-finite one is spelled as a value`` () =
         let values: obj list = [ box 3L; box 7UL; box 2.5m; box 1.5f; box nan ]
 

@@ -28,7 +28,7 @@ let Kind = "testprune-analysis"
 
 /// The format of an analysis record's outputs. Any other is read as a miss.
 [<Literal>]
-let Schema = "fshw-testprune-analysis-v1"
+let Schema = "fshw-testprune-analysis-v2"
 
 /// What fshw's TestPrune plugin contributes to an analysis record's key: which analysis it
 /// asks TestPrune.Core for and how it files one (`keyOf`'s terms, the record's format).
@@ -38,7 +38,7 @@ let Schema = "fshw-testprune-analysis-v1"
 /// id moved with every build, so every release re-analysed every file.
 /// `RecordKeyGoldenTests` pins the key and fails on any change to how it is computed.
 [<Literal>]
-let AnalysisSchema = "fshw-testprune-analysis-semantics-v2"
+let AnalysisSchema = "fshw-testprune-analysis-semantics-v3"
 
 /// The analyser identity, from its parts: TestPrune.Core's release (`name@version`) and
 /// the plugin's analysis `schema`.
@@ -70,22 +70,132 @@ let keyWith (analyzer: string) (identity: string) (relPath: string) (projectName
 let keyOf (identity: string) (relPath: string) (projectName: string) : ActionKey.ActionKey =
     keyWith analyzerIdentity identity relPath projectName
 
-[<Literal>]
-let private RootPlaceholder = "${analysis-root}"
+/// A path an analysis names, parsed once against the root it was analysed under: under the
+/// root, by its repository-relative path, so a record names it the same in every checkout;
+/// anywhere else (outside the root, or spelled so the relative path would not give it back
+/// exactly), as it is.
+type private RootedPath =
+    | UnderRoot of FsHotWatch.Core.RepoRelativePath
+    | Elsewhere of string
 
-let private relativeTo (root: string) (path: string) =
-    let prefix = root.TrimEnd('/', '\\') + "/"
+let private textOf (e: JsonElement) (name: string) =
+    match e.GetProperty(name).GetString() with
+    | null -> raise (FormatException $"%s{name} is null")
+    | value -> value
 
-    if path.StartsWith(prefix, StringComparison.Ordinal) then
-        RootPlaceholder + "/" + path.Substring prefix.Length
-    else
-        path
+/// Whether `e` is an object holding exactly the one property `name`.
+let private holdsOnly (name: string) (e: JsonElement) =
+    e.EnumerateObject() |> Seq.map _.Name |> List.ofSeq = [ name ]
 
-let private absoluteUnder (root: string) (path: string) =
-    if path.StartsWith(RootPlaceholder + "/", StringComparison.Ordinal) then
-        root.TrimEnd('/', '\\') + "/" + path.Substring(RootPlaceholder.Length + 1)
-    else
-        path
+module private RootedPath =
+    let private prefixOf (root: string) = root.TrimEnd('/', '\\') + "/"
+
+    /// `path`, as analysed under `root`.
+    let parse (root: string) (path: string) : RootedPath =
+        let prefix = prefixOf root
+
+        if path.StartsWith(prefix, StringComparison.Ordinal) then
+            let rest = path.Substring prefix.Length
+
+            match FsHotWatch.Core.RepoRelativePath.parse rest with
+            | Ok relative when relative.Text = rest -> UnderRoot relative
+            | _ -> Elsewhere path
+        else
+            Elsewhere path
+
+    /// The path, read under `root`.
+    let under (root: string) (path: RootedPath) : string =
+        match path with
+        | UnderRoot relative -> prefixOf root + relative.Text
+        | Elsewhere text -> text
+
+    /// The path as a record files it: `{"repo": relative}` or `{"path": text}`.
+    let toNode (path: RootedPath) : JsonNode =
+        let o = JsonObject()
+
+        match path with
+        | UnderRoot relative -> o["repo"] <- relative.Text
+        | Elsewhere text -> o["path"] <- text
+
+        o
+
+    /// A path a record filed; a FormatException for anything else.
+    let ofElement (e: JsonElement) : RootedPath =
+        if holdsOnly "repo" e then
+            match FsHotWatch.Core.RepoRelativePath.parse (textOf e "repo") with
+            | Ok relative -> UnderRoot relative
+            | Error why -> raise (FormatException(why.ToString()))
+        elif holdsOnly "path" e then
+            Elsewhere(textOf e "path")
+        else
+            raise (FormatException("a path filed as " + e.GetRawText()))
+
+/// One constructor argument as a record files it.
+type private FiledArg =
+    /// A string, parsed as a path (`RootedPath`): xUnit's `[<Fact>]` and `[<Theory>]` take
+    /// `[CallerFilePath]`, so their arguments name the analysed file's absolute path, and filed
+    /// as written they tied the record to one checkout (AUTOMATION-1697).
+    | PathArg of RootedPath
+    /// Any other constant, as `AttributeArgs` stores it.
+    | ConstantArg of json: string
+
+/// An attribute's constructor arguments as a record files them.
+type private FiledArgs =
+    | Args of FiledArg list
+    /// A payload `AttributeArgs.parse` cannot read, kept exactly.
+    | Unreadable of argsJson: string
+
+module private FiledArgs =
+    /// `argsJson` (`AttributeArgs`), as analysed under `root`.
+    let parse (root: string) (argsJson: string) : FiledArgs =
+        match TestPrune.AttributeArgs.parse argsJson with
+        | Ok args ->
+            Args
+                [ for arg in args ->
+                      match arg with
+                      | TestPrune.AttributeArgs.Text s -> PathArg(RootedPath.parse root s)
+                      | TestPrune.AttributeArgs.Constant json -> ConstantArg json ]
+        | Error _ -> Unreadable argsJson
+
+    /// The arguments as `AttributeArgs` stores them, read under `root`.
+    let under (root: string) (args: FiledArgs) : string =
+        match args with
+        | Args args ->
+            TestPrune.AttributeArgs.write
+                [ for arg in args ->
+                      match arg with
+                      | PathArg path -> TestPrune.AttributeArgs.Text(RootedPath.under root path)
+                      | ConstantArg json -> TestPrune.AttributeArgs.Constant json ]
+        | Unreadable argsJson -> argsJson
+
+    let toNode (args: FiledArgs) : JsonNode =
+        match args with
+        | Args args ->
+            let argNode (arg: FiledArg) : JsonNode =
+                match arg with
+                | PathArg path -> RootedPath.toNode path
+                | ConstantArg json ->
+                    let o = JsonObject()
+                    o["json"] <- json
+                    o
+
+            JsonArray(args |> List.map argNode |> Array.ofList)
+        | Unreadable argsJson ->
+            let o = JsonObject()
+            o["unreadable"] <- argsJson
+            o
+
+    let ofElement (e: JsonElement) : FiledArgs =
+        match e.ValueKind with
+        | JsonValueKind.Array ->
+            let argOf (arg: JsonElement) =
+                if holdsOnly "json" arg then
+                    ConstantArg(textOf arg "json")
+                else
+                    PathArg(RootedPath.ofElement arg)
+
+            Args(e.EnumerateArray() |> Seq.map argOf |> List.ofSeq)
+        | _ -> Unreadable(textOf e "unreadable")
 
 let private kindToken (kind: SymbolKind) =
     match kind with
@@ -147,7 +257,7 @@ let toJson (root: string) (analysis: AnalysisResult) : string =
         let e = JsonObject()
         e["name"] <- s.FullName
         e["kind"] <- kindToken s.Kind
-        e["file"] <- relativeTo root s.SourceFile
+        e["file"] <- RootedPath.toNode (RootedPath.parse root s.SourceFile)
         e["lineStart"] <- s.LineStart
         e["lineEnd"] <- s.LineEnd
         e["hash"] <- s.ContentHash
@@ -170,7 +280,11 @@ let toJson (root: string) (analysis: AnalysisResult) : string =
     let attributes = JsonArray()
 
     for a in analysis.Attributes do
-        attributes.Add(strings [ a.SymbolFullName; a.AttributeName; a.ArgsJson ])
+        let e = JsonObject()
+        e["symbol"] <- a.SymbolFullName
+        e["name"] <- a.AttributeName
+        e["args"] <- FiledArgs.toNode (FiledArgs.parse root a.ArgsJson)
+        attributes.Add e
 
     o["attributes"] <- attributes
     let parents = JsonArray()
@@ -227,7 +341,7 @@ let tryOfJson (root: string) (text: string) : AnalysisResult option =
                             Kind = kindOf (str e "kind")
                             Location =
                               SymbolLocation.ofRow
-                                  (absoluteUnder root (str e "file"))
+                                  (RootedPath.under root (RootedPath.ofElement (e.GetProperty "file")))
                                   (int e "lineStart")
                                   (int e "lineEnd")
                                   (str e "hash")
@@ -245,10 +359,12 @@ let tryOfJson (root: string) (text: string) : AnalysisResult option =
                             TestClass = row[2]
                             TestMethod = row[3] } ]
                   Attributes =
-                    [ for row in rows "attributes" 3 ->
-                          { SymbolFullName = row[0]
-                            AttributeName = row[1]
-                            ArgsJson = row[2] } ]
+                    o.GetProperty("attributes").EnumerateArray()
+                    |> Seq.map (fun e ->
+                        { SymbolFullName = str e "symbol"
+                          AttributeName = str e "name"
+                          ArgsJson = FiledArgs.under root (FiledArgs.ofElement (e.GetProperty "args")) })
+                    |> List.ofSeq
                   ParentLinks = [ for row in rows "parents" 2 -> { Child = row[0]; Parent = row[1] } ]
                   Diagnostics =
                     { DroppedEdges = int diagnostics "droppedEdges"
