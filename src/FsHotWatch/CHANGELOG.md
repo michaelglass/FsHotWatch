@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: an audit given `--store` audits test evidence instead of reporting it falsely vacuous (AUTOMATION-1767).
+  With `--store`, `RecordAudit.resolve` named no audited evidence store, and test-evidence was then compared over an
+  EMPTY list: it read VACUOUS "the clean store holds no key of this kind" while the clean store held its keys. A store
+  a cache home files (`<home>/cache/outcomes/<namespace>/v1`, parsed as a `CacheHomeStore`, never by string
+  replacement) now brings the evidence store beside it (`<home>/cache/evidence/<namespace>/v1`), on the audited side
+  (`--store`) and the clean side (`--clean`) alike; `Request.Evidence` (`--evidence`) names the audited one outright.
+  A side that names none makes test-evidence NOT AUDITED, a finding of its own: `Report.NotAudited` holds each such
+  kind and why (which side, and what to pass), beside `Kinds`, not in it, since it has no counts. It is not vacuous
+  (it never looked), but like vacuous it is no answer: `RecordsVerdict` is `Vacuous` and the exit code 3. An empty
+  clean evidence store is still VACUOUS. BREAKING: `Stores.AuditedEvidence`/`CleanEvidence` and
+  `Setup.AuditedEvidence`/`CleanEvidence` are an `EvidenceStore` (`At of directory | Unnamed of why`), not a
+  `string option`, and `Report` has a `NotAudited` field.
+
 ## 0.10.0-alpha.120 - 2026-11-17
 
 - fix: a change batch re-checks the files after a saved file whose new declarations another check recorded first

@@ -16,6 +16,7 @@ let request (opts: Map<string, string list>) : RecordAudit.Request =
     { Clean = one "clean"
       CleanHome = one "clean-home"
       Store = one "store"
+      Evidence = one "evidence"
       Kinds = all "kind"
       Sample =
         one "sample"

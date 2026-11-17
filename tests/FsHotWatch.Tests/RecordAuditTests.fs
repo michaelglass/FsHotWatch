@@ -455,6 +455,7 @@ let ``a kind that compared nothing is marked vacuous in the text and the JSON, b
               tally "options" 1 0 0
               tally "options-inputs" 0 0 0
               tally "analyze" 2 2 0 ]
+          NotAudited = []
           Mismatches = []
           AuditedKeys = []
           Unmatched = []
@@ -511,6 +512,7 @@ let ``a report with no kind at all is vacuous`` () =
           AuditedStore = "/a"
           CleanStore = "/c"
           Kinds = []
+          NotAudited = []
           Mismatches = []
           AuditedKeys = []
           Unmatched = []
@@ -790,8 +792,8 @@ let private evidenceAudit (dir: string) (fileBoth: string -> string -> unit) =
     RecordAudit.auditStores
         { Audited = Path.Combine(dir, "audited")
           Clean = Path.Combine(dir, "clean")
-          AuditedEvidence = Some auditedEvidence
-          CleanEvidence = Some cleanEvidence }
+          AuditedEvidence = RecordAudit.EvidenceStore.At auditedEvidence
+          CleanEvidence = RecordAudit.EvidenceStore.At cleanEvidence }
         { everyKey with
             Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
 
@@ -822,7 +824,7 @@ let ``CONTROL test-evidence: another run's producer, durations, report id and co
         test <@ report.Verdict = RecordAudit.Verdict.Mismatch @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``test evidence is vacuous without evidence stores, and its unreadable files are counted`` () =
+let ``test evidence with no evidence store is NOT AUDITED, not vacuous, and its unreadable files are counted`` () =
     withTempDir "audit-ev-none" (fun dir ->
         let report =
             RecordAudit.audit
@@ -831,6 +833,8 @@ let ``test evidence is vacuous without evidence stores, and its unreadable files
                 { everyKey with
                     Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
 
+        test <@ List.isEmpty report.Kinds @>
+        test <@ report.NotAudited |> List.map _.Name = [ "test-evidence" ] @>
         test <@ report.Verdict = RecordAudit.Verdict.Vacuous @>)
 
     withTempDir "audit-ev-torn" (fun dir ->
@@ -867,30 +871,278 @@ let ``a report with an unreadable CTRF report names it`` () =
         test <@ report.Mismatches |> List.collect _.Fields = [ "report-unreadable" ] @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``a clean home names its evidence store, --store drops the box-wide one, and --kind all is every kind`` () =
+let ``a clean home names its evidence store, the box-wide store brings its own, and --kind all is every kind`` () =
+    let resolved (request: RecordAudit.Request) =
+        RecordAudit.resolve "/repo" request |> Result.toOption |> Option.get
+
     let fromHome =
+        resolved
+            { RecordAudit.Request.empty with
+                CleanHome = Some "/h"
+                Kinds = [ "all" ] }
+
+    test <@ fromHome.CleanEvidence = RecordAudit.EvidenceStore.At(RecordAudit.evidenceUnderCacheHome "/h" "/repo") @>
+    test <@ fromHome.AuditedEvidence = RecordAudit.EvidenceStore.At(TestEvidenceStore.directoryFor "/repo") @>
+    test <@ fromHome.Options.Kinds = RecordAudit.AuditKind.all @>
+
+    // AUTOMATION-1767: a store a cache home files brings the evidence store beside it, on
+    // either side; any other directory names none, and says what to pass instead.
+    let homed =
+        resolved
+            { RecordAudit.Request.empty with
+                Clean = Some(RecordAudit.storeUnderCacheHome "/c" "/repo")
+                Store = Some(RecordAudit.storeUnderCacheHome "/s" "/repo") }
+
+    test <@ homed.CleanEvidence = RecordAudit.EvidenceStore.At(RecordAudit.evidenceUnderCacheHome "/c" "/repo") @>
+    test <@ homed.AuditedEvidence = RecordAudit.EvidenceStore.At(RecordAudit.evidenceUnderCacheHome "/s" "/repo") @>
+
+    let named =
+        resolved
+            { RecordAudit.Request.empty with
+                Clean = Some "/c"
+                Store = Some "/s" }
+
+    let why =
+        function
+        | RecordAudit.EvidenceStore.Unnamed why -> why
+        | RecordAudit.EvidenceStore.At dir -> failwith $"named %s{dir}"
+
+    test <@ (why named.CleanEvidence).StartsWith "--clean /c is not a cache home's outcome store" @>
+    test <@ (why named.CleanEvidence).EndsWith "pass --clean-home <its cache home>" @>
+    test <@ (why named.AuditedEvidence).StartsWith "--store /s is not a cache home's outcome store" @>
+    test <@ (why named.AuditedEvidence).EndsWith "pass --evidence <its evidence store>" @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``--evidence names the audited evidence store, whatever --store says`` () =
+    let audited (store: string option) =
         RecordAudit.resolve
             "/repo"
             { RecordAudit.Request.empty with
                 CleanHome = Some "/h"
-                Kinds = [ "all" ] }
-        |> Result.toOption
-        |> Option.get
+                Store = store
+                Evidence = Some "/e" }
+        |> Result.map (fun s -> s.AuditedStore, s.AuditedEvidence)
 
-    test <@ fromHome.CleanEvidence = Some(RecordAudit.evidenceUnderCacheHome "/h" "/repo") @>
-    test <@ fromHome.AuditedEvidence = Some(TestEvidenceStore.directoryFor "/repo") @>
-    test <@ fromHome.Options.Kinds = RecordAudit.AuditKind.all @>
+    test <@ audited (Some "/s") = Ok("/s", RecordAudit.EvidenceStore.At "/e") @>
 
-    let named =
-        RecordAudit.resolve
-            "/repo"
+    test
+        <@
+            audited (Some(RecordAudit.storeUnderCacheHome "/s" "/repo")) = Ok(
+                RecordAudit.storeUnderCacheHome "/s" "/repo",
+                RecordAudit.EvidenceStore.At "/e"
+            )
+        @>
+
+    test <@ audited None = Ok(OutcomeStore.directoryFor "/repo", RecordAudit.EvidenceStore.At "/e") @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a cache home's store parses back to its home, area and namespace; any other shape does not`` () =
+    let home = Path.GetFullPath "/h"
+    let outcomes = RecordAudit.storeUnderCacheHome home "/repo"
+
+    let parsed =
+        RecordAudit.CacheHomeStore.tryParse (outcomes + string Path.DirectorySeparatorChar)
+
+    test <@ parsed |> Option.map RecordAudit.CacheHomeStore.path = Some outcomes @>
+    test <@ parsed |> Option.map _.Area = Some RecordAudit.StoreArea.Outcomes @>
+
+    test
+        <@
+            RecordAudit.CacheHomeStore.evidenceBesideOutcomes outcomes = Some(
+                RecordAudit.evidenceUnderCacheHome home "/repo"
+            )
+        @>
+
+    // An evidence store is a cache home's store, but has no evidence store beside it.
+    let evidence = RecordAudit.evidenceUnderCacheHome home "/repo"
+
+    test <@ RecordAudit.CacheHomeStore.tryParse evidence |> Option.map _.Area = Some RecordAudit.StoreArea.Evidence @>
+
+    test <@ RecordAudit.CacheHomeStore.evidenceBesideOutcomes evidence = None @>
+
+    for other in
+        [ "/s"
+          "/h/cache/other/ns/v1"
+          "/h/cache/outcomes/ns/v2"
+          "/h/stash/outcomes/ns/v1"
+          "/v1" ] do
+        test <@ RecordAudit.CacheHomeStore.tryParse other = None @>
+
+/// The stores of the AUTOMATION-1767 audits: two cache homes' outcome and evidence stores, the
+/// clean one's outcome store present (`validateStores`), and what `file` puts in the evidence.
+let private homedAudit
+    (dir: string)
+    (request: RecordAudit.Request -> RecordAudit.Request)
+    (file: string -> string -> unit)
+    =
+    let repo = Path.Combine(dir, "repo")
+    let auditedHome = Path.Combine(dir, "audited-home")
+    let cleanHome = Path.Combine(dir, "clean-home")
+
+    Directory.CreateDirectory(RecordAudit.storeUnderCacheHome cleanHome repo)
+    |> ignore
+
+    file (RecordAudit.evidenceUnderCacheHome auditedHome repo) (RecordAudit.evidenceUnderCacheHome cleanHome repo)
+
+    RecordAudit.resolve
+        repo
+        (request
             { RecordAudit.Request.empty with
-                Clean = Some "/c"
-                Store = Some "/s" }
-        |> Result.toOption
-        |> Option.get
+                CleanHome = Some cleanHome
+                Store = Some(RecordAudit.storeUnderCacheHome auditedHome repo)
+                Kinds = [ "test-evidence" ] })
+    |> Result.bind RecordAudit.execute
+    |> Result.toOption
+    |> Option.get
 
-    test <@ named.CleanEvidence = None && named.AuditedEvidence = None @>
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``--evidence is the audited evidence store an audit reads`` () =
+    withTempDir "audit-ev-flag" (fun dir ->
+        let elsewhere = Path.Combine(dir, "elsewhere")
+        let tests = [ "A.one", "passed" ]
+
+        let report =
+            homedAudit
+                dir
+                (fun r ->
+                    { r with
+                        Store = Some(Path.Combine(dir, "plain-store"))
+                        Evidence = Some elsewhere })
+                (fun _ clean ->
+                    fileEvidence elsewhere evidenceKey "/w/a" "run-1" 1 tests
+                    fileEvidence clean evidenceKey "/w/b" "run-2" 1 tests)
+
+        test <@ report.Kinds |> List.map (fun k -> k.Shared, k.Audited) = [ 1, 1 ] @>
+        test <@ report.Verdict = RecordAudit.Verdict.Agree @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a --store that names no evidence store leaves test-evidence NOT AUDITED, exit 3, apart from vacuous`` () =
+    withTempDir "audit-ev-unnamed" (fun dir ->
+        let report =
+            homedAudit
+                dir
+                (fun r ->
+                    { r with
+                        Store = Some(Path.Combine(dir, "plain-store")) })
+                (fun audited clean ->
+                    fileEvidence audited evidenceKey "/w/a" "run-1" 1 [ "A.one", "passed" ]
+                    fileEvidence clean evidenceKey "/w/b" "run-2" 1 [ "A.one", "passed" ])
+
+        test <@ List.isEmpty report.Kinds @>
+        test <@ report.NotAudited |> List.map _.Name = [ "test-evidence" ] @>
+        test <@ report.NotAudited |> List.forall _.Why.StartsWith("audited side: --store ") @>
+        test <@ report.RecordsVerdict = RecordAudit.Verdict.Vacuous @>
+        test <@ RecordAudit.exitCode report.Verdict = 3 @>
+
+        let json = JsonDocument.Parse(RecordAudit.toJson report).RootElement
+
+        let notAudited =
+            json.GetProperty("notAuditedKinds").EnumerateArray()
+            |> Seq.map (fun k -> k.GetProperty("kind").GetString(), k.GetProperty("reason").GetString().Length > 0)
+            |> List.ofSeq
+
+        test <@ notAudited = [ "test-evidence", true ] @>
+
+        let vacuousKinds, kinds, exit =
+            json.GetProperty("vacuousKinds").GetArrayLength(),
+            json.GetProperty("kinds").GetArrayLength(),
+            json.GetProperty("exitCode").GetInt32()
+
+        test <@ (vacuousKinds, kinds, exit) = (0, 0, 3) @>
+
+        let lines = RecordAudit.render report
+
+        test
+            <@
+                lines
+                |> List.exists _.Contains("test-evidence        NOT AUDITED: audited side: --store ")
+            @>
+
+        test <@ lines |> List.exists _.Contains("VACUOUS:") @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``either side without an evidence store says which side`` () =
+    let unnamed side =
+        RecordAudit.EvidenceStore.Unnamed $"%s{side} has none"
+
+    let named = RecordAudit.EvidenceStore.At "/nowhere"
+
+    let reason (clean, audited) =
+        withTempDir "audit-ev-sides" (fun dir ->
+            let report =
+                RecordAudit.auditStores
+                    { Audited = Path.Combine(dir, "a")
+                      Clean = Path.Combine(dir, "c")
+                      AuditedEvidence = audited
+                      CleanEvidence = clean }
+                    { everyKey with
+                        Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
+
+            report.NotAudited |> List.map _.Why)
+
+    test <@ reason (unnamed "clean", named) = [ "clean side: clean has none" ] @>
+    test <@ reason (named, unnamed "audited") = [ "audited side: audited has none" ] @>
+
+    test
+        <@
+            reason (unnamed "clean", unnamed "audited") = [ "clean side: clean has none; audited side: audited has none" ]
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a derived evidence store whose clean side is empty is still VACUOUS, an alarm`` () =
+    withTempDir "audit-ev-empty" (fun dir ->
+        let report =
+            homedAudit dir id (fun audited _ ->
+                fileEvidence audited evidenceKey "/w/a" "run-1" 1 [ "A.one", "passed" ])
+
+        test <@ List.isEmpty report.NotAudited @>
+
+        test
+            <@
+                report.Kinds |> List.map RecordAudit.KindTally.finding = [ RecordAudit.KindFinding.Vacuous
+                                                                               "the clean store holds no key of this kind" ]
+            @>
+
+        test <@ RecordAudit.exitCode report.Verdict = 3 @>)
+
+/// AUTOMATION-1767: the nightly test-kinds audit passes `--store <a cache home's outcome store>`
+/// and `--clean-home`. Evidence sat beside both outcome stores, yet test-evidence read VACUOUS
+/// "the clean store holds no key": `--store` dropped the audited evidence store.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``--store under a cache home audits the evidence store beside it`` () =
+    withTempDir "audit-ev-store" (fun dir ->
+        let repo = Path.Combine(dir, "repo")
+        let auditedHome = Path.Combine(dir, "audited-home")
+        let cleanHome = Path.Combine(dir, "clean-home")
+        let auditedStore = RecordAudit.storeUnderCacheHome auditedHome repo
+
+        Directory.CreateDirectory(RecordAudit.storeUnderCacheHome cleanHome repo)
+        |> ignore
+
+        let tests = [ "A.one", "passed" ]
+        fileEvidence (RecordAudit.evidenceUnderCacheHome auditedHome repo) evidenceKey "/w/a" "run-1" 1 tests
+        fileEvidence (RecordAudit.evidenceUnderCacheHome cleanHome repo) evidenceKey "/w/b" "run-2" 1 tests
+
+        let report =
+            RecordAudit.resolve
+                repo
+                { RecordAudit.Request.empty with
+                    CleanHome = Some cleanHome
+                    Store = Some auditedStore
+                    Kinds = [ "test-evidence" ] }
+            |> Result.bind RecordAudit.execute
+            |> Result.toOption
+            |> Option.get
+
+        test
+            <@
+                report.Kinds |> List.map (fun k -> k.Kind, k.CleanKeys, k.Shared, k.Audited) = [ "test-evidence",
+                                                                                                 1,
+                                                                                                 1,
+                                                                                                 1 ]
+            @>
+
+        test <@ report.Verdict = RecordAudit.Verdict.Agree @>)
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a CTRF report that is torn JSON has no results to compare`` () =
@@ -930,8 +1182,8 @@ let ``test evidence names a different project, and evidence stores that do not e
             RecordAudit.auditStores
                 { Audited = Path.Combine(dir, "a")
                   Clean = Path.Combine(dir, "c")
-                  AuditedEvidence = Some(Path.Combine(dir, "ae"))
-                  CleanEvidence = Some(Path.Combine(dir, "ce")) }
+                  AuditedEvidence = RecordAudit.EvidenceStore.At(Path.Combine(dir, "ae"))
+                  CleanEvidence = RecordAudit.EvidenceStore.At(Path.Combine(dir, "ce")) }
                 { everyKey with
                     Kinds = [ RecordAudit.RecordKind.TestEvidence ] }
 
@@ -1006,6 +1258,7 @@ let private reportWith (agreement: RecordAudit.LookupAgreement) : RecordAudit.Re
             Audited = 1
             Records = 1
             Mismatched = 0 } ]
+      NotAudited = []
       Mismatches = []
       AuditedKeys = []
       Unmatched = []
@@ -1177,6 +1430,7 @@ let ``the audit names every quarantined file by kind, key and when`` () =
           AuditedStore = "/a"
           CleanStore = "/c"
           Kinds = []
+          NotAudited = []
           Mismatches = []
           AuditedKeys = []
           Unmatched = []

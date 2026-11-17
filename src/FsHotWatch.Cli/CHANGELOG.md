@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: `fshw audit --store <a cache home's outcome store>` audits test evidence (AUTOMATION-1767). It read VACUOUS
+  "the clean store holds no key of this kind" for every such store, because `--store` dropped the audited evidence
+  store. A store at `<home>/cache/outcomes/<namespace>/v1` now brings `<home>/cache/evidence/<namespace>/v1` (so does
+  `--clean`); `--evidence <dir>` names the audited evidence store for any other `--store`. Without one, test-evidence
+  is `NOT AUDITED: <which side, and what to pass>` on its line, and in the JSON a top-level `notAuditedKinds`
+  (`[{kind, reason}]`), in neither `kinds` nor `vacuousKinds`. Exit 3, as vacuous: a kind not audited answers nothing.
+
 ## 0.14.0-alpha.153 - 2026-11-17
 
 - feat: `fshw status` says when the daemon is waiting for a client after a VCS operation (AUTOMATION-1705), with a

@@ -31,10 +31,10 @@ let private usage =
                     [--timeout-min 120] [--diff-plugins fcs,lint,analyzers,findings] [--forced-every 1 | --no-forced]
                     [--daemon-log .fshw/logs/daemon.log] [--max-steps N] [--workspace-path <dir>]
                     [--forced-clean-home <dir>]   forced re-check = records on over an EMPTY cache home
-  fshw-bench audit --target <repo> (--clean-home <dir> | --clean <store dir>) [--store <dir>]
+  fshw-bench audit --target <repo> (--clean-home <dir> | --clean <store dir>) [--store <dir>] [--evidence <dir>]
                    [--kind check]... [--sample 200 (0 = all)] [--seed <text>] [--key ak1:...]...
                    [--prefer-input <label>] [--json] [--out <file>]
-                                        exit 0 agree, 1 a stored record differs from its clean recompute, 3 nothing compared
+                                        exit 0 agree, 1 a stored record differs from its clean recompute, 3 nothing compared or not audited
   fshw-bench replay-summary <out dir>
   fshw-bench replay-gate <out dir>      exit 0 agree, 1 records-vs-forced disagreement, 3 nothing compared
 """

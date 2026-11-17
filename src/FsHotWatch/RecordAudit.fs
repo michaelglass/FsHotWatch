@@ -490,6 +490,11 @@ module KindTally =
         else
             KindFinding.Vacuous "no shared key holds a readable record"
 
+/// A kind the audit had no store to read for, and why (AUTOMATION-1767). It has no counts: it
+/// never looked. Distinct from vacuous, which looked and compared nothing; like vacuous, it is
+/// no answer, never agreement.
+type NotAuditedKind = { Name: string; Why: string }
+
 /// What the shadow logs say about the lookup on the trees today's daemon graded: ADR-074's
 /// night count (b), LOOKUP AGREEMENT (AUTOMATION-1577). Publications only (`check`,
 /// `confirm`); a `fshw verdict` read and a line the shadow could not compare are not counted.
@@ -652,6 +657,8 @@ type Report =
         AuditedStore: string
         CleanStore: string
         Kinds: KindTally list
+        /// Kinds asked for that had no store to read (AUTOMATION-1767): beside `Kinds`, not in it.
+        NotAudited: NotAuditedKind list
         Mismatches: Mismatch list
         /// The audited keys, by kind, in sampling order: what `--key` re-audits.
         AuditedKeys: (string * string list) list
@@ -685,6 +692,9 @@ type Report =
             this.Kinds.IsEmpty
             || this.Kinds |> List.exists (fun k -> KindTally.finding k <> KindFinding.Compared)
         then
+            Verdict.Vacuous
+        // A kind with no store to read answers nothing, as a vacuous one does (exit 3).
+        elif not this.NotAudited.IsEmpty then
             Verdict.Vacuous
         elif not this.Unmatched.IsEmpty then
             Verdict.Vacuous
@@ -724,13 +734,74 @@ let private compareKey (kind: AuditKind) (clean: Side) (stored: Side list) : Mis
                   Clean = RecordSummary.ofSide clean })
     |> List.choose id
 
-/// The stores one audit compares: the outcome stores, and the test-evidence stores beside
-/// them (None where there is none to read, e.g. a clean store named by directory).
+/// Which store a cache home files under `cache/<area>`.
+[<RequireQualifiedAccess>]
+type StoreArea =
+    | Outcomes
+    | Evidence
+
+/// A store directory a cache home files: `<home>/cache/<area>/<namespace>/v1` (AUTOMATION-1767).
+type CacheHomeStore =
+    { Home: string
+      Area: StoreArea
+      Namespace: string }
+
+module CacheHomeStore =
+    let private areaName (area: StoreArea) =
+        match area with
+        | StoreArea.Outcomes -> "outcomes"
+        | StoreArea.Evidence -> "evidence"
+
+    /// The store's directory.
+    let path (store: CacheHomeStore) : string =
+        Path.Combine(store.Home, "cache", areaName store.Area, store.Namespace, "v1")
+
+    /// `directory` read as a store a cache home files; None for a directory of any other shape.
+    let tryParse (directory: string) : CacheHomeStore option =
+        let rec upward (d: DirectoryInfo) =
+            match Option.ofObj d.Parent with
+            | Some parent -> d :: upward parent
+            | None -> [ d ]
+
+        let area (name: string) =
+            [ StoreArea.Outcomes; StoreArea.Evidence ]
+            |> List.tryFind (areaName >> (=) name)
+
+        match upward (DirectoryInfo(Path.TrimEndingDirectorySeparator(Path.GetFullPath directory))) with
+        | v1 :: ns :: areaDir :: cache :: home :: _ when v1.Name = "v1" && cache.Name = "cache" ->
+            area areaDir.Name
+            |> Option.map (fun a ->
+                { Home = home.FullName
+                  Area = a
+                  Namespace = ns.Name })
+        | _ -> None
+
+    /// The evidence store the same cache home files beside the outcome store `directory`; None
+    /// when `directory` is not a cache home's outcome store.
+    let evidenceBesideOutcomes (directory: string) : string option =
+        tryParse directory
+        |> Option.filter (_.Area >> (=) StoreArea.Outcomes)
+        |> Option.map (fun store -> path { store with Area = StoreArea.Evidence })
+
+/// The test-evidence store one side of an audit reads, or why that side names none
+/// (AUTOMATION-1767). An unnamed side makes test-evidence NOT AUDITED, never vacuous.
+[<RequireQualifiedAccess>]
+type EvidenceStore =
+    | At of directory: string
+    | Unnamed of why: string
+
+/// The stores one audit compares: the outcome stores, and the test-evidence stores beside them.
 type Stores =
     { Audited: string
       Clean: string
-      AuditedEvidence: string option
-      CleanEvidence: string option }
+      AuditedEvidence: EvidenceStore
+      CleanEvidence: EvidenceStore }
+
+/// One asked-for kind: compared (its tally, mismatches and audited keys), or not audited.
+[<RequireQualifiedAccess>]
+type private KindRun =
+    | Ran of KindTally * Mismatch list * (string * string list)
+    | NotRun of NotAuditedKind
 
 /// A test-evidence entry as the audit compares it: kind `test-evidence`, keyed by the
 /// entry's key, its project as the subject, its counts, and its CTRF report as outputs.
@@ -864,7 +935,7 @@ let auditStores (stores: Stores) (options: Options) : Report =
         mismatches,
         (kind.Kind, audited |> List.map (fun (clean, _) -> clean.Record.Key.Value.Text))
 
-    let results, unmatched =
+    let runs, unmatched =
         match options.Keys with
         | [] ->
             options.Kinds
@@ -874,7 +945,7 @@ let auditStores (stores: Stores) (options: Options) : Report =
                 | RecordKind.TestEvidence ->
                     // Test evidence lives in its own store beside the outcome store.
                     match stores.CleanEvidence, stores.AuditedEvidence with
-                    | Some cleanEvidence, Some auditedEvidence ->
+                    | EvidenceStore.At cleanEvidence, EvidenceStore.At auditedEvidence ->
                         let candidates, unreadable = readEvidenceStore cleanEvidence
                         unreadableClean <- unreadableClean + unreadable
 
@@ -893,8 +964,21 @@ let auditStores (stores: Stores) (options: Options) : Report =
                         let holdsEvidence (key: ActionKey.KeyValue) =
                             File.Exists(evidencePath auditedEvidence (key.Text.Substring ActionKey.Prefix.Length))
 
-                        auditKind holdsEvidence storedEvidence (AuditKind.find kind) candidates options.Sample
-                    | _ -> auditKind (fun _ -> false) (fun _ -> []) (AuditKind.find kind) [] options.Sample
+                        KindRun.Ran(
+                            auditKind holdsEvidence storedEvidence (AuditKind.find kind) candidates options.Sample
+                        )
+                    | EvidenceStore.Unnamed cleanWhy, EvidenceStore.Unnamed auditedWhy ->
+                        KindRun.NotRun
+                            { Name = AuditKind.TestEvidenceKind
+                              Why = $"clean side: %s{cleanWhy}; audited side: %s{auditedWhy}" }
+                    | EvidenceStore.Unnamed why, EvidenceStore.At _ ->
+                        KindRun.NotRun
+                            { Name = AuditKind.TestEvidenceKind
+                              Why = $"clean side: %s{why}" }
+                    | EvidenceStore.At _, EvidenceStore.Unnamed why ->
+                        KindRun.NotRun
+                            { Name = AuditKind.TestEvidenceKind
+                              Why = $"audited side: %s{why}" }
                 | _ ->
                     let candidates =
                         cleanAnswers
@@ -902,7 +986,7 @@ let auditStores (stores: Stores) (options: Options) : Report =
                         |> List.map snd
                         |> List.filter (fun s -> s.Record.Key.Kind = RecordKind.name kind)
 
-                    auditKind holds storedOf (AuditKind.find kind) candidates options.Sample),
+                    KindRun.Ran(auditKind holds storedOf (AuditKind.find kind) candidates options.Sample)),
             []
         | keys ->
             let found, missing =
@@ -914,14 +998,25 @@ let auditStores (stores: Stores) (options: Options) : Report =
             |> List.map (fun key -> cleanAnswers[key])
             |> List.groupBy _.Record.Key.Kind
             |> List.map (fun (kind, candidates) ->
-                auditKind holds storedOf (AuditKind.ofStoredName kind) candidates None),
+                KindRun.Ran(auditKind holds storedOf (AuditKind.ofStoredName kind) candidates None)),
             missing |> List.map _.Text
+
+    let results =
+        runs
+        |> List.choose (function
+            | KindRun.Ran(tally, mismatches, keys) -> Some(tally, mismatches, keys)
+            | KindRun.NotRun _ -> None)
 
     { Seed = options.Seed
       Sample = if options.Keys.IsEmpty then options.Sample else None
       AuditedStore = auditedRoot
       CleanStore = cleanRoot
       Kinds = results |> List.map (fun (tally, _, _) -> tally)
+      NotAudited =
+        runs
+        |> List.choose (function
+            | KindRun.NotRun notAudited -> Some notAudited
+            | KindRun.Ran _ -> None)
       Mismatches = results |> List.collect (fun (_, mismatches, _) -> mismatches)
       AuditedKeys = results |> List.map (fun (_, _, keys) -> keys)
       Unmatched = unmatched
@@ -931,13 +1026,16 @@ let auditStores (stores: Stores) (options: Options) : Report =
       Quarantine = OutcomeStore.readQuarantine auditedRoot }
 
 /// Audit the records `auditedRoot` holds against the clean recompute filed in `cleanRoot`,
-/// outcome stores only.
+/// outcome stores only: test evidence, if asked for, is not audited.
 let audit (auditedRoot: string) (cleanRoot: string) (options: Options) : Report =
+    let outcomeStoresOnly =
+        EvidenceStore.Unnamed "this audit was given outcome stores only"
+
     auditStores
         { Audited = auditedRoot
           Clean = cleanRoot
-          AuditedEvidence = None
-          CleanEvidence = None }
+          AuditedEvidence = outcomeStoresOnly
+          CleanEvidence = outcomeStoresOnly }
         options
 
 let private verdictToken (verdict: Verdict) =
@@ -997,6 +1095,19 @@ let toJson (report: Report) : string =
             report.Kinds
             |> List.filter (fun k -> KindTally.finding k <> KindFinding.Compared)
             |> List.map (fun k -> JsonValue.Create k.Kind :> JsonNode)
+            |> Array.ofList
+        )
+
+    // The kinds that had no store to read (AUTOMATION-1767): not vacuous (they never looked), so
+    // neither in `kinds` (they have no counts) nor in `vacuousKinds`. The verdict is vacuous (exit 3).
+    o["notAuditedKinds"] <-
+        JsonArray(
+            report.NotAudited
+            |> List.map (fun n ->
+                let e = JsonObject()
+                e["kind"] <- n.Name
+                e["reason"] <- n.Why
+                e :> JsonNode)
             |> Array.ofList
         )
 
@@ -1091,6 +1202,9 @@ let render (report: Report) : string list =
           | KindFinding.Vacuous why ->
               $"  %-20s{k.Kind} VACUOUS: clean keys %d{k.CleanKeys}, shared %d{k.Shared}, nothing compared (%s{why})"
 
+      for n in report.NotAudited do
+          $"  %-20s{n.Name} NOT AUDITED: %s{n.Why}"
+
       for m in report.Mismatches do
           let answer = if m.IsAnswer then "answer" else "history"
           let fields = String.concat "," m.Fields
@@ -1135,7 +1249,7 @@ let render (report: Report) : string list =
           | Verdict.Agree -> "AGREE: every audited record equals its clean recompute"
           | Verdict.Mismatch ->
               $"MISMATCH: %d{report.Mismatches.Length} stored record(s) differ from a clean recompute under the same key: a key missed an input"
-          | Verdict.Vacuous -> "VACUOUS: a kind or a named key compared nothing; no answer"
+          | Verdict.Vacuous -> "VACUOUS: a kind or a named key compared nothing, or a kind was not audited; no answer"
 
       $"records: %s{records}"
 
@@ -1152,11 +1266,17 @@ let render (report: Report) : string list =
 /// The store directory of `repoRoot`'s repository under the cache home `cacheHome`: where a
 /// recompute run with `FSHW_CACHE_HOME=<cacheHome>` files its records.
 let storeUnderCacheHome (cacheHome: string) (repoRoot: string) : string =
-    Path.Combine(cacheHome, "cache", "outcomes", RepoIdentity.namespaceOf repoRoot, "v1")
+    CacheHomeStore.path
+        { Home = cacheHome
+          Area = StoreArea.Outcomes
+          Namespace = RepoIdentity.namespaceOf repoRoot }
 
 /// The test-evidence store of `repoRoot`'s repository under the cache home `cacheHome`.
 let evidenceUnderCacheHome (cacheHome: string) (repoRoot: string) : string =
-    Path.Combine(cacheHome, "cache", "evidence", RepoIdentity.namespaceOf repoRoot, "v1")
+    CacheHomeStore.path
+        { Home = cacheHome
+          Area = StoreArea.Evidence
+          Namespace = RepoIdentity.namespaceOf repoRoot }
 
 /// Refuse to audit a store against itself: every key would agree with its own record.
 let validateStores (auditedRoot: string) (cleanRoot: string) : Result<unit, string> =
@@ -1180,6 +1300,9 @@ type Request =
         CleanHome: string option
         /// The audited store; None for the repository's box-wide one.
         Store: string option
+        /// The audited test-evidence store (`--evidence`); None for the one beside the audited
+        /// outcome store.
+        Evidence: string option
         /// `--kind` values as given: parsed by `resolve` (`AuditKind.parse`).
         Kinds: string list
         /// Keys per kind; None for the default, 0 for every shared key.
@@ -1196,6 +1319,7 @@ module Request =
         { Clean = None
           CleanHome = None
           Store = None
+          Evidence = None
           Kinds = []
           Sample = None
           Seed = None
@@ -1208,23 +1332,48 @@ type Setup =
     {
         AuditedStore: string
         CleanStore: string
-        /// The test-evidence stores beside them: the clean home's and the box-wide one, when
-        /// the clean store is named by its home and the audited one is this repository's.
-        AuditedEvidence: string option
-        CleanEvidence: string option
+        /// The test-evidence stores beside them (AUTOMATION-1767): each named by its cache home,
+        /// by `--evidence`, or as the box-wide one; otherwise why that side names none.
+        AuditedEvidence: EvidenceStore
+        CleanEvidence: EvidenceStore
         Options: Options
     }
+
+/// The evidence store beside the outcome store `directory`, named by `flag`; when `directory` is
+/// not a cache home's outcome store, why not and what to pass instead.
+let private evidenceBeside (flag: string) (instead: string) (directory: string) : EvidenceStore =
+    match CacheHomeStore.evidenceBesideOutcomes directory with
+    | Some evidence -> EvidenceStore.At evidence
+    | None ->
+        EvidenceStore.Unnamed
+            $"%s{flag} %s{directory} is not a cache home's outcome store (<home>/cache/outcomes/<namespace>/v1), so it names no evidence store; pass %s{instead}"
 
 /// Resolve `request` against `repoRoot`; Error names what is wrong with it.
 let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
     let clean =
         match request.Clean, request.CleanHome with
-        | Some store, None -> Ok(Path.GetFullPath store)
-        | None, Some home -> Ok(storeUnderCacheHome (Path.GetFullPath home) repoRoot)
+        | Some store, None ->
+            let store = Path.GetFullPath store
+            Ok(store, evidenceBeside "--clean" "--clean-home <its cache home>" store)
+        | None, Some home ->
+            let home = Path.GetFullPath home
+            Ok(storeUnderCacheHome home repoRoot, EvidenceStore.At(evidenceUnderCacheHome home repoRoot))
         | Some _, Some _ -> Error "pass --clean or --clean-home, not both"
         | None, None ->
             Error
                 "name the clean recompute's store: --clean-home <the FSHW_CACHE_HOME a from-scratch check ran under>, or --clean <store dir>"
+
+    let audited =
+        match request.Store, request.Evidence with
+        | store, Some evidence ->
+            store
+            |> Option.map Path.GetFullPath
+            |> Option.defaultWith (fun () -> OutcomeStore.directoryFor repoRoot),
+            EvidenceStore.At(Path.GetFullPath evidence)
+        | Some store, None ->
+            let store = Path.GetFullPath store
+            store, evidenceBeside "--store" "--evidence <its evidence store>" store
+        | None, None -> OutcomeStore.directoryFor repoRoot, EvidenceStore.At(TestEvidenceStore.directoryFor repoRoot)
 
     let sample =
         match request.Sample with
@@ -1256,20 +1405,14 @@ let resolve (repoRoot: string) (request: Request) : Result<Setup, string> =
     | _, Error e, _, _
     | _, _, Some e, _
     | _, _, _, Error e -> Error e
-    | Ok cleanStore, Ok sample, None, Ok kinds ->
+    | Ok(cleanStore, cleanEvidence), Ok sample, None, Ok kinds ->
+        let auditedStore, auditedEvidence = audited
+
         Ok
-            { AuditedStore =
-                request.Store
-                |> Option.map Path.GetFullPath
-                |> Option.defaultWith (fun () -> OutcomeStore.directoryFor repoRoot)
+            { AuditedStore = auditedStore
               CleanStore = cleanStore
-              AuditedEvidence =
-                match request.Store with
-                | Some _ -> None
-                | None -> Some(TestEvidenceStore.directoryFor repoRoot)
-              CleanEvidence =
-                request.CleanHome
-                |> Option.map (fun home -> evidenceUnderCacheHome (Path.GetFullPath home) repoRoot)
+              AuditedEvidence = auditedEvidence
+              CleanEvidence = cleanEvidence
               Options =
                 { Kinds = kinds
                   Sample = sample

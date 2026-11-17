@@ -285,7 +285,10 @@ type AuditFlag =
     | [<CmdFlag(Description =
                     "The cache home a from-scratch recompute ran under (its FSHW_CACHE_HOME); the clean store is this repository's store inside it",
                 Name = "clean-home")>] CleanHome of string
-    | [<CmdFlag(Description = "Audit this outcome store instead of this repository's box-wide one")>] Store of string
+    | [<CmdFlag(Description = "Audit this outcome store instead of this repository's box-wide one; a cache home's store (<home>/cache/outcomes/<ns>/v1) brings its evidence store")>] Store of
+        string
+    | [<CmdFlag(Description = "Audit this test-evidence store (for a --store that is not a cache home's outcome store; without one, test-evidence is NOT AUDITED, exit 3)")>] Evidence of
+        string
     | [<CmdFlag(Description =
                     "A record kind to sample: check, options, options-inputs, options-portable, options-portable-inputs, format, testprune-analysis, analyze, test, test-evidence, or all (repeatable or comma-separated; default: check; an unknown kind is a usage error)",
                 Repeatable = true)>] Kind of string
@@ -387,7 +390,7 @@ type Command =
     | [<CmdExample("--clean-home /tmp/clean",
                    "--clean-home /tmp/clean --sample 0 --json",
                    "--clean /tmp/clean/store --key ak1:...");
-        Cmd("Clean-recompute audit (ADR-059 §35): compare the records this repository's outcome store holds with the records a from-scratch recompute filed under the SAME keys; a difference is a key that missed an input. Seeded sample per kind, exit 0 agree, 1 mismatch, 3 nothing compared, 2 usage (reads both stores; never contacts the daemon)")>] Audit of
+        Cmd("Clean-recompute audit (ADR-059 §35): compare the records this repository's outcome store holds with the records a from-scratch recompute filed under the SAME keys; a difference is a key that missed an input. Seeded sample per kind, exit 0 agree, 1 mismatch, 3 nothing compared or a kind not audited, 2 usage (reads both stores; never contacts the daemon)")>] Audit of
         AuditFlag list
     | [<Cmd("Report memory headroom and the fshw daemons recorded under this repository and its .workspaces. Report only: stops nothing, deletes nothing, never contacts a daemon")>] Headroom
     | [<Cmd("Install fish completions")>] Completions
@@ -585,6 +588,10 @@ let internal auditRequest (flags: AuditFlag list) : FsHotWatch.RecordAudit.Reque
       Store =
         pick (function
             | AuditFlag.Store d -> Some d
+            | _ -> None)
+      Evidence =
+        pick (function
+            | AuditFlag.Evidence d -> Some d
             | _ -> None)
       Kinds =
         all (function
