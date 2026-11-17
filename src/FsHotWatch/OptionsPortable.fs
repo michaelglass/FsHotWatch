@@ -569,12 +569,52 @@ let private projectName (node: JsonNode) =
     | :? JsonObject as o when not (isNull o["projectFileName"]) -> o["projectFileName"].GetValue<string>()
     | _ -> "?"
 
+/// `project` (as `ProjectOptionsJson` files it) with `MSBuildAllProjects` in ordinal order, as
+/// the SDK's list and as the property's `;`-separated value (AUTOMATION-1684). MSBuild puts the
+/// most recently modified import first, so its order follows the files' change times: every
+/// cross-checkout comparison the shadow made on intelligence differed there and nowhere else.
+/// No check reads it (Ionide's mapping to FCS options does not), so the comparison compares the
+/// set. A copy: the record itself is left as filed, and a filed record is read from the store,
+/// so a field it lacks is compared as it is.
+let private importsInOrder (project: JsonNode) : JsonNode =
+    let copy = project.DeepClone()
+
+    match copy with
+    | :? JsonObject as o ->
+        match o["sdk"] with
+        | :? JsonObject as sdk ->
+            match sdk["msbuildAllProjects"] with
+            | :? JsonArray as imports ->
+                sdk["msbuildAllProjects"] <-
+                    stringArray ([ for v in imports -> v.GetValue<string>() ] |> List.sortWith ordinal)
+            | _ -> ()
+        | _ -> ()
+
+        match o["properties"] with
+        | :? JsonArray as properties ->
+            for p in properties do
+                match p with
+                | :? JsonObject as property ->
+                    match property["name"], property["value"] with
+                    | (:? JsonValue as name), (:? JsonValue as value) ->
+                        match name.TryGetValue<string>(), value.TryGetValue<string>() with
+                        | (true, "MSBuildAllProjects"), (true, imports) ->
+                            property["value"] <- imports.Split ';' |> Array.sortWith ordinal |> String.concat ";"
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        | _ -> ()
+    | _ -> ()
+
+    copy
+
 /// Where the options `filed` holds differ from `evaluated` in `root`, through the token:
 /// the projects matched by file name (the SETS must be equal; the list's order is not
-/// compared), then every field of each, in order.
+/// compared), then every field of each, in order, `MSBuildAllProjects` as a set
+/// (`importsInOrder`).
 let compareProjects (root: string) (filed: JsonArray) (evaluated: Types.ProjectOptions list) : Difference list =
     let byName (projects: JsonArray) =
-        [ for p in projects -> projectName p, p ] |> Map.ofList
+        [ for p in projects -> projectName p, importsInOrder p ] |> Map.ofList
 
     let filedByName = byName filed
     let evaluatedByName = byName (tokenizedProjects root evaluated)
