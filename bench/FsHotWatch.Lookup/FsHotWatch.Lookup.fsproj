@@ -14,18 +14,10 @@
     <OtherFlags>$(OtherFlags) --reflectionfree</OtherFlags>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- Security pin, this project only (experiment E5). The SDK's implicit Native AOT toolchain,
-         Microsoft.DotNet.ILCompiler 10.0.11 and the 10.0.11 runtime packs it pairs with, had
-         GHSA-p3jp-9v83-76w9 (Brotli decoder out-of-bounds write), patched in 10.0.14. The runtime
-         packs follow RuntimeFrameworkVersion and the compiler follows KnownILCompilerPack below (the
-         SDK's own item, so no explicit PackageReference). The repository's SDK/runtime bump is
-         separate. -->
-    <RuntimeFrameworkVersion>10.0.14</RuntimeFrameworkVersion>
+    <!-- No RuntimeFrameworkVersion / ILCompiler pin: the Native AOT toolchain and runtime packs
+         follow the SDK band in global.json, whose runtime is past GHSA-p3jp-9v83-76w9 (Brotli,
+         patched in 10.0.14). AUTOMATION-1708 moved the band and removed the bench-only pin. -->
   </PropertyGroup>
-
-  <ItemGroup>
-    <KnownILCompilerPack Update="Microsoft.DotNet.ILCompiler" ILCompilerPackVersion="10.0.14" />
-  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="Program.fs" />
