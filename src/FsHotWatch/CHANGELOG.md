@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a lookup that misses because GC evicted its key now says so in the daemon log, per record kind (AUTOMATION-1765).
+  Until now an evicted key and a never-filed one missed alike: GC logged counts per kind and no key names, and the
+  TestPrune analysis lookup logged nothing, so how many evicted testprune-analysis keys were looked up again could not
+  be counted. Each GC that evicts keys now writes a tombstone file, `evicted/<ticks>-<nonce>.tsv` under the store root
+  (one line per key: the key value and its kind), kept by its own retention (the store's TTL, then 16 MiB, oldest file
+  first) and outside the byte budget. A lookup that finds nothing filed reads the tombstones (once per GC; otherwise one
+  `stat`) and, for an evicted key, logs `outcome store: evicted-key miss: <kind> <key>, evicted by gc at <time>; <kind>
+  evicted-key misses in this process: <n>`. No record or cache key changes, and the records' layout is unchanged: an
+  older fshw ignores `evicted/`. ADR-059 §40.
+
 ## 0.10.0-alpha.120 - 2026-11-17
 
 - fix: a change batch re-checks the files after a saved file whose new declarations another check recorded first

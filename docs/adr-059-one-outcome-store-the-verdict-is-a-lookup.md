@@ -1968,3 +1968,46 @@ no data migration, no key change). Both hold:
 
 **After the flip.** The nightly `analyze` audit keeps running. Any mismatch reverts the default to
 `shadow` and reopens AUTOMATION-1585.
+
+## 40. Amendment (AUTOMATION-1765): GC files a tombstone of each key it evicts, and a miss says whether it was one
+
+§31 made every eviction logged, but only as counts per kind. A lookup that found nothing filed
+could not tell a key GC had evicted from one never filed. On the server (2026-11-17) every key
+evicted at the 2 GiB cap since §32 was a testprune-analysis key: 10,748 in 19 GCs across both
+stores. How many of them were looked up again, the number that decides the cap and the eviction
+order, could not be counted. The analysis lookup returns an option and logs nothing. Check
+records already classify their misses (`CheckRecords.RecordMiss.NotHeld`, 0 in 191,343), but no
+other kind does.
+
+**Decision.**
+
+- **Tombstones.** Each GC that evicts keys writes one file,
+  `evicted/<UTC ticks, 19 digits>-<nonce>.tsv`, under the store root (`EvictedKeys`). Each line
+  is `<key value>\t<kind>`. The GC's own `now` is the eviction time, carried in the file name.
+  The file is written once through `tmp/` and renamed into place, like a record. One file per GC
+  means two daemons collecting one box-wide store at once never write the same file.
+- **Their own retention.** The tombstones live outside `records/`. They are no key, change no key,
+  and are not counted against `MaxBytes`. Every GC applies their retention by whole files: files
+  older than the store's TTL go first, then the oldest files until the rest fit 16 MiB, which is
+  about 180,000 keys. An older fshw ignores the directory.
+- **The miss reason** is a union, `EvictedKeys.Absence`: `NoTombstone` (never filed, or evicted
+  longer ago than tombstones are kept) or `Evicted of Tombstone` (kind and when). Only the disk
+  store's read produces it, and only for `KeyRead.NothingFiled`. `KeyRead` itself is unchanged, so
+  no reader and no simulation changes.
+- **Cost.** A process reads the tombstones on its first miss (one reader per store root, shared
+  by every store it opens, since a verdict publication opens one per request), and again only
+  when their directory's modification time moves, which happens when a GC adds or deletes a
+  file (at most every 6 hours).
+  Every other miss pays one `stat` and a hash lookup. A hit pays nothing.
+- **Where the count is read: the daemon log.** Each evicted-key miss is one line,
+  `outcome store: evicted-key miss: <kind> <key>, evicted by gc at <time>; <kind> evicted-key
+  misses in this process: <n>`. Lookups happen in every daemon that reads the box-wide store, and
+  GC runs in whichever daemon is due, so a per-daemon counter in `fshw status` would show one
+  daemon's share and lose it on restart. Outcome analytics reads the store with no daemon, so it
+  would need every miss written to disk on the read path. The daemon logs are where AUTOMATION-1765's
+  measurement already came from: grep the line across them for a count per kind, and `sort -u`
+  on the key for distinct keys.
+
+**What it does not do.** It counts lookups of evicted keys. It does not log never-filed misses,
+which are most misses (a fresh tree's checks). Their volume is the denominator only where a kind
+already logs it, as check records do.
