@@ -735,16 +735,16 @@ let ``the order of MSBuildAllProjects changes nothing FCS checks with`` () =
     let b = mapped (List.rev imports)
 
     let fields (o: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions) =
-        o.ProjectFileName,
-        o.ProjectId,
-        o.SourceFiles,
-        o.OtherOptions,
-        [ for r in o.ReferencedProjects -> r.OutputFile ],
-        o.IsIncompleteTypeCheckEnvironment,
-        o.UseScriptResolutionRules,
-        o.LoadTime,
-        o.OriginalLoadReferences.Length,
-        o.Stamp
+        {| ProjectFileName = o.ProjectFileName
+           ProjectId = o.ProjectId
+           SourceFiles = o.SourceFiles
+           OtherOptions = o.OtherOptions
+           References = [ for r in o.ReferencedProjects -> r.OutputFile ]
+           Incomplete = o.IsIncompleteTypeCheckEnvironment
+           ScriptRules = o.UseScriptResolutionRules
+           LoadTime = o.LoadTime
+           LoadReferences = o.OriginalLoadReferences.Length
+           Stamp = o.Stamp |}
 
     test <@ fields a = fields b @>
 
