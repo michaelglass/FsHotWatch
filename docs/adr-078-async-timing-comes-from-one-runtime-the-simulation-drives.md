@@ -117,8 +117,10 @@ The violations each defect caused:
 - **A measured finding, not a violation.** The host can report rest while a debounced receipt is
   still unsettled (482 times in 1,000 histories). A cohort's receipts settle one continuation after
   the request they became retires. The documented contract, that input is never mistaken for rest,
-  holds. Whether rest should also wait for receipts is a product question, recorded here and not
-  decided.
+  holds. Whether rest should also wait for receipts is AUTOMATION-1780 (filed from this finding:
+  a consumer that waits for rest and then reads results can miss the last receipt, the
+  AUTOMATION-1768 shape). Until it decides, the count stays in the census, pinned as a function of
+  the seed, so the decided contract can become a theorem.
 
 ## Rejected
 
