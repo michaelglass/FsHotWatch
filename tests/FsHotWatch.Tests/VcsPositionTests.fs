@@ -36,24 +36,46 @@ let private hex (bytes: byte[]) =
 let private checkoutBytes (op: byte[]) =
     Array.concat [ lengthField 2 op; lengthField 3 "a1705"B ]
 
-/// An operation: its view id (field 1) and metadata (field 3), whose field 3 is the
-/// description and field 7 `is_snapshot`. The description is long enough that its
+/// When every synthetic operation started: metadata field 1 (`start_time`), whose field 1 is
+/// milliseconds since the epoch.
+let private startedAt = 1700000000000L
+
+/// An operation: its view id (field 1) and metadata (field 3), whose field 1 is its start
+/// time, field 3 the description and field 7 `is_snapshot`. The description is long enough that its
 /// length takes two varint bytes, as a real one with `args` tags does.
 let private operationBytes (description: string) (isSnapshot: bool) =
     let metadata =
         Array.concat
-            [ lengthField 1 (Array.concat [ varintField 1 1700000000000UL; varintField 2 60UL ])
+            [ lengthField 1 (Array.concat [ varintField 1 (uint64 startedAt); varintField 2 60UL ])
               lengthField 3 (Text.Encoding.UTF8.GetBytes(description + String(' ', 150)))
               (if isSnapshot then varintField 7 1UL else [||]) ]
 
     Array.concat [ lengthField 1 (opId 9uy); lengthField 3 metadata ]
 
+/// `.jj/working_copy/tree_state`: a file state entry (field 2: path 1, state 2, whose field 1
+/// is the mtime in milliseconds and field 2 the size) per file, then the tree id (field 5).
+let private treeStateBytes (mtimes: int64 list) =
+    let entry (index: int) (mtime: int64) =
+        lengthField
+            2
+            (Array.concat
+                [ lengthField 1 (Text.Encoding.UTF8.GetBytes $"src/F%d{index}.fs")
+                  lengthField 2 (Array.concat [ varintField 1 (uint64 mtime); varintField 2 12UL ]) ])
+
+    Array.concat (List.mapi entry mtimes @ [ lengthField 5 (Array.create 20 7uy) ])
+
+/// Record `mtimes` as the files jj last saw in the working copy at `root`.
+let private writeTreeState (root: string) (mtimes: int64 list) =
+    File.WriteAllBytes(Path.Combine(root, ".jj", "working_copy", "tree_state"), treeStateBytes mtimes)
+
 /// A jj default workspace at `root`: `.jj/repo` a directory holding the op store.
+/// Its tree state records a file written after every synthetic operation started.
 let private jjWorkspace (root: string) =
     Directory.CreateDirectory(Path.Combine(root, ".jj", "repo", "op_store", "operations"))
     |> ignore
 
     Directory.CreateDirectory(Path.Combine(root, ".jj", "working_copy")) |> ignore
+    writeTreeState root [ startedAt + 5L ]
 
 let private writeOperation (root: string) (op: byte[]) (bytes: byte[]) =
     File.WriteAllBytes(Path.Combine(root, ".jj", "repo", "op_store", "operations", hex op), bytes)
@@ -90,7 +112,7 @@ let ``jj: reads the operation that last updated this workspace's working copy`` 
         writeOperation root (opId 1uy) (operationBytes "rebase" false)
         checkOut root (opId 1uy)
 
-        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 1uy), JjOperationKind.Rewrite) @>)
+        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 1uy), JjOperationKind.WroteFiles) @>)
 
 [<Fact>]
 let ``jj: a workspace whose working copy a rewriting operation moved is a VCS operation, a still one an edit`` () =
@@ -123,6 +145,63 @@ let ``jj: a working copy moved only by a snapshot is an edit, because jj wrote n
         test <@ classify before after = BatchOrigin.Edit after @>)
 
 [<Fact>]
+let ``jj: an operation that moved the working copy but wrote no file is an edit`` () =
+    withTempDir "vcs-jj-no-write" (fun root ->
+        jjWorkspace root
+        writeOperation root (opId 1uy) (operationBytes "rebase commit" false)
+        writeOperation root (opId 2uy) (operationBytes "describe commit" false)
+        checkOut root (opId 1uy)
+        let before = positionOf root
+
+        // Every file jj recorded was written before the operation started: `jj describe`
+        // after a snapshot of the agent's own saves.
+        writeTreeState root [ startedAt - 1000L; startedAt - 1L ]
+        checkOut root (opId 2uy)
+        let after = positionOf root
+
+        test <@ after = Position.JjWorkingCopy(hex (opId 2uy), JjOperationKind.WroteNoFile) @>
+        test <@ classify before after = BatchOrigin.Edit after @>)
+
+[<Fact>]
+let ``jj: a file recorded at the operation's start was written by it, and an empty tree state wrote nothing`` () =
+    withTempDir "vcs-jj-boundary" (fun root ->
+        jjWorkspace root
+        writeOperation root (opId 1uy) (operationBytes "edit commit" false)
+        checkOut root (opId 1uy)
+
+        writeTreeState root [ startedAt - 1L; startedAt; startedAt - 2L ]
+        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 1uy), JjOperationKind.WroteFiles) @>
+
+        writeTreeState root []
+        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 1uy), JjOperationKind.WroteNoFile) @>)
+
+[<Fact>]
+let ``jj: a tree state that cannot be read is an error, never a position, so the batch checks`` () =
+    withTempDir "vcs-jj-tree-state" (fun root ->
+        jjWorkspace root
+        writeOperation root (opId 1uy) (operationBytes "rebase commit" false)
+        writeOperation root (opId 2uy) (operationBytes "snapshot working copy" true)
+        checkOut root (opId 1uy)
+        let treeState = Path.Combine(root, ".jj", "working_copy", "tree_state")
+
+        File.Delete treeState
+        test <@ (errorOf root).Contains "tree_state" @>
+
+        // Cut short at the top level, in an entry, and in an entry's file state.
+        File.WriteAllBytes(treeState, [| 0x12uy; 0x40uy |])
+        test <@ (errorOf root).Contains "tree_state" @>
+
+        File.WriteAllBytes(treeState, lengthField 2 [| 0x0auy; 0x05uy |])
+        test <@ (errorOf root).Contains "tree_state" @>
+
+        File.WriteAllBytes(treeState, lengthField 2 (lengthField 2 [| 0x08uy; 0x80uy |]))
+        test <@ (errorOf root).Contains "tree_state" @>
+
+        // A snapshot wrote no file, and its position does not read the tree state at all.
+        checkOut root (opId 2uy)
+        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 2uy), JjOperationKind.Snapshot) @>)
+
+[<Fact>]
 let ``jj: a secondary workspace reads its own working copy and the shared op store`` () =
     withTempDir "vcs-jj-secondary" (fun dir ->
         let primary = Path.Combine(dir, "primary")
@@ -133,10 +212,11 @@ let ``jj: a secondary workspace reads its own working copy and the shared op sto
         |> ignore
 
         File.WriteAllText(Path.Combine(secondary, ".jj", "repo"), "../../primary/.jj/repo")
+        writeTreeState secondary [ startedAt + 5L ]
         writeOperation primary (opId 3uy) (operationBytes "edit commit" false)
         checkOut secondary (opId 3uy)
 
-        test <@ positionOf secondary = Position.JjWorkingCopy(hex (opId 3uy), JjOperationKind.Rewrite) @>)
+        test <@ positionOf secondary = Position.JjWorkingCopy(hex (opId 3uy), JjOperationKind.WroteFiles) @>)
 
 [<Fact>]
 let ``jj: unreadable records are errors, never a position`` () =
@@ -167,13 +247,13 @@ let ``jj: unreadable records are errors, never a position`` () =
         test <@ (errorOf root).Contains(hex (opId 4uy)) @>)
 
 [<Fact>]
-let ``jj: an operation with no metadata rewrote, as proto3 reads an absent is_snapshot`` () =
+let ``jj: an operation with no metadata is no snapshot and started at 0, as proto3 reads absent fields`` () =
     withTempDir "vcs-jj-bare-op" (fun root ->
         jjWorkspace root
         writeOperation root (opId 5uy) (lengthField 1 (opId 9uy))
         checkOut root (opId 5uy)
 
-        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 5uy), JjOperationKind.Rewrite) @>)
+        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 5uy), JjOperationKind.WroteFiles) @>)
 
 // ---- git -----------------------------------------------------------------------------
 
@@ -297,10 +377,15 @@ let ``a plain directory and an unresolvable checkout are untracked`` () =
 let ``describe names the position a log line reports`` () =
     let op = String('a', 128)
 
-    test <@ Position.describe (Position.JjWorkingCopy(op, JjOperationKind.Rewrite)) = "jj op aaaaaaaaaaaa" @>
+    test <@ Position.describe (Position.JjWorkingCopy(op, JjOperationKind.WroteFiles)) = "jj op aaaaaaaaaaaa" @>
 
     test
         <@ Position.describe (Position.JjWorkingCopy(op, JjOperationKind.Snapshot)) = "jj op aaaaaaaaaaaa (snapshot)" @>
+
+    test
+        <@
+            Position.describe (Position.JjWorkingCopy(op, JjOperationKind.WroteNoFile)) = "jj op aaaaaaaaaaaa (wrote no file)"
+        @>
 
     test <@ Position.describe (Position.GitDetached(sha 'b')) = "git HEAD bbbbbbbbbbbb (detached)" @>
 
@@ -321,7 +406,11 @@ let ``jj: a malformed operation or metadata is an error naming the operation fil
         test <@ (errorOf root).Contains(hex (opId 6uy)) @>
 
         writeOperation root (opId 6uy) (lengthField 3 [| 0x0auy; 0x05uy |])
-        test <@ (errorOf root).Contains "metadata" @>)
+        test <@ (errorOf root).Contains "metadata" @>
+
+        // A start time cut short.
+        writeOperation root (opId 6uy) (lengthField 3 (lengthField 1 [| 0x08uy; 0x80uy |]))
+        test <@ (errorOf root).Contains "start time" @>)
 
 [<Fact>]
 let ``a read after the layout changed reports what it found`` () =
@@ -380,7 +469,7 @@ let ``jj: fields of other types around the operation id are skipped`` () =
             Array.concat [ varintField 4 300UL; checkoutBytes (opId 7uy) ]
         )
 
-        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 7uy), JjOperationKind.Rewrite) @>)
+        test <@ positionOf root = Position.JjWorkingCopy(hex (opId 7uy), JjOperationKind.WroteFiles) @>)
 
 [<Fact>]
 let ``jj: a checkout that is a directory is an error, not a position`` () =
@@ -398,17 +487,19 @@ let ``describe keeps an id shorter than its abbreviation whole`` () =
 
 // ---- real jj and git, colocated --------------------------------------------------------
 
-/// A colocated jj+git repository driven by the real tools: the jj detector reads it, a jj
-/// operation is recognised, and an edit (even one jj has snapshotted) is not misread.
-/// Also pins two known limits: a git operation is invisible to the jj detector until the
-/// next jj command, and a jj operation that rewrites no file still moves the position.
-[<Fact(Timeout = 9 * RealCommandMs)>]
-let ``real colocated jj and git: the jj detector reads the checkout and tells an operation from an edit`` () =
+/// A colocated jj+git repository driven by the real tools. Only an operation that wrote
+/// files into the working copy is a VCS operation: one that moved it without writing a
+/// file (`jj commit`, `jj describe`, `jj new` on `@`, jj importing a git commit) leaves the
+/// next save an edit. Also pins the known limit on the git side: a git command is
+/// invisible to the jj detector until the next jj command, so its batch checks as an edit.
+[<Fact(Timeout = 12 * RealCommandMs)>]
+let ``real colocated jj and git: only an operation that wrote files is a VCS operation`` () =
     FsHotWatch.Tests.RealTools.requireTools [ "jj"; "git" ]
     let run = FsHotWatch.Tests.RealTools.run
 
     withTempDir "vcs-colocated" (fun parent ->
         let dir = Path.Combine(parent, "repo")
+        let file = Path.Combine(dir, "a.txt")
         run parent "jj" [ "git"; "init"; "--colocate"; dir ]
         let jj args = run dir "jj" ([ "-R"; dir ] @ args)
 
@@ -427,46 +518,54 @@ let ``real colocated jj and git: the jj detector reads the checkout and tells an
         let gitHead () =
             File.ReadAllText(Path.Combine(dir, ".git", "HEAD")).Trim()
 
-        let started = positionOf dir
-
-        test
-            <@
-                match started with
-                | Position.JjWorkingCopy(_, JjOperationKind.Rewrite) -> true
-                | _ -> false
-            @>
+        let isEdit origin = not (isVcsOperation origin)
 
         // An edit no jj command has seen: the position stands still.
-        File.WriteAllText(Path.Combine(dir, "a.txt"), "one\n")
+        let started = positionOf dir
+        File.WriteAllText(file, "one\n")
         let edited = positionOf dir
-        test <@ classify started edited = BatchOrigin.Edit edited @>
+        test <@ isEdit (classify started edited) @>
 
-        // `jj commit`: a jj operation, recognised. It moves git HEAD too.
+        // `jj commit` moves the working copy (and git HEAD) but writes no file.
         let headBefore = gitHead ()
-        jj [ "commit"; "-m"; "x" ]
+        jj [ "commit"; "-m"; "base" ]
         let committed = positionOf dir
-        test <@ isVcsOperation (classify edited committed) @>
+        let baseCommit = gitHead ()
         test <@ gitHead () <> headBefore @>
+        test <@ isEdit (classify edited committed) @>
 
-        // An edit jj snapshotted: the op moved, but it only recorded what was on disk.
-        File.AppendAllText(Path.Combine(dir, "a.txt"), "two\n")
-        jj [ "status" ]
-        let snapshotted = positionOf dir
-        test <@ classify committed snapshotted = BatchOrigin.Edit snapshotted @>
+        // A save, then `jj describe`, which snapshots the save and writes no file: the
+        // save after it is an edit and checks at once.
+        File.AppendAllText(file, "two\n")
+        jj [ "describe"; "-m"; "described" ]
+        let described = positionOf dir
+        File.AppendAllText(file, "three\n")
+        test <@ isEdit (classify committed described) @>
 
-        // Known limit: a git commit moves git HEAD and nothing the jj detector reads.
+        // `jj new` on `@`: a new empty commit, the same files.
+        jj [ "new" ]
+        let renewed = positionOf dir
+        test <@ isEdit (classify described renewed) @>
+
+        // Known limit: a git commit moves git HEAD and nothing the jj detector reads...
+        File.AppendAllText(file, "four\n")
         let headBeforeGit = gitHead ()
-        git [ "commit"; "-q"; "-am"; "y" ]
+        git [ "commit"; "-q"; "-am"; "by git" ]
         let afterGit = positionOf dir
         test <@ gitHead () <> headBeforeGit @>
-        test <@ classify snapshotted afterGit = BatchOrigin.Edit afterGit @>
+        test <@ isEdit (classify renewed afterGit) @>
 
-        // The next jj command imports it as an operation that rewrites no file, and the
-        // position moves: the next save is classified as a VCS operation.
+        // ...and the jj command that imports it writes no file, so a save stays an edit.
         jj [ "status" ]
         let imported = positionOf dir
-        test <@ isVcsOperation (classify afterGit imported) @>
+        test <@ isEdit (classify afterGit imported) @>
 
-        // `jj new`: a jj operation, recognised.
-        jj [ "new" ]
-        test <@ isVcsOperation (classify imported (positionOf dir)) @>)
+        // `jj new` on the base commit: jj rewrites a.txt to the base's bytes. A VCS operation.
+        jj [ "new"; baseCommit ]
+        let rebased = positionOf dir
+        test <@ File.ReadAllText file = "one\n" @>
+        test <@ isVcsOperation (classify imported rebased) @>
+
+        // Fail safe: a tree state that cannot be parsed is no position, so a batch checks.
+        File.WriteAllBytes(Path.Combine(dir, ".jj", "working_copy", "tree_state"), [| 0x12uy; 0x40uy |])
+        test <@ (errorOf dir).Contains "tree_state" @>)

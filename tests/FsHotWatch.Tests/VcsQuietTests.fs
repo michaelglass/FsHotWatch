@@ -99,9 +99,9 @@ let ``a second operation while waiting joins what is held and moves the reported
 
 [<Fact>]
 let ``a jj snapshot while waiting is an edit that moves the baseline, not the reported operation`` () =
-    let probe, position = movable (Ok(jjAt 'a' JjOperationKind.Rewrite))
+    let probe, position = movable (Ok(jjAt 'a' JjOperationKind.WroteFiles))
     let gate = start probe
-    position.Value <- Ok(jjAt 'b' JjOperationKind.Rewrite)
+    position.Value <- Ok(jjAt 'b' JjOperationKind.WroteFiles)
     let gate, _ = admit gate [ edit "Rebased" ]
     position.Value <- Ok(jjAt 'c' JjOperationKind.Snapshot)
 
@@ -110,8 +110,8 @@ let ``a jj snapshot while waiting is an edit that moves the baseline, not the re
 
     let reported =
         Notice.Waiting(
-            Position.describe (jjAt 'a' JjOperationKind.Rewrite),
-            Position.describe (jjAt 'b' JjOperationKind.Rewrite),
+            Position.describe (jjAt 'a' JjOperationKind.WroteFiles),
+            Position.describe (jjAt 'b' JjOperationKind.WroteFiles),
             1
         )
 
@@ -338,20 +338,20 @@ let ``known limit: an operation slower than the debounce window has its first pa
     test <@ rest = Admission.Hold @>
     test <@ Notice.ofGate gate = Notice.Waiting(Position.describe (at 'a'), Position.describe (at 'b'), 1) @>
 
-/// Pins today's behaviour, not a wish: an operation that rewrites no file (`jj commit`,
-/// `jj describe`, jj importing a git commit) makes no batch, but it moves the position, so
-/// the next save is held as if the operation had made it.
+/// A save is never swallowed by an operation that wrote no file (`jj commit`, `jj describe`,
+/// `jj new` on `@`, jj importing a git commit): it makes no batch of its own, and the save
+/// after it checks at once and anchors the gate at the moved position.
 [<Fact>]
-let ``known limit: the first save after an operation that rewrote no file is held`` () =
-    let probe, position = movable (Ok(jjAt 'a' JjOperationKind.Rewrite))
+let ``the first save after an operation that wrote no file checks at once`` () =
+    let probe, position = movable (Ok(jjAt 'a' JjOperationKind.WroteFiles))
     let gate = start probe
 
-    // `jj describe`: the position moves, and no file changes, so no batch comes.
-    position.Value <- Ok(jjAt 'b' JjOperationKind.Rewrite)
-
+    position.Value <- Ok(jjAt 'b' JjOperationKind.WroteNoFile)
     let gate, save = admit gate [ edit "Saved" ]
-    test <@ save = Admission.Hold @>
+    test <@ save = Admission.Check [ edit "Saved" ] @>
+    test <@ not (isWaiting gate) @>
 
-    // Held once: the save after it is compared with the moved position, and checks.
-    let _, next = admit gate [ edit "SavedAgain" ]
-    test <@ next = Admission.Check [ edit "SavedAgain" ] @>
+    // Anchored at the moved position: an operation that writes files after it is held.
+    position.Value <- Ok(jjAt 'c' JjOperationKind.WroteFiles)
+    let _, rebase = admit gate [ edit "Rebased" ]
+    test <@ rebase = Admission.Hold @>

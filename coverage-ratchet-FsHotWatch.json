@@ -2621,6 +2621,34 @@
         "reason": "new file (AUTOMATION-1744). Not yet measured on Linux CI: set equal to the macOS measurement, as for TestRows.fs; the IO-failure tests use Unix file modes, which Linux honours. Re-baseline from CI (`mise run loosen-from-ci`) if the Linux report differs.",
         "platform": "linux"
       }
+    ],
+    "VcsPosition.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "platform": "macos",
+        "reason": "new file (AUTOMATION-1705: which VCS position a workspace is at, read from files: the jj checkout operation and whether it wrote files, git HEAD and its ref). Explicit so a report that drops it fails coverage-check. Measured 2026-11-17 on macOS by VcsPositionTests: line 100%, branch 100%. Linux provisional, equal to macOS."
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "platform": "linux",
+        "reason": "new file (AUTOMATION-1705: which VCS position a workspace is at, read from files: the jj checkout operation and whether it wrote files, git HEAD and its ref). Explicit so a report that drops it fails coverage-check. Measured 2026-11-17 on macOS by VcsPositionTests: line 100%, branch 100%. Linux provisional, equal to macOS."
+      }
+    ],
+    "VcsQuiet.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "platform": "macos",
+        "reason": "new file (AUTOMATION-1705: the gate that holds what a VCS operation rewrote until a client asks, under the AfterVcsOperation setting). Explicit so a report that drops it fails coverage-check. Measured 2026-11-17 on macOS by VcsQuietTests and VcsQuietDaemonTests: line 100%, branch 100%. Linux provisional, equal to macOS."
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "platform": "linux",
+        "reason": "new file (AUTOMATION-1705: the gate that holds what a VCS operation rewrote until a client asks, under the AfterVcsOperation setting). Explicit so a report that drops it fails coverage-check. Measured 2026-11-17 on macOS by VcsQuietTests and VcsQuietDaemonTests: line 100%, branch 100%. Linux provisional, equal to macOS."
+      }
     ]
   },
   "countFloors": {

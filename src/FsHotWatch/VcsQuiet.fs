@@ -18,9 +18,8 @@
 ///   An operation slower than the debounce window can have its first part decided while
 ///   the position has not moved yet: that part checks as an edit, and only what follows
 ///   the move is held.
-/// - An operation that rewrites no file (`jj commit`, `jj describe`, jj importing a git
-///   commit) makes no batch but moves the position, so the next save is held once, as if
-///   the operation had made it.
+/// - A jj operation that only deleted files is read as one that wrote none, so its batch
+///   checks as an edit.
 /// - In a colocated jj+git checkout the jj position is read, and a git command moves it
 ///   only when the next jj command imports it: a `git checkout` checks as an edit.
 module FsHotWatch.VcsQuiet

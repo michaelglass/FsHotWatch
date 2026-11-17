@@ -7,8 +7,14 @@
 /// - jj: the operation that last updated THIS workspace's working copy, from
 ///   `.jj/working_copy/checkout`. Not the repository's op head: every workspace of a
 ///   repository shares that, so another agent's `jj rebase` in its own workspace would
-///   move it. An operation that only snapshotted the working copy recorded edits already
-///   on disk and wrote no file, so moving to one is an edit.
+///   move it. Moving to it is a VCS operation only when it WROTE files into the working
+///   copy: an operation that only snapshotted recorded edits already on disk, and one that
+///   moved the working copy without writing a file (`jj describe`, `jj commit`, `jj new`
+///   on `@`, importing a git commit) leaves the next save an edit, never a held one.
+///   Whether it wrote is read from `.jj/working_copy/tree_state`, which records each file
+///   as jj last saw it: a file recorded with an mtime at or after the operation's start
+///   was written by it. The tree id there will not do: every jj command first snapshots
+///   the agent's own saves into it, so it moves under `jj describe` too.
 /// - git: `HEAD`, and the commit the branch it names points at (loose or packed).
 module FsHotWatch.VcsPosition
 
@@ -21,8 +27,13 @@ open FsHotWatch.RepositoryIdentity
 type JjOperationKind =
     /// `snapshot working copy`: jj recorded edits already on disk. It wrote no file.
     | Snapshot
-    /// Anything else (rebase, new, edit, undo, restore, ...): it may have rewritten files.
-    | Rewrite
+    /// It moved the working copy without writing a file: `jj describe`, `jj commit`,
+    /// `jj new` on `@`, importing a git commit. An operation that only deleted files is
+    /// read as one too, so its batch checks.
+    | WroteNoFile
+    /// It wrote files into the working copy: a rebase, `jj new` or `jj edit` elsewhere,
+    /// undo, restore.
+    | WroteFiles
 
 /// What a git branch points at.
 [<RequireQualifiedAccess>]
@@ -47,7 +58,8 @@ module Position =
     /// How a log line names a position.
     let describe (position: Position) : string =
         match position with
-        | Position.JjWorkingCopy(op, JjOperationKind.Rewrite) -> $"jj op {short op}"
+        | Position.JjWorkingCopy(op, JjOperationKind.WroteFiles) -> $"jj op {short op}"
+        | Position.JjWorkingCopy(op, JjOperationKind.WroteNoFile) -> $"jj op {short op} (wrote no file)"
         | Position.JjWorkingCopy(op, JjOperationKind.Snapshot) -> $"jj op {short op} (snapshot)"
         | Position.GitDetached commit -> $"git HEAD {short commit} (detached)"
         | Position.GitBranch(name, GitRef.Points commit) -> $"git {name} at {short commit}"
@@ -67,8 +79,9 @@ let classify (before: Position) (after: Position) : BatchOrigin =
         BatchOrigin.Edit after
     else
         match after with
-        | Position.JjWorkingCopy(_, JjOperationKind.Snapshot) -> BatchOrigin.Edit after
-        | Position.JjWorkingCopy(_, JjOperationKind.Rewrite)
+        | Position.JjWorkingCopy(_, JjOperationKind.Snapshot)
+        | Position.JjWorkingCopy(_, JjOperationKind.WroteNoFile) -> BatchOrigin.Edit after
+        | Position.JjWorkingCopy(_, JjOperationKind.WroteFiles)
         | Position.GitDetached _
         | Position.GitBranch _ -> BatchOrigin.VcsOperation(before, after)
 
@@ -165,29 +178,70 @@ let private checkoutOperation (workingCopy: string) : Result<string, string> =
     let file = Path.Combine(workingCopy, "checkout")
 
     readBytes file
-    |> Result.bind (fun bytes -> fieldsOf bytes |> Result.mapError (fun reason -> $"{file}: {reason}"))
+    |> Result.bind (fieldsOf >> Result.mapError (fun reason -> $"{file}: {reason}"))
     |> Result.bind (fun fields ->
         match bytesField 2 fields with
         | Some op -> Ok(Convert.ToHexString(op).ToLowerInvariant())
         | None -> Error $"{file} holds no operation id")
 
+/// What an operation's own record says, before the working copy is read.
+[<RequireQualifiedAccess>]
+type private OperationRecord =
+    /// `snapshot working copy`.
+    | Snapshot
+    /// Any other operation, started this many milliseconds after the epoch.
+    | StartedAt of millis: int64
+
+/// A message nested in `fields` as field `number`; absent, it is empty, as proto3 reads it.
+let private nested (number: int) (fields: (int * Field) list) : Result<(int * Field) list, string> =
+    bytesField number fields |> Option.map fieldsOf |> Option.defaultValue (Ok [])
+
 /// An operation (jj's `Operation` message): field 3 is its metadata, whose field 7 is
-/// `is_snapshot`. Absent reads as false, as proto3 reads it.
-let private operationKind (operations: string) (op: string) : Result<JjOperationKind, string> =
+/// `is_snapshot` and field 1 its start time, a `Timestamp` whose field 1 is milliseconds
+/// since the epoch. Absent fields read as false and 0, as proto3 reads them.
+let private operationRecord (operations: string) (op: string) : Result<OperationRecord, string> =
     let file = Path.Combine(operations, op)
 
     readBytes file
-    |> Result.bind (fun bytes -> fieldsOf bytes |> Result.mapError (fun reason -> $"{file}: {reason}"))
-    |> Result.bind (fun fields ->
-        bytesField 3 fields
-        |> Option.map fieldsOf
-        |> Option.defaultValue (Ok [])
-        |> Result.mapError (fun reason -> $"{file} metadata: {reason}"))
-    |> Result.map (fun metadata ->
+    |> Result.bind (fieldsOf >> Result.mapError (fun reason -> $"{file}: {reason}"))
+    |> Result.bind (nested 3 >> Result.mapError (fun reason -> $"{file} metadata: {reason}"))
+    |> Result.bind (fun metadata ->
         if varintField 7 metadata |> Option.exists (fun flag -> flag <> 0UL) then
-            JjOperationKind.Snapshot
+            Ok OperationRecord.Snapshot
         else
-            JjOperationKind.Rewrite)
+            nested 1 metadata
+            |> Result.mapError (fun reason -> $"{file} start time: {reason}")
+            |> Result.map (varintField 1 >> Option.defaultValue 0UL >> int64 >> OperationRecord.StartedAt))
+
+/// Whether jj recorded any file of the working copy with an mtime at or after `startedAt`:
+/// one the operation wrote. `.jj/working_copy/tree_state` (jj's `TreeState`): field 2 is
+/// an entry per file, whose field 2 is its `FileState`, whose field 1 is the mtime in
+/// milliseconds. Every entry is read, so a malformed one anywhere is an error.
+let private wroteSince (workingCopy: string) (startedAt: int64) : Result<bool, string> =
+    let file = Path.Combine(workingCopy, "tree_state")
+
+    let mtimeOf (entry: byte[]) =
+        fieldsOf entry
+        |> Result.bind (nested 2)
+        |> Result.map (varintField 1 >> Option.defaultValue 0UL >> int64)
+
+    readBytes file
+    |> Result.bind (fun bytes ->
+        fieldsOf bytes
+        |> Result.bind (fun fields ->
+            fields
+            |> List.choose (fun (number, field) ->
+                match field with
+                | Field.Bytes entry when number = 2 -> Some entry
+                | Field.Bytes _
+                | Field.Varint _ -> None)
+            |> List.fold
+                (fun wrote entry ->
+                    wrote
+                    |> Result.bind (fun already ->
+                        mtimeOf entry |> Result.map (fun mtime -> already || mtime >= startedAt)))
+                (Ok false))
+        |> Result.mapError (fun reason -> $"{file}: {reason}"))
 
 let private readJj (root: string) () : Result<Position, string> =
     resolveWorktree root
@@ -198,7 +252,17 @@ let private readJj (root: string) () : Result<Position, string> =
 
         checkoutOperation workingCopy
         |> Result.bind (fun op ->
-            operationKind operations op
+            operationRecord operations op
+            |> Result.bind (fun record ->
+                match record with
+                | OperationRecord.Snapshot -> Ok JjOperationKind.Snapshot
+                | OperationRecord.StartedAt startedAt ->
+                    wroteSince workingCopy startedAt
+                    |> Result.map (fun wrote ->
+                        if wrote then
+                            JjOperationKind.WroteFiles
+                        else
+                            JjOperationKind.WroteNoFile))
             |> Result.map (fun kind -> Position.JjWorkingCopy(op, kind))))
 
 // ---- git -----------------------------------------------------------------------------

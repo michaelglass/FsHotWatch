@@ -29,18 +29,25 @@
   each batch is compared with the position the previous one left. The next `Scan` request (`fshw check`) checks
   everything held, before the wait it grades after returns, so the first check answers for the tree the operation
   left; a check that arrives while the operation's batch is still debouncing gets one request carrying both, whose
-  changes are admitted before the client wakes the gate (`VcsQuiet.decide`). A move to a jj `snapshot working copy`
-  operation is an edit: it recorded edits already on disk. A position that cannot be read checks the batch.
+  changes are admitted before the client wakes the gate (`VcsQuiet.decide`), the ordering fix for `waitForClient`.
+  A jj move is an operation only when the operation WROTE files into the working copy, so a save is never held
+  for an operation that did not make it: a move to `snapshot working copy` recorded edits already on disk, and one
+  that wrote no file (`jj describe`, `jj commit`, `jj new` on `@`, importing a git commit) leaves the next save an
+  edit that anchors the gate where the operation left it. Whether it wrote is read from
+  `.jj/working_copy/tree_state`: a file recorded with an mtime at or after the operation's start (its metadata's
+  `start_time`) was written by it. The tree id there was rejected: every jj command first snapshots the agent's own
+  saves into it, so it moves under `jj describe` too. Field numbers are pinned by a test against a real jj 0.47.1
+  repository. A position that cannot be read, a tree state that does not parse included, checks the batch.
   `GetDiagnostics` carries the gate as `vcs` (`{"state":"checking"}`, or `"waiting"` with `before`, `after` and
   `held`), and so does each session of a repository host's `ListSessions`, so `status` and `status --repository` can
   say a waiting daemon is not a hung one. Known limits, each pinned by a test: an operation slower than the debounce
-  window can have its first part checked as an edit, since a VCS writes its position after the files; an operation
-  that rewrites no file (`jj commit`, `jj describe`, jj importing a git commit) moves the position without a batch,
-  so the next save is held once; in a colocated jj+git checkout the jj position is read, and a git command moves it
-  only when the next jj command imports it, so a `git checkout` checks as an edit. In a repository that checks
-  unasked, a check that arrives while a batch is still debouncing was already answered with that batch (the batch is
-  owned work the check waits for), and a test now pins it; the `Scan` request's wake only spares that check the rest
-  of the debounce window. `VcsPosition` (the detectors) and `VcsQuiet` (the gate, `AfterVcsOperation` and `Notice`)
+  window can have its first part checked as an edit, since a VCS writes its position after the files; a jj
+  operation that only deleted files reads as one that wrote none, so its batch checks; in a colocated jj+git checkout
+  the jj position is read, and a git command moves it only when the next jj command imports it, so a `git checkout`
+  checks as an edit. Each limit fails toward checking, never toward holding. In a repository that checks unasked, a
+  check that arrives while a batch is still debouncing was already answered with that batch (the batch is owned work
+  the check waits for), and a test now pins it; the `Scan` request's wake only spares that check the rest of the
+  debounce window. `VcsPosition` (the detectors) and `VcsQuiet` (the gate, `AfterVcsOperation` and `Notice`)
   are new. BREAKING: `DaemonOptions` gains `AfterVcsOperation` (default `CheckUnasked`) and `VcsProbe` (default
   `VcsPosition.probeFor`), the seam a test moves the position through, and `DaemonRpcConfig` gains `GetVcs`.
 

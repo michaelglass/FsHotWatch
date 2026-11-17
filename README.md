@@ -41,7 +41,8 @@ names), a running daemon checks and tests nothing it rewrote on its own: it hold
 batch until the next `fshw check`, which checks it before it answers. `fshw status`
 (and `fshw status --repository`) meanwhile says `vcs: tree changed by a VCS operation
 (…); waiting for a client`, naming the operation. A save after the operation still
-checks at once, and a jj snapshot of your own edits is not an operation. The cost: a
+checks at once: a jj snapshot of your own edits is not an operation, and
+neither is a jj command that writes no file (`jj describe`, `jj commit`). The cost: a
 check that would have found the run already made pays for it instead.
 
 ## Quick start
