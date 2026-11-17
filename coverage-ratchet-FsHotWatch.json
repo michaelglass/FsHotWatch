@@ -680,8 +680,8 @@
       },
       {
         "line": 100,
-        "branch": 100,
-        "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value rounded down. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-17 on main a0658598): line 134/134, branch 34/34.",
+        "branch": 90,
+        "reason": "Branch floor 90, equal to the Linux entry above (90), for the same reason: the 5 await arms the Linux entry lists are an SDK difference, not a platform one. SDK 10.0.400 instrumented none of them on macOS (34/34 branches in every macOS full-suite run on it, through 2026-11-17); SDK 10.0.404 (AUTOMATION-1708 moved the band there) instruments the same 50 arms as Linux CI. Measured on macOS with SDK 10.0.404 by the full confirm run of 2026-11-17: line 100%, branch 49/50, missing the task-already-finished arm of line 150 (`let! expiry = change`), one of the 5 arms no test can force. Which of those 5 are hit varies by pool timing: the coverage baseline written 2026-11-17 12:49 on the same tree measured 46/50, missing the task-already-finished arms of lines 104, 112, 150 and 188 (all from the Linux entry's list). 90 = 45/50, every reachable arm. Lowered from 100 only for these task-already-finished await arms; RETURN TO 100 when AUTOMATION-1601's seam in PluginWorkOwner, which makes this kind of already-finished await arm deterministic, works and is applied here too. Explicit so that a report which drops this file fails coverage-check instead of passing.",
         "platform": "macos"
       }
     ],
@@ -1332,8 +1332,8 @@
       },
       {
         "line": 100,
-        "branch": 100,
-        "reason": "Explicit so that a report which drops this file fails coverage-check instead of passing (a file with no floor leaves no name to miss). Floor = the measured value rounded down. Measured on macOS by the unit suite (mise run coverage-check, 2026-10-17 on main a0658598): line 292/292, branch 64/64.",
+        "branch": 92,
+        "reason": "Branch floor 92, equal to the Linux entry above (92): the extra arms are an SDK difference, not a platform one. SDK 10.0.400 instrumented 64 branches here on macOS (64/64 in every macOS full-suite run on it, through 2026-11-17); SDK 10.0.404 (AUTOMATION-1708 moved the band there) instruments 72, the await arms on store changes that Linux CI already counts. Measured on macOS with SDK 10.0.404 by the full confirm run of 2026-11-17: line 100%, branch 70/72, missing the task-already-finished await arms at lines 314 (markDeadline `let! marked = store.ChangeAsync`) and 526 (the `for request in queued` loop body, to which the coverage tool attributes the arm of Close's `let! active, queued = store.ChangeAsync` at line 514), changes the pool writer publishes after the caller suspends; Linux CI run 44064378545 (SDK 10.0.404) measured 95%. Lowered from 100 only for these two task-already-finished await arms; RETURN TO 100 when AUTOMATION-1601's seam in PluginWorkOwner, which makes this kind of already-finished await arm deterministic, works and is applied here too. Explicit so that a report which drops this file fails coverage-check instead of passing.",
         "platform": "macos"
       }
     ],
