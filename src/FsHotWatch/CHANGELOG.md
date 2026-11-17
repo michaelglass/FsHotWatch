@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.120 - 2026-11-17
+
 - fix: a change batch re-checks the files after a saved file whose new declarations another check recorded first
   (AUTOMATION-1591). The batch compared the file's new signature with the last one any check had recorded, so when a
   scan in flight (its upstream table built before the save) or a plugin's live demand had already checked the saved

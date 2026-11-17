@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.33 - 2026-11-17
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0-alpha.32 - 2026-11-16
 
 - feat: AUTOMATION-1636 action { Need.* } builder and oracles, analyzer-action pilot in shadow

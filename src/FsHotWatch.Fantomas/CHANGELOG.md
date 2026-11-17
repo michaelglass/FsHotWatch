@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.39 - 2026-11-17
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0-alpha.38 - 2026-11-16
 
 - Build each gitignore matcher only when a query of its kind needs it

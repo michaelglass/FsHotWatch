@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.59 - 2026-11-17
+
 - fix!: an analyzer set with an assembly compiled against another FSharp.Compiler.Service band than the host runs
   is refused at load, before any of it loads, instead of crashing on every file it analyses (AUTOMATION-1706). The
   band is major.minor: FCS stamps its full release in its AssemblyVersion (package 43.12.402 is 43.12.402.0), and the
