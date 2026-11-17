@@ -2625,12 +2625,12 @@ let private processBatchAttempt
             let absSourceFiles = allSourceFiles |> List.map AbsFilePath.create
 
             // What each changed file declared before this batch: the cascade below reaches
-            // past a changed file only when its check declares something else.
-            let signaturesBefore =
+            // past a changed file only when its check declares something else. Read before
+            // any check, from a record of its earlier bytes only (`PriorDeclaration`).
+            let declaredBefore =
                 [ for file in absSourceFiles do
                       for project in ctx.Graph.GetProjectsForFile file do
-                          let projectFile = AbsProjectPath.value project
-                          (file, project), ctx.Pipeline.LastSignature(file, projectFile) |> Option.bind snd ]
+                          (file, project), ctx.Pipeline.PriorDeclaration(file, AbsProjectPath.value project) ]
 
             let tiers = ctx.Graph.GetParallelTiers()
             let mutable checkedFiles = Set.empty
@@ -2721,18 +2721,22 @@ let private processBatchAttempt
             let! changedResults = checkCohort changedSet None
 
             // A changed file whose declarations moved — or whose check did not finish, or
-            // that declares no signature of its own — reaches every later file of its
-            // projects and every project downstream. One whose declarations did not move
-            // reaches nothing: no later file can type-check differently against it. A
-            // batch that changed a project or the solution can move a dependent's options
-            // with no declaration moving, so there every changed file reaches as before.
+            // that declares no signature of its own, or whose earlier declarations no record
+            // names — reaches every later file of its projects and every project downstream.
+            // One whose declarations did not move reaches nothing: no later file can
+            // type-check differently against it. A batch that changed a project or the
+            // solution can move a dependent's options with no declaration moving, so there
+            // every changed file reaches as before.
             let structural = not projFilesChanged.IsEmpty || hasSolution
 
             let moved =
-                signaturesBefore
+                declaredBefore
                 |> List.filter (fun ((file, project), before) ->
-                    let after = ctx.Pipeline.SettledSignature(file, AbsProjectPath.value project)
-                    structural || before.IsNone || after.IsNone || before <> after)
+                    match before with
+                    | PriorDeclaration.Unknown -> true
+                    | PriorDeclaration.Declared signature ->
+                        let after = ctx.Pipeline.SettledSignature(file, AbsProjectPath.value project)
+                        structural || after <> Some signature)
                 |> List.map fst
 
             let movedFiles = moved |> List.map fst |> List.distinct

@@ -697,6 +697,28 @@ let internal apiUpstreamFingerprintsWith
     let table, whole = chain options
     table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, whole
 
+/// What a changed file declared before the change, as the files typed against it saw it:
+/// what a change batch compares the file's new signature with to decide whether the
+/// files after it, and the projects downstream, must be checked again.
+[<RequireQualifiedAccess>]
+type internal PriorDeclaration =
+    /// A check of the file's EARLIER bytes declared this signature.
+    | Declared of signature: string
+    /// Nothing says what the files after it were typed against. The file was never
+    /// recorded, or declares no signature of its own, or its record is already for the
+    /// bytes on disk now: another check (a scan, a plugin's demand) reached them first and
+    /// re-checked nothing after them against what they declare (AUTOMATION-1591).
+    | Unknown
+
+module internal PriorDeclaration =
+    /// Read `UpstreamFingerprints.LastSignature`'s answer for a file whose bytes on disk
+    /// now hash to `current`. Only a record of other bytes is evidence of what came before.
+    let ofRecord (current: string) (record: (string * string option) option) : PriorDeclaration =
+        match record with
+        | Some(content, Some signature) when content <> current -> PriorDeclaration.Declared signature
+        | Some _
+        | None -> PriorDeclaration.Unknown
+
 /// `upstreamFingerprints`, computed once per project per GENERATION and reused.
 ///
 /// Per lookup, the fingerprint stats every file in the project's closure: for a scan

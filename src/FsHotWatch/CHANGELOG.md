@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: a change batch re-checks the files after a saved file whose new declarations another check recorded first
+  (AUTOMATION-1591). The batch compared the file's new signature with the last one any check had recorded, so when a
+  scan in flight (its upstream table built before the save) or a plugin's live demand had already checked the saved
+  bytes, the two were equal and nothing after the file was re-checked: the later files' answers, typed against the old
+  declarations, stood. The batch now reads what the file declared before from a record of its EARLIER bytes only
+  (`CheckCache.PriorDeclaration`); a record of the bytes on disk now says nothing about what the later files were
+  typed against, so the batch re-checks them.
+
 - feat: a daily test-row log that outlives the outcome store's keys (AUTOMATION-1744). Each run's per-test rows
   are also written to a file of their own, `<store root>/test-rows/<yyyy-mm-dd>.<run>.<project>.jsonl.gz`: the run's
   recorded UTC day, its run id (or `sha-` and 12 hex of its hash when it is not letters and digits only), and 12 hex of

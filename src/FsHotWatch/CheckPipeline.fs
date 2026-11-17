@@ -1021,10 +1021,13 @@ type CheckPipeline
                     apiIndex[slot] <- struct (api, content)
                 | _ -> ()
 
-    /// The API signature last recorded for `file` in `projectFile`, with the content hash
-    /// it was recorded for: see `CheckCache.UpstreamFingerprints.LastSignature`.
-    member internal _.LastSignature(file: AbsFilePath, projectFile: string) =
-        upstreamFingerprints.LastSignature(AbsFilePath.value file, projectFile)
+    /// What `file` declared in `projectFile` before the bytes on disk now: see
+    /// `CheckCache.PriorDeclaration`.
+    member internal _.PriorDeclaration(file: AbsFilePath, projectFile: string) : PriorDeclaration =
+        let path = AbsFilePath.value file
+
+        upstreamFingerprints.LastSignature(path, projectFile)
+        |> PriorDeclaration.ofRecord (hashFile path)
 
     /// The API signature recorded for `file` in `projectFile` when that record is for the
     /// bytes on disk now; None when there is none, or the file declares no signature of its own.

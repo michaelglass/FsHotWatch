@@ -4512,6 +4512,167 @@ let ``a scan's answers read before a save's cohort, landing after it, are refuse
             SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0)
             |> ignore)
 
+// AUTOMATION-1591: a warm forced scan builds Probe's upstream table at its first file,
+// before a save changes Early.fs's declarations. The scan then checks Early.fs's new bytes,
+// recording their signature, and answers Late.fs from the table it built before the save:
+// the old, clean result. The save's batch must still re-check Late.fs against the new
+// declarations: the scan recorded them without re-checking anything after Early.fs.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a change batch cascades past a saved file whose new signature a scan recorded without its dependents`` () =
+    withTempDir "daemon-cascade-recorded" (fun root ->
+        let directory = Path.Combine(root, "src")
+        Directory.CreateDirectory directory |> ignore
+        let project = Path.Combine(directory, "Probe.fsproj")
+        let first = Path.Combine(directory, "First.fs")
+        let early = Path.Combine(directory, "Early.fs")
+        let late = Path.Combine(directory, "Late.fs")
+        File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+        File.WriteAllText(first, "module First\nlet seed = 1\n")
+        File.WriteAllText(early, "module Early\nlet value = 1\n")
+        File.WriteAllText(late, "module Late\nlet other = Early.value + 1\n")
+        let assets = FsHotWatch.DepsFreshness.assetsPath project
+        Directory.CreateDirectory(Path.GetDirectoryName assets) |> ignore
+        File.WriteAllText(assets, "{}")
+
+        let checker =
+            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(
+                projectCacheSize = 200,
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true
+            )
+
+        let options, _ =
+            scriptProjectOptions (checker, late, FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText late))
+            |> Async.RunSynchronously
+
+        let options =
+            { options with
+                ProjectFileName = project
+                SourceFiles = [| first; early; late |] }
+
+        let loaded =
+            { minimalLoadedProject project with
+                SourceFiles = [ first; early; late ] }
+
+        let loader = SequencedWorkspaceLoader([ [ loaded ]; [ loaded ]; [ loaded ] ])
+        loader.Resume(0)
+        loader.Resume(1)
+        loader.Resume(2)
+        let callback = ref None
+
+        let watcher: Daemon.WatcherFactory =
+            fun _ onChange _ _ _ ->
+                callback.Value <- Some onChange
+
+                { Mode = FsHotWatch.Watcher.WatcherMode.NativeEvents
+                  Disposables = [] }
+
+        let cache =
+            FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+                FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
+                    FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet,
+                    fun _ -> true
+                ),
+                None,
+                None
+            )
+
+        // One check at a time, so the scan reaches Early.fs only after First.fs's answer.
+        use daemon =
+            Daemon.createWithWorkspaceLoaderAndWatcher
+                checker
+                root
+                { watchingDaemonOptions with
+                    CheckCache = cache
+                    Hosting = DaemonHosting.hostedBy watcher (fun _ -> checker) (WorkScheduler.Scheduler 1) }
+                loader
+                (fun _ -> [ options ])
+                watcher
+
+        daemon.DiscoverAndRegisterProjects() |> Async.RunSynchronously
+        // The warm cache: every file checked, every signature recorded, against the old bytes.
+        daemon.ScanAll() |> Async.RunSynchronously
+
+        let checkedFiles =
+            System.Collections.Concurrent.ConcurrentQueue<string * FileCheckResult>()
+
+        let seals = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+        daemon.RegisterHandler
+            { Name = PluginName.create "cascade-recorder"
+              Init = ()
+              Update =
+                fun _ state event ->
+                    async {
+                        match event with
+                        | FileChecked result -> checkedFiles.Enqueue(AbsFilePath.value result.File, result)
+                        | BatchChecked batch -> seals.Enqueue batch
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked; SubscribeBatchChecked ]
+              CacheKey = None
+              PrepareCommit = None
+              Teardown = None }
+
+        let resultsFor (file: string) =
+            checkedFiles.ToArray()
+            |> Array.filter (fun (path, _) ->
+                CommandPreprocessor.realPathOf path = CommandPreprocessor.realPathOf file)
+            |> Array.map snd
+
+        let hasError (result: FileCheckResult) =
+            FileCheckResult.diagnostics result
+            |> Option.exists (
+                Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            )
+
+        use scanHeld = new Threading.ManualResetEventSlim(false)
+        use release = new Threading.ManualResetEventSlim(false)
+        let heldReads = ref 0
+
+        // Only the forced scan's first answer is held: its table for Probe is built by then.
+        daemon.HoldScanPublications(fun _ ->
+            if Threading.Interlocked.Increment(&heldReads.contents) = 1 then
+                scanHeld.Set()
+                Assert.True(release.Wait(HangWait), "the save must release the scan"))
+
+        try
+            let scan = Async.StartAsTask(daemon.ScanAll())
+            Assert.True(scanHeld.Wait(HangWait), "the forced scan must have answered First.fs")
+
+            // Early.value becomes a string: Late.fs's `Early.value + 1` no longer type-checks.
+            File.WriteAllText(early, "module Early\nlet value = \"one\"\n")
+            release.Set()
+            Assert.True(scan.Wait(HangWait), "the released scan must complete")
+
+            // The scan read Early.fs's new bytes, and answered Late.fs from before the save.
+            test <@ resultsFor early |> Array.exists (fun r -> r.Source.Contains "\"one\"") @>
+            test <@ resultsFor late |> Array.forall (not << hasError) @>
+
+            (callback.Value |> Option.get) (SourceChanged [ early ])
+
+            Assert.True(
+                SpinWait.SpinUntil(
+                    (fun () ->
+                        not daemon.Host.WorkSnapshot.IsBusy
+                        && seals.ToArray() |> Array.exists (fun s -> s.Trigger.IsInSessionBatch)),
+                    TimeSpan.FromSeconds 30.0
+                ),
+                "the save's batch must seal"
+            )
+
+            // The save's batch re-checked Late.fs against Early.fs's new declarations.
+            let lateResults = resultsFor late
+            test <@ hasError (Array.last lateResults) @>
+        finally
+            release.Set()
+
+            SpinWait.SpinUntil((fun () -> not daemon.Host.WorkSnapshot.IsBusy), TimeSpan.FromSeconds 15.0)
+            |> ignore)
+
 // Pins the invariant the scan supervisor must preserve: once ScanAll's receipt
 // settles, the scan state is observable as ScanComplete (not stale ScanIdle) and the
 // generation has advanced. The supervisor publishes the completed state before the

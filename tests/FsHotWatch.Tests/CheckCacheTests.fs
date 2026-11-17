@@ -1352,6 +1352,16 @@ let ``UpstreamFingerprints names an earlier file by the signature recorded for i
         File.WriteAllText(a, "module A // edited")
         test <@ fps.ForApi(b, opts, "h") <> bySignature @>)
 
+// AUTOMATION-1591: a change batch reads what a file declared before its change only from a
+// record of other bytes. A record of the bytes on disk now was made by a check that
+// re-checked nothing after them, so it says nothing about what those files were typed against.
+[<Fact>]
+let ``a file's prior declaration is read only from a record of its earlier bytes`` () =
+    test <@ PriorDeclaration.ofRecord "new" (Some("old", Some "api")) = PriorDeclaration.Declared "api" @>
+    test <@ PriorDeclaration.ofRecord "new" (Some("new", Some "api")) = PriorDeclaration.Unknown @>
+    test <@ PriorDeclaration.ofRecord "new" (Some("old", None)) = PriorDeclaration.Unknown @>
+    test <@ PriorDeclaration.ofRecord "new" None = PriorDeclaration.Unknown @>
+
 // AUTOMATION-1520: a restart served entirely from check records logged "0 hits, 2744
 // misses — no entry", which reads as a full re-typecheck; FCS had started 0 checks.
 [<Fact>]
