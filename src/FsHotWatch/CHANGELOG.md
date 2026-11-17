@@ -18,6 +18,11 @@
   the runtime whose wait keeps its bound. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache
   key changes.
 
+- refactor: `DebouncedWork` takes its debounce timers (`Runtime.Delay`, in place of `Task.Delay`), the continuation
+  chain that admits cohorts in order (`Runtime.Scheduler`, in place of the default scheduler) and its bounded waits
+  from its store's `AsyncRuntime.Runtime` (AUTOMATION-1695). `Queue` loses its `delayTask` argument; tests set a
+  store's `Delay` instead. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache key changes.
+
 - test(rules): FSHW-ROOT-001 — a test touches disk only under a root it alone owns (AUTOMATION-1775).
   Three flakes in one week had one shape: a test touched a place another test, or the build, was changing at the
   same time (a repo-wide walk racing TestPrune.Trace.Tests' scratch, AUTOMATION-1671; a leftover daemon rebuilding

@@ -46,20 +46,22 @@ type private Expiry<'Request> =
 /// A zero delay flushes: it merges into any pending input and queues the cohort for
 /// admission at once, which makes it a barrier ordered after everything posted before it.
 ///
-/// `delayTask` and `awaitReceipt` are the two waits whose timing decides which arm of an
-/// await runs: a debounce timer, and the supervised request's receipt as a cohort's input
-/// retires. Tests pass an already-finished one to pin the arm a real one reaches only when
-/// the pool runs it first. In production they are `Task.Delay` and the receipt itself.
+/// Its debounce timers (`Runtime.Delay`), the continuation chain that admits cohorts in order
+/// (`Runtime.Scheduler`) and its bounded waits (`Runtime.Wait`) come from its store's runtime
+/// (AUTOMATION-1695), so the simulation decides when each timer fires and each admission runs.
+///
+/// `awaitReceipt` wraps the supervised request's receipt as a cohort's input retires. Tests pass
+/// an already-finished one to pin the arm a real one reaches only when the pool runs it first.
+/// In production it is the receipt itself.
 type Queue<'State, 'Request>
     (
         store: Store,
         name: string,
         worker: SupervisedWork.Queue<'State, 'Request>,
         merge: 'Request -> 'Request -> 'Request,
-        ?delayTask: TimeSpan -> Task,
         ?awaitReceipt: Task<unit> -> Task<unit>
     ) =
-    let delayTask = defaultArg delayTask (fun delay -> Task.Delay(delay))
+    let runtime = store.Runtime
     let awaitReceipt = defaultArg awaitReceipt id
 
     let handle =
@@ -132,7 +134,7 @@ type Queue<'State, 'Request>
                         (fun (_: Task) -> admitHead ()),
                         CancellationToken.None,
                         TaskContinuationOptions.None,
-                        TaskScheduler.Default
+                        runtime.Scheduler
                     )
                     .Unwrap())
 
@@ -141,7 +143,7 @@ type Queue<'State, 'Request>
             let! waited =
                 task {
                     try
-                        do! delayTask delay
+                        do! runtime.Delay delay
                         return None
                     with failure ->
                         return Some failure
@@ -226,8 +228,7 @@ type Queue<'State, 'Request>
                 return receipt.Task
             }
 
-        admission
-        |> SupervisedWork.waitWithin store.Runtime SupervisedWork.AdmissionBound
+        admission |> SupervisedWork.waitWithin runtime SupervisedWork.AdmissionBound
 
     /// Close input and the worker. Pending input settles with `ObjectDisposedException`.
     /// Cohorts already queued for admission keep their identity until the closed worker
@@ -248,4 +249,4 @@ type Queue<'State, 'Request>
                 worker.Close()
             }
 
-        closing |> SupervisedWork.waitWithin store.Runtime SupervisedWork.AdmissionBound
+        closing |> SupervisedWork.waitWithin runtime SupervisedWork.AdmissionBound

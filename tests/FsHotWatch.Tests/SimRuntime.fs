@@ -252,6 +252,17 @@ type internal Sim(seed: int, inlineShare: float) =
                 Locking.locked gate (fun () -> now <- max now limit)
                 false
 
+    // `Task.Delay` on the virtual clock: a zero delay is already complete, as there.
+    let delay (span: TimeSpan) : Task =
+        if span <= TimeSpan.Zero then
+            Task.CompletedTask
+        else
+            let elapsed =
+                TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+            schedule span (fun () -> elapsed.TrySetResult() |> ignore) |> ignore
+            elapsed.Task
+
     let cancel (source: CancellationTokenSource) : Task =
         let cancelled =
             TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
@@ -286,6 +297,7 @@ type internal Sim(seed: int, inlineShare: float) =
           Wait = wait
           Scheduler = scheduler
           Schedule = schedule
+          Delay = delay
           Cancel = cancel
           RunSynchronously = runSynchronously }
 
