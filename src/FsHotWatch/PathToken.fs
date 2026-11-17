@@ -26,7 +26,7 @@ let Token = "${repo}"
 /// what the shadow compares: it is a term of the portable request key, and the shadow's
 /// trust count counts only lines that carry the current one.
 [<Literal>]
-let Version = "fshw-root-token-v1"
+let Version = "fshw-root-token-v2"
 
 /// What may stand before a root: the start, an option's separator (`-r:`, `x=`, `a;b`, `a,b`),
 /// a quote, a space or tab, an opening bracket, a response-file `@` or a `|`.
