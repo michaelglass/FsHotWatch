@@ -70,7 +70,7 @@ earn one: run `check` again, or `confirm`.
 `fshw flaky-tests` returns the top tests by `transitions / (n-1)` over the last 20 runs. Score > 0 → suspect; rerun before debugging.
 
 **Is fshw getting more trustworthy? Which projects flake or run slow?**
-`fshw analytics` (`--json`, `--since <days>`) reads the outcome store and shadow ledgers with no daemon: input sets recorded both green and red, tests recorded both passed and red on one tree and tool (from the per-test rows filed beside each test record; timed out and cancelled are kept apart from failed), duration percentiles, reds later green on identical inputs, runs a lookup would have answered, and shadow agreement by day. It lists what the store does not record instead of showing a zero.
+`fshw analytics` (`--json`, `--since <days>`) reads the outcome store and shadow ledgers with no daemon: input sets recorded both green and red, tests recorded both passed and red on one tree and tool (from the per-test rows filed beside each test record and the daily test-row log, which outlives them and is kept 90 days by default, `testRowsLog` in `.fshw.json`; each finding names its source; timed out and cancelled are kept apart from failed), duration percentiles, reds later green on identical inputs, runs a lookup would have answered, and shadow agreement by day. It lists what the store does not record instead of showing a zero.
 
 **Cached output looks stale (e.g. coverage didn't re-run after a config edit).**
 `fshw rerun <plugin>` clears the cache key and re-fires. fshw also auto-warns `cached output may be stale → run fshw rerun <plugin>` when arg-file mtimes outpace the last run — heed it.

@@ -4732,6 +4732,7 @@ let private executeCommandRendered
                     setup.Since
                     scan
                     (FsHotWatch.OutcomeStore.readAllTestRows setup.StoreDir)
+                    (FsHotWatch.TestRowsLog.read setup.StoreDir)
                     (OutcomeAnalytics.readShadowLogs logs)
 
             if setup.Json then

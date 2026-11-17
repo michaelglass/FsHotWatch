@@ -102,29 +102,24 @@ type RunRows =
 let fileNameFor (recordFile: string) : string =
     Path.GetFileNameWithoutExtension(Path.GetFileName recordFile) + Suffix
 
-/// `index` as the bytes it is filed as.
-let encode (index: Index) : byte[] =
-    let header = JsonObject()
-    header["schema"] <- Schema
-    header["key"] <- index.Run.Key.Text
-    header["project"] <- index.Run.Project
-    header["runId"] <- index.Run.RunId
-    header["tree"] <- index.Run.Tree
-    header["tool"] <- index.Run.Tool
-    header["machine"] <- index.Run.Machine
-    header["recordedAt"] <- index.Run.RecordedAt.ToString("o", CultureInfo.InvariantCulture)
+/// Write `run`'s fields into `o`: the header of an index, and every line of the daily log.
+let private writeRun (o: JsonObject) (run: Run) =
+    o["key"] <- run.Key.Text
+    o["project"] <- run.Project
+    o["runId"] <- run.RunId
+    o["tree"] <- run.Tree
+    o["tool"] <- run.Tool
+    o["machine"] <- run.Machine
+    o["recordedAt"] <- run.RecordedAt.ToString("o", CultureInfo.InvariantCulture)
 
-    let line (row: Row) =
-        let o = JsonObject()
-        o["name"] <- row.Name
-        o["outcome"] <- Outcome.token row.Outcome
-        o["ms"] <- row.DurationMs
-        o.ToJsonString()
+/// Write `row`'s fields into `o`: a row line of an index, and every line of the daily log.
+let private writeRow (o: JsonObject) (row: Row) =
+    o["name"] <- row.Name
+    o["outcome"] <- Outcome.token row.Outcome
+    o["ms"] <- row.DurationMs
 
-    let text =
-        header.ToJsonString() :: (NonEmpty.toList index.Rows |> List.map line)
-        |> String.concat "\n"
-
+/// `text` as one gzip member.
+let private gzip (text: string) : byte[] =
     use buffer = new MemoryStream()
 
     do
@@ -133,6 +128,21 @@ let encode (index: Index) : byte[] =
         gzip.Write(bytes, 0, bytes.Length)
 
     buffer.ToArray()
+
+/// `index` as the bytes it is filed as.
+let encode (index: Index) : byte[] =
+    let header = JsonObject()
+    header["schema"] <- Schema
+    writeRun header index.Run
+
+    let line (row: Row) =
+        let o = JsonObject()
+        writeRow o row
+        o.ToJsonString()
+
+    header.ToJsonString() :: (NonEmpty.toList index.Rows |> List.map line)
+    |> String.concat "\n"
+    |> gzip
 
 let private property (o: JsonElement) (name: string) : JsonElement option =
     if o.ValueKind = JsonValueKind.Object then
@@ -167,18 +177,20 @@ let private required (o: JsonElement) (read: JsonElement -> 'T option) (name: st
     | Some value -> Ok value
     | None -> Error $"no {name}"
 
-let private parseRun (line: string) : Result<Run, string> =
-    use doc = JsonDocument.Parse line
-    let o = doc.RootElement
-    let field = required o text
-
-    field "schema"
-    |> Result.bind (fun schema ->
-        if schema = Schema then
+/// Whether `o` states `schema`.
+let private stating (schema: string) (o: JsonElement) : Result<unit, string> =
+    required o text "schema"
+    |> Result.bind (fun stated ->
+        if stated = schema then
             Ok()
         else
-            Error $"unknown schema {schema}")
-    |> Result.bind (fun () -> required o (text >> Option.bind ActionKey.KeyValue.tryParse) "key")
+            Error $"unknown schema {stated}")
+
+/// The run `o`'s fields name: an index's header, or any line of the daily log.
+let private runOf (o: JsonElement) : Result<Run, string> =
+    let field = required o text
+
+    required o (text >> Option.bind ActionKey.KeyValue.tryParse) "key"
     |> Result.bind (fun key ->
         field "project"
         |> Result.bind (fun project ->
@@ -200,10 +212,8 @@ let private parseRun (line: string) : Result<Run, string> =
                                   Machine = machine
                                   RecordedAt = recordedAt })))))))
 
-let private parseRow (line: string) : Result<Row, string> =
-    use doc = JsonDocument.Parse line
-    let o = doc.RootElement
-
+/// The row `o`'s fields name: a row line of an index, or any line of the daily log.
+let private rowOf (o: JsonElement) : Result<Row, string> =
     required o text "name"
     |> Result.bind (fun name ->
         required o (text >> Option.bind Outcome.tryParse) "outcome"
@@ -213,6 +223,25 @@ let private parseRow (line: string) : Result<Row, string> =
                 { Name = name
                   Outcome = outcome
                   DurationMs = ms })))
+
+/// `read` over `line` parsed as JSON, or why it is not JSON. The one place a line is parsed, for
+/// an index and the daily log alike.
+let private parsed (read: JsonElement -> Result<'T, string>) (line: string) : Result<'T, string> =
+    try
+        use doc = JsonDocument.Parse line
+        read doc.RootElement
+    with :? JsonException as ex ->
+        Error ex.Message
+
+let private parseRun: string -> Result<Run, string> =
+    parsed (fun o -> stating Schema o |> Result.bind (fun () -> runOf o))
+
+let private parseRow: string -> Result<Row, string> = parsed rowOf
+
+/// A reader of the text gzip `bytes` hold. Disposing it disposes the streams
+/// under it.
+let private gunzip (bytes: byte[]) : StreamReader =
+    new StreamReader(new GZipStream(new MemoryStream(bytes), CompressionMode.Decompress), Encoding.UTF8)
 
 /// Every result's value, in order, or the first error.
 let private allOk (results: Result<'T, string> list) : Result<'T list, string> =
@@ -227,9 +256,7 @@ let private allOk (results: Result<'T, string> list) : Result<'T list, string> =
 let decode (bytes: byte[]) : Result<Index, string> =
     try
         let text =
-            use input = new MemoryStream(bytes)
-            use gzip = new GZipStream(input, CompressionMode.Decompress)
-            use reader = new StreamReader(gzip, Encoding.UTF8)
+            use reader = gunzip bytes
             reader.ReadToEnd()
 
         match text.Split('\n', StringSplitOptions.RemoveEmptyEntries) |> List.ofArray with
@@ -244,6 +271,75 @@ let decode (bytes: byte[]) : Result<Index, string> =
                     match NonEmpty.ofList rows with
                     | Some rows -> Ok { Run = run; Rows = rows }
                     | None -> Error "no rows"))
-    with
-    | :? InvalidDataException as ex -> Error ex.Message
-    | :? JsonException as ex -> Error ex.Message
+    with :? InvalidDataException as ex ->
+        Error ex.Message
+
+
+// --- the daily log (AUTOMATION-1744): rows that outlive their record ---
+
+/// The daily log's line format. Its lines are the index's run and row fields on one line, so
+/// one encoder writes both (`writeRun`, `writeRow`).
+[<Literal>]
+let LogSchema = "fshw-test-rows-log-v1"
+
+/// What one log file holds.
+type LogFile =
+    {
+        /// Its runs (one, as filed), each with its rows in order.
+        Runs: Index list
+        /// Its lines that are not a log line.
+        UnreadableLines: int
+    }
+
+/// `index` as one run's file in the daily log: gzipped JSON lines, one per row, each carrying the
+/// run's fields beside the row's own. Every line is ended, so a file whose last line is not was
+/// cut short.
+let encodeLog (index: Index) : byte[] =
+    NonEmpty.toList index.Rows
+    |> List.map (fun row ->
+        let o = JsonObject()
+        o["schema"] <- LogSchema
+        writeRun o index.Run
+        writeRow o row
+        o.ToJsonString() + "\n")
+    |> String.concat ""
+    |> gzip
+
+let private parseLogLine: string -> Result<Run * Row, string> =
+    parsed (fun o ->
+        stating LogSchema o
+        |> Result.bind (fun () -> runOf o)
+        |> Result.bind (fun run -> rowOf o |> Result.map (fun row -> run, row)))
+
+/// The runs one log file's `bytes` hold, or why the file is unreadable as a whole: not gzip, cut
+/// short (its last line is not ended), or empty. A line that is not a log line is counted and the
+/// rest read.
+let decodeLog (bytes: byte[]) : Result<LogFile, string> =
+    let text =
+        try
+            use reader = gunzip bytes
+            Ok(reader.ReadToEnd())
+        with :? InvalidDataException as ex ->
+            Error ex.Message
+
+    text
+    |> Result.bind (fun text ->
+        if text.EndsWith "\n" then
+            let lines =
+                text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                |> Array.map parseLogLine
+                |> List.ofArray
+
+            Ok
+                { Runs =
+                    lines
+                    |> List.choose Result.toOption
+                    |> List.groupBy fst
+                    |> List.map (fun (run, rows) ->
+                        { Run = run
+                          Rows =
+                            { Head = snd (List.head rows)
+                              Tail = List.tail rows |> List.map snd } })
+                  UnreadableLines = lines |> List.filter Result.isError |> List.length }
+        else
+            Error "cut short: its last line is not ended")

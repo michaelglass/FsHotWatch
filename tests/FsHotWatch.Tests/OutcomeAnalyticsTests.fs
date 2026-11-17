@@ -72,9 +72,14 @@ let private withLog (lines: string list) (body: string -> 'a) =
 
 let private noRows: TestRowsScan = { Indexes = []; Unreadable = 0 }
 
+let private noLog: TestRowsLog.LogRead =
+    { Runs = []
+      UnreadableFiles = 0
+      UnreadableLines = 0 }
+
 let private analyzeFixture (since: DateTimeOffset option) =
     withLog shadowLines (fun path ->
-        analyze since { Records = fixture; Unreadable = 1 } noRows (readShadowLogs [ path ]))
+        analyze since { Records = fixture; Unreadable = 1 } noRows noLog (readShadowLogs [ path ]))
 
 [<Fact>]
 let ``a shadow line is read back by its fields, and anything else is not a line`` () =
@@ -207,6 +212,7 @@ let ``what the store does not record is reported as a gap, never as a zero`` () 
             { Records = noDurations
               Unreadable = 0 }
             noRows
+            noLog
             (readShadowLogs [])
 
     test <@ List.isEmpty r.Slow @>
@@ -231,7 +237,7 @@ let ``the human report names each section and its numbers`` () =
 [<Fact>]
 let ``an empty store renders as empty, not as a failure`` () =
     let text =
-        render 10 (analyze None { Records = []; Unreadable = 0 } noRows (readShadowLogs []))
+        render 10 (analyze None { Records = []; Unreadable = 0 } noRows noLog (readShadowLogs []))
         |> String.concat "\n"
 
     test <@ text.Contains "0 records" @>
@@ -311,6 +317,9 @@ let private runOf (project: string) (runId: string) (tree: string) (tool: string
              .Value }
     : TestRows.Index)
 
+let private indexOnly =
+    FsHotWatch.Core.NonEmpty.ofList [ RowSource.Index ] |> Option.get
+
 /// A.flaky failed, passed and timed out on one tree and tool; A.skippy was skipped once and
 /// passed once; A.split failed on one tree and passed on another, and passed under another
 /// tool; B.c was cancelled once and passed once.
@@ -331,7 +340,7 @@ let private rowRuns =
       runOf "B.Tests" "r8" "t2" "f1" (t0.AddHours 4.0) [ "B.c", TestRows.Outcome.Passed ] ]
 
 let private analyzeRows (since: DateTimeOffset option) =
-    analyze since { Records = fixture; Unreadable = 0 } { Indexes = rowRuns; Unreadable = 2 } (readShadowLogs [])
+    analyze since { Records = fixture; Unreadable = 0 } { Indexes = rowRuns; Unreadable = 2 } noLog (readShadowLogs [])
 
 [<Fact>]
 let ``flaky test: one test on one tree and tool recorded passed and red, with each outcome counted and both runs`` () =
@@ -346,7 +355,8 @@ let ``flaky test: one test on one tree and tool recorded passed and red, with ea
                                Outcomes = [ TestRows.Outcome.Passed, 1; TestRows.Outcome.Cancelled, 1 ]
                                RedRun = "r7"
                                GreenRun = "r8"
-                               LastSeen = t0.AddHours 4.0 }
+                               LastSeen = t0.AddHours 4.0
+                               Sources = indexOnly }
                              { Project = "A.Tests"
                                Test = "A.flaky"
                                Tree = "t1"
@@ -357,7 +367,8 @@ let ``flaky test: one test on one tree and tool recorded passed and red, with ea
                                    TestRows.Outcome.TimedOut, 1 ]
                                RedRun = "r3"
                                GreenRun = "r2"
-                               LastSeen = t0.AddHours 2.0 } ]
+                               LastSeen = t0.AddHours 2.0
+                               Sources = indexOnly } ]
         @>
 
     test <@ r.TestRowRuns = 8 && r.UnreadableTestRows = 2 @>
@@ -399,7 +410,100 @@ let ``flaky test: the human and JSON reports name each flaky test, its counts an
 
 [<Fact>]
 let ``flaky test: no rows is a gap and an empty section, never a zero rate`` () =
-    let r = analyze None { Records = []; Unreadable = 0 } noRows (readShadowLogs [])
+    let r =
+        analyze None { Records = []; Unreadable = 0 } noRows noLog (readShadowLogs [])
+
     test <@ List.isEmpty r.FlakyTests @>
     test <@ r.Gaps |> List.exists (fun g -> g.StartsWith "flaky tests:") @>
     test <@ (render 10 r |> String.concat "\n").Contains "no test recorded both outcomes" @>
+
+// --- AUTOMATION-1744: the daily test-row log, a second source of rows that outlives its records ---
+
+let private sourcesOf (f: FlakyTest) =
+    FsHotWatch.Core.NonEmpty.toList f.Sources
+
+let private analyzeSources (indexed: TestRows.Index list) (logged: TestRows.Index list) =
+    analyze
+        None
+        { Records = []; Unreadable = 0 }
+        { Indexes = indexed; Unreadable = 0 }
+        { Runs = logged
+          UnreadableFiles = 1
+          UnreadableLines = 2 }
+        (readShadowLogs [])
+
+let private red =
+    runOf "A.Tests" "r1" "t1" "f1" t0 [ "A.flaky", TestRows.Outcome.Failed ]
+
+let private green =
+    runOf "A.Tests" "r2" "t1" "f1" (t0.AddHours 1.0) [ "A.flaky", TestRows.Outcome.Passed ]
+
+[<Fact>]
+let ``flaky test: a run in both the index and the log counts once, and the finding names both sources`` () =
+    let r = analyzeSources [ red; green ] [ red; green ]
+    let flake = List.exactlyOne r.FlakyTests
+    test <@ flake.Outcomes = [ TestRows.Outcome.Passed, 1; TestRows.Outcome.Failed, 1 ] @>
+    test <@ sourcesOf flake = [ RowSource.Index; RowSource.DailyLog ] @>
+
+    test
+        <@
+            r.TestRowRuns = 2
+            && r.LogRuns = 2
+            && r.UnreadableLogFiles = 1
+            && r.UnreadableLogLines = 2
+        @>
+
+[<Fact>]
+let ``flaky test: a run of the same id in another project is another run`` () =
+    let other = runOf "B.Tests" "r1" "t1" "f1" t0 [ "A.flaky", TestRows.Outcome.Failed ]
+
+    let r = analyzeSources [ red ] [ other ]
+    test <@ r.TestRowRuns = 2 @>
+
+[<Fact>]
+let ``flaky test: a finding from the log alone names the log, and one from the index alone the index`` () =
+    test <@ (analyzeSources [] [ red; green ]).FlakyTests |> List.map sourcesOf = [ [ RowSource.DailyLog ] ] @>
+    test <@ (analyzeSources [ red; green ] []).FlakyTests |> List.map sourcesOf = [ [ RowSource.Index ] ] @>
+
+[<Fact>]
+let ``flaky test: --since leaves out logged runs older than it`` () =
+    let r =
+        analyze
+            (Some(t0.AddMinutes 30.0))
+            { Records = []; Unreadable = 0 }
+            noRows
+            { Runs = [ red; green ]
+              UnreadableFiles = 0
+              UnreadableLines = 0 }
+            (readShadowLogs [])
+
+    test <@ List.isEmpty r.FlakyTests && r.LogRuns = 1 && r.TestRowRuns = 1 @>
+
+[<Fact>]
+let ``flaky test: the human and JSON reports name each finding's sources and the log's counts`` () =
+    let r = analyzeSources [ green ] [ red; green ]
+    let text = render 10 r |> String.concat "\n"
+
+    test
+        <@
+            text.Contains
+                "2 run(s) of per test rows, 0 unreadable; 1 beside records, 2 in the daily log, 1 unreadable log file(s), 2 unreadable log line(s)"
+        @>
+
+    test <@ text.Contains "tree t1, tool f1; from index and daily log; last" @>
+
+    let logOnly = render 10 (analyzeSources [] [ red; green ]) |> String.concat "\n"
+    test <@ logOnly.Contains "; from daily log; last" @>
+
+    use doc = JsonDocument.Parse(toJson r)
+    let flake = doc.RootElement.GetProperty("flakyTests")[0]
+
+    let sources =
+        flake.GetProperty("sources").EnumerateArray()
+        |> Seq.map (fun s -> s.GetString())
+        |> List.ofSeq
+
+    test <@ sources = [ "index"; "log" ] @>
+    test <@ doc.RootElement.GetProperty("testRowLogRuns").GetInt32() = 2 @>
+    test <@ doc.RootElement.GetProperty("unreadableTestRowLogLines").GetInt32() = 2 @>
+    test <@ doc.RootElement.GetProperty("unreadableTestRowLogFiles").GetInt32() = 1 @>

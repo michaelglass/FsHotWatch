@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat: a daily test-row log that outlives the outcome store's keys (AUTOMATION-1744). Each run's per-test rows
+  are also written to a file of their own, `<store root>/test-rows/<yyyy-mm-dd>.<run>.<project>.jsonl.gz`: the run's
+  recorded UTC day, its run id (or `sha-` and 12 hex of its hash when it is not letters and digits only), and 12 hex of
+  its project's hash, since one run id covers every project a launch ran. It is written at the moment and from the
+  same value its `<record id>.tests.jsonl.gz` index is filed, so the two carry the same rows, and written once, as a
+  record is: a file already under its name is taken as filed. Each line names its run (key, project, run id, tree,
+  tool, machine, instant) beside the row (name, outcome, ms), schema `fshw-test-rows-log-v1`, written by the index's
+  own encoder. Its own retention, applied by the store's GC by whole files and the day in their name: past the TTL
+  first, then the oldest days' files beyond the cap; a file not named as a run's is never deleted or counted.
+  Defaults 90 days and 512 MiB, set by `"testRowsLog": { "ttlDays": N, "maxMegabytes": N }` in `.fshw.json` (each
+  a positive whole number; a bad value refuses the config, and a store whose retention cannot be read deletes no
+  file). `TestRowsLog.read` reads the log without changing it, each file on its own: one that is torn, not gzip or
+  cannot be opened loses only its own run and is counted. BREAKING: `OutcomeStore.Store` takes the log's retention
+  as a second argument (`Store(settings)` keeps the defaults), and `openFor` reads it from the repository's
+  `.fshw.json`.
+
 - feat: the outcome store keeps per-test rows (AUTOMATION-1744). A test run's rows (each test's name, outcome and
   duration, under the run's key, project, run id, tree, tool, machine and instant, written once per file) are filed
   beside its record as `<record id>.tests.jsonl.gz`, gzipped JSON lines, so a per-test flake rate outlives the

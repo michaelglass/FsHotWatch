@@ -67,8 +67,49 @@ type Flaky =
         LastSeen: DateTimeOffset
     }
 
+/// Where a run's per-test rows were read from (AUTOMATION-1744).
+[<RequireQualifiedAccess>]
+type RowSource =
+    /// The index filed beside the run's record, under its key: the strict same-key join.
+    | Index
+    /// The daily test-row log, which outlives the record.
+    | DailyLog
+
+module RowSource =
+    /// The token the JSON report writes.
+    let token (source: RowSource) : string =
+        match source with
+        | RowSource.Index -> "index"
+        | RowSource.DailyLog -> "log"
+
+    /// How the human report names it.
+    let label (source: RowSource) : string =
+        match source with
+        | RowSource.Index -> "index"
+        | RowSource.DailyLog -> "daily log"
+
+/// One run's per-test rows, with every source they were read from.
+type SourcedRun =
+    { Index: TestRows.Index
+      Sources: FsHotWatch.Core.NonEmpty<RowSource> }
+
+/// `indexed` (read beside the records) and `logged` (read from the daily log) as one list of runs.
+/// A run read from both, by run id and project, counts once and names both sources; its rows
+/// are the index's, which the log copies.
+let mergeSources (indexed: TestRows.Index list) (logged: TestRows.Index list) : SourcedRun list =
+    (indexed |> List.map (fun i -> i, RowSource.Index))
+    @ (logged |> List.map (fun i -> i, RowSource.DailyLog))
+    |> List.groupBy (fun (i, _) -> i.Run.RunId, i.Run.Project)
+    |> List.map (fun (_, seen) ->
+        let first, source = List.head seen
+
+        { Index = first
+          Sources =
+            { Head = source
+              Tail = seen |> List.map snd |> List.distinct |> List.filter ((<>) source) } })
+
 /// One test recorded both green and red on the same tree by the same tool (AUTOMATION-1744),
-/// from the per-test rows filed beside each test record.
+/// from the per-test rows filed beside each test record and the daily test-row log.
 type FlakyTest =
     {
         Project: string
@@ -82,6 +123,8 @@ type FlakyTest =
         /// The newest run that recorded it passed.
         GreenRun: string
         LastSeen: DateTimeOffset
+        /// Where the runs that recorded it were read from.
+        Sources: FsHotWatch.Core.NonEmpty<RowSource>
     }
 
 type Slow =
@@ -126,9 +169,16 @@ type Report =
         Kinds: (string * int) list
         DurationsRecorded: int
         Flaky: Flaky list
-        /// Run indexes of per-test rows read, and index files that are not one.
+        /// Runs of per-test rows read from either source, each counted once.
         TestRowRuns: int
+        /// Runs read beside their records, and index files that are not one.
+        IndexRuns: int
         UnreadableTestRows: int
+        /// Runs read from the daily log; its files that could not be read (each losing only its own
+        /// run); and lines, in files that were read, that are not a log line.
+        LogRuns: int
+        UnreadableLogFiles: int
+        UnreadableLogLines: int
         FlakyTests: FlakyTest list
         Slow: Slow list
         Reds: Reds
@@ -225,8 +275,8 @@ let private laterGreen (history: OutcomeStore.Record list) (r: OutcomeStore.Reco
 let private gaps (rowRuns: int) (durations: int) (records: int) (shadow: ShadowRead) (lookupReads: int) =
     [ if rowRuns = 0 then
           yield
-              "flaky tests: no run in the window filed per test rows (filed beside each test record since \
-               AUTOMATION-1744), so flaky is per test project only."
+              "flaky tests: no run in the window filed per test rows (beside each test record, or in the daily \
+               test-row log, since AUTOMATION-1744), so flaky is per test project only."
       if records > 0 && durations = 0 then
           yield
               "slow: no record carries durationMs (the runner files its K_P test records with DurationMs = None). \
@@ -250,20 +300,33 @@ let private isRed (outcome: TestRows.Outcome) =
     | TestRows.Outcome.Skipped -> false
 
 /// Each test that `runs` recorded both passed and red on one tree by one tool (AUTOMATION-1744),
-/// newest first. A skip is neither: it did not run.
-let flakyTests (runs: TestRows.Index list) : FlakyTest list =
+/// newest first, naming the sources of the runs that recorded it. A skip is neither: it did not run.
+let flakyTests (runs: SourcedRun list) : FlakyTest list =
     runs
-    |> List.collect (fun index ->
-        FsHotWatch.Core.NonEmpty.toList index.Rows
-        |> List.map (fun row -> index.Run, row))
-    |> List.groupBy (fun (run, row) -> run.Project, row.Name, run.Tree, run.Tool)
-    |> List.choose (fun ((project, test, tree, tool), seen) ->
+    |> List.collect (fun sourced ->
+        FsHotWatch.Core.NonEmpty.toList sourced.Index.Rows
+        |> List.map (fun row -> sourced.Index.Run, row, sourced.Sources))
+    |> List.groupBy (fun (run, row, _) -> run.Project, row.Name, run.Tree, run.Tool)
+    |> List.map (fun (test, seen) ->
+        test,
+        seen |> List.map (fun (run, row, _) -> run, row),
+        seen
+        |> List.collect (fun (_, _, sources) -> FsHotWatch.Core.NonEmpty.toList sources))
+    |> List.choose (fun ((project, test, tree, tool), seen, seenSources) ->
         let newestRun (counts: TestRows.Outcome -> bool) =
             seen
             |> List.filter (fun (_, row) -> counts row.Outcome)
             |> List.sortBy (fun (run, _) -> run.RecordedAt)
             |> List.tryLast
             |> Option.map (fun (run, _) -> run.RunId)
+
+        // Every source that read a run recording it, in `RowSource` order: at least the first run's.
+        let sources =
+            let all = seenSources |> List.distinct |> List.sort
+
+            ({ Head = List.head all
+               Tail = List.tail all }
+            : FsHotWatch.Core.NonEmpty<RowSource>)
 
         match newestRun isRed, newestRun ((=) TestRows.Outcome.Passed) with
         | Some red, Some green ->
@@ -275,16 +338,18 @@ let flakyTests (runs: TestRows.Index list) : FlakyTest list =
                   Outcomes = seen |> List.countBy (fun (_, row) -> row.Outcome) |> List.sortBy fst
                   RedRun = red
                   GreenRun = green
+                  Sources = sources
                   LastSeen = seen |> List.map (fun (run, _) -> run.RecordedAt) |> List.max }
         | _ -> None)
     |> List.sortBy (fun f -> -f.LastSeen.UtcTicks, f.Project, f.Test)
 
-/// The report over `scan`'s records, `rows`' per-test rows and `shadow`'s lines, each limited to
-/// `since` when given.
+/// The report over `scan`'s records, the per-test rows of `rows` (beside the records) and `log`
+/// (the daily test-row log), and `shadow`'s lines, each limited to `since` when given.
 let analyze
     (since: DateTimeOffset option)
     (scan: OutcomeStore.Scan)
     (rows: OutcomeStore.TestRowsScan)
+    (log: TestRowsLog.LogRead)
     (shadow: ShadowRead)
     : Report =
     let inWindow (at: DateTimeOffset) =
@@ -292,7 +357,9 @@ let analyze
 
     let records = scan.Records |> List.filter (fun r -> inWindow r.RecordedAt)
     let lines = shadow.Lines |> List.filter (fun l -> inWindow l.At)
-    let rowRuns = rows.Indexes |> List.filter (fun i -> inWindow i.Run.RecordedAt)
+    let indexed = rows.Indexes |> List.filter (fun i -> inWindow i.Run.RecordedAt)
+    let logged = log.Runs |> List.filter (fun i -> inWindow i.Run.RecordedAt)
+    let rowRuns = mergeSources indexed logged
 
     let byKey = records |> List.groupBy _.Key.Value |> Map.ofList
 
@@ -403,7 +470,11 @@ let analyze
       DurationsRecorded = durations
       Flaky = flaky
       TestRowRuns = rowRuns.Length
+      IndexRuns = indexed.Length
       UnreadableTestRows = rows.Unreadable
+      LogRuns = logged.Length
+      UnreadableLogFiles = log.UnreadableFiles
+      UnreadableLogLines = log.UnreadableLines
       FlakyTests = flakyTests rowRuns
       Slow = slow
       Reds =
@@ -466,7 +537,9 @@ let render (top: int) (r: Report) : string list =
       yield ""
 
       yield
-          $"Flaky tests (one test, same tree and tool, recorded both passed and red; %d{r.TestRowRuns} run(s) of per test rows, %d{r.UnreadableTestRows} unreadable):"
+          $"Flaky tests (one test, same tree and tool, recorded both passed and red; %d{r.TestRowRuns} run(s) of per test rows, %d{r.UnreadableTestRows} unreadable; \
+             %d{r.IndexRuns} beside records, %d{r.LogRuns} in the daily log, \
+             %d{r.UnreadableLogFiles} unreadable log file(s), %d{r.UnreadableLogLines} unreadable log line(s)):"
 
       match r.FlakyTests with
       | [] -> yield "  no test recorded both outcomes"
@@ -477,9 +550,14 @@ let render (top: int) (r: Report) : string list =
                   |> List.map (fun (o, n) -> $"%d{n} %s{TestRows.Outcome.token o}")
                   |> String.concat ", "
 
+              let sources =
+                  FsHotWatch.Core.NonEmpty.toList f.Sources
+                  |> List.map RowSource.label
+                  |> String.concat " and "
+
               yield
                   $"  %s{f.Test} [%s{f.Project}]: %s{outcomes}; red in run %s{f.RedRun}, passed in run %s{f.GreenRun}; \
-                    tree %s{f.Tree}, tool %s{f.Tool}; last %s{stamp f.LastSeen}"
+                    tree %s{f.Tree}, tool %s{f.Tool}; from %s{sources}; last %s{stamp f.LastSeen}"
 
       yield ""
       yield $"Slow (by recorded durationMs; %d{r.DurationsRecorded} of %d{r.RecordsRead} records carry one):"
@@ -577,7 +655,11 @@ let toJson (r: Report) : string =
                       :> JsonNode)
               )
               "testRowRuns", ji r.TestRowRuns
+              "testRowIndexRuns", ji r.IndexRuns
               "unreadableTestRows", ji r.UnreadableTestRows
+              "testRowLogRuns", ji r.LogRuns
+              "unreadableTestRowLogFiles", ji r.UnreadableLogFiles
+              "unreadableTestRowLogLines", ji r.UnreadableLogLines
               "flakyTests",
               arr (
                   r.FlakyTests
@@ -590,6 +672,8 @@ let toJson (r: Report) : string =
                             "outcomes", counts (f.Outcomes |> List.map (fun (o, n) -> TestRows.Outcome.token o, n))
                             "redRun", js f.RedRun
                             "greenRun", js f.GreenRun
+                            "sources",
+                            arr (FsHotWatch.Core.NonEmpty.toList f.Sources |> List.map (RowSource.token >> js))
                             "lastSeen", time f.LastSeen ]
                       :> JsonNode)
               )

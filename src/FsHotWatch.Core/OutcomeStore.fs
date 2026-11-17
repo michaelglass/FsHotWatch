@@ -430,7 +430,7 @@ let readQuarantine (root: string) : QuarantineCensus =
     { Noted = noted |> List.map snd
       Unnoted = files.Count - noted.Length }
 
-type Store(settings: Settings) =
+type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, string>>) =
     let root = settings.Root
     let recordsDir = Path.Combine(root, "records")
     let quarantineDir = Path.Combine(root, "quarantine")
@@ -589,6 +589,51 @@ type Store(settings: Settings) =
             FileInfo(Path.Combine(Path.GetDirectoryName file, TestRows.fileNameFor file))
 
         FileInfo(file).Length + (if rows.Exists then rows.Length else 0L)
+
+    /// Write `index`, just filed beside its record, to its own file in the daily test-row log
+    /// (AUTOMATION-1744): the same value, at the same moment, so the two cannot disagree. Written
+    /// once, as a record is (`writeOnceBytes`): a file already under its name is taken as filed. A
+    /// log that cannot be written to is logged; the index stands.
+    let writeToLog (index: TestRows.Index) =
+        try
+            writeOnceBytes (TestRowsLog.pathOf root index) (TestRows.encodeLog index)
+            |> ignore
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException as ex ->
+            settings.Log(
+                "outcome store: could not write the test rows of "
+                + index.Run.Project
+                + " to the daily test-row log: "
+                + ex.Message
+            )
+
+    /// Apply the daily test-row log's own retention at `now` (AUTOMATION-1744), and say what it
+    /// deleted. A retention that could not be read deletes nothing.
+    let collectTestRowsLog (now: DateTimeOffset) =
+        match testRowsLog.Value with
+        | Error why ->
+            settings.Log(
+                "outcome store: test-row log: not collected, its retention could not be read: "
+                + why
+            )
+        | Ok retention ->
+            let collected = TestRowsLog.collect root now retention
+
+            if not (collected.Expired.IsEmpty && collected.OverCap.IsEmpty) then
+                settings.Log(
+                    "outcome store: test-row log: deleted "
+                    + collected.Expired.Length.ToString(CultureInfo.InvariantCulture)
+                    + " day file(s) past the ttl, "
+                    + collected.OverCap.Length.ToString(CultureInfo.InvariantCulture)
+                    + " over the cap of "
+                    + retention.MaxBytes.ToString(CultureInfo.InvariantCulture)
+                    + " byte(s): "
+                    + String.concat ", " (collected.Expired @ collected.OverCap)
+                )
+
+            for name, why in collected.NotDeleted do
+                settings.Log("outcome store: test-row log: could not delete " + name + ": " + why)
 
     /// File `record`'s bytes once: the path it is filed at and whether this call filed it, or why
     /// it could not be filed. Never throws.
@@ -951,6 +996,7 @@ type Store(settings: Settings) =
                 + $"{bytes.ToString(CultureInfo.InvariantCulture)} byte(s); {total.Value.ToString(CultureInfo.InvariantCulture)} byte(s) remain"
             )
 
+        collectTestRowsLog now
         evicted |> List.map (fun (e, _) -> e.Key)
 
     /// `Gc`, unless one completed within `interval` of `now` (AUTOMATION-1665). When a GC
@@ -989,6 +1035,9 @@ type Store(settings: Settings) =
 
             GcRun.Ran evicted
 
+    /// A store whose daily test-row log keeps the default retention (`TestRowsLog.Retention.defaults`).
+    new(settings: Settings) = Store(settings, Lazy<_>.CreateFromValue(Ok TestRowsLog.Retention.defaults))
+
     /// L1 (AUTOMATION-1695): this store as FsHotWatch.Core's `IOutcomeStore`.
     interface OutcomeRecords.IOutcomeStore with
         member _.Read keyValue = readOnce keyValue
@@ -1011,7 +1060,10 @@ type Store(settings: Settings) =
                 let path =
                     Path.Combine(directoryOf record.Key.Value, TestRows.fileNameFor recordFile)
 
-                if writeOnceBytes path (TestRows.encode (OutcomeRecords.TestRowsOf.index record rows)) then
+                let index = OutcomeRecords.TestRowsOf.index record rows
+
+                if writeOnceBytes path (TestRows.encode index) then
+                    writeToLog index
                     OutcomeRecords.Filing.Filed
                 else
                     OutcomeRecords.Filing.AlreadyFiled
@@ -1133,13 +1185,16 @@ module Wired =
         { Store = store
           Collect = collectDue store notDue }
 
-/// The store of `repoRoot`'s repository with the default TTL and byte budget.
+/// The store of `repoRoot`'s repository with the default TTL and byte budget. Its daily test-row
+/// log keeps the retention `repoRoot`'s `.fshw.json` configures (`testRowsLog`), read when a GC
+/// first needs it.
 let openFor (repoRoot: string) (log: string -> unit) =
     Store(
         { Root = directoryFor repoRoot
           Ttl = defaultTtl
           MaxBytes = defaultMaxBytes
-          Log = log }
+          Log = log },
+        lazy (TestRowsLog.Retention.ofRepo repoRoot)
     )
 
 /// Work a plugin files here, box-wide, and also caches per workspace (AUTOMATION-1609).

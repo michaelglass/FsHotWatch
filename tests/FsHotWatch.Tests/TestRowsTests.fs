@@ -348,6 +348,7 @@ let ``a red run and a later green one on the same tree and tool are reported fla
                 None
                 (OutcomeStore.readAll root)
                 (OutcomeStore.readAllTestRows root)
+                (TestRowsLog.read root)
                 (FsHotWatch.Cli.OutcomeAnalytics.readShadowLogs [])
 
         test

@@ -1079,7 +1079,9 @@ let resolveFormatRecords (configured: bool) (env: string -> string) : bool =
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 /// The top-level keys `.fshw.json` may carry. Read by `parseConfig`, except `verdictInputs`
-/// (`VerdictInputs`) and `repositoryHost` (`RepositoryHostMode`), which other readers own.
+/// (`VerdictInputs`), `repositoryHost` (`RepositoryHostMode`) and `testRowsLog`
+/// (`TestRowsLog.Retention`, read where the outcome store opens), which other readers own; this
+/// still refuses a `testRowsLog` they would not read.
 let internal KnownTopLevelKeys =
     set
         [ "afterRun"
@@ -1108,6 +1110,7 @@ let internal KnownTopLevelKeys =
           "runHookCommands"
           "runHookTimeoutSec"
           "tests"
+          "testRowsLog"
           "timeoutSec"
           "verdictInputs" ]
 
@@ -1138,6 +1141,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
     refuseUnknownTopLevelKeys root
+
+    match FsHotWatch.TestRowsLog.Retention.parse json with
+    | Result.Error why -> raise (ConfigErrorException why)
+    | Result.Ok _ -> ()
 
     let parseBuildEntry (v: JsonElement) =
         let cmd =

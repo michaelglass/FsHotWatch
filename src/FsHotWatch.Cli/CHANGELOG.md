@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `fshw analytics` reads flaky tests from the daily test-row log too (AUTOMATION-1744), so a flake whose red
+  record the store has since evicted is still found. A run read from both the index beside its record and the log
+  counts once (by run id and project); each flaky test names its sources, `index` (the strict same-key join), `log`, or
+  both. It reports every log file it could not read, with a count, beside the unreadable lines. `--json` adds
+  `sources` per flaky test and `testRowIndexRuns`, `testRowLogRuns`, `unreadableTestRowLogFiles` and
+  `unreadableTestRowLogLines`. `.fshw.json` accepts `testRowsLog` (`ttlDays`, `maxMegabytes`) and refuses a bad one.
+
 - feat: `fshw analytics` reports flaky TESTS (AUTOMATION-1744): one test on one tree by one tool recorded both passed
   and red (failed, timed out, cancelled or other), with how many runs recorded each outcome and the newest red and
   green run ids, from the per-test rows the store files beside each test record. Skipped is neither. `--json` carries
