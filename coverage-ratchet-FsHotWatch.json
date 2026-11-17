@@ -2649,6 +2649,20 @@
         "platform": "linux",
         "reason": "new file (AUTOMATION-1705: the gate that holds what a VCS operation rewrote until a client asks, under the AfterVcsOperation setting). Explicit so a report that drops it fails coverage-check. Measured 2026-11-17 on macOS by VcsQuietTests and VcsQuietDaemonTests: line 100%, branch 100%. Linux provisional, equal to macOS."
       }
+    ],
+    "EvictedKeys.fs": [
+      {
+        "line": 96,
+        "branch": 82,
+        "reason": "new file (AUTOMATION-1765: tombstones of the keys an outcome store's GC evicted, evicted/<ticks>-<nonce>.tsv under the store root, with their own retention, so a lookup miss tells an evicted key from one never filed). Explicit so that a report which drops this file fails coverage-check. Measured 2026-11-17 on macOS by EvictedMissTests and OutcomeStoreTests with coverage: line 96.9% (95/98), branch 82.6% (38/46). Driven: a tombstone directory that is a file, one that cannot be listed, an unreadable tombstone file, an undeletable one, TTL and cap deletion, a stale snapshot re-read, malformed names and lines. Uncovered: the 3 lines of the arm where another daemon's GC deletes a tombstone file between collect listing and sizing it (a cross-process race no unit test drives deterministically); the IOException arm of three exception filters, which the tests reach only through UnauthorizedAccessException (mode-000 file or directory, read-only directory); compiled fall-through edges of the line pattern and the dictionary lookup.",
+        "platform": "macos"
+      },
+      {
+        "line": 96,
+        "branch": 82,
+        "reason": "new file (AUTOMATION-1765). Not yet measured on Linux CI: set equal to the macOS measurement, as for TestRowsLog.fs; the IO-failure tests use Unix file modes, which Linux honours for a non-root user. Re-baseline from CI (mise run loosen-from-ci) if the Linux report differs.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

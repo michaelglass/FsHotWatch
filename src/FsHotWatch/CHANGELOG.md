@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: a lookup that misses because GC evicted its key now says so in the daemon log, per record kind (AUTOMATION-1765).
+  Until now an evicted key and a never-filed one missed alike: GC logged counts per kind and no key names, and the
+  TestPrune analysis lookup logged nothing, so how many evicted testprune-analysis keys were looked up again could not
+  be counted. Each GC that evicts keys now writes a tombstone file, `evicted/<ticks>-<nonce>.tsv` under the store root
+  (one line per key: the key value and its kind), kept by its own retention (the store's TTL, then 16 MiB, oldest file
+  first) and outside the byte budget. A lookup that finds nothing filed reads the tombstones (once per GC; otherwise one
+  `stat`) and, for an evicted key, logs `outcome store: evicted-key miss: <kind> <key>, evicted by gc at <time>; <kind>
+  evicted-key misses in this process: <n>`. No record or cache key changes, and the records' layout is unchanged: an
+  older fshw ignores `evicted/`. ADR-059 §40.
+
 - fix: the portable options shadow reads a checkout's build output as the root-keyed key has since ADR-076 (AUTOMATION-1684).
   It keyed every probe of `bin/` and `obj/<Configuration>/` and every listing entry naming them, so a built checkout and
   one never built never shared a portable key, although their options agree (a real MSBuild evaluation of one project

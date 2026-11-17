@@ -68,6 +68,7 @@
     <Compile Include="RepositoryIdentity.fs" />
     <Compile Include="RepoIdentity.fs" />
     <Compile Include="TestRowsLog.fs" />
+    <Compile Include="EvictedKeys.fs" />
     <Compile Include="OutcomeStore.fs" />
     <Compile Include="TestFailureClearance.fs" />
     <Compile Include="Lookup.fs" />

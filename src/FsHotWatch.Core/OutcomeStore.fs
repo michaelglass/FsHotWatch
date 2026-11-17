@@ -437,6 +437,36 @@ type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, s
     let quarantineWhyDir = Path.Combine(root, QuarantineWhyDirectory)
     let tmpDir = Path.Combine(root, "tmp")
 
+    /// The tombstones of the keys GC evicted (AUTOMATION-1765), read by a lookup that finds
+    /// nothing filed, shared by every store of this root in the process.
+    let tombstones = EvictedKeys.Reader.forRoot root
+
+    /// Evicted-key misses in this process, by kind.
+    let evictedMisses =
+        Collections.Concurrent.ConcurrentDictionary<string, int>(StringComparer.Ordinal)
+
+    /// Say in the log that the lookup of `keyValue` missed because GC evicted it, with how many such
+    /// misses of its kind this process has had: one line each, so the daemon logs count them per
+    /// kind and per key across every daemon reading the store (AUTOMATION-1765).
+    let noteAbsence (keyValue: ActionKey.KeyValue) =
+        match tombstones.AbsenceOf keyValue with
+        | EvictedKeys.Absence.NoTombstone -> ()
+        | EvictedKeys.Absence.Evicted tombstone ->
+            let n = evictedMisses.AddOrUpdate(tombstone.Kind, 1, fun _ n -> n + 1)
+
+            settings.Log(
+                "outcome store: evicted-key miss: "
+                + tombstone.Kind
+                + " "
+                + keyValue.Text
+                + ", evicted by gc at "
+                + tombstone.EvictedAt.ToString("o", CultureInfo.InvariantCulture)
+                + "; "
+                + tombstone.Kind
+                + " evicted-key misses in this process: "
+                + n.ToString(CultureInfo.InvariantCulture)
+            )
+
     let hexOf (keyValue: ActionKey.KeyValue) =
         keyValue.Text.Substring ActionKey.Prefix.Length
 
@@ -515,7 +545,7 @@ type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, s
                 + " is a miss: "
                 + why
             )
-        | OutcomeRecords.KeyRead.NothingFiled
+        | OutcomeRecords.KeyRead.NothingFiled -> noteAbsence keyValue
         | OutcomeRecords.KeyRead.OnlyRejected _
         | OutcomeRecords.KeyRead.Answered _ ->
             for file, why in OutcomeRecords.KeyRead.rejected keyRead do
@@ -729,6 +759,30 @@ type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, s
             else
                 filing
 
+    /// File a tombstone of each key GC just evicted at `now`, then apply the tombstones' own
+    /// retention (AUTOMATION-1765). Never throws: a tombstone that cannot be filed costs only the
+    /// classification of a later miss.
+    let fileTombstones (now: DateTimeOffset) (evicted: (ActionKey.KeyValue * string) list) =
+        if not evicted.IsEmpty then
+            let path =
+                Path.Combine(root, EvictedKeys.DirectoryName, EvictedKeys.fileNameOf now (Guid.NewGuid().ToString "N"))
+
+            try
+                writeOnce path (EvictedKeys.encode evicted) |> ignore
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException as ex ->
+                settings.Log(
+                    "outcome store: could not file the tombstones of the evicted keys: "
+                    + ex.Message
+                )
+
+        let collected =
+            EvictedKeys.collect root now (EvictedKeys.Retention.ofStoreTtl settings.Ttl)
+
+        for name, why in collected.NotDeleted do
+            settings.Log("outcome store: could not delete the tombstone file " + name + ": " + why)
+
     member _.Root = root
 
     /// Whether any record file is filed under `key`, by name alone: no payload is read,
@@ -839,7 +893,9 @@ type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, s
     /// kind over its share, the oldest other keys go until the store fits. Returns the
     /// evicted key values, oldest first, and says in the log what it evicted, why and of
     /// which kinds (AUTOMATION-1506: an eviction is the one way a filed record turns into a
-    /// miss, and both callers discard the list).
+    /// miss, and both callers discard the list). It files a tombstone of each key it evicts and applies
+    /// the tombstones' own retention (`EvictedKeys`, AUTOMATION-1765), so a later miss of the key says
+    /// it was evicted.
     member _.Gc(now: DateTimeOffset, keep: Set<ActionKey.KeyValue>) : ActionKey.KeyValue list =
         let entries =
             if Directory.Exists recordsDir then
@@ -996,6 +1052,7 @@ type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, s
                 + $"{bytes.ToString(CultureInfo.InvariantCulture)} byte(s); {total.Value.ToString(CultureInfo.InvariantCulture)} byte(s) remain"
             )
 
+        fileTombstones now (evicted |> List.map (fun (e, _) -> e.Key, e.Kind))
         collectTestRowsLog now
         evicted |> List.map (fun (e, _) -> e.Key)
 
