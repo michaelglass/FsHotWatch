@@ -148,7 +148,6 @@ let execute (subject: Subject) (seed: int) (history: Op list) : Violation list *
         | Subject.Mutated _ -> sim.Runtime
 
     use _ = sim.Install()
-    let store = Store runtime
     let cohorts = Collections.Generic.List<int list>()
     let posted = Collections.Generic.List<int>()
     let flushed = Collections.Generic.HashSet<int>()
@@ -166,6 +165,22 @@ let execute (subject: Subject) (seed: int) (history: Op list) : Violation list *
               Detail = detail
               History = history
               Choices = sim.Choices }
+
+    // Every publication is checked on the writer, before anything else runs (AUTOMATION-1781).
+    let observe (snapshot: HostSnapshot) =
+        if not snapshot.IsBusy then
+            let unsettled =
+                receipts
+                |> Seq.filter (fun (_, r) -> not r.IsCompleted)
+                |> Seq.map fst
+                |> List.ofSeq
+
+            if not unsettled.IsEmpty then
+                violate
+                    Theorem.HonestRest
+                    $"publication %d{snapshot.Version} reads at rest while %s{listText unsettled} are unsettled"
+
+    let store = Store(runtime, observe)
 
     let worker =
         SupervisedWork.Queue(
