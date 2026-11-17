@@ -10,6 +10,18 @@
   (`CheckCache.PriorDeclaration`); a record of the bytes on disk now says nothing about what the later files were
   typed against, so the batch re-checks them.
 
+- feat: a warm daemon that sees a VCS operation move its tree goes quiet until a client asks (AUTOMATION-1705). A
+  rebase or checkout in a workspace whose daemon is running used to start checks and test runs (a full suite, in
+  the incident) that nobody asked for. Each change batch is now classified by the checkout's VCS position, read
+  from files and never by running `jj`/`git`: for jj, the operation that last updated THIS workspace's working
+  copy (`.jj/working_copy/checkout`), not the repository's op head, which every workspace moves; for git, `HEAD`
+  and the commit its branch names (loose or packed). An edit checks at once, as before. A batch after the position
+  moved is held, with every later one, and logged once (`a VCS operation moved the tree (X -> Y); waiting for a
+  client before checking`); the next `Scan` request (`fshw check`) checks everything held. A move to a jj
+  `snapshot working copy` operation is an edit: it recorded edits already on disk. A position that cannot be read
+  checks the batch. `VcsPosition` (the detectors) and `VcsQuiet` (the gate) are new. BREAKING: `DaemonOptions` gains
+  `VcsProbe` (default `VcsPosition.probeFor`), the seam a test moves the position through.
+
 - feat: a daily test-row log that outlives the outcome store's keys (AUTOMATION-1744). Each run's per-test rows
   are also written to a file of their own, `<store root>/test-rows/<yyyy-mm-dd>.<run>.<project>.jsonl.gz`: the run's
   recorded UTC day, its run id (or `sha-` and 12 hex of its hash when it is not letters and digits only), and 12 hex of

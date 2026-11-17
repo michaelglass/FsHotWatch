@@ -405,7 +405,7 @@ let private followPointer (file: string) (baseDir: string) (target: string) : Re
 /// its `commondir` file when it has one, else itself. Read from the file git writes,
 /// not guessed from a `/worktrees/` segment in the path — a repository that merely
 /// lives under a directory called `worktrees` must not be truncated to its parent.
-let private gitCommonDir (gitDir: CanonicalPath) : Result<CanonicalPath, IdentityError> =
+let internal gitCommonDir (gitDir: CanonicalPath) : Result<CanonicalPath, IdentityError> =
     let commondir = Path.Combine(gitDir.Value, "commondir")
 
     if File.Exists commondir then
@@ -435,7 +435,7 @@ let private colocatedJjRepo (gitCommon: CanonicalPath) : CanonicalPath option =
 ///
 /// A pointer is read the way git reads it back: only the line ending is stripped, so a
 /// space at the end of the path is part of the path.
-let private gitDirOf (root: CanonicalPath) : Result<CheckoutKind * CanonicalPath, IdentityError> option =
+let internal gitDirOf (root: CanonicalPath) : Result<CheckoutKind * CanonicalPath, IdentityError> option =
     let dotGit = Path.Combine(root.Value, ".git")
 
     if Directory.Exists dotGit then

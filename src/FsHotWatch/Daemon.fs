@@ -1861,6 +1861,8 @@ type private ChangeRequest =
     {
         Changes: FileChangeKind list
         FormatReplies: TaskCompletionSource<string> list
+        /// Client requests that wake a daemon a VCS operation quieted (`VcsQuiet`).
+        ClientRequests: VcsQuiet.ClientAsked list
         /// When the watcher reported the earliest change in this request.
         SeenAt: DateTime
     }
@@ -2896,12 +2898,13 @@ type internal ModelKeptChangingException(attempts: int, owed: OwedChanges) =
 
     member _.Owed = owed
 
-/// The change worker's state: paths whose watcher echo is suppressed, and the changes a
-/// failed batch still owes.
+/// The change worker's state: paths whose watcher echo is suppressed, the changes a
+/// failed batch still owes, and whether batches check at once or wait for a client.
 [<NoComparison; NoEquality>]
 type private ChangeWorkerState =
     { Suppressed: Set<string>
-      Owed: OwedChanges option }
+      Owed: OwedChanges option
+      Gate: VcsQuiet.Gate }
 
 /// Whether a re-discovery has already loaded `path`'s current bytes, so the model holds
 /// them and a change batch has nothing left to re-evaluate. Only a project input
@@ -3722,6 +3725,9 @@ type Daemon
         processRegistry: ProcessRegistry.Registry,
         // Closes watcher input and the change-batch worker.
         closeChanges: unit -> unit,
+        // Posts a client request to the change-batch worker: it wakes a daemon a VCS
+        // operation quieted (`VcsQuiet`). Resolves once the worker has run it.
+        clientAsked: string -> Task<unit>,
         // The checker this daemon checks through: its own, or its partition's in a host.
         checker: FSharpChecker,
         // This session's snapshot epoch and manifest (ADR-045), shared with its change batches.
@@ -3998,6 +4004,10 @@ type Daemon
                     (DaemonIdentity.BinaryIdentity.render (DaemonIdentity.currentIdentity ()))
                     repoRoot }
 
+    /// A client asked for work: a daemon a VCS operation quieted checks the changes it
+    /// held (`VcsQuiet`). Resolves once the change worker has run the request.
+    member internal _.ClientAsked(request: string) : Task<unit> = clientAsked request
+
     /// Note that the watcher reported these changes (`editedFiles`).
     member internal _.NoteEdited(changes: FileChangeKind list) = editedFiles.Note changes
 
@@ -4147,6 +4157,25 @@ type Daemon
                 // off is held through the caller's run claim, when it has one, so test
                 // runs only that caller wanted are cancelled once it has gone.
                 let onScan (invocation: string option) =
+                    // `fshw check` asks through here, so it is what wakes a daemon a VCS
+                    // operation quieted. The scan does not wait for the held batch: both
+                    // are owned work, and the verdict settles after both.
+                    try
+                        this.ClientAsked "scan"
+                        |> _.ContinueWith(
+                            (fun (failed: Task<unit>) ->
+                                Logging.debug
+                                    "vcs"
+                                    $"client wake settled with %s{failed.Exception.GetBaseException().Message}"),
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted,
+                            TaskScheduler.Default
+                        )
+                        |> ignore
+                    with failure ->
+                        // As for a watcher change: the admission stays queued on the store.
+                        Logging.warn "vcs" $"client wake still pending: %s{failure.Message}"
+
                     this.AdmitScan(RunClaim.leaseFor repoRoot invocation)
                     |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
                     |> ignore
@@ -5457,6 +5486,10 @@ module Daemon =
             /// evaluation compared with what such a record would have replayed (AUTOMATION-1602 (b)).
             /// OFF by default; `Shadow` never serves a replay. Only with `OptionsRecords`.
             OptionsPortable: OptionsPortable.Mode
+            /// How a `Watching` daemon reads its checkout's VCS position between change batches, so
+            /// a batch a VCS operation caused is held until a client asks (`VcsQuiet`,
+            /// AUTOMATION-1705). Given the repository root. A seam: tests move the position by hand.
+            VcsProbe: string -> VcsPosition.Probe
         }
 
     module DaemonOptions =
@@ -5477,7 +5510,8 @@ module Daemon =
               LiveResultBound = LiveResults.DefaultBound
               CheckRecords = false
               OptionsRecords = false
-              OptionsPortable = OptionsPortable.Mode.Off }
+              OptionsPortable = OptionsPortable.Mode.Off
+              VcsProbe = VcsPosition.probeFor }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -5866,13 +5900,22 @@ module Daemon =
                                 projPath) }
 
             // Change batches run one at a time under a supervisor. The worker's state is
-            // the set of paths preprocessors wrote, whose watcher echoes are suppressed, and
-            // the changes a failed batch still owes, which run ahead of the next request.
+            // the set of paths preprocessors wrote, whose watcher echoes are suppressed, the
+            // changes a failed batch still owes, which run ahead of the next request, and the
+            // VCS gate: a batch a VCS operation caused waits for a client (`VcsQuiet`). Only a
+            // watching daemon has batches to gate.
+            let initialGate =
+                match opts.RunMode with
+                | RunMode.Watching -> VcsQuiet.start (opts.VcsProbe repoRoot)
+                | RunMode.OneShot -> VcsQuiet.Gate.Ungated
+
             let changeWorker =
                 SupervisedWork.Queue(
                     host.WorkStore,
                     "changes",
-                    { Suppressed = Set.empty; Owed = None },
+                    { Suppressed = Set.empty
+                      Owed = None
+                      Gate = initialGate },
                     Ipc.ambientRpcDeadline (),
                     (fun state (_: ChangeRequest) -> state),
                     (fun state failure ->
@@ -5882,9 +5925,28 @@ module Daemon =
                     ignore,
                     (fun state request ct _ ->
                         async {
-                            let owed = state.Owed |> Option.defaultValue { Changes = []; Admitted = Set.empty }
+                            // A client request wakes a quiet gate, which hands back what it held.
+                            let woken, released =
+                                request.ClientRequests
+                                |> List.fold
+                                    (fun (gate, released) asked ->
+                                        let gate, more = VcsQuiet.wake gate asked
+                                        gate, released @ more)
+                                    (state.Gate, [])
 
-                            let changes = owed.Changes @ request.Changes
+                            let gate, admission = VcsQuiet.admit woken (released @ request.Changes)
+
+                            // Held, a failed batch's owed changes stay owed: they run when a
+                            // client wakes the gate, with what it held.
+                            let owed, admitted, owedAfter =
+                                match admission with
+                                | VcsQuiet.Admission.Check admitted ->
+                                    state.Owed |> Option.defaultValue { Changes = []; Admitted = Set.empty },
+                                    admitted,
+                                    None
+                                | VcsQuiet.Admission.Hold -> { Changes = []; Admitted = Set.empty }, [], state.Owed
+
+                            let changes = owed.Changes @ admitted
 
                             let! suppressed =
                                 if List.isEmpty changes then
@@ -5909,7 +5971,11 @@ module Daemon =
                                     }
 
                             match request.FormatReplies with
-                            | [] -> return { Suppressed = suppressed; Owed = None }
+                            | [] ->
+                                return
+                                    { Suppressed = suppressed
+                                      Owed = owedAfter
+                                      Gate = gate }
                             | replies ->
                                 ct.ThrowIfCancellationRequested()
                                 let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
@@ -5925,7 +5991,8 @@ module Daemon =
                                         |> List.map (respellPathUnderRoot repoRoot watcherRoot)
                                         |> Set.ofList
                                         |> Set.union suppressed
-                                      Owed = None }
+                                      Owed = owedAfter
+                                      Gate = gate }
                         })
                 )
 
@@ -5939,6 +6006,7 @@ module Daemon =
                     (fun earlier later ->
                         { Changes = earlier.Changes @ later.Changes
                           FormatReplies = earlier.FormatReplies @ later.FormatReplies
+                          ClientRequests = earlier.ClientRequests @ later.ClientRequests
                           SeenAt = min earlier.SeenAt later.SeenAt })
                 )
 
@@ -5951,6 +6019,7 @@ module Daemon =
                         changeInput.Post(
                             { Changes = [ change ]
                               FormatReplies = []
+                              ClientRequests = []
                               SeenAt = DateTime.UtcNow },
                             TimeSpan.FromMilliseconds(float (delayForChange change))
                         )
@@ -5973,6 +6042,17 @@ module Daemon =
                     Logging.warn
                         "watcher"
                         $"change admission still pending (%O{change}): %s{failure.Message}; it stays queued and is applied when the daemon's store frees"
+
+            // A zero delay flushes pending watcher input first, so what a quiet gate held
+            // and what arrived since are checked together.
+            let clientAsked (request: string) =
+                changeInput.Post(
+                    { Changes = []
+                      FormatReplies = []
+                      ClientRequests = [ VcsQuiet.ClientAsked request ]
+                      SeenAt = DateTime.UtcNow },
+                    TimeSpan.Zero
+                )
 
             // The ONLY place a watcher can come from. A `OneShot` host never reaches
             // the factory, so its verdict cannot depend on native watcher startup.
@@ -6052,6 +6132,7 @@ module Daemon =
                             changeInput.Post(
                                 { Changes = []
                                   FormatReplies = [ reply ]
+                                  ClientRequests = []
                                   SeenAt = DateTime.UtcNow },
                                 TimeSpan.Zero
                             )
@@ -6088,6 +6169,7 @@ module Daemon =
                 editedFiles,
                 processRegistry,
                 changeInput.Close,
+                clientAsked,
                 checker,
                 snapshots,
                 beforeScanPublication

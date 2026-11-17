@@ -33,6 +33,12 @@ FsHotWatch runs one compiler in the background and shares it with all your tools
 Saves are debounced: if 10 files change at once (a formatter sweeping the repo,
 say), FsHotWatch waits for things to settle and processes them in one batch.
 
+A rebase or checkout is not a save. When a batch arrives after a VCS operation moved
+the checkout (this jj workspace's working-copy operation, or git `HEAD` and the
+branch it names), a running daemon checks and tests nothing on its own: it holds the
+batch, and every later one, until the next `fshw check`. A jj snapshot of your own
+edits is not such an operation.
+
 ## Quick start
 
 ```bash

@@ -123,6 +123,7 @@
     <Compile Include="SharedWatchPoolTests.fs" />
     <Compile Include="SessionScopeTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="VcsQuietDaemonTests.fs" />
     <Compile Include="InProcessEvaluationTests.fs" />
     <Compile Include="ColdScanCeilingTests.fs" />
     <Compile Include="FileCheckedDeliveryTests.fs" />
@@ -158,6 +159,8 @@
     <Compile Include="DaemonEndpointTests.fs" />
     <Compile Include="StoredNameTests.fs" />
     <Compile Include="RepositoryIdentityTests.fs" />
+    <Compile Include="VcsPositionTests.fs" />
+    <Compile Include="VcsQuietTests.fs" />
     <Compile Include="AttachHandshakeTests.fs" />
     <Compile Include="WatchRouterTests.fs" />
     <Compile Include="PluginWedgeTests.fs" />
