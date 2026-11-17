@@ -336,7 +336,13 @@ type private Mutation =
 /// discovery lock. A writer that needed a pool thread would wait behind those callbacks
 /// while they wait for it, and the pool gives each thread it adds to the next callback in
 /// the queue. A change posted asynchronously is published by a writer on the pool.
-type Store() =
+///
+/// `dispatchWriter` hands that writer to the pool. Tests pass their own to decide when the
+/// writer runs relative to the poster, so the interleavings a pool only produces by chance
+/// (a writer that publishes before the poster awaits, a second post finding a writer
+/// already posted, a posted writer finding another writer running) are each reached on
+/// purpose (AUTOMATION-1601).
+type Store(dispatchWriter: (unit -> unit) -> unit) =
     let identity = Guid.NewGuid()
 
     let mutable published =
@@ -432,9 +438,7 @@ type Store() =
         if writeHere then
             publishQueued ()
         elif postWriter then
-            // Not the caller's execution context: the writer publishes every caller's change.
-            ThreadPool.UnsafeQueueUserWorkItem(Action<obj>(fun _ -> writeOnPool ()), null, true)
-            |> ignore
+            dispatchWriter writeOnPool
 
         reply.Task
 
@@ -467,6 +471,13 @@ type Store() =
                             Status = handle.Project next }
                         snapshot.Rows },
             result
+
+    /// A store whose posted writer runs on the thread pool.
+    new() =
+        // Not the caller's execution context: the writer publishes every caller's change.
+        Store(fun write ->
+            ThreadPool.UnsafeQueueUserWorkItem(Action<obj>(fun _ -> write ()), null, true)
+            |> ignore)
 
     member _.Snapshot: HostSnapshot = Volatile.Read(&published)
 

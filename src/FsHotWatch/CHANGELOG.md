@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- test: PluginWorkOwner's Linux branch floor is 100 again, with every Store writer interleaving reached on purpose
+  (AUTOMATION-1601). The internal `Store` takes the function that dispatches its posted writer (the parameterless
+  constructor still uses the thread pool), and tests run that writer inline, hold it, or start it while a synchronous
+  caller is writing. Before, the pool decided whether changeAsync's await found its change already published and
+  whether a posted writer ever met a running one, so the floor flapped: CI run 43081575104 and the 2026-11-13 forced
+  nightly both went red with every test passing. Behaviour is unchanged.
+
 ## 0.10.0-alpha.120 - 2026-11-17
 
 - fix: a change batch re-checks the files after a saved file whose new declarations another check recorded first
