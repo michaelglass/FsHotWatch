@@ -119,7 +119,7 @@ let private passing () =
         (Ok(overheadReport 100.0))
         (Ok(FileCensus.summarize Set.empty Set.empty Set.empty Set.empty))
 
-let private cwd = Path.Combine(Path.GetTempPath(), "tp-cli-cwd")
+let private cwd = FsHotWatch.TestRoots.TestRoot.freshPath "tp-cli-cwd"
 
 [<Fact>]
 let ``audit defaults: repository is the working directory, 1 % sample, seed 1, 30 minutes`` () =
@@ -154,8 +154,7 @@ let ``audit defaults: repository is the working directory, 1 % sample, seed 1, 3
 let ``--keep runs a verb in the given directory and leaves it for inspection`` () =
     let m, calls = passing ()
 
-    let keep =
-        Path.Combine(Path.GetTempPath(), "tp-cli-keep-" + Guid.NewGuid().ToString "N")
+    let keep = FsHotWatch.TestRoots.TestRoot.freshPath "tp-cli-keep"
 
     try
         let o =
@@ -362,7 +361,7 @@ let ``--weave-tests full reaches every verb's request`` () =
 
 [<Fact>]
 let ``the real measurements are wired to the verbs`` () =
-    let empty = Directory.CreateTempSubdirectory("tp-cli-none-").FullName
+    let empty = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-cli-none").FullName
 
     for verb in [ "audit"; "overhead"; "file-census" ] do
         let o = Program.run empty [ verb; "--project-dir"; "."; "--assembly"; "P" ]
@@ -449,8 +448,7 @@ let ``mutate --json prints the report as JSON, each sample's outcome by name`` (
 
 /// A store holding `rows` and `samples`, deleted after `f`.
 let private withShadowStore (rows: TraceStore.ShadowRow list) (samples: TraceStore.MutationSample list) f =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-shadow-report-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-shadow-report" + ".db"
 
     try
         do
@@ -533,7 +531,7 @@ let ``shadow-report usage errors and an unreadable store exit 2`` () =
 
     test <@ badSince.Exit = 2 && badSince.Stderr.StartsWith "--since needs " @>
 
-    let dir = Directory.CreateTempSubdirectory("tp-shadow-bad-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-shadow-bad").FullName
 
     try
         let bad = Path.Combine(dir, "bad.db")
@@ -572,7 +570,7 @@ let ``shadow-report refuses a flag without its value and an unknown flag``
 
 [<Fact>]
 let ``shadow-report on a store a newer trace schema wrote exits 2 and names it`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-shadow-newer-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-shadow-newer").FullName
 
     try
         let path = Path.Combine(dir, "newer.db")
@@ -602,7 +600,7 @@ let ``shadow-report refuses a valued flag at the end of the line`` (flag: string
 
 [<Fact>]
 let ``mutate --diff samples the methods a change touched and --db stores every sample`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-mutate-store-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-mutate-store").FullName
 
     try
         let diffFile = Path.Combine(dir, "change.diff")
@@ -650,7 +648,7 @@ let ``mutate --diff samples the methods a change touched and --db stores every s
 
 [<Fact>]
 let ``mutate without --diff samples every hit method and stores under the assembly's name`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-mutate-store2-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-mutate-store2").FullName
 
     try
         let m, calls = passing ()
@@ -684,7 +682,7 @@ let ``mutate with a --diff it cannot read exits 2 before anything runs`` () =
 
 [<Fact>]
 let ``mutate with a --db it cannot write exits 2 and names it`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-mutate-bad-db-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-mutate-bad-db").FullName
 
     try
         File.WriteAllText(Path.Combine(dir, "bad.db"), "not a database")
@@ -724,7 +722,7 @@ let ``file-census --db stores the census's gaps under --project`` () =
         FileCensus.summarize Set.empty (set [ "K.gap"; "K.read" ]) Set.empty (set [ "K.read" ])
 
     let m, _ = fake (Ok(auditReport [])) (Ok(overheadReport 100.0)) (Ok report)
-    let db = Path.Combine(Path.GetTempPath(), $"tp-gaps-%A{Guid.NewGuid()}.db")
+    let db = FsHotWatch.TestRoots.TestRoot.freshPath "tp-gaps" + ".db"
 
     let o =
         Program.runWith
@@ -747,7 +745,7 @@ let ``file-census --db stores the census's gaps under --project`` () =
 [<Fact>]
 let ``mutate --index refuses an index it cannot read before running anything`` () =
     let m, calls = passing ()
-    let missing = Path.Combine(Path.GetTempPath(), $"tp-no-index-%A{Guid.NewGuid()}.db")
+    let missing = FsHotWatch.TestRoots.TestRoot.freshPath "tp-no-index" + ".db"
 
     let o =
         Program.runWith m cwd [ "mutate"; "--project-dir"; "P"; "--assembly"; "P"; "--index"; missing ]
@@ -757,7 +755,7 @@ let ``mutate --index refuses an index it cannot read before running anything`` (
 
 [<Fact>]
 let ``mutate --index opens a readable index and passes it on, rooted at the repository`` () =
-    let path = Path.Combine(Path.GetTempPath(), $"tp-index-%A{Guid.NewGuid()}.db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-index" + ".db"
     TestPrune.Database.Database.create path |> ignore
     let mutable passed: Mutation.Judge = Mutation.JudgeByProbe
     let m, _ = passing ()
@@ -799,7 +797,7 @@ let private mutateCapturing (extra: string list) =
     o, received
 
 let private freshIndex () =
-    let path = Path.Combine(Path.GetTempPath(), $"tp-index-%A{Guid.NewGuid()}.db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-index" + ".db"
     TestPrune.Database.Database.create path |> ignore
     path
 
@@ -861,7 +859,7 @@ let ``mutate refuses a symbol or static judgement with no index, and an unknown 
 let ``file-census --db that cannot be opened is a usage error naming it`` () =
     let report = FileCensus.summarize Set.empty Set.empty Set.empty Set.empty
     let m, _ = fake (Ok(auditReport [])) (Ok(overheadReport 100.0)) (Ok report)
-    let dir = Directory.CreateTempSubdirectory("tp-gaps-dir-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-gaps-dir").FullName
 
     let o =
         Program.runWith m cwd [ "file-census"; "--project-dir"; "P"; "--assembly"; "P"; "--db"; dir ]

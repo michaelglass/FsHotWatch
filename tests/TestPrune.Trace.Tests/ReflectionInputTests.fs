@@ -44,7 +44,7 @@ let ``the type-set hash is the assembly's sorted type names, and absent for a mi
     let h = TraceIngest.typeSetHash fxLib
     test <@ h = TraceIngest.typeSetHash fxLib @>
     test <@ h <> "absent" && h.Length = 64 @>
-    test <@ TraceIngest.typeSetHash (Path.Combine(Path.GetTempPath(), "no-such-assembly.dll")) = "absent" @>
+    test <@ TraceIngest.typeSetHash (FsHotWatch.TestRoots.TestRoot.freshPath "no-such-assembly" + ".dll") = "absent" @>
     // Another assembly's types hash differently.
     test <@ TraceIngest.typeSetHash (typeof<Shade>.Assembly.Location) <> h @>
 
@@ -237,7 +237,7 @@ let ``nothing outside the root, generated at runtime, or unnamed is noted`` () =
     // A type parameter: no full name.
     let typeParameter = typedefof<option<_>>.GetGenericArguments().[0]
 
-    let outside = recorderWithRoot (Path.Combine(Path.GetTempPath(), "elsewhere"))
+    let outside = recorderWithRoot (FsHotWatch.TestRoots.TestRoot.freshPath "elsewhere")
     outside.EnterScope "T:outside"
     Reflect.NoteTypeWith(outside, typeof<Boxed>)
     Reflect.NoteAssemblyWith(outside, typeof<Boxed>.Assembly)
@@ -274,7 +274,7 @@ let ``a mutant-type list names the types between its separators`` () =
 
 [<Fact>]
 let ``a file that is not an assembly has no type set`` () =
-    let text = Path.GetTempFileName()
+    let text = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
 
     try
         File.WriteAllText(text, "not an assembly")
@@ -285,7 +285,7 @@ let ``a file that is not an assembly has no type set`` () =
 [<Fact>]
 let ``a PE file with no metadata has no type set`` () =
     // FxLib.dll with its CLI header's data-directory entry zeroed: still a PE file, no metadata.
-    let copy = Path.GetTempFileName()
+    let copy = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
 
     try
         let bytes = File.ReadAllBytes fxLib

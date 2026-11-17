@@ -15,11 +15,11 @@ open TestPrune.Trace.Model
 open TestPrune.Trace.Weaver
 open TestPrune.Trace.Tests
 
-/// Copy a fixture's build output to a scratch dir INSIDE the repo (so repo-root probing
-/// still works) and return it. Callers delete it with `deleteScratch`.
+/// Copy a fixture's build output to a scratch dir inside the repository
+/// (`Fixtures.inRepositoryScratch`: why it must be there is written there) and return it.
+/// Callers delete it with `deleteScratch`.
 let copyFixture (sourceDir: string) =
-    let dir =
-        Path.Combine(Fixtures.repoRoot, "tests", "TraceFixtures", "bin-scratch", Guid.NewGuid().ToString "N")
+    let dir = Fixtures.inRepositoryScratch ()
 
     Directory.CreateDirectory dir |> ignore
 

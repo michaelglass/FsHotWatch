@@ -134,12 +134,24 @@ let ``inputs go to static init, then the current scope, then ambient`` () =
 
 [<Fact>]
 let ``every file shim notes its input and does what the original does`` () =
-    let root = Fixtures.repoRoot
+    // The recorder's root is a miniature repository this test alone owns (AUTOMATION-1775):
+    // the shims below LIST it recursively and compare two listings, which on the real
+    // repository raced every build and test writing there between the two.
+    use repository = FsHotWatch.TestRoots.TestRoot.create "trace-io"
+    let root = repository.Path
+
+    for relative in [ "global.json"; "FsHotWatch.slnx" ] do
+        File.Copy(FsHotWatch.TestRoots.RepositoryTree.path relative, repository.Under relative)
+
+    for relative in [ "src/a.json"; "scripts/b.json"; "tests/c.txt" ] do
+        Directory.CreateDirectory(Path.GetDirectoryName(repository.Under relative))
+        |> ignore
+
+        File.WriteAllText(repository.Under relative, "{}")
 
     // A private copy under the root: some shims open with FileShare.None, which fails while
-    // any other process reads the repository's own global.json.
-    let inputDir =
-        Path.Combine(root, "tests", "TraceFixtures", "bin-scratch", Guid.NewGuid().ToString "N")
+    // any other process reads the root's own global.json.
+    let inputDir = repository.Under "input"
 
     let file = Path.Combine(inputDir, "global.json")
     Directory.CreateDirectory inputDir |> ignore
@@ -151,14 +163,13 @@ let ``every file shim notes its input and does what the original does`` () =
     state.EnterScope "T:io"
     let ct = CancellationToken.None
 
-    let scratch =
-        Path.Combine(root, "tests", "TraceFixtures", "bin-scratch", Guid.NewGuid().ToString "N")
+    let scratch = repository.Under "scratch"
 
     Directory.CreateDirectory scratch |> ignore
     let written = Path.Combine(scratch, "w.txt")
 
-    // A build or daemon reading the repository's own global.json while this runs, as one
-    // did when this test failed with "being used by another process" in a full-suite run.
+    // Another reader of the root's global.json while this runs, as a build or daemon read the
+    // repository's when this test failed with "being used by another process" in a full-suite run.
     use _concurrentReader =
         new FileStream(Path.Combine(root, "global.json"), FileMode.Open, FileAccess.Read, FileShare.Read)
 

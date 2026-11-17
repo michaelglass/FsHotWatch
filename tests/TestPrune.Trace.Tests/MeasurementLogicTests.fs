@@ -583,7 +583,7 @@ let ``an exception reading getrusage is the cannot-measure error`` () =
 
 [<Fact>]
 let ``copying a tree keeps relative paths, and a missing source copies nothing`` () =
-    let root = IO.Directory.CreateTempSubdirectory("tp-copytree-").FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-copytree").FullName
 
     try
         let source = IO.Path.Combine(root, "src")

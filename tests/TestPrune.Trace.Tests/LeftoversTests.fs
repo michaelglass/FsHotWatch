@@ -54,7 +54,7 @@ let ``lsof holders are the processes with a descriptor on a named write end, thi
 
 /// A fake `/proc` tree under a fresh directory.
 let private withProc (body: string -> unit) =
-    let root = Path.Combine(Path.GetTempPath(), "proc-" + Guid.NewGuid().ToString "N")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "proc"
     Directory.CreateDirectory root |> ignore
 
     try
@@ -186,7 +186,7 @@ let ``a termination names how many it stopped and what still runs`` () =
 [<Fact>]
 let ``lsof's holders are the processes it lists on the peer of our read end`` () =
     // A stand-in lsof that answers both questions: our read end's peer, then who holds it.
-    let dir = Path.Combine(Path.GetTempPath(), "lsof-" + Guid.NewGuid().ToString "N")
+    let dir = FsHotWatch.TestRoots.TestRoot.freshPath "lsof"
     Directory.CreateDirectory dir |> ignore
     let script = Path.Combine(dir, "lsof")
 
@@ -205,7 +205,7 @@ let ``lsof's holders are the processes it lists on the peer of our read end`` ()
 
 /// A `/proc` tree holding one process's `stat`, under a fresh directory.
 let private procWithStat (pid: int) (stat: string) =
-    let root = Path.Combine(Path.GetTempPath(), "proc-" + Guid.NewGuid().ToString "N")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "proc"
     Directory.CreateDirectory(Path.Combine(root, string pid)) |> ignore
     File.WriteAllText(Path.Combine(root, string pid, "stat"), stat)
     root

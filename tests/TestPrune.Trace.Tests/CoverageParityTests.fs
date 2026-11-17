@@ -88,7 +88,7 @@ let ``a woven app's coverage keeps the branch points of union matches, field com
               AssemblyName = "FxTests"
               TestProject = "FxTests"
               WeaveTests = SitesOnly
-              RunDir = Directory.CreateTempSubdirectory("tp-coverage-").FullName
+              RunDir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-coverage").FullName
               VerifyTimeout = TimeSpan.FromMinutes 2.0 }
 
         let launch = TraceSession.prepareProject req |> Result.defaultWith failwith
@@ -145,7 +145,7 @@ let ``a traced app run under --coverage exits 0 with its test host's complete du
               AssemblyName = "FxTests"
               TestProject = "FxTests"
               WeaveTests = SitesOnly
-              RunDir = Directory.CreateTempSubdirectory("tp-coverage-").FullName
+              RunDir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-coverage").FullName
               VerifyTimeout = TimeSpan.FromMinutes 2.0 }
 
         let launch = TraceSession.prepareProject req |> Result.defaultWith failwith

@@ -18,6 +18,8 @@
     refuses a run given both.
   -->
   <ItemGroup>
+    <!-- AUTOMATION-1775: every scratch directory is a TestRoot this test alone owns. -->
+    <Compile Include="../FsHotWatch.Tests/TestRoot.fs" Link="TestRoot.fs" />
     <Compile Include="QuotationWarmup.fs" />
     <Compile Include="Fixtures.fs" />
     <Compile Include="ScaffoldTests.fs" />

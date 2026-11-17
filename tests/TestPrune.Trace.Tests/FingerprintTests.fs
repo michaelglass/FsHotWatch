@@ -79,7 +79,7 @@ let ``the fingerprint is a pinned lowercase sha256 of canonical json`` () =
 
 [<Fact>]
 let ``hashFile hashes a repo file's bytes and marks a missing file`` () =
-    let root = Directory.CreateTempSubdirectory().FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     File.WriteAllText(Path.Combine(root, "global.json"), "abc")
 
     test
@@ -89,7 +89,7 @@ let ``hashFile hashes a repo file's bytes and marks a missing file`` () =
 
 [<Fact>]
 let ``gather folds in the dump, versions, core's schema as hash scheme and hashed config`` () =
-    let root = Directory.CreateTempSubdirectory().FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     File.WriteAllText(Path.Combine(root, "global.json"), "abc")
     let setVar = $"TESTPRUNE_FP_SET_{Guid.NewGuid():N}"
     let unsetVar = $"TESTPRUNE_FP_UNSET_{Guid.NewGuid():N}"

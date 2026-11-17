@@ -16,7 +16,7 @@ let private request projectDir : TraceSession.PrepareRequest =
       AssemblyName = "FxTests"
       TestProject = "FxTests"
       WeaveTests = SitesOnly
-      RunDir = Directory.CreateTempSubdirectory("tp-measure-").FullName
+      RunDir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-measure").FullName
       VerifyTimeout = TimeSpan.FromMinutes 2.0 }
 
 let private withScratch (f: TraceSession.PrepareRequest -> unit) =
@@ -32,7 +32,7 @@ let private ok (r: Result<'a, string>) = r |> Result.defaultWith failwith
 let private timeout = TimeSpan.FromMinutes 5.0
 
 let private noBuildOutput () =
-    request (Directory.CreateTempSubdirectory("tp-measure-none-").FullName)
+    request ((FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-measure-none").FullName)
 
 [<Fact>]
 let ``getrusage sees a child's CPU`` () =
@@ -46,8 +46,7 @@ let ``getrusage sees a child's CPU`` () =
 
 [<Fact>]
 let ``a getrusage that fails before a launch launches nothing, and after one is an error too`` () =
-    let marker =
-        Path.Combine(Path.GetTempPath(), "tp-measure-" + Guid.NewGuid().ToString "N")
+    let marker = FsHotWatch.TestRoots.TestRoot.freshPath "tp-measure"
 
     let launch read =
         Overhead.measure read false "/bin/sh" [ "-c"; $"touch '%s{marker}'" ] [] "/" timeout

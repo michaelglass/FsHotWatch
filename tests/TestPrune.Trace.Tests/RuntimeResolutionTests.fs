@@ -52,7 +52,7 @@ let ``an app with several frameworks is keyed on Microsoft.NETCore.App`` () =
 
 [<Fact>]
 let ``the runtimeconfig's rollForward wins over DOTNET_ROLL_FORWARD, which wins over Minor`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-rr-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-rr").FullName
 
     try
         for v in installedSet do
@@ -89,7 +89,7 @@ let ``the description is the recorder's for this process`` () =
 /// A project directory holding one build output: `bin/Debug/net10.0/App.dll`, its deps.json
 /// and a runtimeconfig asking for this process's runtime.
 let private withBuild (f: string -> string -> unit) =
-    let root = Directory.CreateTempSubdirectory("tp-predict-").FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-predict").FullName
 
     try
         let out = Path.Combine(root, "app", "bin", "Debug", "net10.0")

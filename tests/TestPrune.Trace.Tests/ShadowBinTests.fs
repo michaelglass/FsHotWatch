@@ -21,7 +21,7 @@ let private sha (path: string) =
     Convert.ToHexString(SHA256.HashData(File.ReadAllBytes path))
 
 let private tempDir () =
-    Directory.CreateTempSubdirectory("tp-shadow-").FullName
+    (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-shadow").FullName
 
 // ---------------------------------------------------------------- HardLink
 
@@ -360,8 +360,7 @@ let private withRecorderPackage (deps: string) (version: string) =
 
 /// A scratch test project: FxTests' build output under `<scratch>/FxTests/bin/Debug/net10.0`.
 let scratchProject () =
-    let projectDir =
-        Path.Combine(Fixtures.fixtureRoot, "bin-scratch", Guid.NewGuid().ToString "N", "FxTests")
+    let projectDir = Path.Combine(Fixtures.inRepositoryScratch (), "FxTests")
 
     let debug = Path.Combine(projectDir, "bin", "Debug", "net10.0")
 

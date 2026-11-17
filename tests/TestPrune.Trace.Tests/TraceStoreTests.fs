@@ -9,7 +9,7 @@ open TestPrune.Trace.Model
 open TestPrune.Trace.TraceStore
 
 let private tempPath () =
-    Path.Combine(Directory.CreateTempSubdirectory().FullName, "traces.db")
+    Path.Combine((FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName, "traces.db")
 
 /// Drop the pooled connections of the database at `path` only; both stores pool under
 /// `Data Source=<path>`. Clearing every pool in the process disposes the handles of
@@ -389,7 +389,7 @@ let ``a migration list that is not strictly increasing is refused before the fil
 
 [<Fact>]
 let ``a TestPrune.Core schema recreate of the index never touches the trace file`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let tracePath = Path.Combine(dir, "test-traces.db")
     let indexPath = Path.Combine(dir, "test-impact.db")
 

@@ -11,7 +11,7 @@ open TestPrune.Trace.TraceIngest
 open TestPrune.Trace.TraceStore
 
 let private tempDb () =
-    Path.Combine(Directory.CreateTempSubdirectory().FullName, "t.db")
+    Path.Combine((FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName, "t.db")
 
 let private counters test ambient =
     { Test = test

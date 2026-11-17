@@ -18,7 +18,7 @@ let private row id kind typeName mem doc first last =
 
 [<Fact>]
 let ``a manifest round-trips`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
 
     try
         let m =
@@ -38,7 +38,7 @@ let ``a manifest round-trips`` () =
 
 [<Fact>]
 let ``a field containing a tab is refused at write time`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
 
     try
         let bad =
@@ -52,7 +52,7 @@ let ``a field containing a tab is refused at write time`` () =
 
 [<Fact>]
 let ``an unknown probe kind is an error, not an exception`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
 
     try
         File.WriteAllText(Path.Combine(dir, "manifest.tsv"), "0\tbogus\tA\tN.M\tf\t\t0\t0\n")
@@ -63,7 +63,7 @@ let ``an unknown probe kind is an error, not an exception`` () =
 
 [<Fact>]
 let ``a missing manifest is an error`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
 
     try
         test <@ Manifest.read dir |> Result.isError @>

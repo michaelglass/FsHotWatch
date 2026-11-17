@@ -17,14 +17,14 @@ let private header =
 let private endLine = """{"end":true}"""
 
 let private writeLines (lines: string[]) =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let path = Path.Combine(dir, "trace-9.ndjson")
     File.WriteAllLines(path, lines)
     path
 
 [<Fact>]
 let ``a dump reads back exactly what the recorder held`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let state = RecorderState(128, None, null)
     state.EnterScope "T:x"
     state.Hit 3
@@ -42,7 +42,7 @@ let ``a dump reads back exactly what the recorder held`` () =
 
 [<Fact>]
 let ``every scope field and header field survives the round trip`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let state = RecorderState(8, None, "T:parent")
     state.EnterScope "T:t"
     let s = state.CurrentScope()
@@ -115,7 +115,7 @@ let ``every scope field and header field survives the round trip`` () =
 
 [<Fact>]
 let ``counters are written under their bucket names`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let state = RecorderState(4, None, null)
     let before = state.Counters()
     state.Hit 0
@@ -197,7 +197,7 @@ let ``a header and end marker alone is a dump with no scopes`` () =
 
 [<Fact>]
 let ``readDirectory ignores tmp files and reports rejected dumps by name`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     File.WriteAllText(Path.Combine(dir, "trace-3.ndjson.tmp"), "partial")
     File.WriteAllText(Path.Combine(dir, "trace-4.ndjson"), "not json")
     let good, bad = DumpReader.readDirectory dir
@@ -206,7 +206,7 @@ let ``readDirectory ignores tmp files and reports rejected dumps by name`` () =
 
 [<Fact>]
 let ``readDirectory returns good dumps and treats a missing directory as empty`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     File.WriteAllLines(Path.Combine(dir, "trace-7.ndjson"), [| header; endLine |])
     let good, bad = DumpReader.readDirectory dir
     test <@ good |> List.map (fun d -> d.Pid) = [ 2 ] && List.isEmpty bad @>

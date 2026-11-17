@@ -120,7 +120,9 @@ let ``with no output directory nothing is installed`` () =
 
 [<Fact>]
 let ``an output directory installs a recorder that dumps at exit`` () =
-    let out = Path.Combine(Directory.CreateTempSubdirectory().FullName, "out")
+    let out =
+        Path.Combine((FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName, "out")
+
     let mutable handler: EventHandler = null
 
     let state =
@@ -150,7 +152,7 @@ let ``an output directory installs a recorder that dumps at exit`` () =
 
 [<Fact>]
 let ``a dump that cannot be written is reported on one line and never throws`` () =
-    let blocker = Path.GetTempFileName()
+    let blocker = (FsHotWatch.TestRoots.TestRoot.freshFile "tmp")
     let err = new StringWriter()
 
     try
@@ -170,7 +172,7 @@ let ``a dump that cannot be written is reported on one line and never throws`` (
 
 [<Fact>]
 let ``a missing or bad id count falls back to a generous default`` () =
-    let out = Directory.CreateTempSubdirectory().FullName
+    let out = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let ignoreExit (_: EventHandler) = ()
 
     for ids in [ None; Some "x"; Some "0" ] do
@@ -183,7 +185,7 @@ let ``a missing or bad id count falls back to a generous default`` () =
 
 [<Fact>]
 let ``a mutate list makes exactly those probes throw, after recording the hit`` () =
-    let out = Directory.CreateTempSubdirectory().FullName
+    let out = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let ignoreExit (_: EventHandler) = ()
 
     let state =
@@ -204,7 +206,7 @@ let ``a mutate list makes exactly those probes throw, after recording the hit`` 
 
 [<Fact>]
 let ``without a mutate list no probe throws`` () =
-    let out = Directory.CreateTempSubdirectory().FullName
+    let out = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let state = Runtime.install (env [ Contract.OutEnv, out ]) ignore
     test <@ isNull state.Mutants @>
     withRecorder state (fun () -> Probes.Hit 1)

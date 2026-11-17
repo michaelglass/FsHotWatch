@@ -34,7 +34,7 @@ let private row id kind typ mem doc line =
 /// document and no symbol (unmapped), 3 = a closure constructor (dropped), 4 = code in
 /// src/Plain.fs, which exists but is not indexed (a file-level entry).
 type World() =
-    let root = Directory.CreateTempSubdirectory().FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let src = Path.Combine(root, "src", "M.fs")
     let plain = Path.Combine(root, "src", "Plain.fs")
     do Directory.CreateDirectory(Path.GetDirectoryName src) |> ignore
@@ -449,7 +449,9 @@ let ``a source file edited since the build marks its executors as drifted`` () =
 [<Fact>]
 let ``a source file deleted since the build is not indexed; unhashed and outside documents are not checked`` () =
     let w = World()
-    let outside = Path.Combine(Path.GetTempPath(), "elsewhere", "X.fs")
+
+    let outside =
+        Path.Combine(FsHotWatch.TestRoots.TestRoot.freshPath "elsewhere", "X.fs")
 
     w.Manifest <-
         { w.Manifest with
@@ -541,7 +543,7 @@ let ``file inputs are stored repo-relative with their current state`` () =
             note st "list-deep" data
             note st "list-deep" (Path.Combine(data, "nowhere"))
             note st "meta" (Path.Combine(data, "a.json"))
-            note st "read" (Path.Combine(Path.GetTempPath(), "outside.json"))
+            note st "read" (FsHotWatch.TestRoots.TestRoot.freshPath "outside" + ".json")
     )
 
     use store = TraceStore.Store.Open w.TraceDb
@@ -578,7 +580,7 @@ let private makeReadOnly (path: string) =
 
 [<Fact>]
 let ``a file's metadata hash follows its content and permissions, never its times`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let file = Path.Combine(dir, "a.txt")
     File.WriteAllText(file, "one")
     let original = metaHash file
@@ -597,7 +599,7 @@ let ``a file's metadata hash follows its content and permissions, never its time
 
 [<Fact>]
 let ``each permission source sees a file made read-only`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let file = Path.Combine(dir, "a.txt")
     File.WriteAllText(file, "x")
     // The attributes source reads on every OS; the Unix mode only off Windows.
@@ -616,7 +618,7 @@ let ``each permission source sees a file made read-only`` () =
 
 [<Fact>]
 let ``a directory's metadata hash follows its entries and permissions; an absent path is absent`` () =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let sub = Path.Combine(dir, "sub")
     Directory.CreateDirectory sub |> ignore
     let empty = metaHash sub
@@ -665,7 +667,7 @@ let ``an input of an unknown kind marks its test incomplete and keeps the others
 
 [<Fact>]
 let ``repoRelative maps under-root paths and the traced bin to the debug bin`` () =
-    let root = Path.Combine(Path.GetTempPath(), "repo")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "repo"
 
     let under (parts: string list) =
         Path.Combine(root :: parts |> Array.ofList)

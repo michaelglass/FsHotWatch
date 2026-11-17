@@ -90,8 +90,7 @@ let ``the log line names the project, both selections, the rules and the misses`
 
 [<Fact>]
 let ``a shadow row round-trips through the store, and so do its misses`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-shadow-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-shadow" + ".db"
 
     try
         use store = Store.Open path
@@ -124,7 +123,7 @@ let ``a shadow row round-trips through the store, and so do its misses`` () =
 
 [<Fact>]
 let ``an input's hash now is the hash ingestion stores for it`` () =
-    let root = Directory.CreateTempSubdirectory("tp-input-now-").FullName
+    let root = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-input-now").FullName
 
     try
         File.WriteAllText(Path.Combine(root, "a.txt"), "x")
@@ -234,8 +233,7 @@ let ``a test held only by an untraced child process is counted, one held by anyt
 
 [<Fact>]
 let ``a row written before the measurement columns reads back as not recorded`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-shadow-old-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-shadow-old" + ".db"
 
     try
         do
@@ -273,8 +271,7 @@ let ``a row written before the measurement columns reads back as not recorded`` 
 
 [<Fact>]
 let ``a mutation sample round-trips through the store`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-mutation-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-mutation" + ".db"
 
     try
         use store = Store.Open path
@@ -457,8 +454,7 @@ let ``fallbacks never leave out a test the static walk reaches from a seed trace
 
 [<Fact>]
 let ``symbol facts: probed is replaced by each ingestion, static-init and unstable accumulate`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-facts-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-facts" + ".db"
 
     try
         use store = Store.Open path
@@ -475,8 +471,7 @@ let ``symbol facts: probed is replaced by each ingestion, static-init and unstab
 
 [<Fact>]
 let ``the inputs a project's traces claim, under one fingerprint`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-claims-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-claims" + ".db"
 
     try
         use store = Store.Open path
@@ -530,8 +525,7 @@ let ``an incomplete trace with no reason is not held by an untraced child`` () =
 
 [<Fact>]
 let ``every row mode and fingerprint outcome, and every sample outcome, round-trips through the store`` () =
-    let path =
-        Path.Combine(Path.GetTempPath(), "tp-shadow-all-" + Guid.NewGuid().ToString "N" + ".db")
+    let path = FsHotWatch.TestRoots.TestRoot.freshPath "tp-shadow-all" + ".db"
 
     try
         use store = Store.Open path

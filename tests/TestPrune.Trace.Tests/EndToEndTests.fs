@@ -33,7 +33,7 @@ type private E2e =
 /// ingest, and hand back the store and the summary. A stale dump left in the run's dump
 /// directory must not survive preparation.
 let private runWoven weaveTests =
-    (let runDir = Directory.CreateTempSubdirectory("tp-e2e-").FullName
+    (let runDir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e").FullName
      let projectDir = ShadowBinTests.scratchProject ()
 
      try
@@ -292,7 +292,7 @@ let ``under a full weave, a test-project module value's read is an input of each
 
 [<Fact>]
 let ``a project with no build output is refused with the shadow bin's reason`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-e2e-none-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-none").FullName
 
     match prepareProject (request SitesOnly dir dir) with
     | Error why -> test <@ why = $"""no build output under %s{Path.Combine(dir, "bin", "Debug")}""" @>
@@ -301,7 +301,9 @@ let ``a project with no build output is refused with the shadow bin's reason`` (
 [<Fact>]
 let ``a project with nothing woven is refused before it runs`` () =
     let projectDir = ShadowBinTests.scratchProject ()
-    let elsewhere = Directory.CreateTempSubdirectory("tp-e2e-root-").FullName
+
+    let elsewhere =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-root").FullName
 
     try
         let result =
@@ -317,7 +319,7 @@ let ``a project with nothing woven is refused before it runs`` () =
 [<Fact>]
 let ``a cancelled preparation raises instead of refusing`` () =
     let projectDir = ShadowBinTests.scratchProject ()
-    let runDir = Directory.CreateTempSubdirectory("tp-e2e-cancel-").FullName
+    let runDir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-cancel").FullName
 
     try
         use cts = new CancellationTokenSource()
@@ -353,7 +355,9 @@ let ``a launcher's cancellation that is not the run's is a refusal`` () =
 [<Fact>]
 let ``a host-launched preparation refuses an app that ships its own recorder before launching`` () =
     let projectDir = ShadowBinTests.scratchProject ()
-    let runDir = Directory.CreateTempSubdirectory("tp-e2e-own-recorder-").FullName
+
+    let runDir =
+        (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-own-recorder").FullName
 
     try
         let debug =
@@ -389,13 +393,15 @@ let ``a host-launched preparation refuses an app that ships its own recorder bef
 
 [<Fact>]
 let ``preparation never throws`` () =
-    match prepareProject (request SitesOnly null (Path.GetTempPath())) with
+    match
+        prepareProject (request SitesOnly null (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-empty").FullName)
+    with
     | Error why -> test <@ why.StartsWith "trace preparation failed: " @>
     | Ok _ -> failwith "prepared a null project"
 
 [<Fact>]
 let ``ingestion never throws`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-e2e-ingest-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-ingest").FullName
     let store = TraceStore.Store.Open(Path.Combine(dir, "traces.db"))
     (store :> IDisposable).Dispose()
 
@@ -443,7 +449,7 @@ let ``ingestion never throws`` () =
 
 [<Fact>]
 let ``a refusal is stored as a refused run with its reason`` () =
-    let dir = Directory.CreateTempSubdirectory("tp-e2e-refusal-").FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-e2e-refusal").FullName
     use store = TraceStore.Store.Open(Path.Combine(dir, "traces.db"))
     recordRefusal store "r1" "P" TraceStore.PartialRun "tree" "no apphost"
     let r = store.Runs "P" |> List.exactlyOne

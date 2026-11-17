@@ -156,7 +156,7 @@ let private run: TraceRun =
 
 /// An index of `graph tests` and a trace database holding `traces`, in a fresh directory.
 let private files (tests: string list) (traces: StoredTrace list) =
-    let dir = Directory.CreateTempSubdirectory().FullName
+    let dir = (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
     let index = Path.Combine(dir, "index.db")
     let db = Path.Combine(dir, "traces.db")
     TestPrune.Database.Database.create(index).RebuildProjects([ graph tests ])
@@ -276,7 +276,7 @@ let ``recall refuses an index of another schema without touching it`` () =
 let ``recall rejects bad arguments with exit 2 and its usage`` (args: string) =
     let o =
         recall
-            (Directory.CreateTempSubdirectory().FullName)
+            ((FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName)
             (args.Split(' ', StringSplitOptions.RemoveEmptyEntries) |> List.ofArray)
 
     test <@ o.Exit = 2 @>

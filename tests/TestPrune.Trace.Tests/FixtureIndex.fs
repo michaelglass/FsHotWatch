@@ -32,8 +32,7 @@ let private fxTests = Path.Combine("tests", "FxTests")
 /// fixture root's relative layout, so a PDB document path made relative to the REAL
 /// fixture root matches the index's paths.
 let private indexProjects (projects: string list) (edit: string -> string -> string) =
-    let scratch =
-        Path.Combine(Path.GetTempPath(), "tp-fixture-index-" + Guid.NewGuid().ToString "N")
+    let scratch = FsHotWatch.TestRoots.TestRoot.freshPath "tp-fixture-index"
 
     for project in projects do
         let source = Path.Combine(Fixtures.fixtureRoot, project)

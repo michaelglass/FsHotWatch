@@ -18,7 +18,7 @@ let ``run returns the exit code and both output streams, and passes the environm
             "/bin/sh"
             [ "-c"; "echo out-$LAUNCH_TEST_VAR; echo err >&2; exit 3" ]
             [ "LAUNCH_TEST_VAR", "yes" ]
-            (Path.GetTempPath())
+            (FsHotWatch.TestRoots.TestBinary.directory ())
             (TimeSpan.FromMinutes 1.0)
 
     test <@ code = 3 @>
@@ -32,7 +32,12 @@ let ``run keeps the end of each stream of a long failing run, and says it droppe
         + "echo out-last; echo err-last >&2; exit 2"
 
     let code, output =
-        Launch.run "/bin/sh" [ "-c"; script ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+        Launch.run
+            "/bin/sh"
+            [ "-c"; script ]
+            []
+            (FsHotWatch.TestRoots.TestBinary.directory ())
+            (TimeSpan.FromMinutes 1.0)
 
     test <@ code = 2 @>
     test <@ output.Contains "out-last" && output.Contains "err-last" @>
@@ -54,7 +59,7 @@ let ``run starts the child outside the caller's trace, passing only the trace va
                 "/usr/bin/env"
                 []
                 [ Recorder.Contract.OutEnv, "/explicit/dumps" ]
-                (Path.GetTempPath())
+                (FsHotWatch.TestRoots.TestBinary.directory ())
                 (TimeSpan.FromMinutes 1.0)
 
         // Only the trace lines: a failure message must not print the rest of the environment.
@@ -73,7 +78,12 @@ let ``run kills a process that outlives its timeout`` () =
     // A `sleep 30` left to finish exits 0, so a non-zero code alone proves the kill: no
     // stopwatch, which a loaded box can push past any bound.
     let code, _ =
-        Launch.run "/bin/sleep" [ "30" ] [] (Path.GetTempPath()) (TimeSpan.FromMilliseconds 200.0)
+        Launch.run
+            "/bin/sleep"
+            [ "30" ]
+            []
+            (FsHotWatch.TestRoots.TestBinary.directory ())
+            (TimeSpan.FromMilliseconds 200.0)
 
     test <@ code <> 0 @>
 
@@ -81,7 +91,7 @@ let private request exe args =
     { Launch.LaunchRequest.Exe = exe
       Launch.LaunchRequest.Args = args
       Launch.LaunchRequest.Env = []
-      Launch.LaunchRequest.WorkDir = Path.GetTempPath()
+      Launch.LaunchRequest.WorkDir = FsHotWatch.TestRoots.TestBinary.directory ()
       Launch.LaunchRequest.Timeout = TimeSpan.FromMinutes 1.0 }
 
 // The child sleeps far past the xUnit cap, so a launcher that waited it out instead of
@@ -101,7 +111,7 @@ let ``cancelling the direct launcher kills its child and raises`` () =
 [<Fact>]
 let ``an already-cancelled launch never starts its child`` () =
     let marker =
-        Path.Combine(Directory.CreateTempSubdirectory("tp-launch-").FullName, "started")
+        Path.Combine((FsHotWatch.TestRoots.TestRoot.freshDirectory "tp-launch").FullName, "started")
 
     raises<OperationCanceledException>
         <@ Launch.direct (request "/bin/sh" [ "-c"; $"touch '%s{marker}'" ]) (CancellationToken(true)) @>
@@ -128,7 +138,12 @@ let ``a run returns when its child exits, killing what the child left running on
         "trap '' TERM; ( trap '' TERM; while :; do sleep 1; done ) & echo orphan=$!; echo started"
 
     let code, output =
-        Launch.run "/bin/sh" [ "-c"; script ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 10.0)
+        Launch.run
+            "/bin/sh"
+            [ "-c"; script ]
+            []
+            (FsHotWatch.TestRoots.TestBinary.directory ())
+            (TimeSpan.FromMinutes 10.0)
 
     let orphan =
         output.Split '\n'
@@ -145,13 +160,23 @@ let ``a run returns when its child exits, killing what the child left running on
         test <@ output.Contains Launch.LeftRunningNote @>
     finally
         if alive orphan then
-            Launch.run "/bin/kill" [ "-9"; string orphan ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+            Launch.run
+                "/bin/kill"
+                [ "-9"; string orphan ]
+                []
+                (FsHotWatch.TestRoots.TestBinary.directory ())
+                (TimeSpan.FromMinutes 1.0)
             |> ignore
 
 [<Fact>]
 let ``a run whose child leaves nothing running says nothing about it`` () =
     let _, output =
-        Launch.run "/bin/sh" [ "-c"; "echo done" ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
+        Launch.run
+            "/bin/sh"
+            [ "-c"; "echo done" ]
+            []
+            (FsHotWatch.TestRoots.TestBinary.directory ())
+            (TimeSpan.FromMinutes 1.0)
 
     test <@ output = "done\n" @>
 
@@ -170,7 +195,7 @@ let ``output held open where lsof cannot run still ends after the grace, and say
 
 /// A `/proc` tree with nothing in it: no process holds anything there.
 let private emptyProc () =
-    let root = Path.Combine(Path.GetTempPath(), "proc-" + Guid.NewGuid().ToString "N")
+    let root = FsHotWatch.TestRoots.TestRoot.freshPath "proc"
     Directory.CreateDirectory root |> ignore
     root
 

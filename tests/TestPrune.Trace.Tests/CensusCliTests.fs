@@ -46,7 +46,7 @@ let private recordAt (path: string) (runId: string) (traced: int) =
     )
 
 let private dir () =
-    Directory.CreateTempSubdirectory().FullName
+    (FsHotWatch.TestRoots.TestRoot.freshDirectory "tmp").FullName
 
 let private census cwd args = Program.run cwd ("census" :: args)
 
