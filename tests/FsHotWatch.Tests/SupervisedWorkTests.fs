@@ -871,3 +871,95 @@ let ``with an inline store writer, admission, a deadline and close each find the
         Assert.False(store.Snapshot.IsBusy)
     finally
         release.Set()
+
+// --- AUTOMATION-1781: a receipt is settled by the time its retirement can read as rest ---
+
+/// A store whose every publication is checked, on the writer, before anything else runs: a
+/// publication that reads at rest while a known receipt is unsettled is recorded. The one point
+/// a reader can see a retirement that a later statement of the same change has not caught up
+/// with, so a receipt set after its retirement publishes is caught every time, not by chance.
+let private restObservingStore () =
+    let receipts = Collections.Concurrent.ConcurrentQueue<Task<unit>>()
+    let atRestUnsettled = Collections.Concurrent.ConcurrentQueue<int64>()
+
+    let observe (snapshot: HostSnapshot) =
+        if not snapshot.IsBusy && receipts |> Seq.exists (fun r -> not r.IsCompleted) then
+            atRestUnsettled.Enqueue snapshot.Version
+
+    Store(AsyncRuntime.pool, observe), receipts, atRestUnsettled
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a finished request's receipt is set before its retirement reads as rest`` () =
+    let store, receipts, atRestUnsettled = restObservingStore ()
+    use release = new ManualResetEventSlim(false)
+
+    let queue =
+        SupervisedWork.Queue(
+            store,
+            "observed",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state _ -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state (value: int) _ _ ->
+                async {
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
+
+                    if value = 2 then
+                        failwith "the second request's work fails"
+
+                    return state + value
+                })
+        )
+
+    // Every receipt is known before any work finishes, so each retirement is checked against it.
+    for value in 1..3 do
+        receipts.Enqueue(queue.Submit(value, CancellationToken.None))
+
+    release.Set()
+
+    receipts
+    |> Seq.iteri (fun i receipt ->
+        if i = 1 then
+            Assert.ThrowsAny<exn>(fun () -> awaitResult receipt) |> ignore
+        else
+            awaitResult receipt)
+
+    queue.Close()
+    Assert.Empty atRestUnsettled
+
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``a request retired by a successor's failing beginWork has its receipt set before rest`` () =
+    let store, receipts, atRestUnsettled = restObservingStore ()
+    use release = new ManualResetEventSlim(false)
+
+    let queue =
+        SupervisedWork.Queue(
+            store,
+            "observed",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state (value: int) ->
+                if value = 2 then
+                    failwith "the successor's beginWork fails"
+
+                state),
+            (fun state _ -> state),
+            ignore,
+            (fun state value _ _ ->
+                async {
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
+                    return state + value
+                })
+        )
+
+    // The first runs; the second queues behind it, and handing over to it stops the queue.
+    receipts.Enqueue(queue.Submit(1, CancellationToken.None))
+    receipts.Enqueue(queue.Submit(2, CancellationToken.None))
+    release.Set()
+
+    for receipt in receipts do
+        Assert.ThrowsAny<exn>(fun () -> awaitResult receipt) |> ignore
+
+    Assert.Empty atRestUnsettled
