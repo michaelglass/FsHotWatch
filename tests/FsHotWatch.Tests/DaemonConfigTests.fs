@@ -234,13 +234,13 @@ let ``parseConfig checker maxConcurrentChecks that is not a positive integer is 
 
     test <@ ex.message.Contains "checker.maxConcurrentChecks" @>
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repository host admits checks at its launch worktree's configured bound`` () =
     withTempDir "cfg-host-checks" (fun dir ->
         File.WriteAllText(Path.Combine(dir, ".fshw.json"), """{"checker": {"maxConcurrentChecks": 2}}""")
         test <@ FsHotWatch.WorkScheduler.CheckConcurrency.value (hostCheckConcurrency dir) = 2 @>)
 
-[<Fact(Timeout = 15000)>]
+[<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a repository host whose launch config is refused admits one check per processor`` () =
     withTempDir "cfg-host-checks-bad" (fun dir ->
         File.WriteAllText(Path.Combine(dir, ".fshw.json"), """{"checker": {"maxConcurrentChecks": 0}}""")
