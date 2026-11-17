@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- FSHW-ROOT-001 on its own, apart from FsHotWatch.Rules, so `.fshw.json` can
+         scope it like FSHW-WALL-001: a test may touch disk only under a root it alone
+         owns covers every test source in the repository, TestPrune's included, while
+         the other house rules stay scoped to FsHotWatch's code (AUTOMATION-1775).
+         Never published. -->
+    <IsPackable>false</IsPackable>
+    <!-- LOAD-BEARING: FSharp.Analyzers.SDK only opens `*Analyzer*.dll`; see
+         FsHotWatch.Rules.fsproj. -->
+    <AssemblyName>FsHotWatch.TestRootAnalyzers</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../FsHotWatch.Rules/TestSource.fs" Link="TestSource.fs" />
+    <Compile Include="RootAnalyzer.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+    <PackageReference Include="FSharp.Analyzers.SDK" />
+    <PackageReference Include="FSharp.Compiler.Service" />
+  </ItemGroup>
+</Project>

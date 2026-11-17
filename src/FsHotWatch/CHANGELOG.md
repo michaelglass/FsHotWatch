@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- test(rules): FSHW-ROOT-001 — a test touches disk only under a root it alone owns (AUTOMATION-1775).
+  Three flakes in one week had one shape: a test touched a place another test, or the build, was changing at the
+  same time (a repo-wide walk racing TestPrune.Trace.Tests' scratch, AUTOMATION-1671; a leftover daemon rebuilding
+  bin/, AUTOMATION-1746; a deleted project's build output, AUTOMATION-1717). Every test now takes its scratch space
+  from `TestRoot` (tests/FsHotWatch.Tests/TestRoot.fs, linked into every test project) and reads the real repository
+  only through `RepositoryTree`, `TestBinary`, `BuildOutput` and `NuGetCache`. The new analyzer assembly
+  `analyzers/FsHotWatch.TestRoots`, scoped like FSHW-WALL-001, flags any other reference to the shared temp
+  directory, `__SOURCE_DIRECTORY__`, `AppContext.BaseDirectory`, the user's home or the process working directory
+  in a test source. Base rate on main d5a441ae: 444 findings (443 in the gate's scope); on this tree: 0 outside a
+  reasoned `// FSHW-ROOT-001 ok:` marker. Not flagged, by design: `<assembly>.Location` (a file already loaded) and
+  string literals. This repository's verdict inputs gain `analyzers/FsHotWatch.TestRoots`, so its stored verdicts
+  re-earn once; no product record or cache key changes.
+
 - feat: a lookup that misses because GC evicted its key now says so in the daemon log, per record kind (AUTOMATION-1765).
   Until now an evicted key and a never-filed one missed alike: GC logged counts per kind and no key names, and the
   TestPrune analysis lookup logged nothing, so how many evicted testprune-analysis keys were looked up again could not

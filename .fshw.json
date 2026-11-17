@@ -12,6 +12,10 @@
         "why": "THE HOUSE RULES THEMSELVES, and they live outside src/+tests/ so no walk of the discovery roots reaches them. Break FSHW-CLAIM-001 or delete a rule and, before this was declared, a green earned while the rule held still reported Applies. The directory is declared rather than a glob so the .fsproj is covered too: the compile list decides which rules are in the assembly at all."
       },
       {
+        "path": "analyzers/FsHotWatch.TestRoots",
+        "why": "FSHW-ROOT-001, the rule that a test touches disk only under a root it alone owns (AUTOMATION-1775). It lives outside src/+tests/ like the house rules, so without this a green earned while the rule held would keep applying after the rule was weakened or deleted."
+      },
+      {
         "path": "coverage-ratchet-FsHotWatch.json",
         "why": "The per-file coverage floors. Lower one and a verdict earned under the higher floor must stop applying; hashing it is the only thing that makes that true."
       },
@@ -48,6 +52,7 @@
       "tools/fsharplint-shim/bin/Debug/net10.0/",
       "analyzers/FsHotWatch.Rules/bin/Debug/net10.0/",
       "analyzers/FsHotWatch.WallClock/bin/Debug/net10.0/",
+      "analyzers/FsHotWatch.TestRoots/bin/Debug/net10.0/",
       "src/TestPrune.Analyzers/bin/Debug/net10.0/"
     ],
     "scope": {
@@ -62,6 +67,14 @@
         ]
       },
       "analyzers/FsHotWatch.WallClock/bin/Debug/net10.0/": {
+        "exclude": [
+          "tests/TraceFixtures/**",
+          "examples/UsageExample/**",
+          "examples/SampleSolution/**",
+          "benchmarks/**"
+        ]
+      },
+      "analyzers/FsHotWatch.TestRoots/bin/Debug/net10.0/": {
         "exclude": [
           "tests/TraceFixtures/**",
           "examples/UsageExample/**",

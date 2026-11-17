@@ -40,6 +40,7 @@ run = [
   "dotnet build tools/fsharplint-shim/fsharplint-shim.csproj",
   "dotnet build analyzers/FsHotWatch.Rules/FsHotWatch.Rules.fsproj",
   "dotnet build analyzers/FsHotWatch.WallClock/FsHotWatch.WallClock.fsproj",
+  "dotnet build analyzers/FsHotWatch.TestRoots/FsHotWatch.TestRoots.fsproj",
   "dotnet build src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj",
 ]
 depends = ["restore"]

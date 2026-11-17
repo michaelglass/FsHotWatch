@@ -201,6 +201,10 @@ let private conventionRulesPath =
 let private wallClockRulesPath =
     lazy (buildAnalyzerProject "FsHotWatch.WallClock" (Path.Combine(findRepoRoot (), "analyzers/FsHotWatch.WallClock")))
 
+/// FSHW-ROOT-001, its own assembly so `.fshw.json` can scope it like FSHW-WALL-001.
+let private testRootRulesPath =
+    lazy (buildAnalyzerProject "FsHotWatch.TestRoots" (Path.Combine(findRepoRoot (), "analyzers/FsHotWatch.TestRoots")))
+
 [<Fact(Timeout = 30000)>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let repoRoot = findRepoRoot ()
@@ -3704,3 +3708,91 @@ let ``FSHW-WALK-001 opt-out needs a stated reason`` () =
         let findings = walkFindings source
         test <@ findings.Length = 1 @>
         test <@ findings |> List.forall (fun e -> e.Line = 7) @>)
+
+// ---------------------------------------------------------------------------
+// FSHW-ROOT-001 — a test may touch disk only under a root it alone owns
+// (AUTOMATION-1775). A repo-wide walk raced another project's scratch directories
+// (AUTOMATION-1671); a leftover daemon rebuilt bin/ under a run (AUTOMATION-1746).
+//
+// The controls in BOTH directions matter: a rule that fires on `<assembly>.Location`, on
+// a literal path or outside test sources would be suppressed rather than obeyed.
+// ---------------------------------------------------------------------------
+
+let private rootFindingsIn (fileName: string) (source: string) =
+    runAnalyzersOnFile testRootRulesPath.Value fileName source
+    |> List.filter (fun e -> e.Message.Contains "a root it alone owns")
+
+/// A test source by name (`TestSource.isTestSource`): the rule polices tests only.
+let private rootFindings = rootFindingsIn "ProbeTests.fs"
+
+let private sharedLocationProbes =
+    [ "module ProbeTests"
+      "open System"
+      "open System.IO"
+      "let a () = Path.GetTempPath()"
+      "let b () = System.IO.Path.GetTempFileName()"
+      "let c () = Directory.CreateTempSubdirectory \"x\""
+      "let d = __SOURCE_DIRECTORY__"
+      "let e () = AppContext.BaseDirectory"
+      "let f () = Environment.GetFolderPath Environment.SpecialFolder.UserProfile"
+      "let g () = Directory.GetCurrentDirectory()"
+      // Spelled in halves: WatcherTests refuses a test source that moves the process
+      // working directory, and this fixture is text, not a move.
+      "let h (p: string) = Directory.SetCurrent" + "Directory p"
+      "let i () = Environment.CurrentDirectory"
+      "let j () = Environment.GetEnvironmentVariable \"HOME\""
+      "let k () = Environment.GetEnvironmentVariable(\"TMPDIR\")" ]
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-ROOT-001 fires on every way a test names a shared location`` () =
+    withAnalyzerGate (fun () ->
+        // The planted violation: one per line 4..14, each a place another test, another
+        // run or the build can change at the same time.
+        let findings = rootFindings (fsSource sharedLocationProbes)
+
+        test <@ findings |> List.map _.Line |> List.sort = [ 4..14 ] @>
+        test <@ findings |> List.forall (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+        test <@ findings |> List.forall (fun e -> e.Message.Contains "TestRoot") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-ROOT-001 polices test sources only`` () =
+    withAnalyzerGate (fun () ->
+        // The product resolves the temp directory and its own location legitimately.
+        test <@ List.isEmpty (rootFindingsIn "Temp.fs" (fsSource sharedLocationProbes)) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-ROOT-001 stays silent on loaded assemblies, literal paths and other variables`` () =
+    withAnalyzerGate (fun () ->
+        // `<assembly>.Location` names one file this process has already loaded, so a test
+        // reading it cannot see it change (the 28 such sites on main were `-r:` references
+        // and copies of a test dependency). A literal path is not seen by the rule at all.
+        let source =
+            fsSource
+                [ "module ProbeTests"
+                  "open System"
+                  "open System.IO"
+                  "let a () = typeof<obj>.Assembly.Location"
+                  "let b () = Reflection.Assembly.GetExecutingAssembly().GetCustomAttributes(true)"
+                  "let c () = Path.Combine(\"/r/repo\", \"src\", \"A.fs\")"
+                  "let d () = Environment.GetEnvironmentVariable \"PATH\""
+                  "let e () = Path.GetTempPath" ]
+
+        // `Path.GetTempPath` unapplied is still the name, so `e` fires: one finding, line 8.
+        test <@ rootFindings source |> List.map _.Line = [ 8 ] @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FSHW-ROOT-001 opt-out needs a stated reason`` () =
+    withAnalyzerGate (fun () ->
+        let source =
+            fsSource
+                [ "module ProbeTests"
+                  "open System.IO"
+                  "// FSHW-ROOT-001 ok: the one place a test reads the shared temp directory"
+                  "let reasoned () = Path.GetTempPath()"
+                  "let inline_ () = Path.GetTempPath() // FSHW-ROOT-001 ok: the helper itself"
+                  "// FSHW-ROOT-001 ok:"
+                  "let bare () = Path.GetTempPath()" ]
+
+        // Only the bare marker's site survives: an exception that does not say why is not
+        // countable as one.
+        test <@ rootFindings source |> List.map _.Line = [ 7 ] @>)
