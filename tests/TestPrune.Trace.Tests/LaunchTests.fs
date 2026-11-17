@@ -113,12 +113,10 @@ let ``an explicit DOTNET_ROOT wins over the running runtime's root`` () =
     test <@ Launch.dotnetRootFrom "/opt/dotnet" = "/opt/dotnet" @>
     test <@ Launch.dotnetRootFrom "" = Launch.dotnetRootFrom null @>
 
-/// Whether `pid` names a live process (signal 0 asks without signalling).
+/// Whether `pid` still runs, as `Leftovers.terminate` judges it: a zombie waiting for its reaper
+/// does not (GitHub run 44083201746).
 let private alive (pid: int) =
-    let code, _ =
-        Launch.run "/bin/sh" [ "-c"; $"kill -0 %d{pid} 2>/dev/null" ] [] (Path.GetTempPath()) (TimeSpan.FromMinutes 1.0)
-
-    code = 0
+    Leftovers.isRunning Leftovers.current pid
 
 // AUTOMATION-1734: a mutant's test left a TERM-ignoring loop re-parented to init, holding the
 // inherited stdout, and the harness waited for the pipe to close until its 20-minute timeout.
@@ -244,3 +242,17 @@ let ``output held by a process the table names closes once that process is stopp
             holder.Kill()
 
         Directory.Delete(root, true)
+
+[<Fact>]
+let ``a launch's note names what it stopped and what still runs after KILL`` () =
+    test <@ Launch.taggedNoteOf (Ok(Leftovers.Termination.Stopped 0)) = "" @>
+
+    test
+        <@
+            Launch.taggedNoteOf (Ok(Leftovers.Termination.Stopped 2)) = $"[launch: stopped 2 %s{Launch.LeftRunningNote}]\n"
+        @>
+
+    test
+        <@
+            Launch.taggedNoteOf (Ok(Leftovers.Termination.StillRunning(1, 12, []))) = $"[launch: stopped 1 %s{Launch.LeftRunningNote}; still running after KILL: 12]\n"
+        @>

@@ -121,13 +121,22 @@ let internal drainInto (reader: TextReader) (tail: Tail) : Task =
 type internal Ending =
     /// They closed within `DrainGrace`.
     | Closed
-    /// They closed once the `stopped` processes holding them were.
-    | ClosedByStopping of stopped: int
-    /// They are still open after the `stopped` processes found holding them were: something
-    /// not found holds them.
-    | StillHeld of stopped: int
+    /// They closed once the processes holding them were stopped (`termination`).
+    | ClosedByStopping of termination: Leftovers.Termination
+    /// They are still open after the processes found holding them were stopped (`termination`):
+    /// something not found holds them.
+    | StillHeld of termination: Leftovers.Termination
     /// They are still open, and what holds them could not be looked for.
     | Unsearched of why: string
+
+/// The note for what stopping the processes carrying a launch's id did: nothing when none ran,
+/// how many were stopped and any still running after KILL, or why they could not be looked for.
+let internal taggedNoteOf (tagged: Result<Leftovers.Termination, string>) : string =
+    match tagged with
+    | Ok(Leftovers.Termination.Stopped 0) -> ""
+    | Ok t ->
+        $"[launch: stopped %d{Leftovers.Termination.stopped t} %s{LeftRunningNote}%s{Leftovers.Termination.survivorsNote t}]\n"
+    | Error why -> $"[launch: could not look for the processes the run left running: %s{why}]\n"
 
 /// End what a launch's child left running (AUTOMATION-1734), and say what was done, as notes
 /// for the launch's output. Every process carrying `launchId` is stopped. If the output pipes
@@ -142,7 +151,8 @@ let internal endLeftovers
     : string =
     // A process re-parented when the child exited is outside `Kill true`'s tree, and one that
     // inherited the output pipes holds them open: waiting for them to close waits for it.
-    let tagged = Leftovers.carrying table launchId |> Result.map Leftovers.terminate
+    let tagged =
+        Leftovers.carrying table launchId |> Result.map (Leftovers.terminate table)
 
     let ending =
         if draining.Wait DrainGrace then
@@ -151,24 +161,22 @@ let internal endLeftovers
             match Leftovers.holders table streams with
             | Error why -> Unsearched why
             | Ok pids ->
-                let stopped = Leftovers.terminate pids
+                let stopped = Leftovers.terminate table pids
 
                 if draining.Wait DrainGrace then
                     ClosedByStopping stopped
                 else
                     StillHeld stopped
 
-    let taggedNote =
-        match tagged with
-        | Ok 0 -> ""
-        | Ok n -> $"[launch: stopped %d{n} %s{LeftRunningNote}]\n"
-        | Error why -> $"[launch: could not look for the processes the run left running: %s{why}]\n"
+    let taggedNote = taggedNoteOf tagged
 
     let endingNote =
         match ending with
         | Closed -> ""
-        | ClosedByStopping n -> $"[launch: stopped %d{n} %s{LeftRunningNote}, holding its output]\n"
-        | StillHeld n -> $"%s{HeldOpenNote} by a process not found (stopped %d{n} that held it); the rest is dropped]\n"
+        | ClosedByStopping t ->
+            $"[launch: stopped %d{Leftovers.Termination.stopped t} %s{LeftRunningNote}, holding its output%s{Leftovers.Termination.survivorsNote t}]\n"
+        | StillHeld t ->
+            $"%s{HeldOpenNote} by a process not found (stopped %d{Leftovers.Termination.stopped t} that held it%s{Leftovers.Termination.survivorsNote t}); the rest is dropped]\n"
         | Unsearched why -> $"%s{HeldOpenNote}; what holds it could not be looked for: %s{why}; the rest is dropped]\n"
 
     taggedNote + endingNote

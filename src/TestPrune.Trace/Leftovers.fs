@@ -27,6 +27,9 @@ let private SigKill = 9
 /// How long a process asked to stop (TERM) has before it is killed (KILL).
 let TermGrace = TimeSpan.FromMilliseconds 500.0
 
+/// How long a process sent KILL has to be gone before `terminate` reports it still running.
+let KillGrace = TimeSpan.FromMilliseconds 500.0
+
 /// Where a launch looks for the processes it left: the machine's process table.
 type ProcessTable =
     /// A `/proc` tree at `root`, as Linux has.
@@ -41,8 +44,6 @@ let current: ProcessTable =
     else
         Tools("/bin/ps", "/usr/sbin/lsof")
 
-let private isAlive (pid: int) = sysKill (pid, 0) = 0
-
 let private pidOf (text: string) =
     match Int32.TryParse(text.Trim()) with
     | true, pid -> Some pid
@@ -55,6 +56,23 @@ let private readable (read: unit -> 'T) : 'T option =
         Some(read ())
     with _ ->
         None
+
+/// Whether `pid`, in a `/proc` tree at `root`, is a zombie: it has exited and closed its descriptors,
+/// and waits for its parent (or the reaper it was re-parented to) to collect it. Its state is the
+/// field after the last parenthesis of its `stat`, since the command name in parentheses may hold
+/// spaces and parentheses itself.
+let internal isZombieIn (root: string) (pid: int) : bool =
+    readable (fun () -> File.ReadAllText(Path.Combine(root, string pid, "stat")))
+    |> Option.exists (fun stat -> stat.Substring(stat.LastIndexOf ')' + 1).TrimStart().StartsWith 'Z')
+
+/// Whether `pid` still runs on `table`'s machine: signal 0 reaches it and, where a `/proc` tree can
+/// say, it is not a zombie. A zombie holds no descriptor and does nothing more; only its reaper can
+/// make it vanish, and a slow one must not make a stopped process look alive.
+let isRunning (table: ProcessTable) (pid: int) : bool =
+    sysKill (pid, 0) = 0
+    && (match table with
+        | Proc root -> not (isZombieIn root pid)
+        | Tools _ -> true)
 
 /// Run a tool to its end: its standard output, or why it could not be run.
 let private tool (exe: string) (args: string list) : Result<string, string> =
@@ -191,11 +209,40 @@ let holders (table: ProcessTable) (streams: Stream list) : Result<int list, stri
                 tool lsof [ "-u"; Environment.UserName; "-F"; "pd" ]
                 |> Result.map (lsofHolders ends self)))
 
-/// Stop each of `pids` still alive: TERM, then KILL once `TermGrace` has passed for any that
-/// ignored it. How many were alive to stop.
-let terminate (pids: int list) : int =
+/// What `terminate` did with the processes it was given that were alive.
+[<RequireQualifiedAccess>]
+type Termination =
+    /// Every one is gone: `stopped` of them.
+    | Stopped of stopped: int
+    /// `survivor`, and `others`, still run after TERM, KILL and `KillGrace`; `stopped` are gone.
+    | StillRunning of stopped: int * survivor: int * others: int list
+
+module Termination =
+    /// How many of the processes were stopped.
+    let stopped (termination: Termination) : int =
+        match termination with
+        | Termination.Stopped n
+        | Termination.StillRunning(n, _, _) -> n
+
+    /// What is still running, for a note: nothing, or `; still running after KILL: 12, 13`.
+    let survivorsNote (termination: Termination) : string =
+        match termination with
+        | Termination.Stopped _ -> ""
+        | Termination.StillRunning(_, survivor, others) ->
+            "; still running after KILL: "
+            + (survivor :: others |> List.map string |> String.concat ", ")
+
+/// How `terminate` reaches processes: whether one still runs, and sending it a signal. The seam a
+/// test drives a process through whose death it controls.
+type internal Signals =
+    { IsRunning: int -> bool
+      Send: int -> int -> unit }
+
+/// `terminate` through `signals`.
+let internal terminateWith (signals: Signals) (pids: int list) : Termination =
+    let isAlive = signals.IsRunning
     let living = pids |> List.distinct |> List.filter isAlive
-    living |> List.iter (fun pid -> sysKill (pid, SigTerm) |> ignore)
+    living |> List.iter (fun pid -> signals.Send pid SigTerm)
 
     // On the awake clock: a sleep of the box must not spend the grace (AUTOMATION-1488).
     let waited = Stopwatch.StartNew()
@@ -203,8 +250,25 @@ let terminate (pids: int list) : int =
     while waited.Elapsed < TermGrace && living |> List.exists isAlive do
         Thread.Sleep 50
 
-    living
-    |> List.filter isAlive
-    |> List.iter (fun pid -> sysKill (pid, SigKill) |> ignore)
+    let killed = living |> List.filter isAlive
+    killed |> List.iter (fun pid -> signals.Send pid SigKill)
 
-    living.Length
+    // A kill takes effect some time after it is sent: wait for each to be gone, as for TERM.
+    let afterKill = Stopwatch.StartNew()
+
+    while afterKill.Elapsed < KillGrace && killed |> List.exists isAlive do
+        Thread.Sleep 50
+
+    match killed |> List.filter isAlive with
+    | [] -> Termination.Stopped living.Length
+    | survivor :: others -> Termination.StillRunning(living.Length - 1 - others.Length, survivor, others)
+
+/// The signals of the machine whose process table `table` is.
+let private signalsOn (table: ProcessTable) : Signals =
+    { IsRunning = isRunning table
+      Send = fun pid signal -> sysKill (pid, signal) |> ignore }
+
+/// Stop each of `pids` still running on `table`'s machine: TERM, then KILL once `TermGrace` has
+/// passed for any that ignored it, then wait up to `KillGrace` for the killed to be gone. What
+/// still runs then is a survivor, named in the result, never assumed dead.
+let terminate (table: ProcessTable) (pids: int list) : Termination = terminateWith (signalsOn table) pids
