@@ -62,3 +62,14 @@ let ``the pool cancels a source, and runs an async computation to completion`` (
     let mutable ran = false
     AsyncRuntime.pool.RunSynchronously(async { ran <- true })
     test <@ ran @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the pool's delay is Task.Delay`` () =
+    test <@ (AsyncRuntime.pool.Delay TimeSpan.Zero).IsCompletedSuccessfully @>
+
+    test
+        <@
+            AsyncRuntime.pool.Wait
+                (TimeSpan.FromMilliseconds(float SyncHangBackstopMs))
+                (AsyncRuntime.pool.Delay(TimeSpan.FromMilliseconds 1.0))
+        @>

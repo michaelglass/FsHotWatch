@@ -11,6 +11,18 @@ open FsHotWatch.PluginWorkOwner
 let private finish (receipt: Task<unit>) =
     receipt.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
 
+/// A store whose debounce timers are the tasks the test sets in `delay` before it posts: the
+/// store's runtime is the one place a queue built on it takes its timers from.
+let private storeWithDelay (dispatch: AsyncRuntime.Runtime -> AsyncRuntime.Runtime) =
+    let delay = ref (fun (_: TimeSpan) -> Task.CompletedTask)
+
+    Store(
+        dispatch
+            { AsyncRuntime.pool with
+                Delay = fun span -> delay.Value span }
+    ),
+    delay
+
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``flush coalesces preceding input and keeps subsequent cohorts ordered`` () =
     let store = Store()
@@ -208,7 +220,7 @@ let ``failed coalescing leaves the accepted pending input intact`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``failed debounce scheduler settles its own pending receipt and records failure`` () =
-    let store = Store()
+    let store, delay = storeWithDelay id
     let failure = InvalidOperationException("controlled scheduler failure")
 
     let worker =
@@ -223,8 +235,8 @@ let ``failed debounce scheduler settles its own pending receipt and records fail
             (fun state values _ _ -> async { return state + List.sum values })
         )
 
-    let input =
-        DebouncedWork.Queue(store, "changes", worker, (@), delayTask = (fun _ -> raise failure))
+    delay.Value <- fun _ -> raise failure
+    let input = DebouncedWork.Queue(store, "changes", worker, (@))
 
     try
         let pending = input.Post([ 1 ], TimeSpan.FromSeconds 5.0)
@@ -242,7 +254,7 @@ let ``failed debounce scheduler settles its own pending receipt and records fail
 
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``obsolete scheduler failure cannot reject its coalesced successor`` () =
-    let store = Store()
+    let store, delay = storeWithDelay id
 
     let firstDelay =
         TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
@@ -284,18 +296,13 @@ let ``obsolete scheduler failure cannot reject its coalesced successor`` () =
                 })
         )
 
-    let input =
-        DebouncedWork.Queue(
-            store,
-            "changes",
-            worker,
-            (@),
-            delayTask =
-                (fun _ ->
-                    match delays.TryDequeue() with
-                    | true, delay -> delay
-                    | _ -> invalidOp "Unexpected fixture delay")
-        )
+    delay.Value <-
+        fun _ ->
+            match delays.TryDequeue() with
+            | true, next -> next
+            | _ -> invalidOp "Unexpected fixture delay"
+
+    let input = DebouncedWork.Queue(store, "changes", worker, (@))
 
     let receipts = ResizeArray<Task<unit>>()
 
@@ -374,7 +381,7 @@ let ``invalid debounce duration admits no cohort`` milliseconds =
 
 [<Fact(Timeout = 15000)>]
 let ``an obsolete debounce timer neither flushes nor fails later input`` () =
-    let store = Store()
+    let store, delay = storeWithDelay id
     let delays = Collections.Concurrent.ConcurrentQueue<TaskCompletionSource<unit>>()
     let cohorts = Collections.Concurrent.ConcurrentQueue<int list>()
 
@@ -394,18 +401,13 @@ let ``an obsolete debounce timer neither flushes nor fails later input`` () =
                 })
         )
 
-    let input =
-        DebouncedWork.Queue(
-            store,
-            "changes",
-            worker,
-            (@),
-            delayTask =
-                (fun _ ->
-                    let delay = TaskCompletionSource<unit>()
-                    delays.Enqueue delay
-                    delay.Task)
-        )
+    delay.Value <-
+        fun _ ->
+            let timer = TaskCompletionSource<unit>()
+            delays.Enqueue timer
+            timer.Task
+
+    let input = DebouncedWork.Queue(store, "changes", worker, (@))
 
     let nextDelay () =
         match delays.TryDequeue() with
@@ -463,7 +465,7 @@ let ``an obsolete debounce timer neither flushes nor fails later input`` () =
 
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a debounce timer that has already finished still admits its cohort`` () =
-    let store = Store()
+    let store, delay = storeWithDelay id
     let cohorts = Collections.Concurrent.ConcurrentQueue<int list>()
 
     let worker =
@@ -482,8 +484,8 @@ let ``a debounce timer that has already finished still admits its cohort`` () =
                 })
         )
 
-    let input =
-        DebouncedWork.Queue(store, "changes", worker, (@), delayTask = (fun _ -> Task.CompletedTask))
+    delay.Value <- fun _ -> Task.CompletedTask
+    let input = DebouncedWork.Queue(store, "changes", worker, (@))
 
     try
         finish (input.Post([ 1 ], TimeSpan.FromSeconds 5.0))
@@ -501,7 +503,7 @@ let private finishedFirst (receipt: Task<unit>) : Task<unit> =
 // `settleWith`'s `do! receipt` has two arms: the request still running when its cohort's input
 // retires, and the request already finished. A worker held open pins the first; this pins the
 // second, which a fast worker reached only when the pool happened to run it first (GitHub CI run
-// 43671932991 missed it, 43670057067 on the same sha did not), as `delayTask` pins line 137's.
+// 43671932991 missed it, 43670057067 on the same sha did not), as a finished `Runtime.Delay` pins line 137's.
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``a supervised request that has already finished still settles its cohort`` () =
     let store = Store()
@@ -574,11 +576,12 @@ let ``a supervised request that has already failed settles its cohort with the f
 // so it publishes nothing while the queue admits.
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``with an inline store writer, every change a debounced cohort awaits is already published`` () =
-    let store =
-        Store(
-            { AsyncRuntime.pool with
-                Dispatch = fun write -> write () }
-        )
+    let store, delay =
+        storeWithDelay (fun runtime ->
+            { runtime with
+                Dispatch = fun write -> write () })
+
+    delay.Value <- fun _ -> Task.CompletedTask
 
     use retired = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
@@ -605,7 +608,6 @@ let ``with an inline store writer, every change a debounced cohort awaits is alr
             "changes",
             worker,
             (@),
-            delayTask = (fun _ -> Task.CompletedTask),
             awaitReceipt =
                 (fun receipt ->
                     retired.Set()
@@ -632,7 +634,7 @@ let ``with an inline store writer, every change a debounced cohort awaits is alr
 [<InlineData(1.0, 5.0, 5.0)>]
 [<InlineData(5.0, 1.0, 5.0)>]
 let ``coalesced input restarts the debounce with the longer delay`` (first: float) (second: float) (longer: float) =
-    let store = Store()
+    let store, delay = storeWithDelay id
     let armed = Collections.Concurrent.ConcurrentQueue<TimeSpan>()
     let timers = Collections.Concurrent.ConcurrentQueue<TaskCompletionSource>()
 
@@ -649,19 +651,14 @@ let ``coalesced input restarts the debounce with the longer delay`` (first: floa
         )
 
     // Timers that never fire on their own, so the second post always coalesces into the first.
-    let input =
-        DebouncedWork.Queue(
-            store,
-            "changes",
-            worker,
-            (@),
-            delayTask =
-                (fun delay ->
-                    armed.Enqueue delay
-                    let timer = TaskCompletionSource()
-                    timers.Enqueue timer
-                    timer.Task)
-        )
+    delay.Value <-
+        fun span ->
+            armed.Enqueue span
+            let timer = TaskCompletionSource()
+            timers.Enqueue timer
+            timer.Task
+
+    let input = DebouncedWork.Queue(store, "changes", worker, (@))
 
     let receipts =
         [ input.Post([ 1 ], TimeSpan.FromSeconds first)
