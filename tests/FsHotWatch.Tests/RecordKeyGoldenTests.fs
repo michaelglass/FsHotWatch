@@ -311,7 +311,7 @@ let ``GOLDEN: the analysis-record key of a fixed analysis and every component it
 
     golden
         "The analyser identity an analysis record is keyed by"
-        "TestPrune.Core@16.1.1.0;fshw-testprune-analysis-schema=fshw-testprune-analysis-semantics-v2"
+        "TestPrune.Core@16.1.1.0;fshw-testprune-analysis-schema=fshw-testprune-analysis-semantics-v3"
         identity
 
     let key =
@@ -327,7 +327,7 @@ let ``GOLDEN: the analysis-record key of a fixed analysis and every component it
 
     golden
         "The analysis-record key"
-        "ak1:47068d474bcacbc167221d14b73281e97d76c594d18f1bfe5845fb2ef59f3d71"
+        "ak1:e6fb15bf2ba1c936fbf4310f708aafb40108ec13b6a9b6e65e3b4480c4770a50"
         key.Value.Text
 
     // `keyOf` is `keyWith` under this process's analyser.

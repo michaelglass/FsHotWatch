@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `AttributeArgs.write` stores parsed attribute arguments again: for arguments `parse` read from a payload
+  `serialize` wrote, it gives back that payload's exact bytes (AUTOMATION-1697).
+
 ## 17.0.0 - 2026-11-16
 
 - fix: a change to a type that a module-level value constructs selects the tests that read any OTHER value of that

@@ -58,6 +58,23 @@ let serialize (values: obj seq) : string =
 
     Encoding.UTF8.GetString(stream.ToArray())
 
+/// The stored form of `args`: for arguments `parse` read from a payload `serialize` wrote, that
+/// payload's exact bytes.
+let write (args: AttributeArg list) : string =
+    use stream = new MemoryStream()
+
+    (use writer = new Utf8JsonWriter(stream)
+     writer.WriteStartArray()
+
+     for arg in args do
+         match arg with
+         | Text s -> writer.WriteStringValue s
+         | Constant json -> writer.WriteRawValue json
+
+     writer.WriteEndArray())
+
+    Encoding.UTF8.GetString(stream.ToArray())
+
 /// Read a stored payload back. A payload that is not a JSON array is an Error naming it:
 /// the index holds only what `serialize` wrote, so an unreadable one is damage to report,
 /// never a declaration to drop in silence.
