@@ -240,3 +240,13 @@ let ``an async run synchronously pumps the world until it completes`` () =
 
     test <@ got = 5 @>
     test <@ List.isEmpty sim.Faults @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a delay completes on the virtual clock, and a zero delay at once`` () =
+    let sim = Sim(14, 0.0)
+    test <@ (sim.Runtime.Delay TimeSpan.Zero).IsCompletedSuccessfully @>
+    let delayed = sim.Runtime.Delay(TimeSpan.FromSeconds 3.0)
+    test <@ not delayed.IsCompleted @>
+    sim.RunUntilQuiet()
+    test <@ delayed.IsCompletedSuccessfully @>
+    test <@ sim.Now = TimeSpan.FromSeconds 3.0 @>

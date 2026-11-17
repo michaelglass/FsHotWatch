@@ -18,6 +18,11 @@
   the runtime whose wait keeps its bound. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache
   key changes.
 
+- refactor: `DebouncedWork` takes its debounce timers (`Runtime.Delay`, in place of `Task.Delay`), the continuation
+  chain that admits cohorts in order (`Runtime.Scheduler`, in place of the default scheduler) and its bounded waits
+  from its store's `AsyncRuntime.Runtime` (AUTOMATION-1695). `Queue` loses its `delayTask` argument; tests set a
+  store's `Delay` instead. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache key changes.
+
 - feat: a lookup that misses because GC evicted its key now says so in the daemon log, per record kind (AUTOMATION-1765).
   Until now an evicted key and a never-filed one missed alike: GC logged counts per kind and no key names, and the
   TestPrune analysis lookup logged nothing, so how many evicted testprune-analysis keys were looked up again could not

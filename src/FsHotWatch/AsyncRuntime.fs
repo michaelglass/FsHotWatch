@@ -25,6 +25,8 @@ type Runtime =
         Scheduler: TaskScheduler
         /// A one-shot timer that calls `expire` after `delay`; disposing it disarms it.
         Schedule: TimeSpan -> (unit -> unit) -> IDisposable
+        /// A task that completes after `delay`: `Task.Delay`.
+        Delay: TimeSpan -> Task
         /// Request cancellation of `source` without running its callbacks on this thread.
         /// The task settles once they have run, faulted with what they raised (or with
         /// `ObjectDisposedException` for a disposed source).
@@ -48,5 +50,6 @@ let pool: Runtime =
       Scheduler = TaskScheduler.Default
       Schedule =
         fun delay expire -> new Timer((fun _ -> expire ()), null, delay, Timeout.InfiniteTimeSpan) :> IDisposable
+      Delay = fun delay -> Task.Delay delay
       Cancel = fun source -> source.CancelAsync()
       RunSynchronously = fun work -> Async.RunSynchronously work }
