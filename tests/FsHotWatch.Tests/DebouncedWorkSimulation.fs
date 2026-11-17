@@ -14,8 +14,8 @@
 ///   * OUTCOME: a receipt succeeds only for a value delivered in a cohort the worker completed,
 ///     fails with the worker's failure only for one delivered in a cohort it failed, and is
 ///     refused as closed only after a close.
-///   * HONEST REST: while a post's value is neither delivered to the worker nor refused as
-///     closed, the host is busy.
+///   * HONEST REST: while any post's receipt is unsettled, the host is busy: rest implies every
+///     receipt has settled (AUTOMATION-1780).
 ///   * SETTLEMENT (at quiescence): every receipt has settled, every value whose receipt
 ///     succeeded or failed with the worker was delivered exactly once, and nothing is busy.
 ///   * RUNTIME: no deadlock, no escape, quiescence reached.
@@ -70,12 +70,10 @@ type Violation =
 /// How often the queue's interesting paths were taken.
 type Census =
     {
-        /// Times the host was at rest while a receipt was still unsettled, its value already
-        /// handed to the worker (or refused as closed): a cohort's receipts settle one
-        /// continuation after the request they became retires. Counted, not a violation: the
-        /// documented contract is that INPUT is never mistaken for rest. AUTOMATION-1780 decides whether
-        /// rest also waits for receipts; until then this is counted, and the count is pinned as a
-        /// function of the seed, so the decision can turn it into a theorem.
+        /// Times the host was at rest while a receipt was still unsettled: a HONEST REST
+        /// violation since AUTOMATION-1780 made rest wait for receipts, so always 0 on a green run.
+        /// Before it, a cohort's receipts settled one continuation after the request they became
+        /// retired, and seeds 1..1000 counted 482.
         RestBeforeReceipt: int
         /// Cohorts that merged more than one post.
         Coalesced: int
@@ -288,17 +286,10 @@ let execute (subject: Subject) (seed: int) (history: Op list) : Violation list *
             |> Seq.map fst
             |> List.ofSeq
 
-        if not store.Snapshot.IsBusy then
-            let delivered = delivered ()
-
-            match unsettled |> List.filter (fun v -> not (List.contains v delivered)) with
-            | [] when unsettled.IsEmpty -> ()
-            | [] -> restBeforeReceipt <- restBeforeReceipt + 1
-            | _ when closed -> restBeforeReceipt <- restBeforeReceipt + 1
-            | waiting ->
-                violate
-                    Theorem.HonestRest
-                    $"the host is at rest while %s{listText waiting} are neither delivered nor refused"
+        // AUTOMATION-1780: rest implies every receipt has settled, delivered, refused or not.
+        if not unsettled.IsEmpty && not store.Snapshot.IsBusy then
+            restBeforeReceipt <- restBeforeReceipt + 1
+            violate Theorem.HonestRest $"the host is at rest while %s{listText unsettled} are unsettled"
 
     let checkRuntime () =
         match sim.Faults with

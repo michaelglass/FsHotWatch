@@ -5,7 +5,8 @@
 /// wait, in order, for admission to the supervisor. Both are published in the host
 /// `Store`, so an input between the watcher and the worker is never mistaken for rest.
 /// `Post` returns after its input is published. Each cohort's receipts settle with the
-/// outcome of the supervised request it became.
+/// outcome of the supervised request it became, and the cohort stays owned until they have:
+/// rest implies every receipt handed out has settled (AUTOMATION-1780).
 module internal FsHotWatch.DebouncedWork
 
 open System
@@ -28,6 +29,10 @@ type private Input<'Request> =
         /// Cohorts whose debounce ended, oldest first. The head is the next to enter the
         /// supervisor, and it leaves this list only once the supervisor owns it.
         Admitting: Cohort<'Request> list
+        /// Cohorts the supervisor owns whose receipts have not settled. Rest waits for them
+        /// (AUTOMATION-1780): a cohort leaves this list in the transition that sets its receipts,
+        /// so a host at rest has settled every receipt it handed out.
+        Settling: WorkId list
         Closed: bool
         Failure: exn option
     }
@@ -36,7 +41,8 @@ type private Input<'Request> =
 [<NoComparison; NoEquality>]
 type private Expiry<'Request> =
     | Admit
-    | Abandon of Cohort<'Request> * exn
+    /// Its timer failed: the cohort settled with that failure in the same transition.
+    | Abandon
     /// Its cohort was already flushed or replaced by later input.
     | Obsolete
 
@@ -69,23 +75,41 @@ type Queue<'State, 'Request>
             name,
             { Pending = None
               Admitting = []
+              Settling = []
               Closed = false
               Failure = None },
             fun input ->
                 RowStatus.ofWork
-                    (input.Pending.IsSome || not (List.isEmpty input.Admitting))
+                    (input.Pending.IsSome
+                     || not (List.isEmpty input.Admitting)
+                     || not (List.isEmpty input.Settling))
                     0L
                     (input.Failure |> Option.map OperationFailure)
         )
 
-    let change transition =
-        store.ChangeAsync(handle, fun _ input -> transition input)
+    // A change whose effect runs on the writer right after its publication (`ChangeAsyncThen`).
+    let changeThen transition =
+        store.ChangeAsyncThen(handle, fun _ input -> transition input)
 
-    let settle (cohort: Cohort<'Request>) (failure: exn option) =
+    // The effect of the change that takes the cohort out of what the row owns: run by the writer
+    // right after that publication, before anything else runs (AUTOMATION-1780). A reader woken
+    // by a receipt finds the cohort retired; a reader that sees the retirement finds the receipts
+    // set, in the simulation exactly, and on the pool but for the statements of this loop
+    // (ADR-078's atomic-step limit).
+    let setReceipts (cohort: Cohort<'Request>) (failure: exn option) () =
         for receipt in cohort.Receipts do
             match failure with
             | None -> receipt.TrySetResult(()) |> ignore
             | Some failure -> receipt.TrySetException failure |> ignore
+
+    // A cohort the supervisor owned settles with its request's outcome, leaving `Settling`.
+    let settle (cohort: Cohort<'Request>) (failure: exn option) =
+        changeThen (fun input ->
+            { input with
+                Settling = List.filter (fun id -> id <> cohort.Id) input.Settling },
+            (),
+            setReceipts cohort failure)
+        |> ignore
 
     let settleWith (cohort: Cohort<'Request>) (receipt: Task<unit>) =
         task {
@@ -105,22 +129,27 @@ type Queue<'State, 'Request>
             let head = List.head (store.Read handle).Admitting
             let! admitted = worker.SubmitAsync(head.Value, CancellationToken.None)
 
-            let refusal =
-                match admitted with
-                | Ok _ -> None
-                | Error failure -> Some failure
-
-            // The supervisor owns the cohort (or refused it) before its input retires.
+            // The supervisor owns the cohort (or refused it) before its input retires. A refused
+            // cohort settles with this publication; an owned one stays owned until its request does.
             do!
-                change (fun input ->
-                    { input with
-                        Admitting = List.tail input.Admitting
-                        Failure = Option.orElse input.Failure refusal },
-                    ())
+                changeThen (fun input ->
+                    match admitted with
+                    | Ok _ ->
+                        { input with
+                            Admitting = List.tail input.Admitting
+                            Settling = head.Id :: input.Settling },
+                        (),
+                        ignore
+                    | Error failure ->
+                        { input with
+                            Admitting = List.tail input.Admitting
+                            Failure = Option.orElse input.Failure (Some failure) },
+                        (),
+                        setReceipts head (Some failure))
 
             match admitted with
             | Ok receipt -> settleWith head receipt
-            | Error failure -> settle head (Some failure)
+            | Error _ -> ()
         }
 
     let admissionGate = Lock()
@@ -150,19 +179,21 @@ type Queue<'State, 'Request>
                 }
 
             let! expiry =
-                change (fun input ->
+                changeThen (fun input ->
                     match input.Pending, waited with
                     | Some cohort, None when cohort.Id = id ->
                         { input with
                             Pending = None
                             Admitting = input.Admitting @ [ cohort ] },
-                        Admit
+                        Admit,
+                        ignore
                     | Some cohort, Some failure when cohort.Id = id ->
                         { input with
                             Pending = None
                             Failure = Some failure },
-                        Abandon(cohort, failure)
-                    | _ -> input, Obsolete)
+                        Abandon,
+                        setReceipts cohort (Some failure)
+                    | _ -> input, Obsolete, ignore)
 
             // Logged after the transition, so the line is a witness that it happened.
             waited
@@ -170,7 +201,7 @@ type Queue<'State, 'Request>
 
             match expiry with
             | Admit -> scheduleAdmission ()
-            | Abandon(cohort, failure) -> settle cohort (Some failure)
+            | Abandon -> ()
             | Obsolete -> ()
         }
 
@@ -236,15 +267,15 @@ type Queue<'State, 'Request>
     member _.Close() =
         let closing =
             task {
-                let! pending =
-                    change (fun input ->
+                do!
+                    changeThen (fun input ->
                         { input with
                             Closed = true
                             Pending = None },
-                        input.Pending)
-
-                pending
-                |> Option.iter (fun cohort -> settle cohort (Some(ObjectDisposedException name)))
+                        (),
+                        match input.Pending with
+                        | Some cohort -> setReceipts cohort (Some(ObjectDisposedException name))
+                        | None -> ignore)
 
                 worker.Close()
             }
