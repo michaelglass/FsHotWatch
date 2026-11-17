@@ -179,6 +179,30 @@ module TestRoot =
         use root = create prefix
         body root
 
+    // The drop-ins below replace a hand-made temp path one for one, so a migrated test
+    // keeps its own cleanup. Each names a place no other test can name (a fresh guid under
+    // this process's root), and whatever the test leaves is removed with that root when
+    // the process exits.
+
+    let private freshName (prefix: string) =
+        Path.Combine(processRoot.Value, prefix + "-" + Guid.NewGuid().ToString "N")
+
+    /// A fresh path this test alone owns, NOT yet created: for code that creates it, or
+    /// must find it absent. Replaces `Path.Combine(Path.GetTempPath(), prefix + guid)`.
+    let freshPath (prefix: string) : string = freshName prefix
+
+    /// A fresh, empty directory this test alone owns. Replaces
+    /// `Directory.CreateTempSubdirectory prefix`.
+    let freshDirectory (prefix: string) : DirectoryInfo =
+        Directory.CreateDirectory(freshName prefix)
+
+    /// A fresh, empty file this test alone owns. Replaces `Path.GetTempFileName ()`, which
+    /// leaves its file directly in the shared temp directory.
+    let freshFile (prefix: string) : string =
+        let path = freshName prefix
+        File.WriteAllBytes(path, [||])
+        path
+
 /// The real repository, read only.
 [<RequireQualifiedAccess>]
 module RepositoryTree =

@@ -112,3 +112,24 @@ let ``repository and test-binary paths resolve named files and refuse a climb`` 
     let repositoryRefuses = climbs RepositoryTree.path
     let binaryRefuses = climbs TestBinary.path
     test <@ repositoryRefuses && binaryRefuses @>
+
+[<Fact(Timeout = 15000)>]
+let ``the drop-ins name fresh places under this process's root`` () =
+    let path = TestRoot.freshPath "tr-path"
+    let other = TestRoot.freshPath "tr-path"
+    let dir = TestRoot.freshDirectory "tr-dir"
+    let file = TestRoot.freshFile "tr-file"
+
+    try
+        test <@ path <> other && not (Directory.Exists path) && not (File.Exists path) @>
+        test <@ dir.Exists && Directory.GetFileSystemEntries dir.FullName |> Array.isEmpty @>
+        test <@ File.Exists file && FileInfo(file).Length = 0L @>
+
+        test
+            <@
+                [ path; dir.FullName; file ]
+                |> List.forall (fun p -> Path.GetDirectoryName p = processRoot.Value)
+            @>
+    finally
+        dir.Delete true
+        File.Delete file
