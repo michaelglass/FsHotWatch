@@ -440,19 +440,21 @@ let execute (subject: Subject) (seed: int) (history: Op list) : Violation list *
 
     List.ofSeq violations, census
 
-/// Histories `first .. first + count - 1`; with `stopAtFirst`, until the first violation.
-let explore (subject: Subject) (first: int) (count: int) (stopAtFirst: bool) : Violation list * Census =
+/// The histories of `seeds`, in order; with `stopAtFirst`, until the first violation.
+let explore (subject: Subject) (seeds: int list) (stopAtFirst: bool) : Violation list * Census =
     let mutable violations = []
     let mutable census = Census.zero
-    let mutable seed = first
+    let mutable remaining = seeds
 
-    while seed < first + count && not (stopAtFirst && not violations.IsEmpty) do
+    while not remaining.IsEmpty && not (stopAtFirst && not violations.IsEmpty) do
+        let seed = remaining.Head
         let found, seen = execute subject seed (generate seed HistoryLength)
         violations <- violations @ found
         census <- Census.add census seen
-        seed <- seed + 1
+        remaining <- remaining.Tail
 
     violations, census
+
 
 /// A violation, with everything needed to replay it: the seed alone regenerates the history
 /// and every choice the runtime made.
