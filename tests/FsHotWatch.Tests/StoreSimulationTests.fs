@@ -10,19 +10,9 @@ open FsHotWatch.Tests.SimRuntime
 open FsHotWatch.Tests.StoreSimulation
 open FsHotWatch.Tests.TestHelpers
 
-/// N histories per run, a FIXED band from the first seed, so the interleavings these histories
-/// reach, and the coverage they contribute, are the same on every run. `FSHW_SIM_HISTORIES`
-/// raises N (the nightly's 100,000); `FSHW_SIM_SEED` moves the band (the nightly's fresh seeds),
-/// and with N = 1 replays one reported seed.
-let private histories =
-    match Int32.TryParse(Environment.GetEnvironmentVariable "FSHW_SIM_HISTORIES") with
-    | true, n when n > 0 -> n
-    | _ -> 1000
+let private histories = SimRegressions.histories
 
-let private firstSeed =
-    match Int32.TryParse(Environment.GetEnvironmentVariable "FSHW_SIM_SEED") with
-    | true, n -> n
-    | _ -> 1
+let private firstSeed = SimRegressions.firstSeed
 
 let private band = [ firstSeed .. firstSeed + histories - 1 ]
 
