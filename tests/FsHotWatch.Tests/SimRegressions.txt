@@ -1,0 +1,6 @@
+# Seeds the async simulations' nightly found failing (AUTOMATION-1695). CI runs every one of
+# them on every run, beside the fixed band 1..N. Append one line per failing nightly seed, with
+# the theorem it violated and the ticket filed for it; never remove one.
+#
+# <component> <seed> <theorem> <ticket>
+# e.g. store 48213 Order AUTOMATION-NNNN

@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="SimRegressions.txt" CopyToOutputDirectory="PreserveNewest" />
     <!-- Byte-exact console captures of real MTP runs, for the output parsers. -->
     <Content Include="MtpOutput/*.output.log" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
@@ -106,6 +107,7 @@
     <Compile Include="SimRuntime.fs" />
     <Compile Include="SimRuntimeTests.fs" />
     <Compile Include="StoreSimulation.fs" />
+    <Compile Include="SimRegressions.fs" />
     <Compile Include="StoreSimulationTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="WorkLedgerPropertyTests.fs" />
