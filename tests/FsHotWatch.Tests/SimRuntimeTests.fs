@@ -136,3 +136,107 @@ let ``work that never stops arriving is reported as unquiet`` () =
     again ()
     sim.RunUntilQuiet()
     test <@ sim.Faults = [ Fault.Unquiet QuietBound ] @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``virtual time advances only to the next armed timer, and a disposed timer never fires`` () =
+    let sim = Sim(9, 0.0)
+    let fired = Collections.Generic.List<string>()
+    use _ = sim.Runtime.Schedule (TimeSpan.FromSeconds 2.0) (fun () -> fired.Add "two")
+
+    let disarmed =
+        sim.Runtime.Schedule (TimeSpan.FromSeconds 1.0) (fun () -> fired.Add "one")
+
+    use _ =
+        sim.Runtime.Schedule (TimeSpan.FromSeconds 3.0) (fun () -> fired.Add "three")
+
+    disarmed.Dispose()
+
+    test <@ sim.Step() = None @>
+    test <@ sim.AdvanceToNextTimer() @>
+    test <@ sim.Now = TimeSpan.FromSeconds 2.0 @>
+    test <@ sim.Step() = Some Ran.Timer @>
+    sim.RunUntilQuiet()
+    test <@ List.ofSeq fired = [ "two"; "three" ] @>
+    test <@ sim.Now = TimeSpan.FromSeconds 3.0 @>
+    test <@ not (sim.AdvanceToNextTimer()) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a bounded wait lets timers due within its bound fire, then times out at its bound`` () =
+    let sim = Sim(10, 0.0)
+    // Virtual time: no thread waits on this bound, the simulated clock reaches it.
+    let virtualBound = TimeSpan.FromSeconds 5.0
+    let settled = TaskCompletionSource<unit>()
+
+    use _ =
+        sim.Runtime.Schedule (TimeSpan.FromSeconds 1.0) (fun () -> settled.SetResult())
+
+    test <@ sim.Runtime.Wait virtualBound settled.Task @>
+    test <@ sim.Now = TimeSpan.FromSeconds 1.0 @>
+
+    let late = TaskCompletionSource<unit>()
+
+    use _ =
+        sim.Runtime.Schedule (TimeSpan.FromSeconds 10.0) (fun () -> late.SetResult())
+
+    test <@ not (sim.Runtime.Wait virtualBound late.Task) @>
+    test <@ sim.Now = TimeSpan.FromSeconds 6.0 @>
+    // An unbounded wait reaches any armed timer.
+    test <@ sim.Runtime.Wait Timeout.InfiniteTimeSpan late.Task @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``tasks started on the runtime's scheduler run from the queue, never inline`` () =
+    let sim = Sim(11, 0.0)
+    use _ = sim.Install()
+
+    let started =
+        Task.Factory.StartNew(
+            (fun () -> 7),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            sim.Runtime.Scheduler
+        )
+
+    let continued =
+        started.ContinueWith((fun (t: Task<int>) -> t.Result + 1), sim.Runtime.Scheduler)
+
+    test <@ not started.IsCompleted @>
+    sim.RunUntilQuiet()
+    test <@ continued.Result = 8 @>
+    test <@ sim.Choices |> List.exists (fun c -> c.IsRan) @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``cancellation runs its callbacks from the runtime, and its task carries their failure`` () =
+    let sim = Sim(12, 0.0)
+    use source = new CancellationTokenSource()
+    let mutable called = false
+    use _ = source.Token.Register(fun () -> called <- true)
+    let cancelling = sim.Runtime.Cancel source
+    test <@ not called @>
+    sim.RunUntilQuiet()
+    test <@ called && cancelling.IsCompletedSuccessfully @>
+
+    source.Dispose()
+    let refused = sim.Runtime.Cancel source
+    sim.RunUntilQuiet()
+    test <@ refused.IsFaulted @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an async run synchronously pumps the world until it completes`` () =
+    let sim = Sim(13, 0.0)
+    use _ = sim.Install()
+
+    let receipt =
+        TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    sim.Runtime.Dispatch(fun () -> receipt.SetResult 5)
+    let mutable got = 0
+
+    sim.Runtime.RunSynchronously(
+        async {
+            let! value = Async.AwaitTask receipt.Task
+            got <- value
+        }
+    )
+
+    test <@ got = 5 @>
+    test <@ List.isEmpty sim.Faults @>

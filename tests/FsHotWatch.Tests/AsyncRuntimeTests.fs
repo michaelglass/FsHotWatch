@@ -31,3 +31,34 @@ let ``the pool runs dispatched work, and its wait sees what that work settles`` 
 
     test <@ AsyncRuntime.pool.Wait (TimeSpan.FromMilliseconds(float SyncHangBackstopMs)) settled.Task @>
     test <@ ran.Task.IsCompletedSuccessfully @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the pool's timer fires its callback, and the pool's scheduler runs started tasks`` () =
+    let fired =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    use _ =
+        AsyncRuntime.pool.Schedule TimeSpan.Zero (fun () -> fired.TrySetResult() |> ignore)
+
+    test <@ AsyncRuntime.pool.Wait (TimeSpan.FromMilliseconds(float SyncHangBackstopMs)) fired.Task @>
+
+    let started =
+        Task.Factory.StartNew(
+            (fun () -> 42),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            AsyncRuntime.pool.Scheduler
+        )
+
+    test <@ started.GetAwaiter().GetResult() = 42 @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the pool cancels a source, and runs an async computation to completion`` () =
+    use source = new CancellationTokenSource()
+    let cancelling = AsyncRuntime.pool.Cancel source
+    test <@ source.IsCancellationRequested @>
+    test <@ AsyncRuntime.pool.Wait (TimeSpan.FromMilliseconds(float SyncHangBackstopMs)) cancelling @>
+
+    let mutable ran = false
+    AsyncRuntime.pool.RunSynchronously(async { ran <- true })
+    test <@ ran @>

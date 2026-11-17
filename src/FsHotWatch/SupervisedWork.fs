@@ -25,13 +25,14 @@ let internal AdmissionBound = TimeSpan.FromSeconds 5.0
 /// Block this thread until `task` settles, at most `bound`, then raise its failure
 /// unwrapped, or `TimeoutException` once the bound passes.
 ///
-/// The bound is kept by this thread's own wait. `task.WaitAsync(bound)` keeps it with a
-/// timer whose callback runs on the thread pool, so with every pool thread busy the
-/// caller waited until the pool freed one: a bounded wait that is not bounded.
-let internal waitWithin (bound: TimeSpan) (task: Task<'T>) : 'T =
-    // The handle's wait raises nothing: a failed task is settled like any other, and
-    // `GetResult` raises its failure unwrapped.
-    if (task :> IAsyncResult).AsyncWaitHandle.WaitOne bound then
+/// The bound is kept by `runtime`'s wait, which `AsyncRuntime.pool` keeps on this thread.
+/// `task.WaitAsync(bound)` keeps it with a timer whose callback runs on the thread pool, so
+/// with every pool thread busy the caller waited until the pool freed one: a bounded wait
+/// that is not bounded.
+let internal waitWithin (runtime: AsyncRuntime.Runtime) (bound: TimeSpan) (task: Task<'T>) : 'T =
+    // The wait raises nothing: a failed task is settled like any other, and `GetResult`
+    // raises its failure unwrapped.
+    if runtime.Wait bound task then
         task.GetAwaiter().GetResult()
     else
         raise (TimeoutException($"gave up after %O{bound}"))
@@ -40,18 +41,16 @@ let private requireBounded (deadline: TimeSpan) =
     if deadline <= TimeSpan.Zero || deadline = TimeSpan.MaxValue then
         invalidArg (nameof deadline) "Supervised work needs a finite positive deadline"
 
-/// A one-shot timer that calls `expire` after `delay`.
-let defaultScheduler (delay: TimeSpan) (expire: unit -> unit) : IDisposable =
-    new Timer((fun _ -> expire ()), null, delay, Timeout.InfiniteTimeSpan) :> IDisposable
+/// A one-shot timer that calls `expire` after `delay`: the pool's.
+let defaultScheduler (delay: TimeSpan) (expire: unit -> unit) : IDisposable = AsyncRuntime.pool.Schedule delay expire
 
 /// Request cancellation without running registered callbacks on this thread: a callback
 /// that blocks or throws must not stall a timer or a close. A source disposed before or
 /// while its callbacks run belongs to work that has already retired, so that refusal is
 /// not a failure; a callback that throws is.
-let private requestCancellation (name: string) (source: CancellationTokenSource) =
+let private requestCancellation (runtime: AsyncRuntime.Runtime) (name: string) (source: CancellationTokenSource) =
     // A disposed source does not throw here; it returns a faulted task, filtered below.
-    source
-        .CancelAsync()
+    (runtime.Cancel source)
         .ContinueWith(
             (fun (cancelled: Task) ->
                 let refusals =
@@ -63,7 +62,7 @@ let private requestCancellation (name: string) (source: CancellationTokenSource)
                     Logging.error name $"a work cancellation callback failed: %O{AggregateException refusals}"),
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default
+            runtime.Scheduler
         )
     |> ignore
 
@@ -114,7 +113,7 @@ let declare
 
 /// Run one piece of external work under a finite deadline and a child-process scope.
 ///
-/// - `schedule` arms the deadline before `work` is invoked, so a callback that blocks
+/// - `runtime.Schedule` arms the deadline before `work` is invoked, so a callback that blocks
 ///   before returning its computation is still covered. A scheduler that fails settles
 ///   the operation with that failure and never invokes `work`.
 /// - When the deadline expires, `onDeadline` records it and the work's token is
@@ -127,7 +126,7 @@ let declare
 let execute
     (name: string)
     (deadline: TimeSpan)
-    (schedule: TimeSpan -> (unit -> unit) -> IDisposable)
+    (runtime: AsyncRuntime.Runtime)
     (onDeadline: exn -> unit)
     (ct: CancellationToken)
     (work: CancellationToken -> Async<'Result>)
@@ -143,11 +142,11 @@ let execute
             with failure ->
                 Logging.error name $"recording the work deadline failed: %O{failure}"
 
-            requestCancellation name cancellation
+            requestCancellation runtime name cancellation
 
         let armed =
             try
-                Ok(schedule deadline expire)
+                Ok(runtime.Schedule deadline expire)
             with failure ->
                 Error failure
 
@@ -258,8 +257,7 @@ type Queue<'State, 'Request>
         beginWork: 'State -> 'Request -> 'State,
         failed: 'State -> exn -> 'State,
         completed: 'State -> unit,
-        work: 'State -> 'Request -> CancellationToken -> ('State -> unit) -> Async<'State>,
-        ?scheduleDeadline: TimeSpan -> (unit -> unit) -> IDisposable
+        work: 'State -> 'Request -> CancellationToken -> ('State -> unit) -> Async<'State>
     ) =
     do requireBounded deadline
 
@@ -268,7 +266,8 @@ type Queue<'State, 'Request>
     // child process a request spawns registers with the owner's process registry rather
     // than the caller's.
     let ownerContext = ExecutionContext.Capture()
-    let scheduleDeadline = defaultArg scheduleDeadline defaultScheduler
+    // The store's runtime: its deadlines, its worker tasks and its waits.
+    let runtime = store.Runtime
 
     let handle =
         store.Register(
@@ -288,17 +287,22 @@ type Queue<'State, 'Request>
     let change transition =
         store.Change(handle, fun _ core -> transition core)
 
+    // `Task.Run`, on the runtime's scheduler.
+    let start (body: unit -> unit) : Task =
+        Task.Factory.StartNew(
+            Action body,
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            runtime.Scheduler
+        )
+
     let launch (body: unit -> unit) : Task =
         match ownerContext with
-        | null -> Task.Run(Action body)
+        | null -> start body
         | context ->
             let launched = ref Task.CompletedTask
 
-            ExecutionContext.Run(
-                context.CreateCopy(),
-                ContextCallback(fun _ -> launched.Value <- Task.Run(Action body)),
-                null
-            )
+            ExecutionContext.Run(context.CreateCopy(), ContextCallback(fun _ -> launched.Value <- start body), null)
 
             launched.Value
 
@@ -324,7 +328,7 @@ type Queue<'State, 'Request>
             if marked then
                 Logging.error name failure.Message
         }
-        |> waitWithin AdmissionBound
+        |> waitWithin runtime AdmissionBound
 
     // A worker task can only fault inside `finish`, before its request retires: a
     // `failed` or successor `beginWork` that throws in the writer. Nothing runs under the
@@ -434,18 +438,18 @@ type Queue<'State, 'Request>
                 execute
                     name
                     deadline
-                    scheduleDeadline
+                    runtime
                     (markDeadline request)
                     request.Cancellation.Token
                     (fun token -> work state request.Value token (publish request.Id))
                     finish
-                |> Async.RunSynchronously)
+                |> runtime.RunSynchronously)
 
         running.ContinueWith(
             (fun (faulted: Task) -> faultWorker request (faulted.Exception.GetBaseException())),
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default
+            runtime.Scheduler
         )
         |> ignore
 
@@ -502,7 +506,7 @@ type Queue<'State, 'Request>
     /// `SubmitAsync`, waiting at most `AdmissionBound` for the admission and raising its
     /// refusal. A timed-out caller does not withdraw the request.
     member this.Submit(value: 'Request, ct: CancellationToken) : Task<unit> =
-        match this.SubmitAsync(value, ct) |> waitWithin AdmissionBound with
+        match this.SubmitAsync(value, ct) |> waitWithin runtime AdmissionBound with
         | Ok receipt -> receipt
         | Error failure -> raise failure
 
@@ -529,7 +533,7 @@ type Queue<'State, 'Request>
                     request.Cancellation.Dispose())
 
                 active
-                |> Option.iter (fun request -> requestCancellation name request.Cancellation)
+                |> Option.iter (fun request -> requestCancellation runtime name request.Cancellation)
             }
 
-        closing |> waitWithin AdmissionBound
+        closing |> waitWithin runtime AdmissionBound

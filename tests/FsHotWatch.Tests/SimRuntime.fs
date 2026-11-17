@@ -10,6 +10,7 @@
 /// - While installed, the simulation is this thread's `SynchronizationContext`, so a task
 ///   continuation captured here is posted into the same queue.
 /// - The pump runs one ready item at a time, choosing which by the seed.
+/// - Time is virtual: it advances only when nothing is ready, to the next armed timer.
 /// - `Runtime.Wait` pumps until its task settles. A wait that nothing left to run can
 ///   settle is a DEADLOCK, raised at once instead of hanging the test.
 ///
@@ -29,6 +30,10 @@ type Ran =
     | Dispatched
     /// A continuation posted to the simulation's synchronization context.
     | Posted
+    /// A task started, or a continuation attached, on the runtime's scheduler.
+    | Scheduled
+    /// A virtual timer's callback.
+    | Timer
 
 /// A choice the simulation made, in the order it made them.
 [<RequireQualifiedAccess>]
@@ -39,6 +44,8 @@ type Choice =
     | Queued
     /// The pump ran ready item `index` of `count`.
     | Ran of index: int * count: int
+    /// Nothing was ready, so virtual time advanced to the next timer.
+    | Advanced of now: TimeSpan
 
 /// What no history may do, whatever the interleaving.
 [<RequireQualifiedAccess>]
@@ -57,6 +64,16 @@ exception SimDeadlockException of string
 type private Item =
     | DispatchedWork of (unit -> unit)
     | PostedWork of SendOrPostCallback * obj
+    | ScheduledTask of (unit -> unit)
+    | FiredTimer of (unit -> unit)
+
+/// A virtual timer: armed until it fires or is disposed.
+[<NoComparison; NoEquality>]
+type private VirtualTimer =
+    { Due: TimeSpan
+      Order: int64
+      Expire: unit -> unit
+      mutable Armed: bool }
 
 type private Context(post: SendOrPostCallback -> obj -> unit) =
     inherit SynchronizationContext()
@@ -64,19 +81,35 @@ type private Context(post: SendOrPostCallback -> obj -> unit) =
     override _.Send(callback, state) = callback.Invoke state
     override this.CreateCopy() = this :> SynchronizationContext
 
+/// The tasks a component starts and the continuations it attaches with a scheduler.
+type private SimScheduler(queue: (unit -> unit) -> unit) as this =
+    inherit TaskScheduler()
+    let run (task: Task) = this.Run task |> ignore
+    override _.QueueTask(task) = queue (fun () -> run task)
+    // Never inline: every scheduled task goes through the queue, so the seed orders it.
+    override _.TryExecuteTaskInline(_, _) = false
+    override _.GetScheduledTasks() = Seq.empty
+    member _.Run(task: Task) = base.TryExecuteTask task
+
 /// The bound on one run to quiescence: far beyond what any history here schedules.
 [<Literal>]
 let QuietBound = 100_000
 
 /// One simulated world. `inlineShare` is the chance that a dispatch runs its work inside the
 /// call rather than queueing it.
+///
+/// Time is virtual: it advances only when nothing is ready, straight to the next armed timer,
+/// and a fired timer's callback is a ready item like any other.
 type internal Sim(seed: int, inlineShare: float) =
     let rng = Random seed
     let owner = Environment.CurrentManagedThreadId
     let gate = Lock()
     let ready = Collections.Generic.List<Item>()
+    let timers = Collections.Generic.List<VirtualTimer>()
     let choices = Collections.Generic.List<Choice>()
     let faults = Collections.Generic.List<Fault>()
+    let mutable now = TimeSpan.Zero
+    let mutable armedSoFar = 0L
 
     let fault (f: Fault) =
         Locking.locked gate (fun () -> faults.Add f)
@@ -98,6 +131,11 @@ type internal Sim(seed: int, inlineShare: float) =
             if fromOwner "a continuation posted from another thread" then
                 enqueue (PostedWork(callback, state)))
 
+    let scheduler =
+        SimScheduler(fun run ->
+            if fromOwner "a task scheduled from another thread" then
+                enqueue (ScheduledTask run))
+
     let step () : Ran option =
         let picked =
             Locking.locked gate (fun () ->
@@ -118,6 +156,65 @@ type internal Sim(seed: int, inlineShare: float) =
         | Some(PostedWork(callback, state)) ->
             callback.Invoke state
             Some Ran.Posted
+        | Some(ScheduledTask run) ->
+            run ()
+            Some Ran.Scheduled
+        | Some(FiredTimer expire) ->
+            expire ()
+            Some Ran.Timer
+
+    // Advance to the next armed timer due no later than `limit`, and make every timer due by
+    // then ready. False when none is due by `limit`.
+    let advance (limit: TimeSpan option) =
+        Locking.locked gate (fun () ->
+            timers.RemoveAll(fun t -> not t.Armed) |> ignore
+
+            if timers.Count = 0 then
+                false
+            else
+                let next = timers |> Seq.minBy (fun t -> t.Due, t.Order)
+
+                match limit with
+                | Some limit when next.Due > limit -> false
+                | Some _
+                | None ->
+                    now <- max now next.Due
+                    choices.Add(Choice.Advanced now)
+
+                    let due =
+                        timers
+                        |> Seq.filter (fun t -> t.Due <= now)
+                        |> Seq.sortBy (fun t -> t.Due, t.Order)
+                        |> List.ofSeq
+
+                    for t in due do
+                        t.Armed <- false
+                        timers.Remove t |> ignore
+                        ready.Add(FiredTimer t.Expire)
+
+                    true)
+
+    let schedule (delay: TimeSpan) (expire: unit -> unit) : IDisposable =
+        if fromOwner "a timer armed from another thread" then
+            let timer =
+                Locking.locked gate (fun () ->
+                    armedSoFar <- armedSoFar + 1L
+
+                    let t =
+                        { Due = now + delay
+                          Order = armedSoFar
+                          Expire = expire
+                          Armed = true }
+
+                    timers.Add t
+                    t)
+
+            { new IDisposable with
+                member _.Dispose() =
+                    Locking.locked gate (fun () -> timer.Armed <- false) }
+        else
+            { new IDisposable with
+                member _.Dispose() = () }
 
     let dispatch (work: unit -> unit) =
         if fromOwner "work dispatched from another thread" then
@@ -128,23 +225,69 @@ type internal Sim(seed: int, inlineShare: float) =
                 Locking.locked gate (fun () -> choices.Add Choice.Queued)
                 enqueue (DispatchedWork work)
 
+    // Pump until `task` settles. With nothing ready, time advances to the next timer due
+    // within `bound` (any timer, unbounded); a bounded wait with none due times out, its bound
+    // passing; an unbounded one with none at all is a deadlock.
     let wait (bound: TimeSpan) (task: Task) =
+        let limit =
+            if bound = Timeout.InfiniteTimeSpan then
+                None
+            else
+                Some(now + bound)
+
         let mutable progressed = true
 
         while not task.IsCompleted && progressed do
-            progressed <- (step ()).IsSome
+            progressed <- (step ()).IsSome || advance limit
 
         if task.IsCompleted then
             true
-        elif bound = Timeout.InfiniteTimeSpan then
-            let what = "an unbounded wait on a task nothing left to run can settle"
-            fault (Fault.Deadlock what)
-            raise (SimDeadlock what)
         else
-            // No virtual time passes here, so a bounded wait with nothing to run times out.
-            false
+            match limit with
+            | None ->
+                let what = "an unbounded wait on a task nothing left to run can settle"
+                fault (Fault.Deadlock what)
+                raise (SimDeadlockException what)
+            | Some limit ->
+                Locking.locked gate (fun () -> now <- max now limit)
+                false
 
-    let runtime: AsyncRuntime.Runtime = { Dispatch = dispatch; Wait = wait }
+    let cancel (source: CancellationTokenSource) : Task =
+        let cancelled =
+            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+        dispatch (fun () ->
+            try
+                source.Cancel()
+                cancelled.SetResult()
+            with failure ->
+                cancelled.SetException failure)
+
+        cancelled.Task
+
+    // Started as a task on the simulation's scheduler, so the scheduler is current while
+    // `work` runs: an `Async.AwaitTask` inside it continues from the queue, not the pool.
+    let runSynchronously (work: Async<unit>) =
+        let running =
+            Task.Factory
+                .StartNew(
+                    (fun () -> Async.StartImmediateAsTask work),
+                    CancellationToken.None,
+                    TaskCreationOptions.DenyChildAttach,
+                    scheduler
+                )
+                .Unwrap()
+
+        wait Timeout.InfiniteTimeSpan running |> ignore
+        running.GetAwaiter().GetResult()
+
+    let runtime: AsyncRuntime.Runtime =
+        { Dispatch = dispatch
+          Wait = wait
+          Scheduler = scheduler
+          Schedule = schedule
+          Cancel = cancel
+          RunSynchronously = runSynchronously }
 
     new(seed: int) = Sim(seed, 0.5)
 
@@ -152,6 +295,9 @@ type internal Sim(seed: int, inlineShare: float) =
 
     /// The capability a simulated component takes in place of `AsyncRuntime.pool`.
     member _.Runtime = runtime
+
+    /// Virtual time since the world began.
+    member _.Now = Locking.locked gate (fun () -> now)
 
     /// Make the simulation this thread's synchronization context until disposed.
     member _.Install() : IDisposable =
@@ -165,7 +311,10 @@ type internal Sim(seed: int, inlineShare: float) =
     /// Run one ready item, chosen by the seed: what it was, or `None` when nothing was ready.
     member _.Step() : Ran option = step ()
 
-    /// Run ready items until none is left, at most `QuietBound`.
+    /// Advance virtual time to the next armed timer and make it ready. False when none is armed.
+    member _.AdvanceToNextTimer() : bool = advance None
+
+    /// Run until nothing is ready and no timer is armed, at most `QuietBound` items.
     member _.RunUntilQuiet() =
         let mutable steps = 0
         let mutable running = true
@@ -177,7 +326,11 @@ type internal Sim(seed: int, inlineShare: float) =
             else
                 match step () with
                 | Some _ -> steps <- steps + 1
-                | None -> running <- false
+                | None -> running <- advance None
+
+    /// Record an ESCAPE unless this runs on the simulation's thread: a harness callback calls it,
+    /// so work a component sent to the real pool behind the runtime's back is still named.
+    member _.CheckOwner(what: string) = fromOwner what |> ignore
 
     member _.ReadyCount = Locking.locked gate (fun () -> ready.Count)
 
