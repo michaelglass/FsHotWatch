@@ -324,7 +324,7 @@ type CheckPipeline
         ?recheckCooldown: TimeSpan,
         ?frames: PathFrame.FrameChoice,
         ?imports: ProjectSnapshots.ReferencePlacement,
-        ?maxConcurrentChecks: int,
+        ?maxConcurrentChecks: WorkScheduler.CheckConcurrency,
         ?admission: WorkScheduler.Lane,
         ?checkRecords: OutcomeStore.Store,
         ?checkToolchain: string,
@@ -355,7 +355,13 @@ type CheckPipeline
         match admission with
         | Some lane -> lane
         | None ->
-            (WorkScheduler.Scheduler(max 1 (defaultArg maxConcurrentChecks Environment.ProcessorCount))).Lane "pipeline"
+            (WorkScheduler.Scheduler(
+                WorkScheduler.CheckConcurrency.value (
+                    defaultArg maxConcurrentChecks WorkScheduler.CheckConcurrency.processorCount
+                )
+            ))
+                .Lane
+                "pipeline"
 
     let maxConcurrentChecks = admission.Scheduler.Capacity
 

@@ -3498,6 +3498,7 @@ let internal daemonWith
             IdleExitSource = idleExit.Source
             PressureIdleFloorMin = pressureIdleFloorMin
             CheckerCacheSizeFactor = config.CheckerCacheSizeFactor
+            MaxConcurrentChecks = config.MaxConcurrentChecks
             Hosting = hosting
             LiveResultBound = liveResultBound }
 
@@ -3523,9 +3524,14 @@ let internal runHostVerb (opts: GlobalOptions) (root: string) : int =
         let partitions =
             FsHotWatch.CheckerPartitions.Partitions Daemon.createCheckerWithCacheSizes
 
-        // Every session's checks take turns at one bound: the host's processors, not
-        // that many per session.
-        let checks = FsHotWatch.WorkScheduler.Scheduler Environment.ProcessorCount
+        // Every session's checks take turns at one bound, not that many per session: the
+        // launch worktree's `checker.maxConcurrentChecks`, one per processor by default.
+        let checks =
+            FsHotWatch.WorkScheduler.Scheduler(
+                FsHotWatch.WorkScheduler.CheckConcurrency.value (
+                    DaemonConfig.hostCheckConcurrency launchRoot.Root.Value
+                )
+            )
 
         // Every session's test hosts and builds take turns at one bound too (AUTOMATION-682,
         // ADR-052): the same processor count, so two sessions' gates cannot each launch a

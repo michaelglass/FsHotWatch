@@ -554,3 +554,20 @@ and [<Sealed>] Lane internal (scheduler: Scheduler, name: string) =
 /// descriptions.
 let parallelWithin (bound: int) (jobs: Async<'T> seq) : Async<'T array> =
     Async.Parallel(jobs, maxDegreeOfParallelism = max 1 bound)
+
+/// How many checks a daemon admits at once: a positive count. Built only by
+/// `CheckConcurrency.tryCreate` (from `.fshw.json`'s `checker.maxConcurrentChecks`) or as
+/// `CheckConcurrency.processorCount` (the default), so a zero or negative bound cannot be
+/// configured at all rather than being clamped later.
+type CheckConcurrency = private CheckConcurrency of int
+
+module CheckConcurrency =
+    /// `n` as a bound, when it is positive.
+    let tryCreate (n: int) : CheckConcurrency option =
+        if n > 0 then Some(CheckConcurrency n) else None
+
+    /// One check per processor: the bound when none is configured.
+    let processorCount: CheckConcurrency = CheckConcurrency Environment.ProcessorCount
+
+    /// The number of checks.
+    let value (CheckConcurrency n) : int = n

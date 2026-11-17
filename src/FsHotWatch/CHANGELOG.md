@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- api: `DaemonOptions.MaxConcurrentChecks: WorkScheduler.CheckConcurrency` sets how many checks a per-worktree daemon
+  admits at once (AUTOMATION-1779); `DaemonOptions.defaults` keeps one per processor. `CheckConcurrency` is a positive
+  count, built only by `CheckConcurrency.tryCreate` or as `CheckConcurrency.processorCount`. **Breaking:**
+  `CheckPipeline`'s optional `maxConcurrentChecks` is now a `CheckConcurrency` instead of an `int` clamped to at least 1.
+
 - **behaviour change:** a `SupervisedWork` request's receipt is set by the writer right after the publication that
   retires it, before anything can read that retirement as rest (AUTOMATION-1781). It was set by the finishing worker a
   few statements later, after the store's writer had moved on, so a reader on another thread could see rest with the
