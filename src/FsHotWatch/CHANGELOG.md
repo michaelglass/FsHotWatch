@@ -21,6 +21,11 @@
   caller is writing. Before, the pool decided whether changeAsync's await found its change already published and
   whether a posted writer ever met a running one, so the floor flapped: CI run 43081575104 and the 2026-11-13 forced
   nightly both went red with every test passing. Behaviour is unchanged.
+- test: DebouncedWork's and SupervisedWork's branch floors are 100 again on both platforms (AUTOMATION-1601). On SDK
+  10.0.404 every await on a store change is a branch on whether the change had already published, and only a pool
+  writer that won the race took that arm; new tests build each queue on a Store whose writer publishes inside the post
+  and take every such arm. SupervisedWork's Close settles queued requests with `List.iter` instead of a task-CE `for`,
+  dropping the enumerator null check no test could take. Behaviour is unchanged.
 
 ## 0.10.0-alpha.120 - 2026-11-17
 

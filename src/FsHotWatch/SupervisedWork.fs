@@ -521,9 +521,12 @@ type Queue<'State, 'Request>
                             queueOf core.Phase
                     )
 
-                for request in queued do
+                // `List.iter`, not `for`: a `for` in a task CE disposes its enumerator behind a
+                // null check that no list enumerator can take (AUTOMATION-1601).
+                queued
+                |> List.iter (fun request ->
                     request.Receipt.TrySetException(ObjectDisposedException name) |> ignore
-                    request.Cancellation.Dispose()
+                    request.Cancellation.Dispose())
 
                 active
                 |> Option.iter (fun request -> requestCancellation name request.Cancellation)

@@ -790,3 +790,70 @@ let ``an owner's cancellation requested before the work returns refuses its succ
         | other -> failwith $"an owner cancelled before the work returned must refuse its success, got %A{other}"
     finally
         gate.Set()
+
+// AUTOMATION-1601: every store change this queue awaits has two arms, the change still queued
+// when the caller awaits it and the change already published. A pool writer decides which; a
+// store whose writer publishes inside the post makes it the second, provided no other writer
+// is running. The worker is held on a gate, so it publishes nothing while the test admits,
+// expires the deadline and closes.
+[<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
+let ``with an inline store writer, admission, a deadline and close each find their change already published`` () =
+    let store = Store(fun write -> write ())
+    use entered = new ManualResetEventSlim(false)
+    use release = new ManualResetEventSlim(false)
+    let schedule, expiry = capturedDeadline ()
+
+    let queue =
+        SupervisedWork.Queue(
+            store,
+            "inline",
+            0,
+            TimeSpan.FromMinutes 1.0,
+            (fun state _ -> state),
+            (fun state _ -> state),
+            ignore,
+            (fun state (_: int) _ _ ->
+                async {
+                    entered.Set()
+                    Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
+                    return state + 1
+                }),
+            scheduleDeadline = schedule
+        )
+
+    // SubmitAsync's admission: published before its await.
+    let admission = queue.SubmitAsync(1, CancellationToken.None)
+    Assert.True(admission.IsCompletedSuccessfully, $"status was %A{admission.Status}")
+
+    let active =
+        match admission.Result with
+        | Ok receipt -> receipt
+        | Error failure -> raise failure
+
+    try
+        Assert.True(entered.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
+
+        // markDeadline's change, from the deadline callback while the worker is held.
+        let expire = expiry ()
+        expire ()
+
+        Assert.IsType<TimeoutException>(snd store.Snapshot.OperationFaults.Head)
+        |> ignore
+
+        // Two requests queue behind the held one; Close settles both.
+        let queued =
+            [ queue.Submit(2, CancellationToken.None)
+              queue.Submit(3, CancellationToken.None) ]
+
+        // Close's change, with the held request still active.
+        queue.Close()
+
+        for receipt in queued do
+            Assert.Throws<ObjectDisposedException>(fun () -> awaitResult receipt) |> ignore
+
+        Assert.True(store.Snapshot.IsBusy, "the held request stays owned until it returns")
+        release.Set()
+        Assert.Throws<TimeoutException>(fun () -> awaitResult active) |> ignore
+        Assert.False(store.Snapshot.IsBusy)
+    finally
+        release.Set()
