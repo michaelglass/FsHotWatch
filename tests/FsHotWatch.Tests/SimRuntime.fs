@@ -340,6 +340,12 @@ type internal Sim(seed: int, inlineShare: float) =
                 | Some _ -> steps <- steps + 1
                 | None -> running <- advance None
 
+    /// Queue `work` as a ready item, never inline: a harness's own source of later completions
+    /// (a scripted stream's data arriving after the read that asked for it).
+    member _.Later(work: unit -> unit) =
+        if fromOwner "work queued from another thread" then
+            enqueue (DispatchedWork work)
+
     /// Record an ESCAPE unless this runs on the simulation's thread: a harness callback calls it,
     /// so work a component sent to the real pool behind the runtime's back is still named.
     member _.CheckOwner(what: string) = fromOwner what |> ignore
