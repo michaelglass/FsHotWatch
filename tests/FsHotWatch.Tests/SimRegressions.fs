@@ -18,6 +18,7 @@ type Entry =
     | Store of seed: int * theorem: StoreSimulation.Theorem * ticket: string
     | SupervisedWork of seed: int * theorem: SupervisedWorkSimulation.Theorem * ticket: string
     | DebouncedWork of seed: int * theorem: DebouncedWorkSimulation.Theorem * ticket: string
+    | Frames of seed: int * theorem: FrameSimulation.Theorem * ticket: string
 
 let private storeTheorems =
     [ StoreSimulation.Theorem.PublicationBeforeReceipt
@@ -43,6 +44,12 @@ let private debouncedTheorems =
       DebouncedWorkSimulation.Theorem.HonestRest
       DebouncedWorkSimulation.Theorem.Settlement
       DebouncedWorkSimulation.Theorem.Runtime ]
+
+let private frameTheorems =
+    [ FrameSimulation.Theorem.RoundTrip
+      FrameSimulation.Theorem.Ending
+      FrameSimulation.Theorem.Settlement
+      FrameSimulation.Theorem.Runtime ]
 
 /// The theorem named `name` among `theorems`, by its case name.
 let private named (theorems: 'T list) (name: string) =
@@ -71,6 +78,11 @@ let private parseLine (number: int) (line: string) : Result<Entry option, string
         | (true, s), Some t -> Ok(Some(Entry.DebouncedWork(s, t, ticket)))
         | (false, _), _ -> Error $"line %d{number}: '%s{seed}' is not a seed"
         | _, None -> Error $"line %d{number}: the debounced-work simulation has no theorem '%s{theorem}'"
+    | [| "frames"; seed; theorem; ticket |] ->
+        match Int32.TryParse seed, named frameTheorems theorem with
+        | (true, s), Some t -> Ok(Some(Entry.Frames(s, t, ticket)))
+        | (false, _), _ -> Error $"line %d{number}: '%s{seed}' is not a seed"
+        | _, None -> Error $"line %d{number}: the frames simulation has no theorem '%s{theorem}'"
     | [| name; _; _; _ |] -> Error $"line %d{number}: no simulated component '%s{name}'"
     | _ -> Error $"line %d{number}: expected '<component> <seed> <theorem> <ticket>', got '%s{line.Trim()}'"
 
@@ -108,7 +120,8 @@ let storeSeeds (first: int) (count: int) (entries: Entry list) : int list =
         match entry with
         | Entry.Store(seed, _, _) -> Some seed
         | Entry.SupervisedWork _
-        | Entry.DebouncedWork _ -> None)
+        | Entry.DebouncedWork _
+        | Entry.Frames _ -> None)
     |> band first count
 
 /// The seeds CI runs for supervised work: the band, then every listed supervised-work seed.
@@ -118,7 +131,8 @@ let supervisedWorkSeeds (first: int) (count: int) (entries: Entry list) : int li
         match entry with
         | Entry.SupervisedWork(seed, _, _) -> Some seed
         | Entry.Store _
-        | Entry.DebouncedWork _ -> None)
+        | Entry.DebouncedWork _
+        | Entry.Frames _ -> None)
     |> band first count
 
 /// The seeds CI runs for debounced work: the band, then every listed debounced-work seed.
@@ -128,7 +142,19 @@ let debouncedWorkSeeds (first: int) (count: int) (entries: Entry list) : int lis
         match entry with
         | Entry.DebouncedWork(seed, _, _) -> Some seed
         | Entry.Store _
-        | Entry.SupervisedWork _ -> None)
+        | Entry.SupervisedWork _
+        | Entry.Frames _ -> None)
+    |> band first count
+
+/// The seeds CI runs for the endpoint's frames: the band, then every listed frames seed.
+let frameSeeds (first: int) (count: int) (entries: Entry list) : int list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | Entry.Frames(seed, _, _) -> Some seed
+        | Entry.Store _
+        | Entry.SupervisedWork _
+        | Entry.DebouncedWork _ -> None)
     |> band first count
 
 /// N histories per component per run, a FIXED band from the first seed, so the interleavings
