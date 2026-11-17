@@ -24,6 +24,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- AUTOMATION-1775: every scratch directory is a TestRoot this test alone owns. -->
+    <Compile Include="../FsHotWatch.Tests/TestRoot.fs" Link="TestRoot.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="System.fs" />
     <Compile Include="Simulation.fs" />

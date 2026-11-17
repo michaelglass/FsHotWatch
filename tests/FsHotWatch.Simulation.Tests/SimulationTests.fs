@@ -133,42 +133,37 @@ let ``the reference interpreter reddens exactly the faulted requirement`` () =
 /// exclusion so it is asserted, not merely tolerated.
 [<Fact>]
 let ``an unreadable test record keeps its key a miss (ADR-072)`` () =
-    let repoRoot =
-        IO.Path.Combine(IO.Path.GetTempPath(), "fshw-sim", Guid.NewGuid().ToString "N")
+    use root = FsHotWatch.TestRoots.TestRoot.create "fshw-sim"
+    let repoRoot = root.Path
 
-    IO.Directory.CreateDirectory repoRoot |> ignore
+    let shadow = FsHotWatch.OutcomeRecords.InMemoryOutcomeStore()
 
-    try
-        let shadow = FsHotWatch.OutcomeRecords.InMemoryOutcomeStore()
+    let stores =
+        Stores.InMemory(shadow, FsHotWatch.OutcomeRecords.InMemoryOutcomeStore())
 
-        let stores =
-            Stores.InMemory(shadow, FsHotWatch.OutcomeRecords.InMemoryOutcomeStore())
+    let at = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
 
-        let at = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
+    let confirm (runId: string) (now: DateTimeOffset) =
+        let run =
+            { Command = FsHotWatch.Cli.Verdict.Command.Confirm
+              Key = treeKey Subject.Current initialTree
+              Started = initialTree
+              Read = initialTree
+              Selected = testProjects
+              Scope = FsHotWatch.Cli.ShadowVerdict.GradedScope.FullSuite
+              RunId = runId }
 
-        let confirm (runId: string) (now: DateTimeOffset) =
-            let run =
-                { Command = FsHotWatch.Cli.Verdict.Command.Confirm
-                  Key = treeKey Subject.Current initialTree
-                  Started = initialTree
-                  Read = initialTree
-                  Selected = testProjects
-                  Scope = FsHotWatch.Cli.ShadowVerdict.GradedScope.FullSuite
-                  RunId = runId }
+        let o = observation Subject.Current run initialTree "sim-fshw" repoRoot now
+        o, publish Subject.Current repoRoot stores o
 
-            let o = observation Subject.Current run initialTree "sim-fshw" repoRoot now
-            o, publish Subject.Current repoRoot stores o
+    let first, answer = confirm "run1" at
+    test <@ answer = FsHotWatch.LookupVerdict.Answer.Green @>
 
-        let first, answer = confirm "run1" at
-        test <@ answer = FsHotWatch.LookupVerdict.Answer.Green @>
+    let full = FsHotWatch.Cli.ShadowVerdict.testKey first "A.Tests" "full"
+    let name = shadow.FileNames full.Value |> List.exactlyOne
+    shadow.Replace(full.Value, name, Error "permission denied")
 
-        let full = FsHotWatch.Cli.ShadowVerdict.testKey first "A.Tests" "full"
-        let name = shadow.FileNames full.Value |> List.exactlyOne
-        shadow.Replace(full.Value, name, Error "permission denied")
-
-        let second, answer = confirm "run2" (at.AddMinutes 1.0)
-        test <@ answer = FsHotWatch.LookupVerdict.Answer.Missing [ "test:A.Tests" ] @>
-        test <@ excusedMiss stores second "test:A.Tests" @>
-        test <@ not (excusedMiss stores second "plugin:lint") @>
-    finally
-        IO.Directory.Delete(repoRoot, true)
+    let second, answer = confirm "run2" (at.AddMinutes 1.0)
+    test <@ answer = FsHotWatch.LookupVerdict.Answer.Missing [ "test:A.Tests" ] @>
+    test <@ excusedMiss stores second "test:A.Tests" @>
+    test <@ not (excusedMiss stores second "plugin:lint") @>

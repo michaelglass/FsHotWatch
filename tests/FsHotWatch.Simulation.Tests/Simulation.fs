@@ -195,10 +195,9 @@ let private memoryFiles (store: OutcomeRecords.InMemoryOutcomeStore) =
 /// Run `events` against `subject` on `backend`, in a fresh temporary repository; every
 /// violation, in step order.
 let execute (backend: Backend) (subject: Subject) (seed: int) (events: Event list) : Violation list =
-    let repoRoot =
-        Path.Combine(Path.GetTempPath(), "fshw-sim", Guid.NewGuid().ToString "N")
-
-    Directory.CreateDirectory repoRoot |> ignore
+    // A root this run alone owns (AUTOMATION-1775), removed when the run ends.
+    use root = FsHotWatch.TestRoots.TestRoot.create "fshw-sim"
+    let repoRoot = root.Path
     let storeRoot = ShadowVerdict.storeRoot repoRoot
     let kpRoot = Path.Combine(repoRoot, "box-wide-outcomes")
 
@@ -407,24 +406,18 @@ let execute (backend: Backend) (subject: Subject) (seed: int) (events: Event lis
             s
         | Event.ProducerUpgrade -> { s with Producer = s.Producer + 1 }
 
-    try
-        let initial =
-            { Tree = initialTree
-              Snapshots = []
-              Stores = openStores ()
-              Selector = SelectorState.cold
-              Producer = 1
-              Now = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
-              LastCommand = Verdict.Command.Check
-              Runs = 0 }
+    let initial =
+        { Tree = initialTree
+          Snapshots = []
+          Stores = openStores ()
+          Selector = SelectorState.cold
+          Producer = 1
+          Now = DateTimeOffset(2026, 11, 14, 12, 0, 0, TimeSpan.Zero)
+          LastCommand = Verdict.Command.Check
+          Runs = 0 }
 
-        events |> List.indexed |> List.fold step initial |> ignore
-        List.ofSeq violations
-    finally
-        try
-            Directory.Delete(repoRoot, true)
-        with :? IOException ->
-            ()
+    events |> List.indexed |> List.fold step initial |> ignore
+    List.ofSeq violations
 
 /// The steps in a history.
 [<Literal>]
