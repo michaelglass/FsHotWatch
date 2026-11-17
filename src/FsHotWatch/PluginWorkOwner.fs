@@ -337,12 +337,12 @@ type private Mutation =
 /// while they wait for it, and the pool gives each thread it adds to the next callback in
 /// the queue. A change posted asynchronously is published by a writer on the pool.
 ///
-/// `dispatchWriter` hands that writer to the pool. Tests pass their own to decide when the
-/// writer runs relative to the poster, so the interleavings a pool only produces by chance
-/// (a writer that publishes before the poster awaits, a second post finding a writer
-/// already posted, a posted writer finding another writer running) are each reached on
-/// purpose (AUTOMATION-1601).
-type Store(dispatchWriter: (unit -> unit) -> unit) =
+/// `runtime` dispatches that writer and keeps a synchronous caller's wait. Tests pass their
+/// own to decide when the writer runs relative to the poster, so the interleavings a pool
+/// only produces by chance (a writer that publishes before the poster awaits, a second post
+/// finding a writer already posted, a posted writer finding another writer running) are
+/// each reached on purpose (AUTOMATION-1601, AUTOMATION-1695).
+type Store(runtime: AsyncRuntime.Runtime) =
     let identity = Guid.NewGuid()
 
     let mutable published =
@@ -438,7 +438,7 @@ type Store(dispatchWriter: (unit -> unit) -> unit) =
         if writeHere then
             publishQueued ()
         elif postWriter then
-            dispatchWriter writeOnPool
+            runtime.Dispatch writeOnPool
 
         reply.Task
 
@@ -455,7 +455,9 @@ type Store(dispatchWriter: (unit -> unit) -> unit) =
     // on the reply itself, which a writer that is already running completes: a
     // continuation would need a pool thread to run.
     let change (transition: WorkId -> HostSnapshot -> HostSnapshot * 'Result) : 'Result =
-        (post true transition).GetAwaiter().GetResult() |> unbox<'Result>
+        let reply = post true transition
+        runtime.Wait Timeout.InfiniteTimeSpan reply |> ignore
+        reply.GetAwaiter().GetResult() |> unbox<'Result>
 
     let rowChange (handle: RowHandle<'T>) (transition: WorkId -> 'T -> 'T * 'Result) =
         fun fresh (snapshot: HostSnapshot) ->
@@ -473,11 +475,7 @@ type Store(dispatchWriter: (unit -> unit) -> unit) =
             result
 
     /// A store whose posted writer runs on the thread pool.
-    new() =
-        // Not the caller's execution context: the writer publishes every caller's change.
-        Store(fun write ->
-            ThreadPool.UnsafeQueueUserWorkItem(Action<obj>(fun _ -> write ()), null, true)
-            |> ignore)
+    new() = Store(AsyncRuntime.pool)
 
     member _.Snapshot: HostSnapshot = Volatile.Read(&published)
 

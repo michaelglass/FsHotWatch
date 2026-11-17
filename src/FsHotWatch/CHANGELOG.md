@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor: `PluginWorkOwner.Store` takes its timing sources as one capability, `AsyncRuntime.Runtime` (AUTOMATION-1695).
+  The store's posted writer was dispatched through a constructor function and its synchronous caller's wait was a
+  direct `GetResult`; both now go through `Runtime.Dispatch` and `Runtime.Wait`, so a deterministic simulation can
+  decide every writer interleaving and report a wait that could never settle instead of hanging. `AsyncRuntime.pool`
+  is today's behaviour: a thread-pool work item and this thread's own wait. No behaviour change; no record or cache
+  key changes.
+
 - test(rules): FSHW-ROOT-001 — a test touches disk only under a root it alone owns (AUTOMATION-1775).
   Three flakes in one week had one shape: a test touched a place another test, or the build, was changing at the
   same time (a repo-wide walk racing TestPrune.Trace.Tests' scratch, AUTOMATION-1671; a leftover daemon rebuilding

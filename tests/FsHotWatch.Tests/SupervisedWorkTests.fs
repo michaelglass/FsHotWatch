@@ -798,7 +798,12 @@ let ``an owner's cancellation requested before the work returns refuses its succ
 // expires the deadline and closes.
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``with an inline store writer, admission, a deadline and close each find their change already published`` () =
-    let store = Store(fun write -> write ())
+    let store =
+        Store(
+            { AsyncRuntime.pool with
+                Dispatch = fun write -> write () }
+        )
+
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
     let schedule, expiry = capturedDeadline ()

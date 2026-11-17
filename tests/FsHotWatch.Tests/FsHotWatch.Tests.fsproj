@@ -102,6 +102,7 @@
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
     <Compile Include="ToolchainScopedTaskCacheTests.fs" />
+    <Compile Include="AsyncRuntimeTests.fs" />
     <Compile Include="PluginWorkOwnerTests.fs" />
     <Compile Include="WorkLedgerPropertyTests.fs" />
     <Compile Include="SupervisedWorkTests.fs" />

@@ -574,7 +574,12 @@ let ``a supervised request that has already failed settles its cohort with the f
 // so it publishes nothing while the queue admits.
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``with an inline store writer, every change a debounced cohort awaits is already published`` () =
-    let store = Store(fun write -> write ())
+    let store =
+        Store(
+            { AsyncRuntime.pool with
+                Dispatch = fun write -> write () }
+        )
+
     use retired = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
 
