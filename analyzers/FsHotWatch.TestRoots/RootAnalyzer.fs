@@ -15,7 +15,8 @@
 ///   - the repository and its build output: `__SOURCE_DIRECTORY__` and
 ///     `AppContext.BaseDirectory`, directories a test can walk up from or write into. NOT
 ///     `<assembly>.Location`: that names one file this process has already loaded, so a
-///     test reading it cannot see it change;
+///     test reading it cannot see it change (on main d5a441ae its 28 hits were all `-r:`
+///     references and copies of a test dependency: false positives);
 ///   - the user's machine: `Environment.GetFolderPath`, and `GetEnvironmentVariable` of
 ///     `HOME`, `USERPROFILE`, `TMPDIR`, `TMP` or `TEMP`;
 ///   - the process working directory: `Directory.GetCurrentDirectory`,
@@ -31,6 +32,27 @@
 /// SUPPRESS: `// FSHW-ROOT-001 ok: <reason>` on the flagged line or in the contiguous
 /// comment block directly above it. The reason is required — a bare marker does not
 /// suppress — so `rg "FSHW-ROOT-001 ok"` lists the allow-list WITH its justifications.
+///
+/// THE ALLOW-LIST (nine files, 2026-11-17; a new marker belongs on this list too):
+///   1. tests/FsHotWatch.Tests/TestRoot.fs — the helper itself: the one place that reads the
+///      temp directory, the repository root, the test binary's directory and the NuGet cache.
+///   2. tests/FsHotWatch.Tests/UserHomeIsolation.fs — names the REAL fshw homes only to
+///      assert that no test resolves them.
+///   3. tests/FsHotWatch.Tests/TestHelpers.fs — the process working directory seam
+///      (`withProcessWorkingDirectory` and friends): moving and reading it IS its job, and its
+///      callers run serialized (LogGlobal).
+///   4. tests/FsHotWatch.Tests/EventTests.fs and
+///   5. tests/FsHotWatch.Tests/InProcessEvaluationTests.fs — the process working directory is
+///      the subject under test (serialized, LogGlobal).
+///   6. tests/FsHotWatch.Tests/ProgramTests.fs — names the real home only to assert the fish
+///      completions write leaves it untouched, or falls back to it.
+///   7. tests/FsHotWatch.Tests/RepositoryIdentityTests.fs — compares the product's state home
+///      against the real home's, read-only.
+///   8. tests/FsHotWatch.IntegrationTests/IntegrationTests.fs — builds this repository's
+///      analyzer projects in place; a copy would lose Directory.Packages.props, the build
+///      props and global.json.
+///   9. tests/TestPrune.Trace.Tests/Fixtures.fs (`inRepositoryScratch`) — fixture copies must
+///      sit under the traced repository root (ADR-077).
 module FsHotWatch.Rules.RootAnalyzer
 
 open FSharp.Analyzers.SDK
