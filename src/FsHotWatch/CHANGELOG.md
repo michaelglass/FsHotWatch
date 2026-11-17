@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: the portable options shadow reads a checkout's build output as the root-keyed key has since ADR-076 (AUTOMATION-1684).
+  It keyed every probe of `bin/` and `obj/<Configuration>/` and every listing entry naming them, so a built checkout and
+  one never built never shared a portable key, although their options agree (a real MSBuild evaluation of one project
+  in two checkouts, built and fresh, now matches and agrees: `OptionsShadowBuiltFreshTests`). The shadow now indexes
+  what `FiledInputs` keys and records the projects' build-output directories (`buildOutput`), which a listing's state
+  does not name (`OptionsRecords.listingStateExcluding`). Shadow only: the portable kinds re-key
+  (`fshw-options-portable-inputs-v2`, `fshw-root-token-v2`), so a repository running the shadow files its portable
+  records once more; no serving key and no root-keyed record changes.
+
 - fix: the portable options shadow compares `MSBuildAllProjects` as a set, sorted on both sides (AUTOMATION-1684).
   MSBuild puts the most recently modified import first, so the order follows file change times: the 3 cross-checkout
   key matches the shadow logged on intelligence all disagreed there and nowhere else. No check reads it (Ionide's

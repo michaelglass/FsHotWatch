@@ -147,7 +147,9 @@ let ``a portable index of the same inputs is the same bytes however they were ga
           Probes = inputs.Probes
           Listings = inputs.Listings
           EnvNames = inputs.EnvNames
-          Generated = generated }
+          Generated = generated
+          // Shuffled with `generated` in the regathered case, so its order is canonical too.
+          BuildOutput = generated |> List.map fst }
 
     let generatedGen =
         Gen.subListOf [ "/r/src/A/obj/a.fs", "s1"; "/r/src/B/obj/b.fs", "s2"; "/r/x.fs", "s3" ]

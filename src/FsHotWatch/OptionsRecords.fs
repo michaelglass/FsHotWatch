@@ -360,6 +360,10 @@ module FiledInputs =
         | "" -> [ Path.Combine(dir, "bin") ]
         | configuration -> [ Path.Combine(dir, "bin"); Path.Combine(dir, "obj", configuration) ]
 
+    /// The directories the builds of `projects` write (`buildOutputOf`), each once.
+    let buildOutput (projects: Types.ProjectOptions list) : string list =
+        projects |> List.collect buildOutputOf |> List.distinct
+
     let private under (dirs: string list) (path: string) =
         let path = Path.TrimEndingDirectorySeparator path
 
@@ -408,7 +412,10 @@ let pathState (path: string) : string =
 /// evaluation that asked for one is not filed (`file`), because a walk that follows what
 /// MSBuild's follows (hidden directories, directory symlinks) need not terminate, and one
 /// that does not (`SafeWalk`) would key a different listing.
-let listingState (listing: Listing) : string =
+///
+/// An entry that is one of `excluded` (full paths) is not named: the portable shadow passes its
+/// projects' build output (AUTOMATION-1684), whose presence never changes the options (ADR-076).
+let listingStateExcluding (excluded: Set<string>) (listing: Listing) : string =
     try
         if listing.Recursive then
             "recursive"
@@ -422,9 +429,16 @@ let listingState (listing: Listing) : string =
                 | ListingKind.Files -> Directory.EnumerateFiles(listing.Directory, listing.Pattern)
 
             "entries:"
-            + digestOf (entries |> Seq.map (fun entry -> Path.GetRelativePath(listing.Directory, entry)))
+            + digestOf (
+                entries
+                |> Seq.filter (Path.TrimEndingDirectorySeparator >> excluded.Contains >> not)
+                |> Seq.map (fun entry -> Path.GetRelativePath(listing.Directory, entry))
+            )
     with ex ->
         "error:" + ex.GetType().Name
+
+/// `listingStateExcluding` with nothing excluded: the state every root-keyed key reads.
+let listingState (listing: Listing) : string = listingStateExcluding Set.empty listing
 
 /// The variables of `environment` an evaluation that reads `names` depends on: those it
 /// names, in any case (MSBuild properties are case-insensitive), and those `envPrefixes`

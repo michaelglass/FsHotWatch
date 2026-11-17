@@ -271,7 +271,7 @@ let ``GOLDEN: the portable options request key names no root and is one key for 
     golden
         "The portable options request key's components"
         [ "global-properties", "8d9179da762f77804197e51dff6612241a9d227f920f90a845f45a5a146903a8"
-          "path-token", "fshw-root-token-v1"
+          "path-token", "fshw-root-token-v2"
           "projects", "f3274e397cf3720ae9545289c63dcdc8d15a7a3a1ee10228ee61d78cbf63a194"
           "sdk", "/sdk/10.0.401"
           "toolchain", goldenOptionsToolchain ]
@@ -279,7 +279,7 @@ let ``GOLDEN: the portable options request key names no root and is one key for 
 
     golden
         "The portable options request key"
-        "ak1:856e4d5c27199af0250771b3eec018fb654efb712c14fd0241034149572e846b"
+        "ak1:e4e0b4ef7e4bee1f518deb5a921980bf3cc59c0421e02e98d84fcfcd86d7aa7e"
         short.Value.Text
 
 // --- the golden test-prune analysis-record key ---

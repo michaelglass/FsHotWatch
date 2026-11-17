@@ -824,3 +824,22 @@ let ``a filed project that is no object, or holds an SDK without imports or a pr
     let differences = OptionsPortable.compareProjects "/checkout" filed []
     test <@ differences |> List.exists (fun d -> d.Project = "?") @>
     test <@ differences |> List.exists (fun d -> d.Project = "${repo}/R.fsproj") @>
+
+[<Fact(Timeout = 120000)>]
+let ``a built checkout and one never built read one portable key, and agree`` () =
+    withBox (fun box ->
+        let appA = Path.GetDirectoryName box.A.Project
+
+        Directory.CreateDirectory(Path.Combine(appA, "bin", "Debug", "net10.0"))
+        |> ignore
+
+        Directory.CreateDirectory(Path.Combine(appA, "obj", "Debug", "net10.0", "refint"))
+        |> ignore
+
+        plainLoad box box.A |> ignore
+        test <@ not (Directory.Exists(Path.Combine(Path.GetDirectoryName box.B.Project, "bin"))) @>
+        plainLoad box box.B |> ignore
+        let line = lastLine box
+        test <@ bool line "crossRoot" @>
+        test <@ (bool line "keyMatch", strings line "moved") = (true, []) @>
+        test <@ bool line "agree" @>)

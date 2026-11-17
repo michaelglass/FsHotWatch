@@ -49,7 +49,7 @@ let RequestKind = "options-portable-inputs"
 let OptionsKind = "options-portable"
 
 [<Literal>]
-let InputsSchema = "fshw-options-portable-inputs-v1"
+let InputsSchema = "fshw-options-portable-inputs-v2"
 
 [<Literal>]
 let OutputsSchema = "fshw-options-portable-v1"
@@ -114,6 +114,9 @@ type Index =
         EnvNames: string list
         /// Each generated compile item, and the state of the bytes the options record files.
         Generated: (string * string) list
+        /// The directories the projects' builds write (`FiledInputs.buildOutput`): a listing does not
+        /// name them (AUTOMATION-1684), so a built checkout and a fresh one read one key.
+        BuildOutput: string list
     }
 
 let private listingLabel (listing: Listing) =
@@ -143,7 +146,8 @@ let private keyOf
               "probe:" + path, pathState root (at path)
           for listing in index.Listings do
               listingLabel listing,
-              listingState
+              listingStateExcluding
+                  (index.BuildOutput |> List.map at |> Set.ofList)
                   { listing with
                       Directory = at listing.Directory }
           for path, state in generated do
@@ -176,6 +180,7 @@ module internal IndexJson =
               Probes = OptionsRecords.Canonical.strings index.Probes
               Listings = OptionsRecords.Canonical.listings index.Listings
               EnvNames = OptionsRecords.Canonical.envNames index.EnvNames
+              BuildOutput = OptionsRecords.Canonical.strings index.BuildOutput
               Generated =
                 index.Generated
                 |> List.distinct
@@ -201,6 +206,7 @@ module internal IndexJson =
             )
 
         o["envNames"] <- stringArray index.EnvNames
+        o["buildOutput"] <- stringArray index.BuildOutput
 
         o["generated"] <-
             JsonArray(
@@ -235,6 +241,7 @@ module internal IndexJson =
                                 Pattern = l.GetProperty("pattern").GetString()
                                 Recursive = l.GetProperty("recursive").GetBoolean() } ]
                       EnvNames = readStrings o "envNames"
+                      BuildOutput = readStrings o "buildOutput"
                       Generated =
                         [ for g in o.GetProperty("generated").EnumerateArray() ->
                               g.GetProperty("path").GetString(), g.GetProperty("state").GetString() ] }
@@ -315,14 +322,18 @@ let private portableOf
     let optionStrings =
         stringsIn (JsonNode.Parse(ProjectOptionsJson.toJson projects)) |> List.ofSeq
 
+    // What the root-keyed key reads (ADR-076): no probe of the projects' build output.
+    let keyed = (FiledInputs.ofEvaluation projects inputs).Keyed
+    let buildOutput = FiledInputs.buildOutput projects
     let generated = generatedOf projects
     let generatedSet = Set.ofList generated
-    let reads = inputs.Reads |> List.filter (generatedSet.Contains >> not)
+    let reads = keyed.Reads |> List.filter (generatedSet.Contains >> not)
 
     let labelStrings =
         reads
-        @ inputs.Probes
-        @ [ for l in inputs.Listings do
+        @ keyed.Probes
+        @ buildOutput
+        @ [ for l in keyed.Listings do
                 l.Directory
                 l.Pattern ]
 
@@ -358,14 +369,15 @@ let private portableOf
 
                 let index =
                     { Reads = reads |> List.map t
-                      Probes = inputs.Probes |> List.map t
+                      Probes = keyed.Probes |> List.map t
                       Listings =
-                        [ for l in inputs.Listings ->
+                        [ for l in keyed.Listings ->
                               { l with
                                   Directory = t l.Directory
                                   Pattern = t l.Pattern } ]
-                      EnvNames = inputs.EnvNames
-                      Generated = [ for path, text in texts -> path, "text:" + ContentHash.ofText text ] }
+                      EnvNames = keyed.EnvNames
+                      Generated = [ for path, text in texts -> path, "text:" + ContentHash.ofText text ]
+                      BuildOutput = buildOutput |> List.map t }
 
                 let outputs = JsonObject()
                 outputs["schema"] <- OutputsSchema

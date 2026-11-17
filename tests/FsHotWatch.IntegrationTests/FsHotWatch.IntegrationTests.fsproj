@@ -50,6 +50,7 @@
     <Compile Include="OutputIdentityBuildTests.fs" />
     <Compile Include="RefAssemblyBuildTests.fs" />
     <Compile Include="BuildBesideEvaluationTests.fs" />
+    <Compile Include="OptionsShadowBuiltFreshTests.fs" />
     <Compile Include="RefAssemblyLiteralTests.fs" />
     <Compile Include="DeterministicPdbPathTests.fs" />
     <Compile Include="CrossTmpdirDaemonTests.fs" />
