@@ -106,18 +106,24 @@ let ``a post whose admission is held gives up within its bound, however busy the
 
 [<Fact(Timeout = 10000)>]
 let ``a bounded wait returns the result, raises the failure unwrapped, or gives up`` () =
-    test <@ SupervisedWork.waitWithin (TimeSpan.FromSeconds 1.0) (Task.FromResult 42) = 42 @>
+    test <@ SupervisedWork.waitWithin AsyncRuntime.pool (TimeSpan.FromSeconds 1.0) (Task.FromResult 42) = 42 @>
 
     raisesWith<InvalidOperationException>
         <@
             SupervisedWork.waitWithin
+                AsyncRuntime.pool
                 (TimeSpan.FromSeconds 1.0)
                 (Task.FromException<int>(InvalidOperationException "own failure"))
         @>
         (fun failure -> <@ failure.Message = "own failure" @>)
 
     raises<TimeoutException>
-        <@ SupervisedWork.waitWithin (TimeSpan.FromMilliseconds 50.0) (TaskCompletionSource<int>().Task) @>
+        <@
+            SupervisedWork.waitWithin
+                AsyncRuntime.pool
+                (TimeSpan.FromMilliseconds 50.0)
+                (TaskCompletionSource<int>().Task)
+        @>
 
 [<Fact(Timeout = 60000)>]
 let ``a daemon probe answers while every pool thread is busy`` () =

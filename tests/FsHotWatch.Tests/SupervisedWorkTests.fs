@@ -30,6 +30,11 @@ let private capturedDeadline () =
 
     schedule, (fun () -> scheduled.Task.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult())
 
+/// The pool, with `schedule` arming its deadlines.
+let private withSchedule (schedule: TimeSpan -> (unit -> unit) -> IDisposable) =
+    { AsyncRuntime.pool with
+        Schedule = schedule }
+
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``closing admission rejects queued work but retains a live callback until cleanup`` () =
     let store = Store()
@@ -85,10 +90,10 @@ let ``closing admission rejects queued work but retains a live callback until cl
 
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``deadline records failure without retiring a noncooperative callback`` () =
-    let store = Store()
+    let schedule, expiry = capturedDeadline ()
+    let store = Store(withSchedule schedule)
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
-    let schedule, expiry = capturedDeadline ()
     let leakedPublish = ref ignore
 
     let queue =
@@ -106,8 +111,7 @@ let ``deadline records failure without retiring a noncooperative callback`` () =
                     entered.Set()
                     Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
-                }),
-            scheduleDeadline = schedule
+                })
         )
 
     let active = queue.Submit(1, CancellationToken.None)
@@ -154,10 +158,10 @@ let ``deadline records failure without retiring a noncooperative callback`` () =
 
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``completion notification stays owned and remains covered by its deadline`` () =
-    let store = Store()
+    let schedule, expiry = capturedDeadline ()
+    let store = Store(withSchedule schedule)
     use notifying = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
-    let schedule, expiry = capturedDeadline ()
 
     let queue =
         SupervisedWork.Queue(
@@ -170,8 +174,7 @@ let ``completion notification stays owned and remains covered by its deadline`` 
             (fun _ ->
                 notifying.Set()
                 Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))),
-            (fun state (_: int) _ _ -> async { return state + 1 }),
-            scheduleDeadline = schedule
+            (fun state (_: int) _ _ -> async { return state + 1 })
         )
 
     let active = queue.Submit(1, CancellationToken.None)
@@ -364,7 +367,7 @@ let ``shared execution deadline retains an exclusive capability until real compl
         SupervisedWork.execute
             "exclusive"
             (TimeSpan.FromMinutes 1.0)
-            schedule
+            (withSchedule schedule)
             (fun failure -> owner.MarkRunFailure(identity, failure))
             CancellationToken.None
             (fun _ ->
@@ -410,7 +413,7 @@ let ``external execution refuses an unbounded ownership lifetime`` kind =
         SupervisedWork.execute
             "invalid"
             deadline
-            SupervisedWork.defaultScheduler
+            AsyncRuntime.pool
             ignore
             CancellationToken.None
             (fun _ -> async { started.Value <- true })
@@ -432,7 +435,7 @@ let ``scheduler failure settles the operation without invoking external work`` (
         SupervisedWork.execute
             "schedule"
             (TimeSpan.FromSeconds 1.0)
-            (fun _ _ -> raise failure)
+            (withSchedule (fun _ _ -> raise failure))
             ignore
             CancellationToken.None
             (fun _ ->
@@ -461,9 +464,9 @@ let ``an execution releases its deadline exactly once`` (releasedByFinish: bool)
         SupervisedWork.execute
             "release"
             (TimeSpan.FromMinutes 1.0)
-            (fun _ _ ->
+            (withSchedule (fun _ _ ->
                 { new IDisposable with
-                    member _.Dispose() = disposals.Value <- disposals.Value + 1 })
+                    member _.Dispose() = disposals.Value <- disposals.Value + 1 }))
             ignore
             CancellationToken.None
             (fun _ -> async.Return 1)
@@ -481,9 +484,24 @@ let ``an execution releases its deadline exactly once`` (releasedByFinish: bool)
 [<InlineData("notification")>]
 [<InlineData("timer-disposal")>]
 let ``settlement failure remains owned until its failed receipt is published`` stage =
-    let store = Store()
     let failure = InvalidOperationException(stage)
     let disposed = ref 0
+    // The store the deadline's teardown inspects, set once the store exists.
+    let busy = ref (fun () -> false)
+
+    let store =
+        Store(
+            withSchedule (fun _ _ ->
+                { new IDisposable with
+                    member _.Dispose() =
+                        Assert.True(busy.Value(), "deadline teardown must precede retirement")
+                        disposed.Value <- disposed.Value + 1
+
+                        if stage = "timer-disposal" then
+                            raise failure })
+        )
+
+    busy.Value <- fun () -> store.Snapshot.IsBusy
 
     let queue =
         SupervisedWork.Queue(
@@ -500,16 +518,7 @@ let ``settlement failure remains owned until its failed receipt is published`` s
                 async {
                     publish 1
                     return 2
-                }),
-            scheduleDeadline =
-                (fun _ _ ->
-                    { new IDisposable with
-                        member _.Dispose() =
-                            Assert.True(store.Snapshot.IsBusy, "deadline teardown must precede retirement")
-                            disposed.Value <- disposed.Value + 1
-
-                            if stage = "timer-disposal" then
-                                raise failure })
+                })
         )
 
     try
@@ -588,11 +597,11 @@ let ``deadline publication failure still cancels work and late timer callbacks c
         SupervisedWork.execute
             "deadline-report"
             (TimeSpan.FromSeconds 5.)
-            (fun _ callback ->
+            (withSchedule (fun _ callback ->
                 expire.Value <- callback
 
                 { new IDisposable with
-                    member _.Dispose() = () })
+                    member _.Dispose() = () }))
             (fun _ -> failwith "diagnostic publication refused")
             CancellationToken.None
             (fun token ->
@@ -761,7 +770,7 @@ let ``an owner's cancellation requested before the work returns refuses its succ
             SupervisedWork.execute
                 "owner"
                 (TimeSpan.FromMinutes 1.0)
-                SupervisedWork.defaultScheduler
+                AsyncRuntime.pool
                 ignore
                 owner.Token
                 (fun token ->
@@ -798,15 +807,16 @@ let ``an owner's cancellation requested before the work returns refuses its succ
 // expires the deadline and closes.
 [<Fact(Timeout = FsHotWatch.Tests.TestHelpers.SyncHangBackstopMs)>]
 let ``with an inline store writer, admission, a deadline and close each find their change already published`` () =
+    let schedule, expiry = capturedDeadline ()
+
     let store =
         Store(
-            { AsyncRuntime.pool with
+            { withSchedule schedule with
                 Dispatch = fun write -> write () }
         )
 
     use entered = new ManualResetEventSlim(false)
     use release = new ManualResetEventSlim(false)
-    let schedule, expiry = capturedDeadline ()
 
     let queue =
         SupervisedWork.Queue(
@@ -822,8 +832,7 @@ let ``with an inline store writer, admission, a deadline and close each find the
                     entered.Set()
                     Assert.True(release.Wait(FsHotWatch.Tests.TestHelpers.HangWait))
                     return state + 1
-                }),
-            scheduleDeadline = schedule
+                })
         )
 
     // SubmitAsync's admission: published before its await.

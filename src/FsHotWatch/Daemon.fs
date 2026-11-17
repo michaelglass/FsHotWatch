@@ -1767,7 +1767,7 @@ let private getScanRow (ScanAgent(owner, _)) = owner.State
 
 let private setScanStatus (ScanAgent(owner, _)) state =
     owner.Submit(SetScanState state, CancellationToken.None)
-    |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
+    |> SupervisedWork.waitWithin AsyncRuntime.pool SupervisedWork.AdmissionBound
 
 let private closeScan (ScanAgent(owner, _)) = owner.Close()
 
@@ -4182,7 +4182,7 @@ type Daemon
                         Logging.warn "vcs" $"client wake still pending: %s{failure.Message}"
 
                     this.AdmitScan(RunClaim.leaseFor repoRoot invocation)
-                    |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
+                    |> SupervisedWork.waitWithin AsyncRuntime.pool SupervisedWork.AdmissionBound
                     |> ignore
 
                 let triggerBuild () =

@@ -9,6 +9,15 @@
   is today's behaviour: a thread-pool work item and this thread's own wait. No behaviour change; no record or cache
   key changes.
 
+- refactor: `SupervisedWork` takes every timing source from its store's `AsyncRuntime.Runtime` (AUTOMATION-1695).
+  Its worker tasks (`Task.Run`), fault and cancellation continuations (`ContinueWith` on the default scheduler), the
+  cancellation request itself (`CancelAsync`), deadline timers, the worker's blocking run of its work
+  (`Async.RunSynchronously`) and its bounded waits now go through `Runtime.Scheduler`, `Runtime.Cancel`,
+  `Runtime.Schedule`, `Runtime.RunSynchronously` and `Runtime.Wait`. `Queue` loses its `scheduleDeadline` argument
+  (its store's runtime arms deadlines), `execute` takes the runtime in place of a scheduler, and `waitWithin` takes
+  the runtime whose wait keeps its bound. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache
+  key changes.
+
 - feat: a lookup that misses because GC evicted its key now says so in the daemon log, per record kind (AUTOMATION-1765).
   Until now an evicted key and a never-filed one missed alike: GC logged counts per kind and no key names, and the
   TestPrune analysis lookup logged nothing, so how many evicted testprune-analysis keys were looked up again could not

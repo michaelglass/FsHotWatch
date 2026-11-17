@@ -226,7 +226,8 @@ type Queue<'State, 'Request>
                 return receipt.Task
             }
 
-        admission |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
+        admission
+        |> SupervisedWork.waitWithin store.Runtime SupervisedWork.AdmissionBound
 
     /// Close input and the worker. Pending input settles with `ObjectDisposedException`.
     /// Cohorts already queued for admission keep their identity until the closed worker
@@ -247,4 +248,4 @@ type Queue<'State, 'Request>
                 worker.Close()
             }
 
-        closing |> SupervisedWork.waitWithin SupervisedWork.AdmissionBound
+        closing |> SupervisedWork.waitWithin store.Runtime SupervisedWork.AdmissionBound
