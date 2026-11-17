@@ -185,7 +185,10 @@ let execute (subject: Subject) (seed: int) (history: Op list) : Violation list *
         | Subject.Mutated Mutant.SubmitOrderSwapped -> sim.Runtime
 
     use _ = sim.Install()
-    let store = Store runtime
+    // Every publication is checked on the writer, before anything else runs (AUTOMATION-1781):
+    // the one point a statement-level gap between a retirement and its receipt shows.
+    let observe = ref (fun (_: HostSnapshot) -> ())
+    let store = Store(runtime, (fun snapshot -> observe.Value snapshot))
     let behaviours = Collections.Generic.Dictionary<int, Behaviour>()
     let started = Collections.Generic.List<int>()
     // Requests whose work returned a result.
@@ -208,6 +211,20 @@ let execute (subject: Subject) (seed: int) (history: Op list) : Violation list *
               Detail = detail
               History = history
               Choices = sim.Choices }
+
+    observe.Value <-
+        fun snapshot ->
+            if not snapshot.IsBusy then
+                let unsettled =
+                    admitted
+                    |> Seq.filter (fun a -> not a.Receipt.IsCompleted)
+                    |> Seq.map (fun a -> a.Value)
+                    |> List.ofSeq
+
+                if not unsettled.IsEmpty then
+                    violate
+                        Theorem.HonestRest
+                        $"publication %d{snapshot.Version} reads at rest while %s{listText unsettled} are unsettled"
 
     let beginWork (state: int list) (value: int) =
         sim.CheckOwner "beginWork ran off the simulation's thread"

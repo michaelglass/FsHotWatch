@@ -107,7 +107,9 @@ The violations each defect caused:
 
 - **The atomic step is one dispatch or one continuation.** A race between two statements of one
   method, with no await or dispatch between them, is not reachable: for example, setting a reply
-  before its `Volatile.Write`. Locks own that class.
+  before its `Volatile.Write`, except where a test checks at Store's `onPublished`, which runs on the
+  writer between a publication and everything after it (AUTOMATION-1781). Locks own the rest of
+  that class.
 - **F# `Async` can hop to the pool on its own** (the trampoline). The harness's callbacks call
   `CheckOwner`, so a hop that reaches them is an escape, not a silent pass.
 - **Not driven yet** (follow-up):
@@ -119,8 +121,11 @@ The violations each defect caused:
   request they became retired. Filed as AUTOMATION-1780 (a consumer that waits for rest and then
   reads results can miss the last receipt, the AUTOMATION-1768 shape) and decided there: rest waits
   for receipts. DebouncedWork keeps a cohort owned until its receipts are set, and the simulation
-  asserts it as HONEST REST (an unsettled receipt implies busy). SupervisedWork's own receipt is set
-  a statement after its retirement publishes, which the atomic-step limit above leaves unreached.
+  asserts it as HONEST REST (an unsettled receipt implies busy). SupervisedWork's own receipt was set
+  a few statements after its retirement published, below the atomic step: fixed by AUTOMATION-1781,
+  which sets it as an effect the writer runs right after the retiring publication. Store's
+  `onPublished` observer lets the simulations check HONEST REST at every publication, on the
+  writer, so such a statement-level gap is now reachable by the theorem itself.
 
 ## Rejected
 
