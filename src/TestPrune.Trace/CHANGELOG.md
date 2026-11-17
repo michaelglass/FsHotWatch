@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: `Leftovers.terminate` returns only once the processes it KILLed are gone, and names any still running
+  (GitHub run 44083201746). It sent KILL and returned at once, so a caller told a process was stopped could still
+  find it running: on a loaded Linux runner, `LaunchTests` found the orphan it had just seen stopped alive. After
+  KILL it now waits up to `Leftovers.KillGrace` (500 ms, like `TermGrace`) for each to be gone, and returns a
+  `Leftovers.Termination`: `Stopped n`, or `StillRunning(n, survivor, others)` for those still running then, which a
+  launch names in its note ("still running after KILL: …"); nothing is assumed dead. A process counts as running
+  only when signal 0 reaches it and, where a `/proc` tree can say, it is not a zombie (`Leftovers.isRunning`): a
+  zombie holds nothing and only its reaper can remove it. `terminate` now takes the `ProcessTable`.
+
 ## 0.10.0 - 2026-11-16
 
 - fix: a run no longer waits on output that a process the test run left behind still holds
