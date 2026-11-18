@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.121 - 2026-11-18
+
 - **behaviour change:** a `SupervisedWork` request's receipt is set by the writer right after the publication that
   retires it, before anything can read that retirement as rest (AUTOMATION-1781). It was set by the finishing worker a
   few statements later, after the store's writer had moved on, so a reader on another thread could see rest with the

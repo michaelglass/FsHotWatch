@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.120 - 2026-11-18
+
 - fix: testprune-analysis records name every path under the analysed root relative to it, attribute arguments included
   (AUTOMATION-1697). xUnit's `[<Fact>]` and `[<Theory>]` take `[CallerFilePath]`, so their arguments held the absolute
   path of the checkout that filed the record, and a record filed in one workspace did not match the same tree analysed in

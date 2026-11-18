@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.154 - 2026-11-18
+
 - fix: `fshw audit --store <a cache home's outcome store>` audits test evidence (AUTOMATION-1767). It read VACUOUS
   "the clean store holds no key of this kind" for every such store, because `--store` dropped the audited evidence
   store. A store at `<home>/cache/outcomes/<namespace>/v1` now brings `<home>/cache/evidence/<namespace>/v1` (so does

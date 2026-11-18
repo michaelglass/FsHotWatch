@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 17.1.0 - 2026-11-18
+
 - feat: `AttributeArgs.write` stores parsed attribute arguments again: for arguments `parse` read from a payload
   `serialize` wrote, it gives back that payload's exact bytes (AUTOMATION-1697).
 

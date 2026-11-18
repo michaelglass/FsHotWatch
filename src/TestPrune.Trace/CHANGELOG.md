@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-11-18
+
 - fix: `Leftovers.terminate` returns only once the processes it KILLed are gone, and names any still running
   (GitHub run 44083201746). It sent KILL and returned at once, so a caller told a process was stopped could still
   find it running: on a loaded Linux runner, `LaunchTests` found the orphan it had just seen stopped alive. After

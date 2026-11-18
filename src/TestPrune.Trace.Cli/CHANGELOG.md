@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-11-18
+
+- fix(trace): terminate waits for what it KILLed and names survivors
+- fix(testprune): analysis records name paths relative to the root, attribute arguments included (AUTOMATION-1697)
+
+
 ## 0.10.0 - 2026-11-16
 
 - fix: `mutate --judge` rejects an unknown judgement when the flag is read, and `--include` that

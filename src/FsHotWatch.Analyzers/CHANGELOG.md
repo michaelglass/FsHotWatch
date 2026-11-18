@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.60 - 2026-11-18
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0-alpha.59 - 2026-11-17
 
 - fix!: an analyzer set with an assembly compiled against another FSharp.Compiler.Service band than the host runs

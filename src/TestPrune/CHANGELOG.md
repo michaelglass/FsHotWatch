@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 17.1.0 - 2026-11-18
+
+- fix(testprune): analysis records name paths relative to the root, attribute arguments included (AUTOMATION-1697)
+
+
 ## 17.0.0 - 2026-11-16
 
 - fix: AUTOMATION-1733 a file's static initializer is a dependency between its values
