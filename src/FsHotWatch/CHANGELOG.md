@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- test: the `tests.traces` integration test's scratch build is hermetic and diagnosable (AUTOMATION-1784). On a
+  degraded CI runner its restore waited minutes on nuget.org, then the build was silent until the 10-minute kill, with
+  nothing in the failure but "Restored" lines. The scaffold now turns NuGetAudit off (no vulnerability-database
+  fetch) and pins FSharp.Core and xUnit to `Directory.Packages.props`' versions, so the restore needs nothing the
+  repository's own restore did not fetch. The build runs through `ProcessHelper.runProcess`, so the MSBuild discovery
+  variables an earlier daemon test leaks into the test process never reach it (docs/leaked-msbuild-env-bug.md), and at
+  `-v:n -clp:ShowTimestamp` with a binlog in the scratch root; a failure or timeout names the binlog and quotes the
+  last 80 timestamped lines. Test code only: no product, record or cache key changes.
+
 - fix: the deps gate retries a restore that raced an absent `project.assets.json` once the assets are back (AUTOMATION-1785).
   Its restore could report success while an external `dotnet restore --force` had the assets file deleted, so the gate
   failed fast with "still missing". The gate attempts one restore per stale state, and that state was the dependency
