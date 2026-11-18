@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the deps gate retries a restore that raced an absent `project.assets.json` once the assets are back (AUTOMATION-1785).
+  Its restore could report success while an external `dotnet restore --force` had the assets file deleted, so the gate
+  failed fast with "still missing". The gate attempts one restore per stale state, and that state was the dependency
+  signature alone, so when the assets returned it skipped the project for good and kept a stale FS0039 until the daemon
+  restarted. The attempt key is now the signature plus the assets file's content hash, or absent (`RecoveryAttempt`,
+  `AssetsState`); `evaluateProject` takes `assetsState` in place of `assetsPresent`. The tracker keeps every state it
+  attempted until the project is healthy again, so an assets file flapping between two states earns at most two
+  restores, not one per flip. ADR-008 amendment (2026-11-18). The attempt key is in memory only: no record or cache key
+  changes.
+
 - **behaviour change:** a `SupervisedWork` request's receipt is set by the writer right after the publication that
   retires it, before anything can read that retirement as rest (AUTOMATION-1781). It was set by the finishing worker a
   few statements later, after the store's writer had moved on, so a reader on another thread could see rest with the
