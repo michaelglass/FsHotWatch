@@ -120,9 +120,23 @@ let assetsPath (fsprojPath: string) : string =
     let projDir = Path.GetDirectoryName(fsprojPath: string)
     Path.Combine(projDir, "obj", "project.assets.json")
 
-/// True when the project's `obj/project.assets.json` exists on disk. Used as the
-/// post-restore "did recovery actually produce assets?" check.
-let assetsPresent (fsprojPath: string) : bool = File.Exists(assetsPath fsprojPath)
+/// A project's restore output as the gate sees it: no `obj/project.assets.json`, or one
+/// with this content. Compared by content, never by write time (ADR-008).
+[<RequireQualifiedAccess>]
+type AssetsState =
+    | Absent
+    | Present of contentHash: string
+
+/// Read a project's `obj/project.assets.json` once, into an `AssetsState`.
+///
+/// A file that cannot be read is `Absent`: it vanished between listing and reading, or
+/// a restore holds it mid-write. Either way there are no assets FCS could load now, and
+/// the next reading that finds content is a new state with its own attempt.
+let assetsState (fsprojPath: string) : AssetsState =
+    try
+        AssetsState.Present(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText(assetsPath fsprojPath)))
+    with _ ->
+        AssetsState.Absent
 
 /// Read a file's last-write mtime (UTC), or None when it does not exist.
 let private tryMtime (path: string) : DateTime option =
@@ -437,10 +451,9 @@ type FreshBaselineFile(path: string) =
             None
 
     let assetsHash (proj: string) =
-        try
-            Some(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText(assetsPath proj)))
-        with _ ->
-            None
+        match assetsState proj with
+        | AssetsState.Present hash -> Some hash
+        | AssetsState.Absent -> None
 
     /// Where the baseline lives.
     member _.Path = path
@@ -492,28 +505,43 @@ type FreshBaselineFile(path: string) =
             | true, entry -> Some entry
             | _ -> None)
 
-/// Debounce tracker: remembers, per project, the last stale signature recovery
-/// was attempted for. Thread-safe; shared across scan cycles by the daemon.
+/// One stale state recovery can be attempted for: the dependency signature it was stale
+/// at, and the restore output on disk when the attempt began. Recovery is attempted at
+/// most once per attempt key (see `RecoveryTracker`, ADR-008).
+type RecoveryAttempt =
+    { Signature: string
+      Assets: AssetsState }
+
+/// Debounce tracker: remembers, per project, every stale state (`RecoveryAttempt`)
+/// recovery was attempted for since the project was last healthy. Thread-safe; shared
+/// across scan cycles by the daemon.
+///
+/// A set, not the last key: an assets file flapping between absent and one content
+/// would otherwise make each flip look new and buy a restore per flip
+/// (AUTOMATION-1785).
 ///
 /// With a `FreshBaselineFile`, the fresh baseline also outlives the process: a first
 /// sighting consults it, and every recorded baseline is written to it.
 type RecoveryTracker(durable: FreshBaselineFile option) =
-    let attempted = ConcurrentDictionary<string, string>()
+    let attempted = ConcurrentDictionary<string, Set<RecoveryAttempt>>()
     let freshSignatures = ConcurrentDictionary<string, string>()
     let gates = ConcurrentDictionary<string, obj>()
 
     /// A tracker whose baseline lives only as long as it does.
     new() = RecoveryTracker(None)
 
-    /// True when a restore should be attempted for this (project, signature) —
-    /// i.e. we have not already attempted recovery for this exact stale state.
-    member _.ShouldAttempt(proj: string, sig_: string) : bool =
+    /// True when a restore should be attempted for this project in this state — i.e. no
+    /// recovery was attempted for this exact stale state since the project was last
+    /// healthy (`Clear`).
+    member _.ShouldAttempt(proj: string, attempt: RecoveryAttempt) : bool =
         match attempted.TryGetValue proj with
-        | true, prev -> prev <> sig_
+        | true, tried -> not (Set.contains attempt tried)
         | false, _ -> true
 
-    /// Record that recovery was attempted for (project, signature).
-    member _.MarkAttempted(proj: string, sig_: string) = attempted[proj] <- sig_
+    /// Record that recovery was attempted for this project in this state.
+    member _.MarkAttempted(proj: string, attempt: RecoveryAttempt) =
+        attempted.AddOrUpdate(proj, Set.singleton attempt, (fun _ tried -> Set.add attempt tried))
+        |> ignore
 
     /// True when the dep-content signature differs from the last one this project
     /// was observed Fresh / recovered at. This is the escape hatch for the mtime probe,
@@ -557,7 +585,7 @@ type RecoveryTracker(durable: FreshBaselineFile option) =
         freshSignatures[proj] <- sig_
         durable |> Option.iter (fun baseline -> baseline.Record(proj, sig_))
 
-    /// Forget any recorded attempt for a project (e.g. after it recovered) so a
+    /// Forget every recorded attempt for a project (e.g. after it recovered) so a
     /// future regression is treated freshly. The fresh-content baseline is kept
     /// so subsequent drift remains detectable.
     member _.Clear(proj: string) = attempted.TryRemove proj |> ignore
@@ -627,12 +655,15 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
         ""
 
 /// Pure gate orchestration over an injected freshness probe + restore runner +
-/// debounce tracker. Attempts recovery at most once per distinct stale state.
+/// debounce tracker. Attempts recovery at most once per distinct stale state, keyed on
+/// (dependency signature, assets content hash or absent).
 ///
 /// `probe` returns the current freshness; `signatureOf` yields the dep-relevant
 /// content signature used for debounce, drift detection AND false-positive
 /// suppression (production injects `depRelevantSignature`); `runner` performs the
-/// restore; `assetsPresent` reports whether `obj/project.assets.json` exists.
+/// restore; `assetsState` reads `obj/project.assets.json` (production injects the
+/// module's `assetsState`). The attempt key is the signature PLUS that assets state, so
+/// assets that came back after a restore raced their deletion are a new state.
 ///
 /// Post-restore policy: a successful restore means the package graph is consistent,
 /// so we proceed without re-running the mtime probe. `dotnet restore` is a no-op
@@ -649,7 +680,7 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 let evaluateProject
     (probe: string -> Freshness)
     (signatureOf: string -> string)
-    (assetsPresent: string -> bool)
+    (assetsState: string -> AssetsState)
     (runner: RestoreRunner)
     (tracker: RecoveryTracker)
     (proj: string)
@@ -657,19 +688,24 @@ let evaluateProject
     // Shared stale handling: debounce, attempt restore, record the new fresh
     // content baseline on success so subsequent drift is detectable.
     let attemptRecovery (sig_: string) : GateResult =
-        if not (tracker.ShouldAttempt(proj, sig_)) then
+        let attempt =
+            { Signature = sig_
+              Assets = assetsState proj }
+
+        if not (tracker.ShouldAttempt(proj, attempt)) then
             SkipAlreadyAttempted
         else
-            tracker.MarkAttempted(proj, sig_)
+            tracker.MarkAttempted(proj, attempt)
             let outcome = runner proj
 
             match outcome with
             | Succeeded _ ->
-                if assetsPresent proj then
+                match assetsState proj with
+                | AssetsState.Present _ ->
                     tracker.Clear proj
                     tracker.RecordFreshSignature(proj, sig_)
                     RecoveredOk
-                else
+                | AssetsState.Absent ->
                     let msg, detail = restoreFailureMessage proj outcome
                     FailFast(msg, detail)
             | Failed _

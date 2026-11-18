@@ -5916,7 +5916,7 @@ module Daemon =
                             DepsFreshness.evaluateProject
                                 (DepsFreshness.detectProjectFreshness repoRoot)
                                 (DepsFreshness.depRelevantSignature repoRoot)
-                                DepsFreshness.assetsPresent
+                                DepsFreshness.assetsState
                                 runner
                                 tracker
                                 projPath) }

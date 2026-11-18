@@ -129,3 +129,38 @@ into a no-op later.
 - Future freshness/cache work: default to content hashing. If you reach for
   mtime, you must (a) use it only as a fast path and (b) name the content-aware
   backstop — as `verifyArtifactsFresh` does.
+
+## Amendment (2026-11-18): the recovery attempt key includes the assets content
+
+The deps gate attempts a restore at most once per stale state. Until this amendment the
+state was the dependency signature alone, and that let a race pin a stale verdict
+(AUTOMATION-1785):
+
+1. The daemon's restore ran at the same moment as an external `dotnet restore --force`.
+2. The daemon's restore reported `Succeeded` while `obj/project.assets.json` was briefly
+   absent (the external restore had deleted it and not yet written it back). The gate
+   failed fast: "still missing".
+3. Seconds later the assets file was back. The next check read the project stale, but its
+   signature was the one already attempted, so the gate answered `SkipAlreadyAttempted`
+   every time after. The daemon kept a phantom FS0039 until it restarted.
+
+The signature is derived from the declared dependencies only, so it cannot tell "assets
+absent" from "assets present". The state the gate attempted and the state it later saw
+were different, but its key did not record the difference.
+
+**Decision.** The attempt key (`RecoveryAttempt`) is the dependency signature plus the
+assets file's state: `AssetsState.Present contentHash`, or `AssetsState.Absent`. It is
+read once, before the restore, by `assetsState`. That function is also the source of the
+fresh baseline's assets hash. As everywhere in this ADR, the key uses the file's content,
+never its mtime: a restore can rewrite assets with identical bytes, and that is not a new
+state.
+
+**The retry-loop guard is still keyed on the full state.** Each distinct
+(signature, assets) state earns exactly one attempt. The tracker keeps the *set* of
+states attempted per project until the project is next healthy (`Clear`), not only the
+last one. With only the last key, an assets file flapping between absent and one content
+would look new on every flip and buy a restore per flip. With the set, that flapping
+earns at most two attempts in total
+(`an assets file flapping between two states earns at most two restores`).
+
+The key is held in memory only: no persisted record or cache key changes.

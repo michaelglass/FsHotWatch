@@ -420,8 +420,8 @@ let ``depRelevantSignature: unparseable fsproj folds a sentinel and re-arms on f
 // ---- orchestration: evaluateProject ----
 
 let private sigZero (_: string) = "sig-0"
-let private assetsYes (_: string) = true
-let private assetsNo (_: string) = false
+let private assetsYes (_: string) = AssetsState.Present "assets-h"
+let private assetsNo (_: string) = AssetsState.Absent
 // `Drained` because these fakes stand in for a REAL restore whose output was fully
 // read — a fake must not hand back a capture it never measured.
 let private succeedingRunner: RestoreRunner =
@@ -697,6 +697,78 @@ let ``evaluateProject: Stale on first sighting (no baseline) still restores`` ()
     test <@ runs = 1 @>
     test <@ result = RecoveredOk @>
 
+/// AUTOMATION-1785: the daemon's restore raced an external `dotnet restore --force`,
+/// returned Succeeded while `obj/project.assets.json` was momentarily absent, and failed
+/// fast. Seconds later the assets were back, but with the dependency signature unchanged
+/// the gate refused to try again and kept the stale failure until the daemon restarted.
+/// Assets that came back are a new state, and a new state earns its one attempt.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a restore that raced an absent assets file is retried once the assets are back`` () =
+    let mutable assets = AssetsState.Absent
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Succeeded(ProcessOutput.Drained "restored")
+
+    let probe (_: string) =
+        match assets with
+        | AssetsState.Absent -> missing
+        | AssetsState.Present _ -> stale
+
+    let tracker = RecoveryTracker()
+    let proj = "P.fsproj"
+
+    let raced = evaluateProject probe sigZero (fun _ -> assets) runner tracker proj
+
+    match raced with
+    | FailFast(msg, _) -> test <@ msg.Contains "still missing" @>
+    | other -> failwithf "expected the raced restore to fail fast, got %A" other
+
+    assets <- AssetsState.Present "assets-h"
+
+    let afterReturn =
+        evaluateProject probe sigZero (fun _ -> assets) runner tracker proj
+
+    test <@ afterReturn = RecoveredOk @>
+    test <@ runs = 2 @>
+
+/// The guard on the fix above: an assets file that keeps flapping between absent and
+/// one content must not buy a restore per flip. Every state is attempted once, and a
+/// state seen before is not new again until the project recovers.
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an assets file flapping between two states earns at most two restores`` () =
+    let mutable assets = AssetsState.Absent
+    let mutable runs = 0
+
+    // Every restore "succeeds" and leaves the assets absent: the external restore
+    // that keeps deleting and rewriting them got there first.
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            assets <- AssetsState.Absent
+            Succeeded(ProcessOutput.Drained "restored")
+
+    let probe (_: string) =
+        match assets with
+        | AssetsState.Absent -> missing
+        | AssetsState.Present _ -> stale
+
+    let tracker = RecoveryTracker()
+
+    for flip in 1..10 do
+        assets <-
+            if flip % 2 = 0 then
+                AssetsState.Present "assets-h"
+            else
+                AssetsState.Absent
+
+        evaluateProject probe sigZero (fun _ -> assets) runner tracker "P.fsproj"
+        |> ignore
+
+    test <@ runs <= 2 @>
+
 // ---- preflight: restore before discovery ----
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -756,7 +828,7 @@ let ``a restore failure preflight saw is still reported when the scan's gate ski
     let tracker = RecoveryTracker()
 
     let gate =
-        evaluateProject (fun _ -> stale) (fun _ -> "dep-sig") (fun _ -> false) runner tracker
+        evaluateProject (fun _ -> stale) (fun _ -> "dep-sig") assetsNo runner tracker
 
     let scanGate = withPreflight (preflight gate [ "P.fsproj" ]) gate
 
@@ -1103,7 +1175,7 @@ let private gateOf (root: string) (runs: int ref) =
     let tracker = trackerFor root
 
     fun fsproj ->
-        evaluateProject (detectProjectFreshness root) (depRelevantSignature root) assetsPresent runner tracker fsproj
+        evaluateProject (detectProjectFreshness root) (depRelevantSignature root) assetsState runner tracker fsproj
 
 /// Rewrite `path` with the bytes it already has, the way a merge or a checkout does:
 /// same content, a newer mtime.
