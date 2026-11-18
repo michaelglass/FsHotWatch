@@ -44,6 +44,18 @@
   from its store's `AsyncRuntime.Runtime` (AUTOMATION-1695). `Queue` loses its `delayTask` argument; tests set a
   store's `Delay` instead. `AsyncRuntime.pool` is exactly the previous behaviour. No record or cache key changes.
 
+- test(rules): FSHW-TIME-001 — a simulated module reaches no timing source directly (AUTOMATION-1695).
+  `PluginWorkOwner`, `SupervisedWork` and `DebouncedWork` are now driven by seeded deterministic simulations
+  (1,000 histories per module in CI, a fixed regression list, and 100,000 fresh seeds every night; ADR-078). That
+  only removes timing flakes while every timing source in those three files goes through their store's
+  `AsyncRuntime.Runtime`, so the house rule is: no pool, timer or blocking call outside `AsyncRuntime.fs` in a
+  simulated file. FSHW-TIME-001 (`analyzers/FsHotWatch.Rules`, run by the check's analyzer pass) enforces it in
+  `PluginWorkOwner.fs`, `SupervisedWork.fs` and `DebouncedWork.fs`: it flags `Task.Run`, `Task.Delay`,
+  `TaskScheduler.Default`, anything on `ThreadPool`, the `Async` starters and `RunSynchronously`, `Thread.Sleep`,
+  `CancelAsync`, `CancelAfter`, a constructed `Timer`, and a `ContinueWith` that does not name `runtime.Scheduler`.
+  `AsyncRuntime.fs`, where the pool lives, and every other file are out of its scope; the three modules are silent
+  under it. No record or cache key changes.
+
 - test(rules): FSHW-ROOT-001 — a test touches disk only under a root it alone owns (AUTOMATION-1775).
   Three flakes in one week had one shape: a test touched a place another test, or the build, was changing at the
   same time (a repo-wide walk racing TestPrune.Trace.Tests' scratch, AUTOMATION-1671; a leftover daemon rebuilding
