@@ -129,6 +129,47 @@ module CacheTally =
           Stored = later.Stored - earlier.Stored
           NotStored = minus earlier.NotStored later.NotStored }
 
+/// One output whose moved bytes made lookups miss, and how many.
+type MovedOutputMisses = { Output: string; Misses: int64 }
+
+/// A tally's misses per `CacheMiss` reason, and the outputs that moved most
+/// (AUTOMATION-1816): what a scan's `scan-metrics.jsonl` record carries, so a series of
+/// scans that all missed says why without reading the log.
+type CacheMissReasons =
+    {
+        NoKey: int64
+        NoEntry: int64
+        ParseOnly: int64
+        /// Lookups that missed on moved outputs. A lookup naming two outputs counts once
+        /// here and once on each output in `TopMovedOutputs`.
+        OutputsMoved: int64
+        /// At most `CacheMissReasons.TopMovedOutputCount`, most misses first, ties by output.
+        TopMovedOutputs: MovedOutputMisses list
+    }
+
+module CacheMissReasons =
+    /// How many moved outputs a record names.
+    [<Literal>]
+    let TopMovedOutputCount = 10
+
+    /// The reasons `tally` counted. They sum to `CacheTally.misses tally`: the tally keys its
+    /// misses by `CacheMiss.label`, and these are its four cases.
+    let ofTally (tally: CacheTally) : CacheMissReasons =
+        let count (miss: CacheMiss) =
+            tally.Misses |> Map.tryFind (CacheMiss.label miss) |> Option.defaultValue 0L
+
+        { NoKey = count CacheMiss.NoKey
+          NoEntry = count CacheMiss.NoEntry
+          ParseOnly = count CacheMiss.ParseOnly
+          // The label is the case's, whatever outputs it names.
+          OutputsMoved = count (CacheMiss.OutputsMoved [])
+          TopMovedOutputs =
+            tally.MovedOutputs
+            |> Map.toList
+            |> List.sortBy (fun (output, misses) -> -misses, output)
+            |> List.truncate TopMovedOutputCount
+            |> List.map (fun (output, misses) -> { Output = output; Misses = misses }) }
+
 /// How many moved outputs the line names; the rest are counted.
 [<Literal>]
 let private NamedOutputs = 5

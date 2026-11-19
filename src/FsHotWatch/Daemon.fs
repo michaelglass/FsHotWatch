@@ -5299,7 +5299,7 @@ let private performScan
                   CacheHits = cacheScan.Hits
                   CacheMisses = CheckCacheTally.CacheTally.misses cacheScan
                   CacheReplays = cacheScan.Replayed
-                  CheckCache = Some pipeline.HasCheckCache
+                  CheckCache = ScanMetrics.CheckCacheRecord.ofScan pipeline.HasCheckCache cacheScan
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
                   ManagedBytes = reading.ManagedBytes

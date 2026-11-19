@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat!: a scan's `scan-metrics.jsonl` record says why its check-result cache missed (AUTOMATION-1816). A consumer's
+  lands each logged ~2,500 misses and 0 hits against ~3,000 stored entries, and the record carried only the count, so
+  a series of all-miss scans could not tell a wrongly keyed cache from project outputs that keep moving. With the
+  cache on, the record now carries `cacheMissReasons` (`noKey`, `noEntry`, `parseOnly`, `outputsMoved`, all four
+  always present; they sum to `cacheMisses`) and `cacheTopMovedOutputs`, the up-to-10 repository-relative outputs
+  that `outputsMoved` misses named most, as `{output, misses}`, most misses first, ties by output. Both are null with
+  the cache off. They come from the same `CacheTally` the scan's `check-result cache:` log line reads
+  (`CacheMissReasons.ofTally`). **Breaking:** `ScanSample.CheckCache` is a `CheckCacheRecord` (`Unrecorded`, `Off`,
+  `OnBeforeReasons` for an "on" line written before the reasons existed, or `On` with the reasons) instead of a
+  `bool option`. Older lines still parse. No cache key changes.
+
 - test: the `tests.traces` integration test's scratch build is hermetic and diagnosable (AUTOMATION-1784). On a
   degraded CI runner its restore waited minutes on nuget.org, then the build was silent until the 10-minute kill, with
   nothing in the failure but "Restored" lines. The scaffold now turns NuGetAudit off (no vulnerability-database

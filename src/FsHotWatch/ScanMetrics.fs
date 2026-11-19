@@ -17,6 +17,28 @@ module FsHotWatch.ScanMetrics
 open System
 open System.Text.Json
 
+/// Whether a scan's daemon ran a check-result cache, and why that cache's lookups missed.
+[<RequireQualifiedAccess>]
+type CheckCacheRecord =
+    /// A record written before `checkCache` existed.
+    | Unrecorded
+    /// No cache: `CacheHits` and `CacheMisses` are 0 because nothing could be looked up
+    /// (`"checkCache": "off"`, the miss-reason fields null).
+    | Off
+    /// A cache ran, in a record written before `cacheMissReasons` existed.
+    | OnBeforeReasons
+    /// A cache ran, and its misses per reason (AUTOMATION-1816).
+    | On of misses: CheckCacheTally.CacheMissReasons
+
+module CheckCacheRecord =
+    /// What a scan records about its cache: `scan` is the scan's share of the pipeline's
+    /// tally (`CacheTally.since` the scan-start snapshot).
+    let ofScan (hasCheckCache: bool) (scan: CheckCacheTally.CacheTally) : CheckCacheRecord =
+        if hasCheckCache then
+            CheckCacheRecord.On(CheckCacheTally.CacheMissReasons.ofTally scan)
+        else
+            CheckCacheRecord.Off
+
 /// One completed scan generation's measurement. Field names are the JSON keys.
 type ScanSample =
     {
@@ -62,10 +84,9 @@ type ScanSample =
         /// Files this scan served from filed `check` records (ADR-059 §17): neither hits nor
         /// misses, and no FCS check ran for them.
         CacheReplays: int64
-        /// Whether this daemon ran a check-result cache. `Some false` makes `CacheHits` and
-        /// `CacheMisses` 0 because there was no cache, not because nothing was looked up
-        /// (`"checkCache": "off"`). `None` for a record written before the field existed.
-        CheckCache: bool option
+        /// Whether this daemon ran a check-result cache, and, when it did, why this scan's
+        /// lookups missed (`cacheMissReasons`, `cacheTopMovedOutputs`).
+        CheckCache: CheckCacheRecord
         /// Extra rounds `runDependentChecks` needed beyond the first pass,
         /// summed over projects (ADR-056). 0 on a clean scan; the retry amplification
         /// bounds shows up here.
@@ -164,9 +185,34 @@ let toJsonLine (sample: ScanSample) : string =
            cacheReplays = sample.CacheReplays
            checkCache =
             match sample.CheckCache with
-            | Some true -> "on"
-            | Some false -> "off"
-            | None -> null
+            | CheckCacheRecord.On _
+            | CheckCacheRecord.OnBeforeReasons -> "on"
+            | CheckCacheRecord.Off -> "off"
+            | CheckCacheRecord.Unrecorded -> null
+           // `obj` so a scan with no reasons writes null: a JSON boundary, not a domain value.
+           cacheMissReasons =
+            match sample.CheckCache with
+            | CheckCacheRecord.On misses ->
+                box
+                    {| noKey = misses.NoKey
+                       noEntry = misses.NoEntry
+                       parseOnly = misses.ParseOnly
+                       outputsMoved = misses.OutputsMoved |}
+            | CheckCacheRecord.OnBeforeReasons
+            | CheckCacheRecord.Off
+            | CheckCacheRecord.Unrecorded -> null
+           cacheTopMovedOutputs =
+            match sample.CheckCache with
+            | CheckCacheRecord.On misses ->
+                misses.TopMovedOutputs
+                |> List.map (fun moved ->
+                    {| output = moved.Output
+                       misses = moved.Misses |})
+                |> Array.ofList
+                |> box
+            | CheckCacheRecord.OnBeforeReasons
+            | CheckCacheRecord.Off
+            | CheckCacheRecord.Unrecorded -> null
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -228,10 +274,28 @@ let tryParseLine (line: string) : ScanSample option =
                     match root.TryGetProperty "checkCache" with
                     | true, value when value.ValueKind = JsonValueKind.String ->
                         match value.GetString() with
-                        | "on" -> Some true
-                        | "off" -> Some false
-                        | _ -> None
-                    | _ -> None
+                        | "on" ->
+                            match root.TryGetProperty "cacheMissReasons" with
+                            | true, reasons when reasons.ValueKind = JsonValueKind.Object ->
+                                let count (name: string) = reasons.GetProperty(name).GetInt64()
+
+                                CheckCacheRecord.On
+                                    { NoKey = count "noKey"
+                                      NoEntry = count "noEntry"
+                                      ParseOnly = count "parseOnly"
+                                      OutputsMoved = count "outputsMoved"
+                                      TopMovedOutputs =
+                                        (field "cacheTopMovedOutputs").EnumerateArray()
+                                        |> Seq.map (fun moved ->
+                                            ({ Output = moved.GetProperty("output").GetString()
+                                               Misses = moved.GetProperty("misses").GetInt64() }
+                                            : CheckCacheTally.MovedOutputMisses))
+                                        |> List.ofSeq }
+                            // Written before the reasons existed.
+                            | _ -> CheckCacheRecord.OnBeforeReasons
+                        | "off" -> CheckCacheRecord.Off
+                        | _ -> CheckCacheRecord.Unrecorded
+                    | _ -> CheckCacheRecord.Unrecorded
                   RetryRounds = (field "retryRounds").GetInt32()
                   RssBytes = (field "rssBytes").GetInt64()
                   ManagedBytes = (field "managedBytes").GetInt64()

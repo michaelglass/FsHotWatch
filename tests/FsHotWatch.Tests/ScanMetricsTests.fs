@@ -7,10 +7,19 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.ScanMetrics
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.CheckCacheTally
 
 // The scan metrics exist as measurement that a LATER RUN CAN COMPARE. That makes
 // the record's round-trip — emitted, re-read, and fitted — the property under
 // test, not the fact that some number was logged.
+
+/// A scan whose cache missed nothing.
+let private noMisses: CacheMissReasons =
+    { NoKey = 0L
+      NoEntry = 0L
+      ParseOnly = 0L
+      OutputsMoved = 0L
+      TopMovedOutputs = [] }
 
 let private sample generation rss =
     { Generation = generation
@@ -26,7 +35,7 @@ let private sample generation rss =
       CacheHits = 0L
       CacheMisses = 0L
       CacheReplays = 0L
-      CheckCache = Some true
+      CheckCache = CheckCacheRecord.On noMisses
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -342,9 +351,10 @@ let ``a sample says whether its daemon ran a check-result cache`` () =
     // `cacheHits: 0, cacheMisses: 0` reads the same for a daemon with no cache and for
     // a cache nothing was looked up in; only this field tells them apart.
     for ran, rendered in
-        [ Some false, "\"checkCache\":\"off\""
-          Some true, "\"checkCache\":\"on\""
-          None, "\"checkCache\":null" ] do
+        [ CheckCacheRecord.Off, "\"checkCache\":\"off\""
+          CheckCacheRecord.On noMisses, "\"checkCache\":\"on\""
+          CheckCacheRecord.OnBeforeReasons, "\"checkCache\":\"on\""
+          CheckCacheRecord.Unrecorded, "\"checkCache\":null" ] do
         let original =
             { sample 1L 1_000L with
                 CheckCache = ran }
@@ -357,13 +367,13 @@ let ``a sample says whether its daemon ran a check-result cache`` () =
 let ``a record written before samples said whether a cache ran reads as not recorded`` () =
     match tryParseLine legacyLine with
     | None -> Assert.Fail "a pre-existing record must still parse"
-    | Some parsed -> test <@ parsed.CheckCache = None @>
+    | Some parsed -> test <@ parsed.CheckCache = CheckCacheRecord.Unrecorded @>
 
     // A value this version does not know is not recorded either, rather than a guess.
     let unknown =
         (toJsonLine (sample 1L 1L)).Replace("\"checkCache\":\"on\"", "\"checkCache\":\"maybe\"")
 
-    test <@ (tryParseLine unknown |> Option.map _.CheckCache) = Some None @>
+    test <@ (tryParseLine unknown |> Option.map _.CheckCache) = Some CheckCacheRecord.Unrecorded @>
 
 [<Fact>]
 let ``bootstrap counts round-trip`` () =
@@ -381,3 +391,134 @@ let ``bootstrap counts round-trip`` () =
             (tryParseLine line
              |> Option.map (fun s -> s.FcsBootstrapStarts, s.FcsBootstrapProjects)) = Some(46L, 23)
         @>
+
+// --- Why a scan's cache lookups missed (AUTOMATION-1816) ---
+
+/// One scan's tally, built the way the daemon builds it: lookups counted by a
+/// `CacheTallyCounter` the pipeline shares, and the scan's share taken with
+/// `CacheTally.since` from the snapshot at scan start. The lookups before the start
+/// belong to an earlier scan and must not be counted in this one.
+let private scanTally () : CacheTally =
+    let counter = CacheTallyCounter()
+
+    let miss reason =
+        counter.LookedUp(CacheLookupOutcome.Miss reason)
+
+    // An earlier scan.
+    miss CacheMiss.NoEntry
+    miss (CacheMiss.OutputsMoved [ "src/Old/bin/Old.dll" ])
+    counter.LookedUp CacheLookupOutcome.Hit
+    let atScanStart = counter.Snapshot
+
+    for _ in 1..5 do
+        counter.LookedUp CacheLookupOutcome.Hit
+
+    for _ in 1..2 do
+        counter.LookedUp CacheLookupOutcome.Replayed
+
+    miss CacheMiss.NoKey
+
+    for _ in 1..3 do
+        miss CacheMiss.NoEntry
+
+    for _ in 1..2 do
+        miss CacheMiss.ParseOnly
+
+    // A miss on two outputs counts on both: Lib and Core tie at 4.
+    for _ in 1..4 do
+        miss (CacheMiss.OutputsMoved [ "src/Lib/bin/Lib.dll"; "src/Core/bin/Core.dll" ])
+
+    for _ in 1..3 do
+        miss (CacheMiss.OutputsMoved [ "src/Web/bin/Web.dll" ])
+
+    // Ten more outputs, one miss each, listed out of order: thirteen moved outputs in all.
+    for i in [ 10; 3; 7; 1; 9; 2; 8; 4; 6; 5 ] do
+        miss (CacheMiss.OutputsMoved [ $"src/P%02d{i}/bin/P%02d{i}.dll" ])
+
+    CacheTally.since atScanStart counter.Snapshot
+
+let private cacheSample (record: CheckCacheRecord) (scan: CacheTally) =
+    { sample 3L 1_000L with
+        CacheHits = scan.Hits
+        CacheMisses = CacheTally.misses scan
+        CacheReplays = scan.Replayed
+        CheckCache = record }
+
+[<Fact>]
+let ``a scan's record counts its cache misses per reason, and they sum to its misses`` () =
+    // Every lookup a land made missed, ~3,000 entries on disk, and the record said only
+    // how many. The reasons are what tells a cache keyed wrongly from one whose project
+    // outputs keep moving.
+    let scan = scanTally ()
+    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    use doc = System.Text.Json.JsonDocument.Parse line
+    let root = doc.RootElement
+    let reasons = root.GetProperty "cacheMissReasons"
+
+    let count (key: string) = reasons.GetProperty(key).GetInt64()
+
+    let counted =
+        reasons.EnumerateObject()
+        |> Seq.map (fun p -> p.Name, p.Value.GetInt64())
+        |> Map.ofSeq
+
+    test <@ counted = Map.ofList [ "noKey", 1L; "noEntry", 3L; "parseOnly", 2L; "outputsMoved", 17L ] @>
+
+    let misses = root.GetProperty("cacheMisses").GetInt64()
+    test <@ misses = 23L @>
+    test <@ count "noKey" + count "noEntry" + count "parseOnly" + count "outputsMoved" = misses @>
+
+[<Fact>]
+let ``a scan's record names the ten outputs that moved most, most-missed first`` () =
+    let scan = scanTally ()
+    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    use doc = System.Text.Json.JsonDocument.Parse line
+
+    let top =
+        doc.RootElement.GetProperty("cacheTopMovedOutputs").EnumerateArray()
+        |> Seq.map (fun e -> e.GetProperty("output").GetString(), e.GetProperty("misses").GetInt64())
+        |> List.ofSeq
+
+    // Thirteen outputs moved; ten are named. Ties order by output, so the list is the
+    // same on every run.
+    test
+        <@
+            top = [ "src/Core/bin/Core.dll", 4L
+                    "src/Lib/bin/Lib.dll", 4L
+                    "src/Web/bin/Web.dll", 3L
+                    "src/P01/bin/P01.dll", 1L
+                    "src/P02/bin/P02.dll", 1L
+                    "src/P03/bin/P03.dll", 1L
+                    "src/P04/bin/P04.dll", 1L
+                    "src/P05/bin/P05.dll", 1L
+                    "src/P06/bin/P06.dll", 1L
+                    "src/P07/bin/P07.dll", 1L ]
+        @>
+
+[<Fact>]
+let ``the miss reasons round-trip through the record`` () =
+    let scan = scanTally ()
+    let original = cacheSample (CheckCacheRecord.ofScan true scan) scan
+
+    test <@ tryParseLine (toJsonLine original) = Some original @>
+
+[<Fact>]
+let ``a scan without a cache records no miss reasons`` () =
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan false CacheTally.empty) CacheTally.empty)
+
+    test <@ line.Contains "\"checkCache\":\"off\"" @>
+    test <@ line.Contains "\"cacheMissReasons\":null" @>
+    test <@ line.Contains "\"cacheTopMovedOutputs\":null" @>
+
+[<Fact>]
+let ``a record from a cache that ran before the reasons existed reads as on, without reasons`` () =
+    let legacy =
+        (toJsonLine (sample 1L 1L))
+            .Replace(",\"cacheMissReasons\":{\"noEntry\":0,\"noKey\":0,\"outputsMoved\":0,\"parseOnly\":0}", "")
+            .Replace(",\"cacheTopMovedOutputs\":[]", "")
+
+    test <@ not (legacy.Contains "cacheMissReasons" || legacy.Contains "cacheTopMovedOutputs") @>
+    test <@ (tryParseLine legacy |> Option.map _.CheckCache) = Some CheckCacheRecord.OnBeforeReasons @>

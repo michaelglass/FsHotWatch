@@ -5841,6 +5841,15 @@ let ``five scan generations emit five parseable, fittable measurement records`` 
 let ``a scan's measurement record says whether the daemon ran a check-result cache`` () =
     // 0 hits / 0 misses is what both a cacheless daemon and an idle cache record; the
     // record has to carry which one it was.
+    // A running cache nothing was looked up in still says why nothing missed: every
+    // reason at 0, no moved outputs (AUTOMATION-1816).
+    let idleCache: FsHotWatch.CheckCacheTally.CacheMissReasons =
+        { NoKey = 0L
+          NoEntry = 0L
+          ParseOnly = 0L
+          OutputsMoved = 0L
+          TopMovedOutputs = [] }
+
     let running =
         FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
             FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
@@ -5851,7 +5860,11 @@ let ``a scan's measurement record says whether the daemon ran a check-result cac
             None
         )
 
-    for setup, expected in [ FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off, false; running, true ] do
+    let cases =
+        [ FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off, FsHotWatch.ScanMetrics.CheckCacheRecord.Off
+          running, FsHotWatch.ScanMetrics.CheckCacheRecord.On idleCache ]
+
+    for setup, expected in cases do
         withTempDir "scan-metrics-cache-flag" (fun tmpDir ->
             Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
@@ -5867,7 +5880,7 @@ let ``a scan's measurement record says whether the daemon ran a check-result cac
             let series =
                 FsHotWatch.ScanMetrics.readSeries (FsHotWatch.ScanMetrics.recordPath tmpDir)
 
-            test <@ series |> List.map (fun s -> s.CheckCache) = [ Some expected ] @>)
+            test <@ series |> List.map (fun s -> s.CheckCache) = [ expected ] @>)
 
 // --- timing attribution rework: the scan and discovery are named phases ---
 
