@@ -38,6 +38,39 @@ type CacheLookupOutcome =
     | Replayed
     | Miss of CacheMiss
 
+/// What a `NoEntry` miss would have done under the alternative keys AUTOMATION-1816
+/// measures (step 1, measurement only: nothing is served by them). Each compares the file's
+/// upstream now with the upstream recorded with the last entry stored for the same bytes,
+/// options and toolchain (`AlternativeKeys`):
+/// - by SIGNATURE: every earlier file and every source of every referenced F# project, each
+///   named by its API signature (`ApiSignature`), or by its content where it has none;
+/// - by REFERENCES: only the files the entry's check resolved symbols in
+///   (`CacheInputs.usedDeclarationFiles`), named the same way.
+/// The references are a subset of the signature upstream, so a signature-unchanged miss is
+/// a references-unchanged miss too.
+[<RequireQualifiedAccess>]
+type NoEntryAlternative =
+    /// Nothing recorded to compare with: no entry for these bytes and options was stored
+    /// by an fshw that records alternative upstreams (an older fshw's entry, or bytes never
+    /// stored), the stored check's references could not be described, or the file moved
+    /// between the miss and the comparison.
+    | Unknown
+    /// The signature upstream is unchanged: both alternative keys would have served it.
+    | SignatureUnchanged
+    /// Only the referenced files' signatures are unchanged.
+    | OnlyReferencesUnchanged
+    /// Neither alternative upstream is unchanged.
+    | NeitherUnchanged
+
+module NoEntryAlternative =
+    /// The outcome, as the tally counts it.
+    let label (outcome: NoEntryAlternative) : string =
+        match outcome with
+        | NoEntryAlternative.Unknown -> "unknown"
+        | NoEntryAlternative.SignatureUnchanged -> "signature unchanged"
+        | NoEntryAlternative.OnlyReferencesUnchanged -> "only references unchanged"
+        | NoEntryAlternative.NeitherUnchanged -> "neither unchanged"
+
 /// What became of a finished check's answer.
 [<RequireQualifiedAccess>]
 type CacheStore =
@@ -69,6 +102,9 @@ type CacheTally =
         Stored: int64
         /// Answers not stored, per `CacheStore.label`.
         NotStored: Map<string, int64>
+        /// `NoEntry` misses per `NoEntryAlternative.label`, counted when the pipeline settles
+        /// (`CheckPipeline.SettleApiIndex`), not at the lookup.
+        NoEntryAlternatives: Map<string, int64>
     }
 
 module CacheTally =
@@ -78,7 +114,8 @@ module CacheTally =
           Misses = Map.empty
           MovedOutputs = Map.empty
           Stored = 0L
-          NotStored = Map.empty }
+          NotStored = Map.empty
+          NoEntryAlternatives = Map.empty }
 
     let private bump (key: string) (counts: Map<string, int64>) =
         counts |> Map.change key (fun n -> Some(defaultArg n 0L + 1L))
@@ -109,6 +146,10 @@ module CacheTally =
             { tally with
                 NotStored = bump (CacheStore.label other) tally.NotStored }
 
+    let comparedAlternative (outcome: NoEntryAlternative) (tally: CacheTally) : CacheTally =
+        { tally with
+            NoEntryAlternatives = bump (NoEntryAlternative.label outcome) tally.NoEntryAlternatives }
+
     let misses (tally: CacheTally) : int64 =
         tally.Misses |> Map.fold (fun sum _ n -> sum + n) 0L
 
@@ -127,7 +168,8 @@ module CacheTally =
           Misses = minus earlier.Misses later.Misses
           MovedOutputs = minus earlier.MovedOutputs later.MovedOutputs
           Stored = later.Stored - earlier.Stored
-          NotStored = minus earlier.NotStored later.NotStored }
+          NotStored = minus earlier.NotStored later.NotStored
+          NoEntryAlternatives = minus earlier.NoEntryAlternatives later.NoEntryAlternatives }
 
 /// One output whose moved bytes made lookups miss, and how many.
 type MovedOutputMisses = { Output: string; Misses: int64 }
@@ -169,6 +211,31 @@ module CacheMissReasons =
             |> List.sortBy (fun (output, misses) -> -misses, output)
             |> List.truncate TopMovedOutputCount
             |> List.map (fun (output, misses) -> { Output = output; Misses = misses }) }
+
+/// A tally's `NoEntry` misses as a scan's metrics record them (AUTOMATION-1816):
+/// `NoEntry = Unknown + ReferencesUnchanged + (misses neither key would have served)`.
+type NoEntryAlternatives =
+    {
+        /// Misses the signature key would have served.
+        SignatureUnchanged: int64
+        /// Misses the references key would have served; includes `SignatureUnchanged`.
+        ReferencesUnchanged: int64
+        /// Misses with nothing recorded to compare with (`NoEntryAlternative.Unknown`).
+        Unknown: int64
+    }
+
+module NoEntryAlternatives =
+    let ofTally (tally: CacheTally) : NoEntryAlternatives =
+        let count (outcome: NoEntryAlternative) =
+            tally.NoEntryAlternatives
+            |> Map.tryFind (NoEntryAlternative.label outcome)
+            |> Option.defaultValue 0L
+
+        let signature = count NoEntryAlternative.SignatureUnchanged
+
+        { SignatureUnchanged = signature
+          ReferencesUnchanged = signature + count NoEntryAlternative.OnlyReferencesUnchanged
+          Unknown = count NoEntryAlternative.Unknown }
 
 /// How many moved outputs the line names; the rest are counted.
 [<Literal>]
@@ -230,6 +297,9 @@ type CacheTallyCounter() =
 
     member _.Stored(store: CacheStore) =
         Locking.locked lockObj (fun () -> tally <- CacheTally.stored store tally)
+
+    member _.ComparedAlternative(outcome: NoEntryAlternative) =
+        Locking.locked lockObj (fun () -> tally <- CacheTally.comparedAlternative outcome tally)
 
     /// The counts so far.
     member _.Snapshot: CacheTally = Locking.locked lockObj (fun () -> tally)

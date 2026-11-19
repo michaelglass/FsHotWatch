@@ -290,6 +290,19 @@ type internal PendingRecord =
         Outputs: CheckOutputs
     }
 
+/// An entry stored since the pipeline last settled, waiting for the upstreams it was typed
+/// against to be recorded under AUTOMATION-1816's alternative keys (measurement only).
+[<NoComparison; NoEquality>]
+type internal StoredForAlternatives =
+    {
+        Options: FSharpProjectOptions
+        ContentHash: string
+        /// The key it is stored under: recorded only while the disk still reads the same.
+        ContentKey: CacheKey
+        /// The files its check resolved symbols in, absolute (`CacheInputs.usedDeclarationFiles`).
+        References: string list
+    }
+
 /// A walk of the check records for one project, read for replays.
 [<NoComparison; NoEquality>]
 type internal ReplayWalk =
@@ -583,6 +596,95 @@ type CheckPipeline
 
     /// Every lookup and store this pipeline's cache has made, by outcome.
     let cacheTally = CacheTallyCounter()
+
+    /// Where AUTOMATION-1816's alternative upstreams are recorded and read
+    /// (`MeasureAlternativeKeys`). Measurement only: nothing is keyed or served by them.
+    /// Without a store every `NoEntry` miss is compared with nothing: unknown.
+    let mutable alternativeKeys: AlternativeKeys.IAlternativeKeyStore option = None
+
+    /// The `NoEntry` misses since the last settle, to compare under the alternative keys:
+    /// (file, options, the content hash the lookup read).
+    let noEntryMisses =
+        ConcurrentQueue<struct (string * FSharpProjectOptions * string)>()
+
+    /// Entries stored since the last settle, by (file, project), whose alternative upstreams
+    /// are recorded at the next one.
+    let storedForAlternatives =
+        ConcurrentDictionary<struct (string * string), StoredForAlternatives>()
+
+    /// What a record of `path`'s alternative upstreams is filed under: its bytes, its keyed
+    /// options (`UpstreamFingerprints.KeyedOptions`) and the toolchain, as the key names them.
+    let alternativeRecordKey (path: string) (options: FSharpProjectOptions) (contentHash: string) =
+        AlternativeKeys.recordKey
+            (outputName path)
+            (outputName options.ProjectFileName)
+            contentHash
+            (upstreamFingerprints.KeyedOptions(path, options, optionsHashOf options))
+            toolchainIdentity
+
+    /// Compare each `NoEntry` miss since the last settle with the record for its inputs, then
+    /// record the entries stored since. Called by `SettleApiIndex` in a fresh generation, once
+    /// the cohort's signatures are recorded: a lookup's own generation can name an earlier
+    /// file by content only because its check had not finished yet. The comparisons run
+    /// first, so a miss is compared with the record from before its own entry was stored.
+    let measureAlternatives () =
+        let started = Diagnostics.Stopwatch.GetTimestamp()
+
+        let rec compare (compared: int) =
+            match noEntryMisses.TryDequeue() with
+            | true, struct (path, options, contentHash) ->
+                let outcome =
+                    match alternativeKeys with
+                    // The file moved since the lookup: what it missed on is gone.
+                    | Some store when hashFile path = contentHash ->
+                        let optionsHash = optionsHashOf options
+
+                        AlternativeKeys.classify
+                            (store.TryRead(alternativeRecordKey path options contentHash))
+                            (upstreamFingerprints.ForApi(path, options, optionsHash))
+                            (fun references ->
+                                upstreamFingerprints.ReferencesFor(
+                                    path,
+                                    options,
+                                    optionsHash,
+                                    references |> List.map outputPath
+                                ))
+                    | _ -> NoEntryAlternative.Unknown
+
+                cacheTally.ComparedAlternative outcome
+                compare (compared + 1)
+            | _ -> compared
+
+        let compared = compare 0
+
+        let record (entry: Collections.Generic.KeyValuePair<struct (string * string), StoredForAlternatives>) =
+            let slot, stored = entry.Key, entry.Value
+            storedForAlternatives.TryRemove slot |> ignore
+            let struct (path, _) = slot
+
+            match alternativeKeys, makeCacheKeyFast (AbsFilePath.create path) stored.Options with
+            | Some store, Some content when content = stored.ContentKey ->
+                let optionsHash = optionsHashOf stored.Options
+
+                store.Write
+                    (alternativeRecordKey path stored.Options stored.ContentHash)
+                    { Signature = upstreamFingerprints.ForApi(path, stored.Options, optionsHash)
+                      References = stored.References |> List.map outputName
+                      ReferencesFingerprint =
+                        upstreamFingerprints.ReferencesFor(path, stored.Options, optionsHash, stored.References) }
+
+                1
+            // The entry no longer describes the disk: what it was typed against is unknown.
+            | _ -> 0
+
+        let recorded = List.ofSeq storedForAlternatives |> List.sumBy record
+
+        if compared + recorded > 0 then
+            let elapsed = Diagnostics.Stopwatch.GetElapsedTime started
+
+            Logging.info
+                "cache"
+                $"alternative keys (measurement): compared %d{compared} no-entry miss(es), recorded %d{recorded} entr(y/ies) in %d{int64 elapsed.TotalMilliseconds}ms"
 
     /// Report the registered working set to a scoped backend.
     let ensureCacheCoversWorkingSet () =
@@ -1016,6 +1118,7 @@ type CheckPipeline
         | Some _ ->
             // Fresh tables, from every signature recorded so far.
             upstreamFingerprints.BeginGeneration()
+            measureAlternatives ()
 
             for KeyValue(slot, options) in List.ofSeq indexedSinceSettle do
                 indexedSinceSettle.TryRemove slot |> ignore
@@ -1026,6 +1129,12 @@ type CheckPipeline
                 | (true, struct (_, stored)), Some content, Some api when stored = content ->
                     apiIndex[slot] <- struct (api, content)
                 | _ -> ()
+
+    /// Record each stored entry's alternative upstreams in `store`, and compare each
+    /// `NoEntry` miss with them, when the pipeline settles (AUTOMATION-1816, measurement
+    /// only). Set once, before the first check.
+    member internal _.MeasureAlternativeKeys(store: AlternativeKeys.IAlternativeKeyStore) =
+        alternativeKeys <- Some store
 
     /// What `file` declared in `projectFile` before the bytes on disk now: see
     /// `CheckCache.PriorDeclaration`.
@@ -1823,7 +1932,14 @@ type CheckPipeline
                 // A replay is not a miss: no FCS check runs for it (AUTOMATION-1520).
                 match cached, miss with
                 | Some { CheckResults = Replayed _ }, _ -> cacheTally.LookedUp CacheLookupOutcome.Replayed
-                | _, Some miss -> cacheTally.LookedUp(CacheLookupOutcome.Miss miss)
+                | _, Some miss ->
+                    cacheTally.LookedUp(CacheLookupOutcome.Miss miss)
+
+                    match miss with
+                    | CacheMiss.NoEntry -> noEntryMisses.Enqueue(struct (absPath, options, contentHash))
+                    | CacheMiss.NoKey
+                    | CacheMiss.ParseOnly
+                    | CacheMiss.OutputsMoved _ -> ()
                 | _ -> ()
 
                 match cached with
@@ -1892,6 +2008,17 @@ type CheckPipeline
 
                                 index ()
                                 cacheTally.Stored CacheStore.Stored
+
+                                // Only with a store to record in: the walk is free when the
+                                // check record or a plugin already took it, not otherwise.
+                                if alternativeKeys.IsSome then
+                                    CacheInputs.usedDeclarationFiles repoRoot r.ProjectOptions r.CheckResults
+                                    |> Option.iter (fun references ->
+                                        storedForAlternatives[slot] <-
+                                            { Options = options
+                                              ContentHash = contentHash
+                                              ContentKey = key
+                                              References = references |> List.map (FileCheckResult.textToReal r) })
                             | _ -> ()
                         | FullCheck _ ->
                             if cacheBackend.IsSome then

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- feat!: a scan's `scan-metrics.jsonl` record says how many of its `noEntry` misses an alternative check-result key
+  would have served (AUTOMATION-1816, measurement only). A consumer's lands miss 919 to 2,570 lookups each, every one
+  `noEntry`, because a file's key names the TEXT of every file before it, so a body edit to an early file (a generated
+  schema file on every migration) re-keys everything after it. Three new top-level fields beside `cacheMissReasons`:
+  `noEntrySignatureUnchanged` (the miss would have hit had each upstream file been named by its API signature, in the
+  same scope as today's key), `noEntryReferencesUnchanged` (the same, over only the files the stored entry's check
+  resolved symbols in; it includes the signature-unchanged misses) and `noEntryAlternativeUnknown` (nothing recorded to
+  compare with: an entry stored by an older fshw, bytes or options never stored, references that could not be
+  described). Null with the cache off. With the cache on, each stored entry's alternative upstreams are recorded in
+  `.fshw/cache/alternative-keys/` when the pipeline settles, keyed by the file's bytes, options and toolchain, and a
+  later daemon's misses are compared with them at its settle. They reuse the signatures and the used-symbol walk
+  (`CacheInputs.usedDeclarationFiles`) the daemon already computes; nothing is re-checked. **No cache key, lookup or
+  stored entry changes; nothing is served by an alternative key.** **Breaking:** `CheckCacheRecord.On` carries
+  `CacheMissReasons * NoEntryAlternatives`, and a line with reasons but no alternative counts reads as the new
+  `OnBeforeAlternatives`; `CacheTally` has a `NoEntryAlternatives` field. Older lines still parse.
+
 ## 0.10.0-alpha.122 - 2026-11-19
 
 - feat!: a scan's `scan-metrics.jsonl` record says why its check-result cache missed (AUTOMATION-1816). A consumer's

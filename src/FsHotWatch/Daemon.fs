@@ -5810,6 +5810,16 @@ module Daemon =
                         ?checkRecords = checkRecordStore
                     )
 
+            // AUTOMATION-1816, measurement only: what each stored entry was typed against under
+            // the alternative keys, kept beside this workspace's daemon state so the next
+            // daemon (a land's starts cold) can say whether its no-entry misses would have hit.
+            if cacheBackend.IsSome then
+                pipeline.MeasureAlternativeKeys(
+                    FsHotWatch.AlternativeKeys.FileAlternativeKeyStore(
+                        Path.Combine(FsHwPaths.root repoRoot, "cache", "alternative-keys")
+                    )
+                )
+
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache opts.CheckCache)
 
             let graph = ProjectGraph()

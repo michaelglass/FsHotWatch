@@ -5862,7 +5862,13 @@ let ``a scan's measurement record says whether the daemon ran a check-result cac
 
     let cases =
         [ FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off, FsHotWatch.ScanMetrics.CheckCacheRecord.Off
-          running, FsHotWatch.ScanMetrics.CheckCacheRecord.On idleCache ]
+          running,
+          FsHotWatch.ScanMetrics.CheckCacheRecord.On(
+              idleCache,
+              { SignatureUnchanged = 0L
+                ReferencesUnchanged = 0L
+                Unknown = 0L }
+          ) ]
 
     for setup, expected in cases do
         withTempDir "scan-metrics-cache-flag" (fun tmpDir ->

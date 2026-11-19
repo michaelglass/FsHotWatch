@@ -637,16 +637,27 @@ type internal SignatureLookup = string -> string -> string -> string -> string -
 /// Sound by induction over the compile order: a file's entry equals another's only when,
 /// for each file before it, either the bytes are equal or a check of those bytes against
 /// an equal entry declared an equal signature.
-let internal apiUpstreamFingerprintsWith
+/// `apiUpstreamFingerprintsWith`'s tables, and how its walk named each source file of the
+/// project and of every F# project it references, transitively: `api:<signature>` or
+/// `content:<hash>` (`ApiChain.Parts`, keyed by the path as the options list it). A file
+/// two projects of the closure both compile is named as the first walked names it.
+[<NoComparison; NoEquality>]
+type internal ApiChain =
+    { Table: System.Collections.Generic.IReadOnlyDictionary<string, string>
+      Whole: string
+      Parts: System.Collections.Generic.IReadOnlyDictionary<string, string> }
+
+let internal apiChainWith
     (hashFile: string -> string)
     (stampFile: string -> string)
     (contentTableOf: FSharpProjectOptions -> System.Collections.Generic.IReadOnlyDictionary<string, string> * string)
     (signatureOf: SignatureLookup)
     (repoRoot: string option)
     (options: FSharpProjectOptions)
-    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    : ApiChain =
     let relativize = relativizeOption repoRoot
     let wholes = System.Collections.Generic.Dictionary<string, string>()
+    let named = System.Collections.Generic.Dictionary<string, string>()
 
     let rec chain (opts: FSharpProjectOptions) =
         let parts = System.Collections.Generic.List<string>()
@@ -679,6 +690,7 @@ let internal apiUpstreamFingerprintsWith
                 | Some signature -> "api:" + signature
                 | None -> "content:" + content
 
+            named.TryAdd(source, part) |> ignore
             running <- sha256Hex $"%s{running}\n%s{relativize source}=%s{part}"
 
         table, running
@@ -695,7 +707,65 @@ let internal apiUpstreamFingerprintsWith
             whole
 
     let table, whole = chain options
-    table :> System.Collections.Generic.IReadOnlyDictionary<string, string>, whole
+
+    { Table = table
+      Whole = whole
+      Parts = named }
+
+let internal apiUpstreamFingerprintsWith
+    (hashFile: string -> string)
+    (stampFile: string -> string)
+    (contentTableOf: FSharpProjectOptions -> System.Collections.Generic.IReadOnlyDictionary<string, string> * string)
+    (signatureOf: SignatureLookup)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    : System.Collections.Generic.IReadOnlyDictionary<string, string> * string =
+    let chain =
+        apiChainWith hashFile stampFile contentTableOf signatureOf repoRoot options
+
+    chain.Table, chain.Whole
+
+/// AUTOMATION-1816's REFERENCES upstream of `filePath` (measurement only, never a key): the
+/// project's options without the source list, its assembly and non-F# project references
+/// (as `apiUpstreamFingerprintsWith` names them), and only the `references` (the files a
+/// check of it resolved symbols in, `CacheInputs.usedDeclarationFiles`) that the API chain
+/// names, each as it names them (`ApiChain.Parts`), in path order. The file itself, files
+/// outside the chain (NuGet, the SDK) and repeats are left out. A referenced F# project
+/// contributes only the referenced files of it, not its whole chain.
+let internal referencesFingerprintWith
+    (hashFile: string -> string)
+    (stampFile: string -> string)
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    (parts: System.Collections.Generic.IReadOnlyDictionary<string, string>)
+    (filePath: string)
+    (references: string list)
+    : string =
+    let relativize = relativizeOption repoRoot
+    let lines = System.Collections.Generic.List<string>()
+    lines.Add $"options:%s{getProjectFlagsHashRelativeTo repoRoot options}"
+    addAssemblyParts lines hashFile stampFile repoRoot options
+
+    for reference in options.ReferencedProjects do
+        match reference with
+        | FSharpReferencedProject.FSharpReference _ -> ()
+        | FSharpReferencedProject.PEReference(getStamp, _) ->
+            lines.Add(otherReferencePart repoRoot reference.OutputFile (getStamp ()))
+        | FSharpReferencedProject.ILModuleReference(output, getStamp, _) ->
+            lines.Add(otherReferencePart repoRoot output (getStamp ()))
+
+    for file, part in
+        references
+        |> List.filter (fun file -> file <> filePath)
+        |> List.distinct
+        |> List.choose (fun file ->
+            match parts.TryGetValue file with
+            | true, part -> Some(relativize file, part)
+            | false, _ -> None)
+        |> List.sortBy fst do
+        lines.Add $"%s{file}=%s{part}"
+
+    sha256Hex (String.concat "\n" lines)
 
 /// What a changed file declared before the change, as the files typed against it saw it:
 /// what a change batch compares the file's new signature with to decide whether the
@@ -744,10 +814,7 @@ type UpstreamFingerprints(repoRoot: string option) =
     let mutable generationsDeclared = false
 
     let apiMemo =
-        System.Collections.Concurrent.ConcurrentDictionary<
-            string,
-            Lazy<System.Collections.Generic.IReadOnlyDictionary<string, string> * string>
-         >()
+        System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<ApiChain>>()
 
     let sourceMemo =
         System.Collections.Concurrent.ConcurrentDictionary<
@@ -861,17 +928,34 @@ type UpstreamFingerprints(repoRoot: string option) =
     /// `For`, by API signature: `filePath`'s `apiUpstreamFingerprintsWith` entry, from
     /// this generation's table for its project. Built at the project's first lookup in the
     /// generation, from the signatures recorded by then.
-    member internal _.ForApi(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
+    member internal this.ForApi(filePath: string, options: FSharpProjectOptions, optionsHash: string) : string =
+        let chain = this.ApiChain(options, optionsHash)
+        fingerprintIn (chain.Table, chain.Whole) filePath
+
+    /// This generation's API chain of `options`' project (see `ForApi`).
+    member private _.ApiChain(options: FSharpProjectOptions, optionsHash: string) : ApiChain =
         let build () =
-            apiUpstreamFingerprintsWith hasher.Hash fileStampText contentTableOf signatureOf repoRoot options
+            apiChainWith hasher.Hash fileStampText contentTableOf signatureOf repoRoot options
 
-        let table =
-            if System.Threading.Volatile.Read(&generationsDeclared) then
-                apiMemo.GetOrAdd($"%s{options.ProjectFileName}|%s{optionsHash}", fun _ -> lazy (build ())).Value
-            else
-                build ()
+        if System.Threading.Volatile.Read(&generationsDeclared) then
+            apiMemo.GetOrAdd($"%s{options.ProjectFileName}|%s{optionsHash}", fun _ -> lazy (build ())).Value
+        else
+            build ()
 
-        fingerprintIn table filePath
+    /// `referencesFingerprintWith` of `filePath` over `references` (absolute), from this
+    /// generation's API chain for its project: AUTOMATION-1816's references upstream.
+    /// Measurement only, never a key.
+    member internal this.ReferencesFor
+        (filePath: string, options: FSharpProjectOptions, optionsHash: string, references: string list)
+        : string =
+        referencesFingerprintWith
+            hasher.Hash
+            fileStampText
+            repoRoot
+            options
+            (this.ApiChain(options, optionsHash)).Parts
+            filePath
+            references
 
     /// Fingerprint for `filePath`, from this generation's table for its project.
     /// `optionsHash` distinguishes two option sets for one project file.

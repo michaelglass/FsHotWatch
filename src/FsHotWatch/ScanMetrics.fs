@@ -27,15 +27,22 @@ type CheckCacheRecord =
     | Off
     /// A cache ran, in a record written before `cacheMissReasons` existed.
     | OnBeforeReasons
-    /// A cache ran, and its misses per reason (AUTOMATION-1816).
-    | On of misses: CheckCacheTally.CacheMissReasons
+    /// A cache ran, in a record with its misses per reason written before the
+    /// alternative-key counts existed.
+    | OnBeforeAlternatives of misses: CheckCacheTally.CacheMissReasons
+    /// A cache ran: its misses per reason, and what its `NoEntry` misses would have done
+    /// under the alternative keys (AUTOMATION-1816).
+    | On of misses: CheckCacheTally.CacheMissReasons * alternatives: CheckCacheTally.NoEntryAlternatives
 
 module CheckCacheRecord =
     /// What a scan records about its cache: `scan` is the scan's share of the pipeline's
     /// tally (`CacheTally.since` the scan-start snapshot).
     let ofScan (hasCheckCache: bool) (scan: CheckCacheTally.CacheTally) : CheckCacheRecord =
         if hasCheckCache then
-            CheckCacheRecord.On(CheckCacheTally.CacheMissReasons.ofTally scan)
+            CheckCacheRecord.On(
+                CheckCacheTally.CacheMissReasons.ofTally scan,
+                CheckCacheTally.NoEntryAlternatives.ofTally scan
+            )
         else
             CheckCacheRecord.Off
 
@@ -85,7 +92,10 @@ type ScanSample =
         /// misses, and no FCS check ran for them.
         CacheReplays: int64
         /// Whether this daemon ran a check-result cache, and, when it did, why this scan's
-        /// lookups missed (`cacheMissReasons`, `cacheTopMovedOutputs`).
+        /// lookups missed (`cacheMissReasons`, `cacheTopMovedOutputs`) and what its
+        /// `NoEntry` misses would have done under the alternative keys
+        /// (`noEntrySignatureUnchanged`, `noEntryReferencesUnchanged`,
+        /// `noEntryAlternativeUnknown`).
         CheckCache: CheckCacheRecord
         /// Extra rounds `runDependentChecks` needed beyond the first pass,
         /// summed over projects (ADR-056). 0 on a clean scan; the retry amplification
@@ -186,13 +196,15 @@ let toJsonLine (sample: ScanSample) : string =
            checkCache =
             match sample.CheckCache with
             | CheckCacheRecord.On _
+            | CheckCacheRecord.OnBeforeAlternatives _
             | CheckCacheRecord.OnBeforeReasons -> "on"
             | CheckCacheRecord.Off -> "off"
             | CheckCacheRecord.Unrecorded -> null
            // `obj` so a scan with no reasons writes null: a JSON boundary, not a domain value.
            cacheMissReasons =
             match sample.CheckCache with
-            | CheckCacheRecord.On misses ->
+            | CheckCacheRecord.On(misses, _)
+            | CheckCacheRecord.OnBeforeAlternatives misses ->
                 box
                     {| noKey = misses.NoKey
                        noEntry = misses.NoEntry
@@ -203,7 +215,8 @@ let toJsonLine (sample: ScanSample) : string =
             | CheckCacheRecord.Unrecorded -> null
            cacheTopMovedOutputs =
             match sample.CheckCache with
-            | CheckCacheRecord.On misses ->
+            | CheckCacheRecord.On(misses, _)
+            | CheckCacheRecord.OnBeforeAlternatives misses ->
                 misses.TopMovedOutputs
                 |> List.map (fun moved ->
                     {| output = moved.Output
@@ -213,6 +226,28 @@ let toJsonLine (sample: ScanSample) : string =
             | CheckCacheRecord.OnBeforeReasons
             | CheckCacheRecord.Off
             | CheckCacheRecord.Unrecorded -> null
+           // `Nullable` so a scan with no counts writes null: a JSON boundary, not a domain value.
+           noEntrySignatureUnchanged =
+            match sample.CheckCache with
+            | CheckCacheRecord.On(_, alternatives) -> Nullable alternatives.SignatureUnchanged
+            | CheckCacheRecord.OnBeforeAlternatives _
+            | CheckCacheRecord.OnBeforeReasons
+            | CheckCacheRecord.Off
+            | CheckCacheRecord.Unrecorded -> Nullable()
+           noEntryReferencesUnchanged =
+            match sample.CheckCache with
+            | CheckCacheRecord.On(_, alternatives) -> Nullable alternatives.ReferencesUnchanged
+            | CheckCacheRecord.OnBeforeAlternatives _
+            | CheckCacheRecord.OnBeforeReasons
+            | CheckCacheRecord.Off
+            | CheckCacheRecord.Unrecorded -> Nullable()
+           noEntryAlternativeUnknown =
+            match sample.CheckCache with
+            | CheckCacheRecord.On(_, alternatives) -> Nullable alternatives.Unknown
+            | CheckCacheRecord.OnBeforeAlternatives _
+            | CheckCacheRecord.OnBeforeReasons
+            | CheckCacheRecord.Off
+            | CheckCacheRecord.Unrecorded -> Nullable()
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -279,7 +314,7 @@ let tryParseLine (line: string) : ScanSample option =
                             | true, reasons when reasons.ValueKind = JsonValueKind.Object ->
                                 let count (name: string) = reasons.GetProperty(name).GetInt64()
 
-                                CheckCacheRecord.On
+                                let misses: CheckCacheTally.CacheMissReasons =
                                     { NoKey = count "noKey"
                                       NoEntry = count "noEntry"
                                       ParseOnly = count "parseOnly"
@@ -291,6 +326,17 @@ let tryParseLine (line: string) : ScanSample option =
                                                Misses = moved.GetProperty("misses").GetInt64() }
                                             : CheckCacheTally.MovedOutputMisses))
                                         |> List.ofSeq }
+
+                                match root.TryGetProperty "noEntrySignatureUnchanged" with
+                                | true, signature when signature.ValueKind = JsonValueKind.Number ->
+                                    CheckCacheRecord.On(
+                                        misses,
+                                        { SignatureUnchanged = signature.GetInt64()
+                                          ReferencesUnchanged = (field "noEntryReferencesUnchanged").GetInt64()
+                                          Unknown = (field "noEntryAlternativeUnknown").GetInt64() }
+                                    )
+                                // Written before the alternative-key counts existed.
+                                | _ -> CheckCacheRecord.OnBeforeAlternatives misses
                             // Written before the reasons existed.
                             | _ -> CheckCacheRecord.OnBeforeReasons
                         | "off" -> CheckCacheRecord.Off

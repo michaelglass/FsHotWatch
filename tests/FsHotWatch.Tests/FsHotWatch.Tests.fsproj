@@ -298,6 +298,7 @@
     <Compile Include="RefAssemblyFreshnessTests.fs" />
     <Compile Include="DepsFreshnessTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
+    <Compile Include="AlternativeKeyTests.fs" />
     <Compile Include="CheckPipelineCancellationTests.fs" />
     <Compile Include="WorkSchedulerTests.fs" />
     <Compile Include="WorkSchedulerStatusTests.fs" />

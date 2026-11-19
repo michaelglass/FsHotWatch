@@ -21,6 +21,20 @@ let private noMisses: CacheMissReasons =
       OutputsMoved = 0L
       TopMovedOutputs = [] }
 
+/// A scan with no no-entry miss to compare under the alternative keys.
+let private noAlternatives: NoEntryAlternatives =
+    { SignatureUnchanged = 0L
+      ReferencesUnchanged = 0L
+      Unknown = 0L }
+
+/// `line` as fshw 0.14.0-alpha.155 wrote it: miss reasons, no alternative-key counts.
+let private withoutAlternatives (line: string) =
+    Text.RegularExpressions.Regex.Replace(
+        line,
+        ",\"noEntry(SignatureUnchanged|ReferencesUnchanged|AlternativeUnknown)\":[0-9]+",
+        ""
+    )
+
 let private sample generation rss =
     { Generation = generation
       Kind = "cold"
@@ -35,7 +49,7 @@ let private sample generation rss =
       CacheHits = 0L
       CacheMisses = 0L
       CacheReplays = 0L
-      CheckCache = CheckCacheRecord.On noMisses
+      CheckCache = CheckCacheRecord.On(noMisses, noAlternatives)
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -352,8 +366,9 @@ let ``a sample says whether its daemon ran a check-result cache`` () =
     // a cache nothing was looked up in; only this field tells them apart.
     for ran, rendered in
         [ CheckCacheRecord.Off, "\"checkCache\":\"off\""
-          CheckCacheRecord.On noMisses, "\"checkCache\":\"on\""
+          CheckCacheRecord.On(noMisses, noAlternatives), "\"checkCache\":\"on\""
           CheckCacheRecord.OnBeforeReasons, "\"checkCache\":\"on\""
+          CheckCacheRecord.OnBeforeAlternatives noMisses, "\"checkCache\":\"on\""
           CheckCacheRecord.Unrecorded, "\"checkCache\":null" ] do
         let original =
             { sample 1L 1_000L with
@@ -519,6 +534,86 @@ let ``a record from a cache that ran before the reasons existed reads as on, wit
         (toJsonLine (sample 1L 1L))
             .Replace(",\"cacheMissReasons\":{\"noEntry\":0,\"noKey\":0,\"outputsMoved\":0,\"parseOnly\":0}", "")
             .Replace(",\"cacheTopMovedOutputs\":[]", "")
+        |> withoutAlternatives
 
     test <@ not (legacy.Contains "cacheMissReasons" || legacy.Contains "cacheTopMovedOutputs") @>
     test <@ (tryParseLine legacy |> Option.map _.CheckCache) = Some CheckCacheRecord.OnBeforeReasons @>
+
+// --- What the no-entry misses would have done under alternative keys (AUTOMATION-1816) ---
+
+/// A scan whose no-entry misses were compared under the alternative keys: two would have
+/// hit by signature (and so by references too), three by references alone, one under
+/// neither, and four had nothing recorded to compare with.
+let private alternativesTally () : CacheTally =
+    let counter = CacheTallyCounter()
+    // An earlier scan's comparison, not this one's.
+    counter.ComparedAlternative NoEntryAlternative.SignatureUnchanged
+    let atScanStart = counter.Snapshot
+
+    for outcome, times in
+        [ NoEntryAlternative.SignatureUnchanged, 2
+          NoEntryAlternative.OnlyReferencesUnchanged, 3
+          NoEntryAlternative.NeitherUnchanged, 1
+          NoEntryAlternative.Unknown, 4 ] do
+        for _ in 1..times do
+            counter.LookedUp(CacheLookupOutcome.Miss CacheMiss.NoEntry)
+            counter.ComparedAlternative outcome
+
+    CacheTally.since atScanStart counter.Snapshot
+
+[<Fact>]
+let ``a scan's record says how many no-entry misses an alternative key would have served`` () =
+    let scan = alternativesTally ()
+    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    use doc = System.Text.Json.JsonDocument.Parse line
+    let root = doc.RootElement
+    let count (key: string) = root.GetProperty(key).GetInt64()
+
+    test <@ count "noEntrySignatureUnchanged" = 2L @>
+    // A signature-unchanged upstream leaves every referenced file's signature unchanged too.
+    test <@ count "noEntryReferencesUnchanged" = 5L @>
+    test <@ count "noEntryAlternativeUnknown" = 4L @>
+    let noEntry = root.GetProperty("cacheMissReasons").GetProperty("noEntry").GetInt64()
+    test <@ noEntry = 10L @>
+
+[<Fact>]
+let ``the alternative-key counts round-trip through the record`` () =
+    let scan = alternativesTally ()
+    let original = cacheSample (CheckCacheRecord.ofScan true scan) scan
+
+    test
+        <@
+            original.CheckCache = CheckCacheRecord.On(
+                CacheMissReasons.ofTally scan,
+                { SignatureUnchanged = 2L
+                  ReferencesUnchanged = 5L
+                  Unknown = 4L }
+            )
+        @>
+
+    test <@ tryParseLine (toJsonLine original) = Some original @>
+
+[<Fact>]
+let ``a record written before the alternative-key counts existed reads as on, with reasons and without them`` () =
+    let scan = alternativesTally ()
+    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+    let older = withoutAlternatives line
+
+    test <@ not (older.Contains "noEntrySignatureUnchanged") @>
+
+    test
+        <@
+            (tryParseLine older |> Option.map _.CheckCache) = Some(
+                CheckCacheRecord.OnBeforeAlternatives(CacheMissReasons.ofTally scan)
+            )
+        @>
+
+[<Fact>]
+let ``a scan without a cache records no alternative-key counts`` () =
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan false CacheTally.empty) CacheTally.empty)
+
+    test <@ line.Contains "\"noEntrySignatureUnchanged\":null" @>
+    test <@ line.Contains "\"noEntryReferencesUnchanged\":null" @>
+    test <@ line.Contains "\"noEntryAlternativeUnknown\":null" @>

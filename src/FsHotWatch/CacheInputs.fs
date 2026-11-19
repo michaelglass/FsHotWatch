@@ -113,15 +113,26 @@ let private accessText (access: FSharpAccessibility) =
 let private entityName (entity: FSharpEntity) =
     entity.TryFullName |> Option.defaultValue entity.DisplayName
 
-/// The text `usedSignaturesHash` hashes: one line per external symbol and one block per
-/// repository entity, sorted, so the order FCS reports uses in cannot move it.
-let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (results: FSharpCheckFileResults) =
+/// `usedShapes`, with the files that declare what it renders from this repository: each
+/// repository value, member and active pattern a symbol use resolved to, and each
+/// repository entity it names or reaches through such a signature. In the order FCS
+/// reports them, as FCS names them (a check in a virtual frame names virtual paths).
+let internal usedShapesAndFiles
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    (results: FSharpCheckFileResults)
+    : string * string list =
     let inRepo = inRepository repoRoot options
     let lines = HashSet<string>(StringComparer.Ordinal)
     let visited = HashSet<string>(StringComparer.Ordinal)
     let pending = Queue<FSharpEntity>()
+    let declaredIn = HashSet<string>(StringComparer.Ordinal)
 
     let add (line: string) = lines.Add line |> ignore
+
+    let declaration (symbol: FSharpSymbol) =
+        symbol.DeclarationLocation
+        |> Option.iter (fun range -> declaredIn.Add range.FileName |> ignore)
 
     let visit (entity: FSharpEntity) =
         let name = entityName entity
@@ -129,6 +140,7 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
 
         if visited.Add $"%s{assembly.SimpleName}/%s{name}" then
             if inRepo assembly then
+                declaration entity
                 pending.Enqueue entity
             else
                 add $"ext %s{assembly.QualifiedName} %s{name}"
@@ -266,6 +278,7 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
             let assembly = m.Assembly
 
             if inRepo assembly then
+                declaration m
                 m.DeclaringEntity |> Option.iter visit
                 add ("val " + memberText m)
             else
@@ -279,6 +292,7 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
             case.Fields |> Seq.iter (fun field -> follow field.FieldType)
         | :? FSharpActivePatternCase as case ->
             let group = String.concat "|" case.Group.Names
+            declaration case
             follow case.Group.OverallType
             add $"pattern %s{case.Name} %s{group} : %s{typeText case.Group.OverallType}"
         // Generic and ordinary parameters are part of a signature rendered above.
@@ -289,14 +303,21 @@ let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (result
     while pending.Count > 0 do
         entityShape (pending.Dequeue())
 
-    lines |> Seq.sort |> String.concat "\n"
+    lines |> Seq.sort |> String.concat "\n", List.ofSeq declaredIn
 
-/// What `usedSignaturesHash` answered for one check, and for which root and project.
+/// The text `usedSignaturesHash` hashes: one line per external symbol and one block per
+/// repository entity, sorted, so the order FCS reports uses in cannot move it.
+let usedShapes (repoRoot: string option) (options: FSharpProjectOptions) (results: FSharpCheckFileResults) =
+    usedShapesAndFiles repoRoot options results |> fst
+
+/// What the walk behind `usedSignaturesHash` answered for one check, and for which root and
+/// project: the hash and the declaring files, or None for both when the shape could not be
+/// described.
 [<NoComparison; NoEquality>]
 type private UsedSignaturesMemo =
     { RepoRoot: string option
       Options: FSharpProjectOptions
-      Hash: string option }
+      Walk: (string * string list) option }
 
 /// Held weakly by the check results it describes, so an entry lives exactly as long as
 /// that check does.
@@ -322,6 +343,31 @@ let private usedSignaturesMemo =
 /// Every plugin that keys a `FileChecked` event (analyzers, lint) is handed the same check
 /// results, so the hash is remembered against them and the walk runs once per event, not
 /// once per plugin. A different root or project is computed afresh.
+/// The walk for one live check, remembered against its results: the hash of its shapes and
+/// the files declaring them, or None when the shape could not be described.
+let private usedWalk (repoRoot: string option) (options: FSharpProjectOptions) (results: FSharpCheckFileResults) =
+    match usedSignaturesMemo.TryGetValue results with
+    | true, memo when memo.RepoRoot = repoRoot && obj.ReferenceEquals(memo.Options, options) -> memo.Walk
+    | _ ->
+        // FCS can throw from a symbol property on partially-checked code. A shape that
+        // cannot be described leaves no key, so the caller runs rather than replays.
+        let walk =
+            try
+                let shapes, files = usedShapesAndFiles repoRoot options results
+                Some(CheckCache.sha256Hex shapes, files)
+            with ex ->
+                Logging.debug "cache" $"used-signatures unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
+                None
+
+        usedSignaturesMemo.AddOrUpdate(
+            results,
+            { RepoRoot = repoRoot
+              Options = options
+              Walk = walk }
+        )
+
+        walk
+
 let usedSignaturesHash
     (repoRoot: string option)
     (options: FSharpProjectOptions)
@@ -331,24 +377,20 @@ let usedSignaturesHash
     | ParseOnly _ -> Some "parse-only"
     // What the filed check answered (ADR-059 §17).
     | Replayed outputs -> outputs.UsedSignatures
-    | FullCheck(_, results) ->
-        match usedSignaturesMemo.TryGetValue results with
-        | true, memo when memo.RepoRoot = repoRoot && obj.ReferenceEquals(memo.Options, options) -> memo.Hash
-        | _ ->
-            // FCS can throw from a symbol property on partially-checked code. A shape that
-            // cannot be described leaves no key, so the caller runs rather than replays.
-            let hash =
-                try
-                    Some(usedShapes repoRoot options results |> CheckCache.sha256Hex)
-                with ex ->
-                    Logging.debug "cache" $"used-signatures unavailable (%s{ex.GetType().Name}): %s{ex.Message}"
-                    None
+    | FullCheck(_, results) -> usedWalk repoRoot options results |> Option.map fst
 
-            usedSignaturesMemo.AddOrUpdate(
-                results,
-                { RepoRoot = repoRoot
-                  Options = options
-                  Hash = hash }
-            )
-
-            hash
+/// The files declaring what a live check resolved from this repository
+/// (`usedShapesAndFiles`), as FCS names them: the dependency set of AUTOMATION-1816's
+/// references key. From the same remembered walk as `usedSignaturesHash`, so a check whose
+/// analyzers or check record already hashed its shapes pays nothing more. None for a check
+/// that is not live (parse-only, replayed: no symbol uses) or whose shapes could not be
+/// described.
+let internal usedDeclarationFiles
+    (repoRoot: string option)
+    (options: FSharpProjectOptions)
+    (checkResults: FileCheckState)
+    : string list option =
+    match checkResults with
+    | ParseOnly _
+    | Replayed _ -> None
+    | FullCheck(_, results) -> usedWalk repoRoot options results |> Option.map snd
