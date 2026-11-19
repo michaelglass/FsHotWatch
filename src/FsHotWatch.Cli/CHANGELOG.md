@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.155 - 2026-11-19
+
 - feature: `.fshw.json` key `checker.maxConcurrentChecks` bounds how many files the daemon type-checks at once
   (AUTOMATION-1779). A positive whole number; `0`, a negative, a fraction, a string or `null` refuses the config with
   `checker.maxConcurrentChecks must be a positive whole number`. Absent, the bound is one check per processor, as

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.122 - 2026-11-19
+
 - feat!: a scan's `scan-metrics.jsonl` record says why its check-result cache missed (AUTOMATION-1816). A consumer's
   lands each logged ~2,500 misses and 0 hits against ~3,000 stored entries, and the record carried only the count, so
   a series of all-miss scans could not tell a wrongly keyed cache from project outputs that keep moving. With the
