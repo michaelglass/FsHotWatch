@@ -63,6 +63,9 @@ and InMemoryCacheSettings =
         Include: string list
         /// Globs over repo-relative project paths never cached; wins over `Include`.
         Exclude: string list
+        /// `referencesKey`: `"off"` (the default) or `"shadow"`, AUTOMATION-1816's references
+        /// key verified against every cold check and never served.
+        ReferencesKey: FsHotWatch.InMemoryCheckCache.ReferencesKey
     }
 
 /// `"cache": "memory"` / `true`: every file, every checkout, every project.
@@ -70,7 +73,8 @@ let defaultInMemoryCache =
     { MaxEntries = CacheSize.All
       Scope = CacheScope.AllCheckouts
       Include = []
-      Exclude = [] }
+      Exclude = []
+      ReferencesKey = FsHotWatch.InMemoryCheckCache.ReferencesKey.Off }
 
 /// What `resolveWorktree` read this checkout as, for a startup line.
 let private describeCheckout
@@ -149,7 +153,8 @@ let private inMemorySetup
     FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
         cache,
         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
-        Some scope
+        Some scope,
+        settings.ReferencesKey
     )
 
 /// The check-result cache `config` runs in `repoRoot`. Logs nothing: the daemon states
@@ -1340,11 +1345,23 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | other -> refuse $"scope '%s{other}' is not \"all\" or \"default-workspace\""
                 | true, _ -> refuse "scope must be \"all\" or \"default-workspace\""
 
+            let referencesKey =
+                match v.TryGetProperty "referencesKey" with
+                | false, _ -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
+                | true, k when k.ValueKind = JsonValueKind.String ->
+                    match k.GetString() with
+                    | "off" -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
+                    | "shadow" -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow
+                    // Serving from it is not built: nothing else may start a daemon.
+                    | other -> refuse $"referencesKey '%s{other}' is not \"off\" or \"shadow\""
+                | true, _ -> refuse "referencesKey must be \"off\" or \"shadow\""
+
             InMemory
                 { MaxEntries = maxEntries
                   Scope = scope
                   Include = globs v "include"
-                  Exclude = globs v "exclude" }
+                  Exclude = globs v "exclude"
+                  ReferencesKey = referencesKey }
         | true, v when v.ValueKind = JsonValueKind.String ->
             match v.GetString().ToLowerInvariant() with
             | "memory" -> InMemory defaultInMemoryCache

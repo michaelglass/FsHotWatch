@@ -4649,7 +4649,8 @@ let ``a change batch cascades past a saved file whose new signature a scan recor
                     fun _ -> true
                 ),
                 None,
-                None
+                None,
+                FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
             )
 
         // One check at a time, so the scan reaches Early.fs only after First.fs's answer.
@@ -5850,24 +5851,45 @@ let ``a scan's measurement record says whether the daemon ran a check-result cac
           OutputsMoved = 0L
           TopMovedOutputs = [] }
 
-    let running =
+    let runningWith referencesKey =
         FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
             FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(
                 FsHotWatch.InMemoryCheckCache.CacheCapacity.WorkingSet,
                 fun _ -> true
             ),
             None,
-            None
+            None,
+            referencesKey
         )
+
+    let noAlternatives: FsHotWatch.CheckCacheTally.NoEntryAlternatives =
+        { SignatureUnchanged = 0L
+          ReferencesUnchanged = 0L
+          Unknown = 0L }
+
+    // With the references key in shadow, the daemon records what it verified (AUTOMATION-1816
+    // step 2): nothing here, so every count at 0.
+    let idleShadow: FsHotWatch.CheckCacheTally.ReferencesShadowScan =
+        { Agreed = 0L
+          Disagreements = []
+          Unverified =
+            { NoCachedVerdict = 0L
+              NoColdVerdict = 0L }
+          HeldBytesPeak = 0L }
 
     let cases =
         [ FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off, FsHotWatch.ScanMetrics.CheckCacheRecord.Off
-          running,
+          runningWith FsHotWatch.InMemoryCheckCache.ReferencesKey.Off,
           FsHotWatch.ScanMetrics.CheckCacheRecord.On(
               idleCache,
-              { SignatureUnchanged = 0L
-                ReferencesUnchanged = 0L
-                Unknown = 0L }
+              noAlternatives,
+              FsHotWatch.ScanMetrics.ReferencesShadowRecord.NotRun
+          )
+          runningWith FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow,
+          FsHotWatch.ScanMetrics.CheckCacheRecord.On(
+              idleCache,
+              noAlternatives,
+              FsHotWatch.ScanMetrics.ReferencesShadowRecord.Ran idleShadow
           ) ]
 
     for setup, expected in cases do

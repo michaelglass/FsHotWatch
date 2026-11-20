@@ -169,6 +169,20 @@ FSHW_CHECK_CACHE=on in this daemon's environment overrides cache.scope
 `.fshw/scan-metrics.jsonl` carries `checkCache: "on" | "off"`, so `cacheHits: 0,
 cacheMisses: 0` can be read as "no cache" or "nothing looked up".
 
+### The references key in shadow: `cache.referencesKey`
+
+`"cache": { …, "referencesKey": "shadow" }` runs a second check-result key beside the
+first, in shadow only (AUTOMATION-1816). The references key names a file by its bytes,
+options and toolchain and only the files its last stored check resolved symbols in, so an
+edit to an early file that a later file never references would not re-check it. In
+shadow it never serves: every file is checked cold as before. For each miss it would have
+served, the scan's `scan-metrics.jsonl` record says, under `referencesShadow`, whether the
+verdict it would have served (recorded with the stored entry in
+`.fshw/cache/alternative-keys/`) agrees with the cold check's, and names the file and
+checks of every disagreement. Its memory is the cold verdicts it holds from each check to
+the next settle, 736 bytes a file, reported as `heldBytesPeak`. `"off"` is the default;
+any other value fails the load.
+
 ## Pressure-shortened idle exit
 
 [Idle exit](#idle-exit) reclaims memory from daemons that have gone *quiet*, but

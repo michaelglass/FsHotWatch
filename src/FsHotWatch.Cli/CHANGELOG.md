@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feature: `.fshw.json` key `cache.referencesKey`: `"off"` (the default) or `"shadow"`, which runs AUTOMATION-1816's references key in shadow (verified against every cold check, recorded in `scan-metrics.jsonl` as `referencesShadow`, never served). Any other value fails the load: serving from it is not built. With the key on, the startup `check-result cache:` line says `references key: shadow`.
+
 ## 0.14.0-alpha.156 - 2026-11-20
 
 - chore: rebuild to bundle updated dependencies

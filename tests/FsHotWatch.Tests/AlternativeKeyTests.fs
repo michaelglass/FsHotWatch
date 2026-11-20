@@ -216,11 +216,11 @@ let ``the file store keeps alternative upstreams across daemons, and reads a dam
               References = [ "${repo}/src/A.fs"; "${repo}/src/B.fs" ]
               ReferencesFingerprint = "refs" }
 
-        (FileAlternativeKeyStore(dir) :> IAlternativeKeyStore).Write "k1" recorded
+        (FileAlternativeKeyStore(dir) :> IAlternativeKeyStore).Write "k1" (AlternativeRecord.Upstreams recorded)
 
         // A later daemon's store over the same directory.
         let later = FileAlternativeKeyStore(dir) :> IAlternativeKeyStore
-        test <@ later.TryRead "k1" = Some recorded @>
+        test <@ later.TryRead "k1" = Some(AlternativeRecord.Upstreams recorded) @>
         test <@ later.TryRead "k2" = None @>
 
         for file in Directory.GetFiles dir do
@@ -235,10 +235,16 @@ let ``a record that is not exactly this schema reads as none`` () =
           References = [ "${repo}/src/A.fs" ]
           ReferencesFingerprint = "refs" }
 
-    test <@ tryOfJson (toJson recorded) = Some recorded @>
+    test <@ tryOfJson (toJson (AlternativeRecord.Upstreams recorded)) = Some(AlternativeRecord.Upstreams recorded) @>
 
     let noReferences = { recorded with References = [] }
-    test <@ tryOfJson (toJson noReferences) = Some noReferences @>
+
+    test
+        <@
+            tryOfJson (toJson (AlternativeRecord.Upstreams noReferences)) = Some(
+                AlternativeRecord.Upstreams noReferences
+            )
+        @>
 
     for text in
         [ "{ not json"
@@ -260,14 +266,14 @@ let ``the file store drops a record it cannot write, and leaves nothing half-wri
         let blocked = Path.Combine(tmpDir, "blocked")
         File.WriteAllText(blocked, "")
         let store = FileAlternativeKeyStore(blocked) :> IAlternativeKeyStore
-        store.Write "k" recorded
+        store.Write "k" (AlternativeRecord.Upstreams recorded)
         test <@ store.TryRead "k" = None @>
 
         // The record's own path is a directory: the rename fails after the write.
         let dir = Path.Combine(tmpDir, "alternative-keys")
         Directory.CreateDirectory(Path.Combine(dir, "k.json")) |> ignore
         let occupied = FileAlternativeKeyStore(dir) :> IAlternativeKeyStore
-        occupied.Write "k" recorded
+        occupied.Write "k" (AlternativeRecord.Upstreams recorded)
         test <@ occupied.TryRead "k" = None @>
         test <@ Directory.GetFiles dir |> Array.isEmpty @>)
 

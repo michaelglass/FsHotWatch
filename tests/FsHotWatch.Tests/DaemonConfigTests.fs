@@ -983,7 +983,7 @@ let ``createCacheComponents builds a cache in the default workspace under defaul
                     { defaultInMemoryCache with
                         Scope = CacheScope.DefaultWorkspaceOnly })
         with
-        | CheckCacheSetup.On(_, _, Some scope) -> test <@ scope.Contains "jj default workspace" @>
+        | CheckCacheSetup.On(_, _, Some scope, _) -> test <@ scope.Contains "jj default workspace" @>
         | other -> failwith $"expected a running cache, got %A{other}")
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
@@ -997,12 +997,57 @@ let ``createCacheComponents passes maxEntries and the project filter to the cach
                         MaxEntries = CacheSize.Entries 42
                         Exclude = [ "src/Libs/" ] })
         with
-        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache), _, _) ->
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache), _, _, _) ->
             test <@ cache.Capacity = 42 @>
             let scoped = cache :> FsHotWatch.CheckCache.IScopedCheckCache
             test <@ not (scoped.Admits(Path.Combine(tmpDir, "src", "Libs", "L", "L.fsproj"))) @>
             test <@ scoped.Admits(Path.Combine(tmpDir, "src", "App", "App.fsproj")) @>
         | other -> failwith $"expected an InMemoryCheckCache, got %A{other}")
+
+// --- cache.referencesKey: AUTOMATION-1816's references key, in shadow only ---
+
+[<Fact(Timeout = 15000)>]
+let ``the references key is off unless cache.referencesKey says shadow`` () =
+    test <@ defaultInMemoryCache.ReferencesKey = ReferencesKey.Off @>
+
+    let parsed json =
+        match (parseConfig json defaults).Cache with
+        | InMemory settings -> Some settings.ReferencesKey
+        | NoCache -> None
+
+    test <@ parsed """{"cache": "memory"}""" = Some ReferencesKey.Off @>
+    test <@ parsed """{"cache": {"maxEntries": "all"}}""" = Some ReferencesKey.Off @>
+    test <@ parsed """{"cache": {"referencesKey": "off"}}""" = Some ReferencesKey.Off @>
+    test <@ parsed """{"cache": {"referencesKey": "shadow"}}""" = Some ReferencesKey.Shadow @>
+
+[<Theory>]
+[<InlineData("""{"cache": {"referencesKey": "on"}}""")>]
+[<InlineData("""{"cache": {"referencesKey": "serve"}}""")>]
+[<InlineData("""{"cache": {"referencesKey": true}}""")>]
+let ``cache.referencesKey refuses anything but off and shadow`` (json: string) =
+    // Serving from the references key is not built: a value that reads as "serve" must
+    // not start a daemon that silently only shadows, or one that silently does nothing.
+    Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+    |> ignore
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``createCacheComponents carries the references key to the running cache, and its startup line says shadow`` () =
+    withTempDir "cfg-cc-references" (fun tmpDir ->
+        let setup =
+            createCacheComponents
+                tmpDir
+                (InMemory
+                    { defaultInMemoryCache with
+                        ReferencesKey = ReferencesKey.Shadow })
+
+        match setup with
+        | CheckCacheSetup.On(_, _, _, referencesKey) -> test <@ referencesKey = ReferencesKey.Shadow @>
+        | other -> failwith $"expected a running cache, got %A{other}"
+
+        test <@ (describeCheckCache setup).Contains "references key: shadow" @>
+
+        let off = createCacheComponents tmpDir (InMemory defaultInMemoryCache)
+        test <@ not ((describeCheckCache off).Contains "references key") @>)
 
 // --- FSHW_CHECK_CACHE: one daemon's check-result cache, outside the shared config ---
 
@@ -1043,7 +1088,7 @@ let ``FSHW_CHECK_CACHE=on runs the cache in a secondary workspace the scope leav
             createCacheComponentsWith CheckCacheOverride.ForcedOn tmpDir defaultWorkspaceScope
 
         match setup with
-        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache), _, Some _) ->
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache), _, Some _, _) ->
             let line = describeCheckCache setup
 
             test
@@ -1070,7 +1115,7 @@ let ``FSHW_CHECK_CACHE=on keeps the configured size and project filter`` () =
                         MaxEntries = CacheSize.Entries 42
                         Exclude = [ "src/Libs/" ] })
         with
-        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache), _, _) ->
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache as cache), _, _, _) ->
             test <@ cache.Capacity = 42 @>
             let scoped = cache :> FsHotWatch.CheckCache.IScopedCheckCache
             test <@ not (scoped.Admits(Path.Combine(tmpDir, "src", "Libs", "L", "L.fsproj"))) @>
@@ -1082,7 +1127,7 @@ let ``FSHW_CHECK_CACHE=on with no cache configured runs the default in-memory ca
         let setup = createCacheComponentsWith CheckCacheOverride.ForcedOn tmpDir NoCache
 
         match setup with
-        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache), _, Some _) ->
+        | CheckCacheSetup.On((:? FsHotWatch.InMemoryCheckCache.InMemoryCheckCache), _, Some _, _) ->
             let line = describeCheckCache setup
             test <@ line.Contains "FSHW_CHECK_CACHE=on" && line.Contains "no cache" @>
         | other -> failwith $"expected a running in-memory cache, got %A{other}")
@@ -1846,7 +1891,7 @@ let ``createCacheComponents NoCache runs no cache`` () =
 let ``createCacheComponents InMemory runs a cache with a key provider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
         match createCacheComponents tmpDir (InMemory defaultInMemoryCache) with
-        | CheckCacheSetup.On(_, keyProvider, _) -> test <@ keyProvider.IsSome @>
+        | CheckCacheSetup.On(_, keyProvider, _, _) -> test <@ keyProvider.IsSome @>
         | other -> failwith $"expected a running cache, got %A{other}")
 
 // --- defaultConfigFor ---

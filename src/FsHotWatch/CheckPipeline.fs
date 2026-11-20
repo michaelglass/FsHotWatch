@@ -303,6 +303,26 @@ type internal StoredForAlternatives =
         References: string list
     }
 
+/// How AUTOMATION-1816's alternative keys run in a pipeline, and the state each needs.
+[<NoComparison; NoEquality>]
+type internal AlternativeMeasurement =
+    /// Step 1, the references key off: each stored entry's upstreams are recorded in the
+    /// store, and each `NoEntry` miss is classified against them.
+    | Measure of store: AlternativeKeys.IAlternativeKeyStore
+    /// Step 2, the references key in shadow: as `Measure`, and each stored entry's record
+    /// carries its verdict, held in `coldVerdicts` (by slot, with the content hash it was
+    /// checked at) from the check until the next settle records it and verifies every miss
+    /// the references key would have served against it.
+    | Shadow of
+        store: AlternativeKeys.IAlternativeKeyStore *
+        coldVerdicts: ConcurrentDictionary<struct (string * string), struct (string * AlternativeKeys.CheckVerdict)>
+
+module internal AlternativeMeasurement =
+    let store (measurement: AlternativeMeasurement) =
+        match measurement with
+        | Measure store
+        | Shadow(store, _) -> store
+
 /// A walk of the check records for one project, read for replays.
 [<NoComparison; NoEquality>]
 type internal ReplayWalk =
@@ -597,10 +617,11 @@ type CheckPipeline
     /// Every lookup and store this pipeline's cache has made, by outcome.
     let cacheTally = CacheTallyCounter()
 
-    /// Where AUTOMATION-1816's alternative upstreams are recorded and read
-    /// (`MeasureAlternativeKeys`). Measurement only: nothing is keyed or served by them.
-    /// Without a store every `NoEntry` miss is compared with nothing: unknown.
-    let mutable alternativeKeys: AlternativeKeys.IAlternativeKeyStore option = None
+    /// Where AUTOMATION-1816's alternative upstreams are recorded and read, and whether the
+    /// references key shadows (`MeasureAlternativeKeys`, `ShadowReferencesKey`). Nothing is
+    /// keyed or served by them. Without one every `NoEntry` miss is compared with nothing:
+    /// unknown.
+    let mutable alternativeKeys: AlternativeMeasurement option = None
 
     /// The `NoEntry` misses since the last settle, to compare under the alternative keys:
     /// (file, options, the content hash the lookup read).
@@ -622,25 +643,44 @@ type CheckPipeline
             (upstreamFingerprints.KeyedOptions(path, options, optionsHashOf options))
             toolchainIdentity
 
+    /// The verdict of the cold check of `slot` at `contentHash`, held for the shadow.
+    let coldVerdictOf
+        (coldVerdicts: ConcurrentDictionary<struct (string * string), struct (string * AlternativeKeys.CheckVerdict)>)
+        (slot: struct (string * string))
+        (contentHash: string)
+        =
+        match coldVerdicts.TryGetValue slot with
+        | true, struct (checkedAt, verdict) when checkedAt = contentHash -> Some verdict
+        | _ -> None
+
     /// Compare each `NoEntry` miss since the last settle with the record for its inputs, then
     /// record the entries stored since. Called by `SettleApiIndex` in a fresh generation, once
     /// the cohort's signatures are recorded: a lookup's own generation can name an earlier
     /// file by content only because its check had not finished yet. The comparisons run
     /// first, so a miss is compared with the record from before its own entry was stored.
+    ///
+    /// With the references key in shadow, a miss it would have served is verified too: the
+    /// verdict its record holds against the cold check's (`AlternativeKeys.verify`). Then
+    /// each record carries its entry's verdict, and the verdicts held since the last settle
+    /// are accounted for and dropped.
     let measureAlternatives () =
         let started = Diagnostics.Stopwatch.GetTimestamp()
 
         let rec compare (compared: int) =
             match noEntryMisses.TryDequeue() with
             | true, struct (path, options, contentHash) ->
-                let outcome =
-                    match alternativeKeys with
-                    // The file moved since the lookup: what it missed on is gone.
-                    | Some store when hashFile path = contentHash ->
-                        let optionsHash = optionsHashOf options
+                match alternativeKeys with
+                // The file moved since the lookup: what it missed on is gone.
+                | Some measurement when hashFile path = contentHash ->
+                    let optionsHash = optionsHashOf options
 
+                    let recorded =
+                        (AlternativeMeasurement.store measurement)
+                            .TryRead(alternativeRecordKey path options contentHash)
+
+                    let outcome =
                         AlternativeKeys.classify
-                            (store.TryRead(alternativeRecordKey path options contentHash))
+                            (recorded |> Option.map AlternativeKeys.AlternativeRecord.upstreams)
                             (upstreamFingerprints.ForApi(path, options, optionsHash))
                             (fun references ->
                                 upstreamFingerprints.ReferencesFor(
@@ -649,9 +689,20 @@ type CheckPipeline
                                     optionsHash,
                                     references |> List.map outputPath
                                 ))
-                    | _ -> NoEntryAlternative.Unknown
 
-                cacheTally.ComparedAlternative outcome
+                    cacheTally.ComparedAlternative outcome
+
+                    match measurement, recorded with
+                    | Shadow(_, coldVerdicts), Some recorded when AlternativeKeys.referencesKeyServes outcome ->
+                        cacheTally.Shadowed(
+                            AlternativeKeys.verify
+                                (outputName path)
+                                recorded
+                                (coldVerdictOf coldVerdicts (struct (path, options.ProjectFileName)) contentHash)
+                        )
+                    | _ -> ()
+                | _ -> cacheTally.ComparedAlternative NoEntryAlternative.Unknown
+
                 compare (compared + 1)
             | _ -> compared
 
@@ -663,15 +714,26 @@ type CheckPipeline
             let struct (path, _) = slot
 
             match alternativeKeys, makeCacheKeyFast (AbsFilePath.create path) stored.Options with
-            | Some store, Some content when content = stored.ContentKey ->
+            | Some measurement, Some content when content = stored.ContentKey ->
                 let optionsHash = optionsHashOf stored.Options
 
-                store.Write
-                    (alternativeRecordKey path stored.Options stored.ContentHash)
+                let upstreams: AlternativeKeys.AlternativeUpstreams =
                     { Signature = upstreamFingerprints.ForApi(path, stored.Options, optionsHash)
                       References = stored.References |> List.map outputName
                       ReferencesFingerprint =
                         upstreamFingerprints.ReferencesFor(path, stored.Options, optionsHash, stored.References) }
+
+                let record =
+                    match measurement with
+                    | Measure _ -> AlternativeKeys.AlternativeRecord.Upstreams upstreams
+                    | Shadow(_, coldVerdicts) ->
+                        match coldVerdictOf coldVerdicts slot stored.ContentHash with
+                        | Some verdict -> AlternativeKeys.AlternativeRecord.WithVerdict(upstreams, verdict)
+                        | None -> AlternativeKeys.AlternativeRecord.Upstreams upstreams
+
+                (AlternativeMeasurement.store measurement).Write
+                    (alternativeRecordKey path stored.Options stored.ContentHash)
+                    record
 
                 1
             // The entry no longer describes the disk: what it was typed against is unknown.
@@ -679,12 +741,29 @@ type CheckPipeline
 
         let recorded = List.ofSeq storedForAlternatives |> List.sumBy record
 
+        // Everything the shadow held since the last settle, then dropped: its whole addition
+        // to the daemon's memory between settles.
+        let held =
+            match alternativeKeys with
+            | Some(Shadow(_, coldVerdicts)) ->
+                let held =
+                    List.ofSeq coldVerdicts
+                    |> List.sumBy (fun entry ->
+                        coldVerdicts.TryRemove entry.Key |> ignore
+                        let struct (_, verdict) = entry.Value
+                        AlternativeKeys.CheckVerdict.heldBytes verdict)
+
+                cacheTally.ShadowHeld held
+                $", shadow held %d{held} byte(s)"
+            | Some(Measure _)
+            | None -> ""
+
         if compared + recorded > 0 then
             let elapsed = Diagnostics.Stopwatch.GetElapsedTime started
 
             Logging.info
                 "cache"
-                $"alternative keys (measurement): compared %d{compared} no-entry miss(es), recorded %d{recorded} entr(y/ies) in %d{int64 elapsed.TotalMilliseconds}ms"
+                $"alternative keys (measurement): compared %d{compared} no-entry miss(es), recorded %d{recorded} entr(y/ies)%s{held} in %d{int64 elapsed.TotalMilliseconds}ms"
 
     /// Report the registered working set to a scoped backend.
     let ensureCacheCoversWorkingSet () =
@@ -1134,7 +1213,21 @@ type CheckPipeline
     /// `NoEntry` miss with them, when the pipeline settles (AUTOMATION-1816, measurement
     /// only). Set once, before the first check.
     member internal _.MeasureAlternativeKeys(store: AlternativeKeys.IAlternativeKeyStore) =
-        alternativeKeys <- Some store
+        alternativeKeys <- Some(Measure store)
+
+    /// As `MeasureAlternativeKeys`, with the references key in shadow (AUTOMATION-1816 step
+    /// 2): each record carries its entry's verdict, and each miss the references key would
+    /// have served is verified against the cold check that answered it. Never serves. Set
+    /// once, before the first check.
+    member internal _.ShadowReferencesKey(store: AlternativeKeys.IAlternativeKeyStore) =
+        alternativeKeys <- Some(Shadow(store, ConcurrentDictionary()))
+
+    /// Whether the references key runs in shadow here.
+    member internal _.ReferencesKey: FsHotWatch.InMemoryCheckCache.ReferencesKey =
+        match alternativeKeys with
+        | Some(Shadow _) -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow
+        | Some(Measure _)
+        | None -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
 
     /// What `file` declared in `projectFile` before the bytes on disk now: see
     /// `CheckCache.PriorDeclaration`.
@@ -2011,7 +2104,8 @@ type CheckPipeline
 
                                 // Only with a store to record in: the walk is free when the
                                 // check record or a plugin already took it, not otherwise.
-                                if alternativeKeys.IsSome then
+                                match alternativeKeys with
+                                | Some measurement ->
                                     CacheInputs.usedDeclarationFiles repoRoot r.ProjectOptions r.CheckResults
                                     |> Option.iter (fun references ->
                                         storedForAlternatives[slot] <-
@@ -2019,6 +2113,19 @@ type CheckPipeline
                                               ContentHash = contentHash
                                               ContentKey = key
                                               References = references |> List.map (FileCheckResult.textToReal r) })
+
+                                    // The cold verdict, for the next settle to verify a
+                                    // would-be-served miss of this check against and to
+                                    // record with its entry.
+                                    match measurement with
+                                    | Shadow(_, coldVerdicts) ->
+                                        CheckRecords.CheckOutputs.ofResult repoRoot r
+                                        |> Option.iter (fun outputs ->
+                                            coldVerdicts[slot] <-
+                                                struct (contentHash,
+                                                        AlternativeKeys.CheckVerdict.ofOutputs repoRoot outputs))
+                                    | Measure _ -> ()
+                                | None -> ()
                             | _ -> ()
                         | FullCheck _ ->
                             if cacheBackend.IsSome then

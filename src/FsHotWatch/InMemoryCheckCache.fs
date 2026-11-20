@@ -174,6 +174,20 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                 lruNodes.Clear()
                 slots.Clear())
 
+/// `cache.referencesKey` (AUTOMATION-1816 step 2): whether the REFERENCES key runs beside the
+/// check-result key. The references key names a file by its bytes, options and toolchain and
+/// only the files its last stored check resolved symbols in (`AlternativeKeys`). Serving from it
+/// is not built: it runs in shadow or not at all.
+[<RequireQualifiedAccess>]
+type ReferencesKey =
+    /// Not run. Step 1's measurement (`AlternativeKeys`) still records each stored entry's
+    /// upstreams, and nothing else.
+    | Off
+    /// Run in shadow: never serves. For each no-entry miss it would have served, the file
+    /// is checked cold as always, and the verdict the key would have served is compared with
+    /// the cold one (`scan-metrics.jsonl`'s `referencesShadow`).
+    | Shadow
+
 /// The daemon's check-result cache, with what its one startup line says about it.
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
 type CheckCacheSetup =
@@ -182,14 +196,19 @@ type CheckCacheSetup =
     /// A cache is configured but its scope leaves this checkout out; `scope` names the
     /// scope and the checkout it was read from.
     | OffInThisCheckout of scope: string
-    /// A running cache; `scope`, when the config set one, says why it runs here.
-    | On of backend: ICheckCacheBackend * keyProvider: ICacheKeyProvider option * scope: string option
+    /// A running cache; `scope`, when the config set one, says why it runs here;
+    /// `referencesKey` whether AUTOMATION-1816's references key shadows it.
+    | On of
+        backend: ICheckCacheBackend *
+        keyProvider: ICacheKeyProvider option *
+        scope: string option *
+        referencesKey: ReferencesKey
 
 module CheckCacheSetup =
     /// The backend and key provider the daemon runs with: both `None` unless the cache is `On`.
     let components (setup: CheckCacheSetup) : ICheckCacheBackend option * ICacheKeyProvider option =
         match setup with
-        | CheckCacheSetup.On(backend, keyProvider, _) -> Some backend, keyProvider
+        | CheckCacheSetup.On(backend, keyProvider, _, _) -> Some backend, keyProvider
         | CheckCacheSetup.Off
         | CheckCacheSetup.OffInThisCheckout _ -> None, None
 
@@ -200,7 +219,7 @@ let describeCheckCache (setup: CheckCacheSetup) : string =
     | CheckCacheSetup.Off ->
         "check-result cache: OFF — every scan re-asks FCS for every file (\"cache\": \"memory\" in .fshw.json enables it)"
     | CheckCacheSetup.OffInThisCheckout scope -> $"check-result cache: OFF in this checkout — %s{scope}"
-    | CheckCacheSetup.On(backend, _, scope) ->
+    | CheckCacheSetup.On(backend, _, scope, referencesKey) ->
         let state =
             match backend with
             | :? InMemoryCheckCache as cache ->
@@ -209,6 +228,11 @@ let describeCheckCache (setup: CheckCacheSetup) : string =
                 | CacheCapacity.Entries n -> $"in-memory, at most %d{n} entries"
             | other -> other.GetType().Name
 
+        let shadow =
+            match referencesKey with
+            | ReferencesKey.Off -> ""
+            | ReferencesKey.Shadow -> "; references key: shadow (verified against every cold check, never served)"
+
         match scope with
-        | Some scope -> $"check-result cache: %s{state} — %s{scope}"
-        | None -> $"check-result cache: %s{state}"
+        | Some scope -> $"check-result cache: %s{state}%s{shadow} — %s{scope}"
+        | None -> $"check-result cache: %s{state}%s{shadow}"

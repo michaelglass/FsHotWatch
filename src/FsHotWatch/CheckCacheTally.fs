@@ -71,6 +71,166 @@ module NoEntryAlternative =
         | NoEntryAlternative.OnlyReferencesUnchanged -> "only references unchanged"
         | NoEntryAlternative.NeitherUnchanged -> "neither unchanged"
 
+/// One part of a check's verdict, as the consumers of a served check read it
+/// (AUTOMATION-1816 step 2). The references key in shadow compares each part of the verdict
+/// it would have served with the cold check's.
+[<RequireQualifiedAccess>]
+type VerdictFacet =
+    /// The file's own diagnostics: the compiler's verdict on it.
+    | Diagnostics
+    /// `CheckCache.fcsCheckSignature`: what every plugin keys a file's result by, with the
+    /// file's source and `UsedSignatures`.
+    | FcsSignature
+    /// `CacheInputs.usedSignaturesHash`: the shape of everything the check resolved outside
+    /// the file, which every plugin keys a file's result by.
+    | UsedSignatures
+    /// `ApiSignature.ofResult`: what the file declares, which later files are keyed and
+    /// typed against.
+    | ApiSignature
+
+/// A check whose answer a served verdict would decide.
+[<RequireQualifiedAccess>]
+type VerdictCheck =
+    | Compiler
+    | Analyzers
+    | Lint
+    | TestPrune
+
+module VerdictCheck =
+    let label (check: VerdictCheck) : string =
+        match check with
+        | VerdictCheck.Compiler -> "compiler"
+        | VerdictCheck.Analyzers -> "analyzers"
+        | VerdictCheck.Lint -> "lint"
+        | VerdictCheck.TestPrune -> "test-prune"
+
+module VerdictFacet =
+    /// Every facet, in the order a verdict compares them.
+    let all =
+        [ VerdictFacet.Diagnostics
+          VerdictFacet.FcsSignature
+          VerdictFacet.UsedSignatures
+          VerdictFacet.ApiSignature ]
+
+    /// The facet as `scan-metrics.jsonl` names it.
+    let label (facet: VerdictFacet) : string =
+        match facet with
+        | VerdictFacet.Diagnostics -> "diagnostics"
+        | VerdictFacet.FcsSignature -> "fcsSignature"
+        | VerdictFacet.UsedSignatures -> "usedSignatures"
+        | VerdictFacet.ApiSignature -> "apiSignature"
+
+    let private facetLabel = label
+
+    let tryParse (label: string) : VerdictFacet option =
+        all |> List.tryFind (fun facet -> facetLabel facet = label)
+
+    /// The checks whose answer a served verdict decides through this facet. The analyzers,
+    /// lint and TestPrune key each file's result by its source, `FcsSignature` and
+    /// `UsedSignatures` (`AnalyzersPlugin`, `LintPlugin`, `IndexedAnalysis.identity`): a
+    /// served check that differs in either hands each of them other inputs than a cold one.
+    let checks (facet: VerdictFacet) : VerdictCheck list =
+        match facet with
+        | VerdictFacet.Diagnostics
+        | VerdictFacet.ApiSignature -> [ VerdictCheck.Compiler ]
+        | VerdictFacet.FcsSignature
+        | VerdictFacet.UsedSignatures -> [ VerdictCheck.Analyzers; VerdictCheck.Lint; VerdictCheck.TestPrune ]
+
+/// A file whose verdict under the references key differs from a cold check's.
+type ShadowDisagreement =
+    {
+        /// The file, as the check-result cache names it (`${repo}/...` inside the repository).
+        File: string
+        /// The facets that differ, in `VerdictFacet.all` order; never empty.
+        Facets: VerdictFacet list
+    }
+
+module ShadowDisagreement =
+    /// Every check a disagreement decides, in `VerdictCheck` order.
+    let checks (disagreement: ShadowDisagreement) : VerdictCheck list =
+        disagreement.Facets
+        |> List.collect VerdictFacet.checks
+        |> List.distinct
+        |> List.sort
+
+/// Why a would-be-served verdict could not be compared.
+[<RequireQualifiedAccess>]
+type ShadowUnverifiedReason =
+    /// The record for its inputs holds no verdict: written with the references key off, or
+    /// by an fshw from before it.
+    | NoCachedVerdict
+    /// The cold check left no verdict to compare: not stored (its inputs moved during it,
+    /// or its answer was uncacheable), or the file moved before the comparison.
+    | NoColdVerdict
+
+/// What the references key in shadow found for one miss it would have served.
+[<RequireQualifiedAccess>]
+type ShadowOutcome =
+    | Agreed
+    | Disagreed of ShadowDisagreement
+    | Unverified of ShadowUnverifiedReason
+
+/// What the references key in shadow did, since the tally began. Disagreements and the
+/// bytes held at each settle are kept newest first with their counts, so `since` takes a
+/// scan's share of them.
+type ShadowTally =
+    {
+        Agreed: int64
+        NoCachedVerdict: int64
+        NoColdVerdict: int64
+        Disagreements: int64
+        /// Every disagreement, newest first.
+        DisagreementsNewestFirst: ShadowDisagreement list
+        Settles: int64
+        /// At each settle, the bytes the shadow held for its cold verdicts until then
+        /// (`CheckVerdict.heldBytes`), newest first.
+        HeldBytesNewestFirst: int64 list
+    }
+
+module ShadowTally =
+    let empty =
+        { Agreed = 0L
+          NoCachedVerdict = 0L
+          NoColdVerdict = 0L
+          Disagreements = 0L
+          DisagreementsNewestFirst = []
+          Settles = 0L
+          HeldBytesNewestFirst = [] }
+
+    let shadowed (outcome: ShadowOutcome) (tally: ShadowTally) : ShadowTally =
+        match outcome with
+        | ShadowOutcome.Agreed ->
+            { tally with
+                Agreed = tally.Agreed + 1L }
+        | ShadowOutcome.Disagreed disagreement ->
+            { tally with
+                Disagreements = tally.Disagreements + 1L
+                DisagreementsNewestFirst = disagreement :: tally.DisagreementsNewestFirst }
+        | ShadowOutcome.Unverified ShadowUnverifiedReason.NoCachedVerdict ->
+            { tally with
+                NoCachedVerdict = tally.NoCachedVerdict + 1L }
+        | ShadowOutcome.Unverified ShadowUnverifiedReason.NoColdVerdict ->
+            { tally with
+                NoColdVerdict = tally.NoColdVerdict + 1L }
+
+    let held (bytes: int64) (tally: ShadowTally) : ShadowTally =
+        { tally with
+            Settles = tally.Settles + 1L
+            HeldBytesNewestFirst = bytes :: tally.HeldBytesNewestFirst }
+
+    let since (earlier: ShadowTally) (later: ShadowTally) : ShadowTally =
+        let newest (count: int64) (items: 'a list) = List.truncate (int count) items
+        let disagreements = later.Disagreements - earlier.Disagreements
+        let settles = later.Settles - earlier.Settles
+
+        { Agreed = later.Agreed - earlier.Agreed
+          NoCachedVerdict = later.NoCachedVerdict - earlier.NoCachedVerdict
+          NoColdVerdict = later.NoColdVerdict - earlier.NoColdVerdict
+          Disagreements = disagreements
+          DisagreementsNewestFirst = newest disagreements later.DisagreementsNewestFirst
+          Settles = settles
+          HeldBytesNewestFirst = newest settles later.HeldBytesNewestFirst }
+
 /// What became of a finished check's answer.
 [<RequireQualifiedAccess>]
 type CacheStore =
@@ -105,6 +265,9 @@ type CacheTally =
         /// `NoEntry` misses per `NoEntryAlternative.label`, counted when the pipeline settles
         /// (`CheckPipeline.SettleApiIndex`), not at the lookup.
         NoEntryAlternatives: Map<string, int64>
+        /// What the references key in shadow found (AUTOMATION-1816 step 2), counted when the
+        /// pipeline settles. Empty with the references key off.
+        ReferencesShadow: ShadowTally
     }
 
 module CacheTally =
@@ -115,7 +278,8 @@ module CacheTally =
           MovedOutputs = Map.empty
           Stored = 0L
           NotStored = Map.empty
-          NoEntryAlternatives = Map.empty }
+          NoEntryAlternatives = Map.empty
+          ReferencesShadow = ShadowTally.empty }
 
     let private bump (key: string) (counts: Map<string, int64>) =
         counts |> Map.change key (fun n -> Some(defaultArg n 0L + 1L))
@@ -150,6 +314,14 @@ module CacheTally =
         { tally with
             NoEntryAlternatives = bump (NoEntryAlternative.label outcome) tally.NoEntryAlternatives }
 
+    let shadowed (outcome: ShadowOutcome) (tally: CacheTally) : CacheTally =
+        { tally with
+            ReferencesShadow = ShadowTally.shadowed outcome tally.ReferencesShadow }
+
+    let shadowHeld (bytes: int64) (tally: CacheTally) : CacheTally =
+        { tally with
+            ReferencesShadow = ShadowTally.held bytes tally.ReferencesShadow }
+
     let misses (tally: CacheTally) : int64 =
         tally.Misses |> Map.fold (fun sum _ n -> sum + n) 0L
 
@@ -169,7 +341,8 @@ module CacheTally =
           MovedOutputs = minus earlier.MovedOutputs later.MovedOutputs
           Stored = later.Stored - earlier.Stored
           NotStored = minus earlier.NotStored later.NotStored
-          NoEntryAlternatives = minus earlier.NoEntryAlternatives later.NoEntryAlternatives }
+          NoEntryAlternatives = minus earlier.NoEntryAlternatives later.NoEntryAlternatives
+          ReferencesShadow = ShadowTally.since earlier.ReferencesShadow later.ReferencesShadow }
 
 /// One output whose moved bytes made lookups miss, and how many.
 type MovedOutputMisses = { Output: string; Misses: int64 }
@@ -237,6 +410,51 @@ module NoEntryAlternatives =
           ReferencesUnchanged = signature + count NoEntryAlternative.OnlyReferencesUnchanged
           Unknown = count NoEntryAlternative.Unknown }
 
+/// Would-be-served misses whose verdicts could not be compared, per reason.
+type ShadowUnverified =
+    {
+        /// `ShadowUnverifiedReason.NoCachedVerdict`.
+        NoCachedVerdict: int64
+        /// `ShadowUnverifiedReason.NoColdVerdict`.
+        NoColdVerdict: int64
+    }
+
+/// What the references key in shadow found in one scan, as its `scan-metrics.jsonl` record
+/// carries it (AUTOMATION-1816 step 2). The misses it would have served are
+/// `Agreed + Disagreements + Unverified` (`ReferencesShadowScan.wouldServe`), which is the
+/// scan's `noEntryReferencesUnchanged`.
+type ReferencesShadowScan =
+    {
+        Agreed: int64
+        /// Every disagreement, in the order found.
+        Disagreements: ShadowDisagreement list
+        Unverified: ShadowUnverified
+        /// The most bytes the shadow held for cold verdicts at any settle in the scan: its
+        /// whole addition to the daemon's memory, by exact accounting (`CheckVerdict.heldBytes`).
+        HeldBytesPeak: int64
+    }
+
+module ReferencesShadowScan =
+    let ofTally (tally: CacheTally) : ReferencesShadowScan =
+        let shadow = tally.ReferencesShadow
+
+        { Agreed = shadow.Agreed
+          Disagreements = List.rev shadow.DisagreementsNewestFirst
+          Unverified =
+            { NoCachedVerdict = shadow.NoCachedVerdict
+              NoColdVerdict = shadow.NoColdVerdict }
+          HeldBytesPeak =
+            match shadow.HeldBytesNewestFirst with
+            | [] -> 0L
+            | held -> List.max held }
+
+    /// The misses the references key would have served.
+    let wouldServe (scan: ReferencesShadowScan) : int64 =
+        scan.Agreed
+        + int64 scan.Disagreements.Length
+        + scan.Unverified.NoCachedVerdict
+        + scan.Unverified.NoColdVerdict
+
 /// How many moved outputs the line names; the rest are counted.
 [<Literal>]
 let private NamedOutputs = 5
@@ -300,6 +518,12 @@ type CacheTallyCounter() =
 
     member _.ComparedAlternative(outcome: NoEntryAlternative) =
         Locking.locked lockObj (fun () -> tally <- CacheTally.comparedAlternative outcome tally)
+
+    member _.Shadowed(outcome: ShadowOutcome) =
+        Locking.locked lockObj (fun () -> tally <- CacheTally.shadowed outcome tally)
+
+    member _.ShadowHeld(bytes: int64) =
+        Locking.locked lockObj (fun () -> tally <- CacheTally.shadowHeld bytes tally)
 
     /// The counts so far.
     member _.Snapshot: CacheTally = Locking.locked lockObj (fun () -> tally)

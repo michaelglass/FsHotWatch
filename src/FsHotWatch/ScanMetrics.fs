@@ -17,6 +17,15 @@ module FsHotWatch.ScanMetrics
 open System
 open System.Text.Json
 
+/// Whether the references key ran in shadow in a scan, and what it found (AUTOMATION-1816
+/// step 2).
+[<RequireQualifiedAccess>]
+type ReferencesShadowRecord =
+    /// The references key was off, or the record was written before it existed
+    /// (`"referencesShadow": null` or absent).
+    | NotRun
+    | Ran of CheckCacheTally.ReferencesShadowScan
+
 /// Whether a scan's daemon ran a check-result cache, and why that cache's lookups missed.
 [<RequireQualifiedAccess>]
 type CheckCacheRecord =
@@ -30,21 +39,34 @@ type CheckCacheRecord =
     /// A cache ran, in a record with its misses per reason written before the
     /// alternative-key counts existed.
     | OnBeforeAlternatives of misses: CheckCacheTally.CacheMissReasons
-    /// A cache ran: its misses per reason, and what its `NoEntry` misses would have done
-    /// under the alternative keys (AUTOMATION-1816).
-    | On of misses: CheckCacheTally.CacheMissReasons * alternatives: CheckCacheTally.NoEntryAlternatives
+    /// A cache ran: its misses per reason, what its `NoEntry` misses would have done under
+    /// the alternative keys, and what the references key in shadow found (AUTOMATION-1816).
+    | On of
+        misses: CheckCacheTally.CacheMissReasons *
+        alternatives: CheckCacheTally.NoEntryAlternatives *
+        shadow: ReferencesShadowRecord
+
+/// The check-result cache a scan's daemon ran.
+[<RequireQualifiedAccess>]
+type ScanCache =
+    | Off
+    | On of referencesKey: InMemoryCheckCache.ReferencesKey
 
 module CheckCacheRecord =
     /// What a scan records about its cache: `scan` is the scan's share of the pipeline's
     /// tally (`CacheTally.since` the scan-start snapshot).
-    let ofScan (hasCheckCache: bool) (scan: CheckCacheTally.CacheTally) : CheckCacheRecord =
-        if hasCheckCache then
+    let ofScan (cache: ScanCache) (scan: CheckCacheTally.CacheTally) : CheckCacheRecord =
+        match cache with
+        | ScanCache.On referencesKey ->
             CheckCacheRecord.On(
                 CheckCacheTally.CacheMissReasons.ofTally scan,
-                CheckCacheTally.NoEntryAlternatives.ofTally scan
+                CheckCacheTally.NoEntryAlternatives.ofTally scan,
+                match referencesKey with
+                | InMemoryCheckCache.ReferencesKey.Off -> ReferencesShadowRecord.NotRun
+                | InMemoryCheckCache.ReferencesKey.Shadow ->
+                    ReferencesShadowRecord.Ran(CheckCacheTally.ReferencesShadowScan.ofTally scan)
             )
-        else
-            CheckCacheRecord.Off
+        | ScanCache.Off -> CheckCacheRecord.Off
 
 /// One completed scan generation's measurement. Field names are the JSON keys.
 type ScanSample =
@@ -95,7 +117,8 @@ type ScanSample =
         /// lookups missed (`cacheMissReasons`, `cacheTopMovedOutputs`) and what its
         /// `NoEntry` misses would have done under the alternative keys
         /// (`noEntrySignatureUnchanged`, `noEntryReferencesUnchanged`,
-        /// `noEntryAlternativeUnknown`).
+        /// `noEntryAlternativeUnknown`), and what the references key in shadow found
+        /// (`referencesShadow`).
         CheckCache: CheckCacheRecord
         /// Extra rounds `runDependentChecks` needed beyond the first pass,
         /// summed over projects (ADR-056). 0 on a clean scan; the retry amplification
@@ -203,7 +226,7 @@ let toJsonLine (sample: ScanSample) : string =
            // `obj` so a scan with no reasons writes null: a JSON boundary, not a domain value.
            cacheMissReasons =
             match sample.CheckCache with
-            | CheckCacheRecord.On(misses, _)
+            | CheckCacheRecord.On(misses, _, _)
             | CheckCacheRecord.OnBeforeAlternatives misses ->
                 box
                     {| noKey = misses.NoKey
@@ -215,7 +238,7 @@ let toJsonLine (sample: ScanSample) : string =
             | CheckCacheRecord.Unrecorded -> null
            cacheTopMovedOutputs =
             match sample.CheckCache with
-            | CheckCacheRecord.On(misses, _)
+            | CheckCacheRecord.On(misses, _, _)
             | CheckCacheRecord.OnBeforeAlternatives misses ->
                 misses.TopMovedOutputs
                 |> List.map (fun moved ->
@@ -229,25 +252,55 @@ let toJsonLine (sample: ScanSample) : string =
            // `Nullable` so a scan with no counts writes null: a JSON boundary, not a domain value.
            noEntrySignatureUnchanged =
             match sample.CheckCache with
-            | CheckCacheRecord.On(_, alternatives) -> Nullable alternatives.SignatureUnchanged
+            | CheckCacheRecord.On(_, alternatives, _) -> Nullable alternatives.SignatureUnchanged
             | CheckCacheRecord.OnBeforeAlternatives _
             | CheckCacheRecord.OnBeforeReasons
             | CheckCacheRecord.Off
             | CheckCacheRecord.Unrecorded -> Nullable()
            noEntryReferencesUnchanged =
             match sample.CheckCache with
-            | CheckCacheRecord.On(_, alternatives) -> Nullable alternatives.ReferencesUnchanged
+            | CheckCacheRecord.On(_, alternatives, _) -> Nullable alternatives.ReferencesUnchanged
             | CheckCacheRecord.OnBeforeAlternatives _
             | CheckCacheRecord.OnBeforeReasons
             | CheckCacheRecord.Off
             | CheckCacheRecord.Unrecorded -> Nullable()
            noEntryAlternativeUnknown =
             match sample.CheckCache with
-            | CheckCacheRecord.On(_, alternatives) -> Nullable alternatives.Unknown
+            | CheckCacheRecord.On(_, alternatives, _) -> Nullable alternatives.Unknown
             | CheckCacheRecord.OnBeforeAlternatives _
             | CheckCacheRecord.OnBeforeReasons
             | CheckCacheRecord.Off
             | CheckCacheRecord.Unrecorded -> Nullable()
+           // `obj` so a scan without the shadow writes null: a JSON boundary, not a domain value.
+           referencesShadow =
+            match sample.CheckCache with
+            | CheckCacheRecord.On(_, _, ReferencesShadowRecord.Ran shadow) ->
+                box
+                    {| wouldServe = CheckCacheTally.ReferencesShadowScan.wouldServe shadow
+                       agreed = shadow.Agreed
+                       disagreed = shadow.Disagreements.Length
+                       unverified =
+                        {| noCachedVerdict = shadow.Unverified.NoCachedVerdict
+                           noColdVerdict = shadow.Unverified.NoColdVerdict |}
+                       heldBytesPeak = shadow.HeldBytesPeak
+                       disagreements =
+                        shadow.Disagreements
+                        |> List.map (fun disagreement ->
+                            {| file = disagreement.File
+                               checks =
+                                CheckCacheTally.ShadowDisagreement.checks disagreement
+                                |> List.map CheckCacheTally.VerdictCheck.label
+                                |> Array.ofList
+                               facets =
+                                disagreement.Facets
+                                |> List.map CheckCacheTally.VerdictFacet.label
+                                |> Array.ofList |})
+                        |> Array.ofList |}
+            | CheckCacheRecord.On(_, _, ReferencesShadowRecord.NotRun)
+            | CheckCacheRecord.OnBeforeAlternatives _
+            | CheckCacheRecord.OnBeforeReasons
+            | CheckCacheRecord.Off
+            | CheckCacheRecord.Unrecorded -> null
            retryRounds = sample.RetryRounds
            rssBytes = sample.RssBytes
            managedBytes = sample.ManagedBytes
@@ -260,6 +313,35 @@ let toJsonLine (sample: ScanSample) : string =
            scope = DaemonHosting.ResourceScope.render sample.Scope
            sampledAt = sample.SampledAt.ToString("o") |}
     )
+
+/// A record's `referencesShadow` object. A malformed one throws, and `tryParseLine` reads
+/// the line as no sample: the record is all-or-nothing.
+let private readShadow (shadow: JsonElement) : CheckCacheTally.ReferencesShadowScan =
+    let count (o: JsonElement) (name: string) = o.GetProperty(name).GetInt64()
+    let unverified = shadow.GetProperty "unverified"
+
+    let facet (element: JsonElement) =
+        let label = element.GetString()
+
+        match CheckCacheTally.VerdictFacet.tryParse label with
+        | Some facet -> facet
+        | None -> raise (JsonException $"unknown verdict facet '%s{label}'")
+
+    { Agreed = count shadow "agreed"
+      Disagreements =
+        shadow.GetProperty("disagreements").EnumerateArray()
+        |> Seq.map (fun disagreement ->
+            ({ File = disagreement.GetProperty("file").GetString()
+               Facets =
+                 disagreement.GetProperty("facets").EnumerateArray()
+                 |> Seq.map facet
+                 |> List.ofSeq }
+            : CheckCacheTally.ShadowDisagreement))
+        |> List.ofSeq
+      Unverified =
+        { NoCachedVerdict = count unverified "noCachedVerdict"
+          NoColdVerdict = count unverified "noColdVerdict" }
+      HeldBytesPeak = count shadow "heldBytesPeak" }
 
 /// Parse one JSON line back into a sample. `None` for blank lines, malformed
 /// JSON, or a record missing a field — a half-written last line (the daemon was
@@ -333,7 +415,12 @@ let tryParseLine (line: string) : ScanSample option =
                                         misses,
                                         { SignatureUnchanged = signature.GetInt64()
                                           ReferencesUnchanged = (field "noEntryReferencesUnchanged").GetInt64()
-                                          Unknown = (field "noEntryAlternativeUnknown").GetInt64() }
+                                          Unknown = (field "noEntryAlternativeUnknown").GetInt64() },
+                                        // Absent before step 2; null with the key off.
+                                        match root.TryGetProperty "referencesShadow" with
+                                        | true, shadow when shadow.ValueKind = JsonValueKind.Object ->
+                                            ReferencesShadowRecord.Ran(readShadow shadow)
+                                        | _ -> ReferencesShadowRecord.NotRun
                                     )
                                 // Written before the alternative-key counts existed.
                                 | _ -> CheckCacheRecord.OnBeforeAlternatives misses

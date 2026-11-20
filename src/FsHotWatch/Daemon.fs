@@ -5299,7 +5299,13 @@ let private performScan
                   CacheHits = cacheScan.Hits
                   CacheMisses = CheckCacheTally.CacheTally.misses cacheScan
                   CacheReplays = cacheScan.Replayed
-                  CheckCache = ScanMetrics.CheckCacheRecord.ofScan pipeline.HasCheckCache cacheScan
+                  CheckCache =
+                    ScanMetrics.CheckCacheRecord.ofScan
+                        (if pipeline.HasCheckCache then
+                             ScanMetrics.ScanCache.On pipeline.ReferencesKey
+                         else
+                             ScanMetrics.ScanCache.Off)
+                        cacheScan
                   RetryRounds = retryRounds
                   RssBytes = reading.RssBytes
                   ManagedBytes = reading.ManagedBytes
@@ -5813,12 +5819,20 @@ module Daemon =
             // AUTOMATION-1816, measurement only: what each stored entry was typed against under
             // the alternative keys, kept beside this workspace's daemon state so the next
             // daemon (a land's starts cold) can say whether its no-entry misses would have hit.
-            if cacheBackend.IsSome then
-                pipeline.MeasureAlternativeKeys(
+            // With `cache.referencesKey: "shadow"` each record carries its verdict too, and
+            // every miss the references key would have served is verified; nothing is served.
+            match opts.CheckCache with
+            | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(_, _, _, referencesKey) ->
+                let store =
                     FsHotWatch.AlternativeKeys.FileAlternativeKeyStore(
                         Path.Combine(FsHwPaths.root repoRoot, "cache", "alternative-keys")
                     )
-                )
+
+                match referencesKey with
+                | FsHotWatch.InMemoryCheckCache.ReferencesKey.Off -> pipeline.MeasureAlternativeKeys store
+                | FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow -> pipeline.ShadowReferencesKey store
+            | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off
+            | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.OffInThisCheckout _ -> ()
 
             Logging.info "cache" (FsHotWatch.InMemoryCheckCache.describeCheckCache opts.CheckCache)
 

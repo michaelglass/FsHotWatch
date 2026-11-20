@@ -879,7 +879,7 @@ let ``describeCheckCache says OFF when there is no backend`` () =
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache names a fixed bound`` () =
     let text =
-        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(500), None, None))
+        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(500), None, None, ReferencesKey.Off))
 
     Assert.Contains("in-memory", text)
     Assert.Contains("500", text)
@@ -887,7 +887,9 @@ let ``describeCheckCache names a fixed bound`` () =
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache says a working-set cache holds every admitted file`` () =
     let text =
-        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(CacheCapacity.WorkingSet), None, None))
+        describeCheckCache (
+            CheckCacheSetup.On(InMemoryCheckCache(CacheCapacity.WorkingSet), None, None, ReferencesKey.Off)
+        )
 
     Assert.Contains("working set", text)
 
@@ -900,7 +902,8 @@ type private ForeignBackend() =
 
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache names a backend it does not know by its type`` () =
-    let text = describeCheckCache (CheckCacheSetup.On(ForeignBackend(), None, None))
+    let text =
+        describeCheckCache (CheckCacheSetup.On(ForeignBackend(), None, None, ReferencesKey.Off))
 
     Assert.Equal("check-result cache: ForeignBackend", text)
 
@@ -914,7 +917,9 @@ let ``describeCheckCache states a scope that left this checkout out, and no advi
 [<Fact(Timeout = 15000)>]
 let ``describeCheckCache names the scope a running cache runs under`` () =
     let text =
-        describeCheckCache (CheckCacheSetup.On(InMemoryCheckCache(500), None, Some "cache.scope is \"all\""))
+        describeCheckCache (
+            CheckCacheSetup.On(InMemoryCheckCache(500), None, Some "cache.scope is \"all\"", ReferencesKey.Off)
+        )
 
     Assert.Equal("check-result cache: in-memory, at most 500 entries — cache.scope is \"all\"", text)
 
@@ -923,7 +928,7 @@ let ``a setup hands the daemon a backend and key provider only when the cache is
     let backend = InMemoryCheckCache(500) :> ICheckCacheBackend
     let keyProvider = TimestampCacheKeyProvider() :> ICacheKeyProvider
 
-    match CheckCacheSetup.components (CheckCacheSetup.On(backend, Some keyProvider, None)) with
+    match CheckCacheSetup.components (CheckCacheSetup.On(backend, Some keyProvider, None, ReferencesKey.Off)) with
     | Some b, Some k ->
         Assert.Same(backend, b)
         Assert.Same(keyProvider, k)

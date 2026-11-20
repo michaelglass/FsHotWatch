@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- feat!: the REFERENCES key runs in shadow behind `cache.referencesKey: "shadow"` (AUTOMATION-1816 step 2), off by
+  default. Step 1 showed the references key (a file's bytes, options and toolchain, plus only the files its last
+  stored check resolved symbols in) would have served 71% and 93% of a consumer's misses on two migration lands; that
+  counts entries that EXISTED, not verdicts that would have been RIGHT. In shadow it never serves: every file is still
+  checked cold. Each alternative-key record now also carries the stored check's verdict
+  (`fshw-alternative-upstreams-v2`: its own diagnostics, `fcsCheckSignature`, `usedSignaturesHash`, API signature), and
+  for every no-entry miss the references key would have served, the next settle compares that verdict with the cold
+  check's. A scan's `scan-metrics.jsonl` record gains `referencesShadow` (null with the key off): `wouldServe` (equals
+  `noEntryReferencesUnchanged`), `agreed`, `disagreed`, `unverified` (`noCachedVerdict`: the record was filed with the
+  key off; `noColdVerdict`: the cold check was not stored), `heldBytesPeak`, and `disagreements`, one per file, naming
+  the facets that differ and the checks they decide (`compiler` for diagnostics and the API signature; `analyzers`,
+  `lint` and `test-prune` for `fcsSignature` and `usedSignatures`, which each of them keys a file's result by). The
+  shadow's only memory is the cold verdicts held from each check to the next settle (736 bytes a file on a 64-bit CLR,
+  dropped at the settle); `heldBytesPeak` is that exact accounting. **Breaking:** `IAlternativeKeyStore` reads and writes an
+  `AlternativeRecord` (step-1 records still read, as `Upstreams`); `CheckCacheSetup.On` and `CheckCacheRecord.On`
+  carry a fourth and third component (`ReferencesKey`, `ReferencesShadowRecord`); `CheckCacheRecord.ofScan` takes a
+  `ScanCache`; `CacheTally` has a `ReferencesShadow` field. Older scan-metrics lines still parse.
+
 ## 0.10.0-alpha.123 - 2026-11-20
 
 - feat!: a scan's `scan-metrics.jsonl` record says how many of its `noEntry` misses an alternative check-result key

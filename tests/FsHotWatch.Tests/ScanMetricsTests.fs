@@ -8,6 +8,7 @@ open FsHotWatch
 open FsHotWatch.ScanMetrics
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.CheckCacheTally
+open FsHotWatch.InMemoryCheckCache
 
 // The scan metrics exist as measurement that a LATER RUN CAN COMPARE. That makes
 // the record's round-trip — emitted, re-read, and fitted — the property under
@@ -49,7 +50,7 @@ let private sample generation rss =
       CacheHits = 0L
       CacheMisses = 0L
       CacheReplays = 0L
-      CheckCache = CheckCacheRecord.On(noMisses, noAlternatives)
+      CheckCache = CheckCacheRecord.On(noMisses, noAlternatives, ReferencesShadowRecord.NotRun)
       RetryRounds = 0
       RssBytes = rss
       ManagedBytes = rss / 4L
@@ -366,7 +367,7 @@ let ``a sample says whether its daemon ran a check-result cache`` () =
     // a cache nothing was looked up in; only this field tells them apart.
     for ran, rendered in
         [ CheckCacheRecord.Off, "\"checkCache\":\"off\""
-          CheckCacheRecord.On(noMisses, noAlternatives), "\"checkCache\":\"on\""
+          CheckCacheRecord.On(noMisses, noAlternatives, ReferencesShadowRecord.NotRun), "\"checkCache\":\"on\""
           CheckCacheRecord.OnBeforeReasons, "\"checkCache\":\"on\""
           CheckCacheRecord.OnBeforeAlternatives noMisses, "\"checkCache\":\"on\""
           CheckCacheRecord.Unrecorded, "\"checkCache\":null" ] do
@@ -465,7 +466,9 @@ let ``a scan's record counts its cache misses per reason, and they sum to its mi
     // how many. The reasons are what tells a cache keyed wrongly from one whose project
     // outputs keep moving.
     let scan = scanTally ()
-    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan)
 
     use doc = System.Text.Json.JsonDocument.Parse line
     let root = doc.RootElement
@@ -487,7 +490,9 @@ let ``a scan's record counts its cache misses per reason, and they sum to its mi
 [<Fact>]
 let ``a scan's record names the ten outputs that moved most, most-missed first`` () =
     let scan = scanTally ()
-    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan)
 
     use doc = System.Text.Json.JsonDocument.Parse line
 
@@ -515,14 +520,16 @@ let ``a scan's record names the ten outputs that moved most, most-missed first``
 [<Fact>]
 let ``the miss reasons round-trip through the record`` () =
     let scan = scanTally ()
-    let original = cacheSample (CheckCacheRecord.ofScan true scan) scan
+
+    let original =
+        cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan
 
     test <@ tryParseLine (toJsonLine original) = Some original @>
 
 [<Fact>]
 let ``a scan without a cache records no miss reasons`` () =
     let line =
-        toJsonLine (cacheSample (CheckCacheRecord.ofScan false CacheTally.empty) CacheTally.empty)
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan ScanCache.Off CacheTally.empty) CacheTally.empty)
 
     test <@ line.Contains "\"checkCache\":\"off\"" @>
     test <@ line.Contains "\"cacheMissReasons\":null" @>
@@ -564,7 +571,9 @@ let private alternativesTally () : CacheTally =
 [<Fact>]
 let ``a scan's record says how many no-entry misses an alternative key would have served`` () =
     let scan = alternativesTally ()
-    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan)
 
     use doc = System.Text.Json.JsonDocument.Parse line
     let root = doc.RootElement
@@ -580,7 +589,9 @@ let ``a scan's record says how many no-entry misses an alternative key would hav
 [<Fact>]
 let ``the alternative-key counts round-trip through the record`` () =
     let scan = alternativesTally ()
-    let original = cacheSample (CheckCacheRecord.ofScan true scan) scan
+
+    let original =
+        cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan
 
     test
         <@
@@ -588,7 +599,8 @@ let ``the alternative-key counts round-trip through the record`` () =
                 CacheMissReasons.ofTally scan,
                 { SignatureUnchanged = 2L
                   ReferencesUnchanged = 5L
-                  Unknown = 4L }
+                  Unknown = 4L },
+                ReferencesShadowRecord.NotRun
             )
         @>
 
@@ -597,7 +609,10 @@ let ``the alternative-key counts round-trip through the record`` () =
 [<Fact>]
 let ``a record written before the alternative-key counts existed reads as on, with reasons and without them`` () =
     let scan = alternativesTally ()
-    let line = toJsonLine (cacheSample (CheckCacheRecord.ofScan true scan) scan)
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan)
+
     let older = withoutAlternatives line
 
     test <@ not (older.Contains "noEntrySignatureUnchanged") @>
@@ -612,8 +627,106 @@ let ``a record written before the alternative-key counts existed reads as on, wi
 [<Fact>]
 let ``a scan without a cache records no alternative-key counts`` () =
     let line =
-        toJsonLine (cacheSample (CheckCacheRecord.ofScan false CacheTally.empty) CacheTally.empty)
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan ScanCache.Off CacheTally.empty) CacheTally.empty)
 
     test <@ line.Contains "\"noEntrySignatureUnchanged\":null" @>
     test <@ line.Contains "\"noEntryReferencesUnchanged\":null" @>
     test <@ line.Contains "\"noEntryAlternativeUnknown\":null" @>
+
+// --- The references key in shadow (AUTOMATION-1816 step 2) ---
+
+/// A scan whose references-key shadow verified four would-be-served misses: two agreed,
+/// one disagreed on what later files are typed against, one had no cold verdict.
+let private shadowTally () : CacheTally =
+    let counter = CacheTallyCounter()
+    let atScanStart = counter.Snapshot
+
+    for outcome in
+        [ ShadowOutcome.Agreed
+          ShadowOutcome.Agreed
+          ShadowOutcome.Disagreed
+              { File = "${repo}/src/C.fs"
+                Facets = [ VerdictFacet.ApiSignature; VerdictFacet.UsedSignatures ] }
+          ShadowOutcome.Unverified ShadowUnverifiedReason.NoColdVerdict ] do
+        counter.Shadowed outcome
+
+    counter.ShadowHeld 2_048L
+    CacheTally.since atScanStart counter.Snapshot
+
+[<Fact>]
+let ``a shadow scan's record names every disagreement's file and checks`` () =
+    let scan = shadowTally ()
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Shadow) scan) scan)
+
+    use doc = System.Text.Json.JsonDocument.Parse line
+    let shadow = doc.RootElement.GetProperty "referencesShadow"
+    let count (key: string) = shadow.GetProperty(key).GetInt64()
+
+    let unverified (key: string) =
+        shadow.GetProperty("unverified").GetProperty(key).GetInt64()
+
+    let disagreement = shadow.GetProperty("disagreements").[0]
+    let file = disagreement.GetProperty("file").GetString()
+
+    test <@ count "wouldServe" = 4L @>
+    test <@ count "agreed" = 2L @>
+    test <@ count "disagreed" = 1L @>
+    test <@ unverified "noColdVerdict" = 1L @>
+    test <@ unverified "noCachedVerdict" = 0L @>
+    test <@ count "heldBytesPeak" = 2_048L @>
+    test <@ file = "${repo}/src/C.fs" @>
+
+    let strings (name: string) =
+        disagreement.GetProperty(name).EnumerateArray()
+        |> Seq.map _.GetString()
+        |> List.ofSeq
+
+    test <@ strings "facets" = [ "apiSignature"; "usedSignatures" ] @>
+    test <@ strings "checks" = [ "compiler"; "analyzers"; "lint"; "test-prune" ] @>
+
+[<Fact>]
+let ``a shadow scan's record round-trips`` () =
+    let scan = shadowTally ()
+
+    let original =
+        cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Shadow) scan) scan
+
+    test
+        <@
+            match original.CheckCache with
+            | CheckCacheRecord.On(_, _, ReferencesShadowRecord.Ran shadow) -> shadow.Agreed = 2L
+            | _ -> false
+        @>
+
+    test <@ tryParseLine (toJsonLine original) = Some original @>
+
+[<Fact>]
+let ``with the references key off a scan records no shadow, and a step-1 line reads as not run`` () =
+    let scan = alternativesTally ()
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Off) scan) scan)
+
+    test <@ line.Contains "\"referencesShadow\":null" @>
+
+    let alpha156 = line.Replace(",\"referencesShadow\":null", "")
+    test <@ not (alpha156.Contains "referencesShadow") @>
+
+    test
+        <@
+            match tryParseLine alpha156 |> Option.map _.CheckCache with
+            | Some(CheckCacheRecord.On(_, _, ReferencesShadowRecord.NotRun)) -> true
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``a shadow record naming a facet this fshw does not know is not a sample`` () =
+    let scan = shadowTally ()
+
+    let line =
+        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Shadow) scan) scan)
+
+    test <@ (tryParseLine line).IsSome @>
+    test <@ tryParseLine (line.Replace("\"apiSignature\"", "\"someFutureFacet\"")) = None @>

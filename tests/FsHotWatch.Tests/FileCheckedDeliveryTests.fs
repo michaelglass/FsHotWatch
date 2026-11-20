@@ -253,7 +253,12 @@ let private withFixtureOf checkCache appFlags name body =
 let private withFixtureCaching checkCache = withFixtureOf checkCache []
 
 let private inMemoryCache () =
-    FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000), None, None)
+    FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(
+        FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(1000),
+        None,
+        None,
+        FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
+    )
 
 let private withFixture name body =
     withFixtureCaching (inMemoryCache ()) name body
