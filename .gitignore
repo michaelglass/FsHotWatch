@@ -106,3 +106,10 @@ tests/TraceFixtures/bin-scratch/
 
 # TestPrune coverage reports (mise run tp-test)
 coverage-tp/
+
+# Agent and CI scratch: `tmp/` (ci.exit, ci-land.exit, fix-msg.txt, pack scratch) and
+# `.ci-linux/` (the local Linux CI run's build tree and steps.tsv). Generated and
+# regenerable; untracked, they made the nightly workspace clean keep workspaces as if
+# they held unsaved work.
+tmp/
+.ci-linux/
