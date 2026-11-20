@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.124 - 2026-11-21
+
 - feat!: the REFERENCES key runs in shadow behind `cache.referencesKey: "shadow"` (AUTOMATION-1816 step 2), off by
   default. Step 1 showed the references key (a file's bytes, options and toolchain, plus only the files its last
   stored check resolved symbols in) would have served 71% and 93% of a consumer's misses on two migration lands; that
