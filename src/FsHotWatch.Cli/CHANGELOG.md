@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.156 - 2026-11-20
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.155 - 2026-11-19
 
 - feature: `.fshw.json` key `checker.maxConcurrentChecks` bounds how many files the daemon type-checks at once

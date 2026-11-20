@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.123 - 2026-11-20
+
 - feat!: a scan's `scan-metrics.jsonl` record says how many of its `noEntry` misses an alternative check-result key
   would have served (AUTOMATION-1816, measurement only). A consumer's lands miss 919 to 2,570 lookups each, every one
   `noEntry`, because a file's key names the TEXT of every file before it, so a body edit to an early file (a generated
