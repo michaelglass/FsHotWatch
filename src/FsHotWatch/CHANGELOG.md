@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: every recorded night's spot-check mismatches roll up (AUTOMATION-1816 step 2b). `SpotCheckCounts` keeps the
+  mismatched files by name (`Mismatched`, `"mismatched"` in the summary line; `Mismatch` is now their count), and
+  `SpotCheckRollUp.ofSummaries` reads every summary line into nights compared, files sampled, and each mismatch's
+  night (run and time), plugin and file: all of `references-shadow.jsonl`, not only the retained reports.
+  **Breaking:** `SpotCheckCounts.Mismatch` is a member over `Mismatched: string list`.
+
 - feat!: test-prune may refuse S' (AUTOMATION-1816 step 2b). `SelectionsAnswer` is `Selected of Selections` or
   `Refused of reason`, and `SelectionsReply` speaks it (schema `fshw-references-shadow-selections-v2`, `"result"`).
   A refusal files the test-prune comparison as `TestPruneSection.Invalid` / `TestPruneSummary.Invalid` with its

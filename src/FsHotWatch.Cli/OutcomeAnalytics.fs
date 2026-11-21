@@ -276,6 +276,9 @@ type Report =
         /// The nightly's output-level shadow reports in the window (AUTOMATION-1816 step 2b),
         /// oldest first, from `.fshw/references-shadow.jsonl`.
         ReferencesShadow: FsHotWatch.ReferencesShadowReport.Summary list
+        /// Every recorded night's spot-check mismatches, whatever the window: the go criterion reads
+        /// them all (`references-shadow.jsonl`, every line).
+        ReferencesShadowSpotChecks: FsHotWatch.ReferencesShadowReport.SpotCheckRollUp
         Gaps: string list
     }
 
@@ -654,6 +657,7 @@ let analyze
           Satisfied = reads.Length - missing
           Missing = missing }
       ReferencesShadow = referencesShadow |> List.filter (fun s -> inWindow s.WrittenAt)
+      ReferencesShadowSpotChecks = FsHotWatch.ReferencesShadowReport.SpotCheckRollUp.ofSummaries referencesShadow
       Gaps =
         gaps rowRuns.Length durations records.Length shadow reads.Length
         @ [ if referencesShadow |> List.forall (fun s -> not (inWindow s.WrittenAt)) then
@@ -836,6 +840,15 @@ let render (top: int) (r: Report) : string list =
       for s in r.ReferencesShadow do
           yield $"  references shadow %s{stamp s.WrittenAt} run %s{s.RunId}: %s{referencesShadowText s.Result}"
 
+      let spot = r.ReferencesShadowSpotChecks
+
+      if spot.Nights > 0 then
+          yield
+              $"  references shadow spot-checks, all %d{spot.Nights} recorded night(s): sampled %d{spot.Sampled}, mismatches %d{spot.Mismatches.Length}"
+
+          for m in spot.Mismatches do
+              yield $"    mismatch %s{stamp m.WrittenAt} run %s{m.RunId} %s{m.Plugin} %s{m.File}"
+
       yield ""
       yield "Not recorded:"
 
@@ -1009,6 +1022,23 @@ let toJson (r: Report) : string =
                   r.ReferencesShadow
                   |> List.map (fun s -> JsonNode.Parse(FsHotWatch.ReferencesShadowReport.Summary.toJson s))
               )
+              "referencesShadowSpotChecks",
+              obj
+                  [ "nights", ji r.ReferencesShadowSpotChecks.Nights
+                    "sampled", ji r.ReferencesShadowSpotChecks.Sampled
+                    "mismatches", ji r.ReferencesShadowSpotChecks.Mismatches.Length
+                    "mismatched",
+                    arr (
+                        r.ReferencesShadowSpotChecks.Mismatches
+                        |> List.map (fun m ->
+                            obj
+                                [ "runId", js m.RunId
+                                  "writtenAt",
+                                  js (m.WrittenAt.ToString("o", Globalization.CultureInfo.InvariantCulture))
+                                  "plugin", js m.Plugin
+                                  "file", js m.File ]
+                            :> JsonNode)
+                    ) ]
               "gaps", arr (r.Gaps |> List.map js) ]
 
     root.ToJsonString()

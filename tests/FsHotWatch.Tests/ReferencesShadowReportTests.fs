@@ -255,7 +255,7 @@ let ``each sampled file's recomputed result is compared with the cached one`` ()
         <@
             counts = { Sampled = 3
                        Equal = 1
-                       Mismatch = 1
+                       Mismatched = [ "src/D.fs" ]
                        NotRecomputed = 1 }
         @>
 
@@ -367,7 +367,7 @@ let ``the report and its summary line round-trip`` () =
             <@
                 counts.SpotChecks.Lint = { Sampled = 3
                                            Equal = 1
-                                           Mismatch = 1
+                                           Mismatched = [ "src/D.fs" ]
                                            NotRecomputed = 1 }
             @>
 
@@ -548,3 +548,76 @@ let ``a refused S-prime is an invalid test-prune comparison, with its reason, th
         """{"schema":"fshw-references-shadow-selections-v2","result":"other"}"""
 
     test <@ SelectionsReply.tryOfJson unknownResult = None @>
+
+/// The spot-check mismatches of EVERY recorded night roll up, from every summary line: more nights
+/// than the retained reports, and a night on another host, which has no spot-check. Each mismatch
+/// keeps its night, plugin and file.
+[<Fact>]
+let ``every recorded night's spot-check mismatches roll up from every summary line`` () =
+    withTempDir "refshadow-rollup" (fun repoRoot ->
+        let nights = RetainedReports + 2
+
+        let night (i: int) : Report =
+            let at = DateTimeOffset(2026, 10, 1, 3, 0, 0, TimeSpan.Zero).AddDays(float i)
+
+            match sample.Result with
+            | Compared c ->
+                { RunId = $"run-%02d{i}"
+                  WrittenAt = at
+                  Result =
+                    Compared
+                        { c with
+                            SpotChecks =
+                                { Seed = i
+                                  Analyzers =
+                                    [ "src/A.fs", SpotOutcome.Equal
+                                      if i = 0 then
+                                          "src/Old.fs", SpotOutcome.Mismatch([], [ Finding.ofEntry (entry "X" 1 "x") ]) ]
+                                  Lint = [ $"src/N%02d{i}.fs", SpotOutcome.Mismatch([], []) ] } } }
+            | HostMismatch _ -> failwith "the sample is a comparison"
+
+        for i in 0 .. nights - 1 do
+            write repoRoot (night i)
+
+        write
+            repoRoot
+            { sample with
+                RunId = "elsewhere"
+                WrittenAt = DateTimeOffset(2026, 12, 1, 3, 0, 0, TimeSpan.Zero)
+                Result = HostMismatch("laptop", "land-box") }
+
+        // The detailed reports are trimmed; the summary lines are not.
+        test <@ Directory.GetFiles(reportsDirectory repoRoot, "*.json").Length = RetainedReports @>
+
+        let rollUp = SpotCheckRollUp.ofSummaries (readSummaries repoRoot)
+
+        test <@ rollUp.Nights = nights @>
+        // Each night samples two analyzers files on night 0, one otherwise, and one lint file.
+        test <@ rollUp.Sampled = 2 * nights + 1 @>
+        test <@ rollUp.Mismatches.Length = nights + 1 @>
+
+        test
+            <@
+                rollUp.Mismatches |> List.take 2 = [ { RunId = "run-00"
+                                                       WrittenAt = DateTimeOffset(2026, 10, 1, 3, 0, 0, TimeSpan.Zero)
+                                                       Plugin = "analyzers"
+                                                       File = "src/Old.fs" }
+                                                     { RunId = "run-00"
+                                                       WrittenAt = DateTimeOffset(2026, 10, 1, 3, 0, 0, TimeSpan.Zero)
+                                                       Plugin = "lint"
+                                                       File = "src/N00.fs" } ]
+            @>
+
+        test
+            <@
+                rollUp.Mismatches |> List.last |> (fun m -> m.RunId, m.Plugin, m.File) = ($"run-%02d{nights - 1}",
+                                                                                          "lint",
+                                                                                          $"src/N%02d{nights - 1}.fs")
+            @>
+
+        test
+            <@
+                SpotCheckRollUp.ofSummaries [] = { Nights = 0
+                                                   Sampled = 0
+                                                   Mismatches = [] }
+            @>)
