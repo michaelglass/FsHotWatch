@@ -7,6 +7,12 @@
 - chore: rebuild to bundle updated dependencies
 
 
+- feat!: AUTOMATION-1816 step 2b. `createWith` takes a `TaskCache.DisplacementCapture` (`create` is `createWith Off`).
+  Captured, lint keeps each file's key base and answers `references-shadow-lint`: per servable file, the entry its own
+  write displaced, compared only when that entry's key equals the key reuse would have read (this run's key base with
+  the record's used and FCS signatures); a different key, or nothing displaced, is unverifiable, never equal.
+  **Breaking:** `LintState` gains `FindingsByFile` (each file's findings, by the rule `WarningsByFile` follows).
+
 ## 0.7.0-alpha.45 - 2026-11-18
 
 - chore: rebuild to bundle updated dependencies

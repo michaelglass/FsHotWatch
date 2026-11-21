@@ -3080,7 +3080,14 @@ let registerPluginsIn
         | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
         | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
 
-        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create outsideRepoScope lintConfigPath None config.TimeoutSec)
+        daemon.RegisterHandler(
+            FsHotWatch.Lint.LintPlugin.createWith
+                daemon.Displacement
+                outsideRepoScope
+                lintConfigPath
+                None
+                config.TimeoutSec
+        )
 
     // Analyzers plugin
     match config.Analyzers with

@@ -745,6 +745,31 @@ type FileTaskCache(cacheDir: string, ?repoRoot: string) =
         { EntryCount = count
           SizeBytes = bytes }
 
+    /// The entries this store holds for one plugin and file, each with the key it was filed
+    /// under: the ones a write under a new key would delete (`pruneSupersededSiblings`), read
+    /// from the same memo, so listing them scans no directory. An entry that cannot be read
+    /// here is left out.
+    member _.EntriesOf(compositeKey: CompositeKey) : DisplacedEntry list =
+        let paths =
+            lock livePathsLock (fun () ->
+                match livePaths.TryGetValue(entryKey compositeKey) with
+                | true, paths -> paths
+                | false, _ -> [])
+
+        paths
+        |> List.choose (fun p ->
+            try
+                if File.Exists p then
+                    let result, _ = deserializeEntry repoRoot (File.ReadAllText p)
+
+                    Some
+                        { Key = result.CacheKey
+                          Result = result }
+                else
+                    None
+            with _ ->
+                None)
+
     /// Number of read attempts that found a file but couldn't deserialise it. A
     /// non-zero value indicates corruption or a stale on-disk format.
     member _.ParseFailureCount = parseFailureCount

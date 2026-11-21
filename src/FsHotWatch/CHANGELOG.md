@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat!: `TaskCache.DisplacementCapturingTaskCache` keeps, for named plugins, the per-file entries a write displaces
+  WITH THEIR KEYS (read before the write is handed on, since the file store deletes them), and
+  `FileTaskCache.EntriesOf` lists one plugin and file's entries with their keys. With `cache.nightlyShadow` on, the
+  daemon puts lint's entries under it (below the toolchain scope) and hands lint `Daemon.Displacement`. Record only:
+  nothing read, written or served changes. **Breaking:** `ReferencesShadowReport.UnverifiableReason` gains
+  `DisplacedKeyDiffers` (the displaced entry was filed under another key than the reused one).
+
 - feat: with `cache.nightlyShadow` on, the daemon answers `references-shadow-servable`: the files the references key
   would have served since it started, with their recorded signatures (AUTOMATION-1816 step 2b).
 

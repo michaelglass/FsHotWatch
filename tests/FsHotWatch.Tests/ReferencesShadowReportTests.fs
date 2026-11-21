@@ -386,6 +386,7 @@ let ``the servable files and a plugin's reply round-trip, and anything else read
             "analyzers"
             [ "src/A.fs", FileOutcome.Equal
               "src/B.fs", FileOutcome.Unverifiable UnverifiableReason.NoReusedKey
+              "src/D.fs", FileOutcome.Unverifiable UnverifiableReason.DisplacedKeyDiffers
               "src/C.fs",
               FileOutcome.Mismatch(
                   [ Finding.ofEntry (entry "X" 1 "reused") ],

@@ -304,6 +304,7 @@
     <Compile Include="ReferencesShadowReportTests.fs" />
     <Compile Include="ReferencesShadowTests.fs" />
     <Compile Include="ReferencesShadowAnalyzersTests.fs" />
+    <Compile Include="ReferencesShadowLintTests.fs" />
     <Compile Include="ReferencesShadowSelectionTests.fs" />
     <Compile Include="ReferencesShadowTriggerTests.fs" />
     <Compile Include="CheckPipelineCancellationTests.fs" />
