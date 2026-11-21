@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.160 - 2026-11-21
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.159 - 2026-11-21
 
 - fix: a file command whose arguments name an `.fsx` script declares the script's transitive `#load` closure as
