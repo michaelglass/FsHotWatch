@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.121 - 2026-11-21
+
 - fix: AUTOMATION-1835. A zero-affected green stands on a passing `tests.beforeRun` over the tree it answers for
   (ADR-080). The nothing-to-verify skip (every changed symbol uncovered) returned green without running `beforeRun`
   over a tree no passing hook had seen. It now runs `beforeRun` first under its own run id, and skips only when the
