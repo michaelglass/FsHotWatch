@@ -13,6 +13,7 @@ open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 open FsHotWatch.CheckCacheTally
 open FsHotWatch.AlternativeKeys
+open FsHotWatch.ReferencesShadowReport
 open FsHotWatch.Events
 open FsHotWatch.Tests.TestHelpers
 

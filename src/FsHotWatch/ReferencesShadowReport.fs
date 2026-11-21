@@ -19,6 +19,39 @@ open System.Text.Json
 open System.Text.Json.Nodes
 open FsHotWatch.ErrorLedger
 
+// --- servable files ----------------------------------------------------------------------
+
+/// A check's used-signatures hash as the plugins key on it: `CacheInputs.usedSignaturesHash`'s
+/// value, or none when the check's shape could not be described (and no plugin keyed it).
+[<RequireQualifiedAccess>]
+type UsedSignaturesKey =
+    | Described of hash: string
+    | Undescribed
+
+/// A file the references key would have served (step 2b): what reuse would key each plugin's
+/// result by is the stored check's FCS and used signatures, read from its record.
+type ServableFile =
+    {
+        /// Repository-relative, `/`-separated.
+        File: string
+        Project: string
+        FcsSignature: string
+        UsedSignatures: UsedSignaturesKey
+    }
+
+module ServableFile =
+    /// The servable `file` of `project` whose stored check had `verdict`.
+    let internal ofVerdict (file: string) (project: string) (verdict: AlternativeKeys.CheckVerdict) : ServableFile =
+        { File = file
+          Project = project
+          FcsSignature = verdict.FcsSignature
+          UsedSignatures =
+            if verdict.UsedSignatures.StartsWith("some:", StringComparison.Ordinal) then
+                UsedSignaturesKey.Described(verdict.UsedSignatures.Substring 5)
+            else
+                UsedSignaturesKey.Undescribed }
+
+
 // --- analyzers and lint ------------------------------------------------------------------
 
 /// One finding as the comparison sees it: rule, position, severity and message. The detail
@@ -48,17 +81,22 @@ type UnverifiableReason =
     | NoReusedEntry
     /// The plugin's configuration moved since the reused entry was filed.
     | ConfigChanged
+    /// Reuse would have read no key for the file: its record names no used signatures, or this
+    /// run's plugin keyed no result for it (a file outside its scope).
+    | NoReusedKey
 
 module UnverifiableReason =
     let token =
         function
         | UnverifiableReason.NoReusedEntry -> "no-reused-entry"
         | UnverifiableReason.ConfigChanged -> "config-changed"
+        | UnverifiableReason.NoReusedKey -> "no-reused-key"
 
     let tryParse =
         function
         | "no-reused-entry" -> Some UnverifiableReason.NoReusedEntry
         | "config-changed" -> Some UnverifiableReason.ConfigChanged
+        | "no-reused-key" -> Some UnverifiableReason.NoReusedKey
         | _ -> None
 
 /// What reuse would have handed a plugin for one file.
@@ -649,6 +687,85 @@ module Summary =
             { RunId = Read.str root "runId"
               WrittenAt = Read.writtenAt root
               Result = result })
+
+// --- the commands the nightly asks -------------------------------------------------------
+
+/// The daemon's own command: the files the references key would have served since it started
+/// (`ServableFile`), as `Servable.toJson` writes them.
+[<Literal>]
+let ServableCommand = "references-shadow-servable"
+
+/// The analyzers plugin's command: given `Servable.toJson`'s list, what reuse would have handed it
+/// for each file against what this run found (`PluginReply`).
+[<Literal>]
+let AnalyzersCommand = "references-shadow-analyzers"
+
+/// `Servable.toJson`'s schema.
+[<Literal>]
+let ServableSchema = "fshw-references-shadow-servable-v1"
+
+/// `PluginReply.toJson`'s schema.
+[<Literal>]
+let PluginReplySchema = "fshw-references-shadow-plugin-v1"
+
+/// The servable files as the daemon hands them to the plugins.
+module Servable =
+    let toJson (files: ServableFile list) : string =
+        let o = JsonObject()
+        o["schema"] <- ServableSchema
+
+        o["files"] <-
+            Write.array (
+                files
+                |> List.map (fun f ->
+                    let row = JsonObject()
+                    row["file"] <- f.File
+                    row["project"] <- f.Project
+                    row["fcsSignature"] <- f.FcsSignature
+
+                    match f.UsedSignatures with
+                    | UsedSignaturesKey.Described hash -> row["usedSignatures"] <- hash
+                    | UsedSignaturesKey.Undescribed -> ()
+
+                    row :> JsonNode)
+            )
+
+        o.ToJsonString()
+
+    let tryOfJson (text: string) : ServableFile list option =
+        Read.document ServableSchema text (fun root ->
+            Read.items root "files"
+            |> List.map (fun e ->
+                ({ File = Read.str e "file"
+                   Project = Read.str e "project"
+                   FcsSignature = Read.str e "fcsSignature"
+                   UsedSignatures =
+                     match e.TryGetProperty "usedSignatures" with
+                     | true, _ -> UsedSignaturesKey.Described(Read.str e "usedSignatures")
+                     | false, _ -> UsedSignaturesKey.Undescribed }
+                : ServableFile)))
+
+/// One plugin's comparison as its command replies with it.
+module PluginReply =
+    let toJson (comparison: PluginComparison) : string =
+        let o = Write.plugin comparison
+        o["schema"] <- PluginReplySchema
+        o.ToJsonString()
+
+    let tryOfJson (text: string) : PluginComparison option =
+        Read.document PluginReplySchema text Read.plugin
+
+/// The comparison of `plugin` over `servable`: per file, what `reused` says reuse would have
+/// handed it against `fresh`, this run's findings for the file (by repository-relative path).
+let comparePlugin
+    (plugin: string)
+    (reused: ServableFile -> Reused)
+    (fresh: string -> ErrorEntry list)
+    (servable: ServableFile list)
+    : PluginComparison =
+    servable
+    |> List.map (fun file -> file.File, compareFile (reused file) (fresh file.File))
+    |> PluginComparison.ofFiles plugin
 
 // --- files -------------------------------------------------------------------------------
 

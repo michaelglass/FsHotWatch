@@ -117,36 +117,6 @@ module CheckVerdict =
         + stringBytes verdict.UsedSignatures.Length
         + stringBytes verdict.ApiSignature.Length
 
-/// A check's used-signatures hash as the plugins key on it: `CacheInputs.usedSignaturesHash`'s
-/// value, or none when the check's shape could not be described (and no plugin keyed it).
-[<RequireQualifiedAccess>]
-type UsedSignaturesKey =
-    | Described of hash: string
-    | Undescribed
-
-/// A file the references key would have served (step 2b): what reuse would key each plugin's
-/// result by is the stored check's FCS and used signatures, read from its record.
-type ServableFile =
-    {
-        /// Repository-relative, `/`-separated.
-        File: string
-        Project: string
-        FcsSignature: string
-        UsedSignatures: UsedSignaturesKey
-    }
-
-module ServableFile =
-    /// The servable `file` of `project` whose stored check had `verdict`.
-    let ofVerdict (file: string) (project: string) (verdict: CheckVerdict) : ServableFile =
-        { File = file
-          Project = project
-          FcsSignature = verdict.FcsSignature
-          UsedSignatures =
-            if verdict.UsedSignatures.StartsWith("some:", StringComparison.Ordinal) then
-                UsedSignaturesKey.Described(verdict.UsedSignatures.Substring 5)
-            else
-                UsedSignaturesKey.Undescribed }
-
 /// One filed record.
 [<RequireQualifiedAccess>]
 type AlternativeRecord =

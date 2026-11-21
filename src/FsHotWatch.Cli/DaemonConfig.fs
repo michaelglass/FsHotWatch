@@ -76,6 +76,14 @@ let defaultInMemoryCache =
       Exclude = []
       ReferencesKey = FsHotWatch.InMemoryCheckCache.ReferencesKey.Off }
 
+/// Whether `config` runs AUTOMATION-1816 step 2b's nightly shadow, which exists only inside
+/// the references key's shadow.
+let nightlyShadowOf (config: CacheBackendConfig) : FsHotWatch.InMemoryCheckCache.NightlyShadow =
+    match config with
+    | InMemory { ReferencesKey = FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow nightly } -> nightly
+    | InMemory _
+    | NoCache -> FsHotWatch.InMemoryCheckCache.NightlyShadow.Off
+
 /// What `resolveWorktree` read this checkout as, for a startup line.
 let private describeCheckout
     (kind: Result<FsHotWatch.RepositoryIdentity.CheckoutKind, FsHotWatch.RepositoryIdentity.IdentityError>)
@@ -3133,7 +3141,15 @@ let registerPluginsIn
                       RecordMode = mode
                       Toolchain = FsHotWatch.DotnetToolchain.identity repoRoot
                       Log = Logging.warn "analyze-records"
-                      Trace = Logging.debug "analyze-records" }
+                      Trace = Logging.debug "analyze-records"
+                      // AUTOMATION-1816 step 2b: the nightly shadow rebuilds the key reuse
+                      // would have read from each file's key parts.
+                      ReuseKeys =
+                        match nightlyShadowOf config.Cache with
+                        | FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost _ ->
+                            FsHotWatch.Analyzers.AnalyzeRecords.ReuseKeys.Kept
+                        | FsHotWatch.InMemoryCheckCache.NightlyShadow.Off ->
+                            FsHotWatch.Analyzers.AnalyzeRecords.ReuseKeys.NotKept }
 
                 Some wiring
 
