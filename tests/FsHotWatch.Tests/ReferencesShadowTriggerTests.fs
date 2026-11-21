@@ -260,3 +260,40 @@ let ``a daemon without the servable command or a malformed reply is a failure, a
     match (run (answer (Map.ofList [ ServableCommand, servable ]))).Result with
     | Compared c -> test <@ c.TestPrune = TestPruneSection.NotCompared "no test-prune plugin" @>
     | HostMismatch _ -> failwith "expected a comparison"
+
+/// TEST 7, the trigger's half (gates the land): with the nightly shadow on, the confirm runs the
+/// same, answers the same exit code, and leaves the verdict and the ledgers the run reads
+/// byte for byte as with it off.
+[<Fact>]
+let ``the nightly shadow on or off, the confirm's exit code, verdict and ledgers are the same`` () =
+    let confirm (nightly: FsHotWatch.InMemoryCheckCache.NightlyShadow) =
+        withTempDir "refshadow-gate-confirm" (fun repoRoot ->
+            FsHotWatch.TestPrune.PendingVerification.save repoRoot (set [ "Lib.f" ])
+            let runs = ref 0
+
+            let send: ScopeCommands.Send =
+                fun name _ ->
+                    match name with
+                    | n when n = ServableCommand -> Some(Servable.toJson [])
+                    | _ -> None
+
+            let exitCode =
+                aroundConfirm
+                    repoRoot
+                    nightly
+                    "land-box"
+                    CheckVerdict.Freshness.RequireNewRun
+                    send
+                    (fun () -> false)
+                    (fun () ->
+                        runs.Value <- runs.Value + 1
+                        Directory.CreateDirectory(FsHwPaths.root repoRoot) |> ignore
+                        File.WriteAllText(FsHwPaths.verdictFile repoRoot, "{\"the\":\"verdict\"}")
+                        3)
+
+            exitCode,
+            runs.Value,
+            File.ReadAllText(FsHwPaths.verdictFile repoRoot),
+            File.ReadAllText(FsHotWatch.TestPrune.PendingVerification.sidecarPath repoRoot))
+
+    test <@ confirm onLandHost = confirm FsHotWatch.InMemoryCheckCache.NightlyShadow.Off @>

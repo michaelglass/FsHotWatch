@@ -170,3 +170,25 @@ let ``no differing analysis copies nothing, and an unreadable one is unverifiabl
         test <@ selections.Copy = ImpactDbCopy.NotCopied @>
         test <@ selections.UnverifiableAnalyses = 1 && selections.DifferingAnalyses = 0 @>
         test <@ not (Directory.Exists copyDir) @>)
+
+/// TEST 7, test-prune's half (gates the land): computing S′ changes nothing the gate selects
+/// from. The index answers every selection, file key, symbol and edge exactly as before.
+[<Fact>]
+let ``computing S-prime leaves the index the gate selects from exactly as it was`` () =
+    withTempDir "refshadow-gate-index" (fun dir ->
+        let root, db, dbPath, store = fixture dir (Some(testsAnalysis false))
+
+        let gate () =
+            [ [ "Lib.f" ]; [ "Lib.g" ]; changed ]
+            |> List.map (fun seeds -> (db.QueryAffectedSelection seeds).Tests |> List.map testName |> List.sort),
+            db.GetFileKeys(),
+            db.GetAllSymbolNames(),
+            db.GetDependenciesFromFile "tests/Tests.fs"
+            |> List.sortBy (fun d -> d.FromSymbol, d.ToSymbol)
+
+        let before = gate ()
+        let reused = reusedAnalysisOf store root (db.GetFileKeys()) servable
+        let shadow = selections db dbPath (Path.Combine(dir, "copy")) changed [ reused ]
+        // The shadow did substitute: S′ lost T.
+        test <@ shadow.SPrime <> shadow.S @>
+        test <@ gate () = before @>)
