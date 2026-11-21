@@ -7,6 +7,10 @@
 - chore: rebuild to bundle updated dependencies
 
 
+- feat!: `AnalyzeRecords.ReuseKeys.Kept` carries a `Recheck`; `references-shadow-analyzers-spot-check` analyses each
+  sampled `sameKey` file again on a live check, records and task cache bypassed, against the findings this run served;
+  nothing it analyses is reported, filed or served (AUTOMATION-1816 step 2b).
+
 - feat: `references-shadow-analyzers` answers `sameKey` for a file this run keyed by the reused key (its analysis may be
   the record itself), and looks nothing up for it (AUTOMATION-1816 step 2b).
 

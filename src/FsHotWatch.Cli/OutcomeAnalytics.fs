@@ -714,9 +714,18 @@ let private referencesShadowText (result: FsHotWatch.ReferencesShadowReport.Summ
 
                 $"test-prune attributable %d{tp.Attributable}, selector miss %d{tp.SelectorMiss}, flaky %d{tp.FlakyChanged}, differing analyses %d{tp.DifferingAnalyses}, unverifiable %d{tp.UnverifiableAnalyses}, %s{copy}"
 
+        let spot (name: string) (counts: FsHotWatch.ReferencesShadowReport.SpotCheckCounts) =
+            $"%s{name} %d{counts.Sampled} sampled: equal %d{counts.Equal} / mismatch %d{counts.Mismatch} / not recomputed %d{counts.NotRecomputed}"
+
         let analyzers = plugin "analyzers" c.Analyzers
         let lint = plugin "lint" c.Lint
-        $"servable %d{c.Servable}; %s{analyzers}; %s{lint}; %s{testPrune}"
+
+        let spotChecks =
+            let analyzersSpot = spot "analyzers" c.SpotChecks.Analyzers
+            let lintSpot = spot "lint" c.SpotChecks.Lint
+            $"same-key spot-check (seed %d{c.SpotChecks.Seed}): %s{analyzersSpot}; %s{lintSpot}"
+
+        $"servable %d{c.Servable}; %s{analyzers}; %s{lint}; %s{spotChecks}; %s{testPrune}"
 
 let render (top: int) (r: Report) : string list =
     [ let stores = FsHotWatch.Core.NonEmpty.toList r.Stores

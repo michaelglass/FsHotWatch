@@ -206,6 +206,105 @@ module PluginComparison =
             | FileOutcome.Mismatch _
             | FileOutcome.Unverifiable _ -> None)
 
+// --- the spot-check of sameKey files -----------------------------------------------------
+
+/// How many `sameKey` files each plugin recomputes per nightly (all of them when there are fewer).
+[<Literal>]
+let SpotCheckSize = 50
+
+/// A real FCS check of a file under its project options, never answered from a filed check record
+/// (`CheckPipeline.CheckFileLive`): what a plugin recomputes a sampled `sameKey` file on, its own
+/// result cache bypassed. None when the check did not complete.
+type Recheck =
+    Events.AbsFilePath -> FSharp.Compiler.CodeAnalysis.FSharpProjectOptions -> Async<Events.FileCheckResult option>
+
+/// One sampled `sameKey` file: the plugin's result recomputed with its cache bypassed, against
+/// the result this run served for it.
+[<RequireQualifiedAccess>]
+type SpotOutcome =
+    | Equal
+    /// Both lists, normalised: what this run served (the cached result), then the recomputed one.
+    | Mismatch of cached: Finding list * recomputed: Finding list
+    /// The result could not be recomputed (no live check, a plugin failure), and why.
+    | NotRecomputed of reason: string
+
+/// Each plugin's spot-check: RECORD AND COMPARE ONLY, nothing recomputed is reported, filed or served.
+type SpotChecks =
+    {
+        /// The seed every sample of this report was drawn with.
+        Seed: int
+        /// Each sampled file, by path, and how its recomputed result compared.
+        Analyzers: (string * SpotOutcome) list
+        Lint: (string * SpotOutcome) list
+    }
+
+type SpotCheckCounts =
+    { Sampled: int
+      Equal: int
+      Mismatch: int
+      NotRecomputed: int }
+
+module SpotCheck =
+    /// Up to `size` of `files`, drawn by `seed`, in path order: the same seed and files draw the
+    /// same sample whatever order the files are named in.
+    let sample (seed: int) (size: int) (files: string list) : string list =
+        let pool = files |> List.distinct |> List.sort |> Array.ofList
+        let drawn = min size pool.Length
+        let random = Random seed
+
+        for i in 0 .. drawn - 1 do
+            let j = random.Next(i, pool.Length)
+            let picked = pool[j]
+            pool[j] <- pool[i]
+            pool[i] <- picked
+
+        pool |> Array.truncate drawn |> Array.sort |> List.ofArray
+
+    /// The `cached` result against the `recomputed` one, normalised as `compareFile` normalises.
+    let compare (cached: ErrorEntry list) (recomputed: Result<ErrorEntry list, string>) : SpotOutcome =
+        match recomputed with
+        | Result.Error reason -> SpotOutcome.NotRecomputed reason
+        | Result.Ok again ->
+            let normal (entries: ErrorEntry list) =
+                entries |> List.map Finding.ofEntry |> Finding.normalise
+
+            if normal cached = normal again then
+                SpotOutcome.Equal
+            else
+                SpotOutcome.Mismatch(normal cached, normal again)
+
+    /// Recompute each of `files` (`recompute`, the plugin's own computation, its cache bypassed) and
+    /// compare it with `cached`, one file at a time.
+    let run
+        (files: string list)
+        (recompute: string -> Async<Result<ErrorEntry list, string>>)
+        (cached: string -> ErrorEntry list)
+        : Async<(string * SpotOutcome) list> =
+        async {
+            let outcomes = ResizeArray()
+
+            for file in files do
+                let! again = recompute file
+                outcomes.Add(file, compare (cached file) again)
+
+            return List.ofSeq outcomes
+        }
+
+    let counts (outcomes: (string * SpotOutcome) list) : SpotCheckCounts =
+        outcomes
+        |> List.fold
+            (fun c (_, outcome) ->
+                match outcome with
+                | SpotOutcome.Equal -> { c with Equal = c.Equal + 1 }
+                | SpotOutcome.Mismatch _ -> { c with Mismatch = c.Mismatch + 1 }
+                | SpotOutcome.NotRecomputed _ ->
+                    { c with
+                        NotRecomputed = c.NotRecomputed + 1 })
+            { Sampled = outcomes.Length
+              Equal = 0
+              Mismatch = 0
+              NotRecomputed = 0 }
+
 // --- test-prune --------------------------------------------------------------------------
 
 /// A test's outcome in one run's CTRF reports.
@@ -376,6 +475,8 @@ type Comparison =
         Analyzers: PluginComparison
         Lint: PluginComparison
         TestPrune: TestPruneSection
+        /// Each plugin's recomputed sample of its `sameKey` files.
+        SpotChecks: SpotChecks
     }
 
 type ReportResult =
@@ -417,11 +518,17 @@ type TestPruneSummary =
     | Compared of TestPruneCounts
     | NotCompared of reason: string
 
+type SpotCheckSummary =
+    { Seed: int
+      Analyzers: SpotCheckCounts
+      Lint: SpotCheckCounts }
+
 type SummaryCounts =
     { Servable: int
       Analyzers: Counts
       Lint: Counts
-      TestPrune: TestPruneSummary }
+      TestPrune: TestPruneSummary
+      SpotChecks: SpotCheckSummary }
 
 [<RequireQualifiedAccess>]
 type SummaryResult =
@@ -486,6 +593,47 @@ module private Write =
             o["reason"] <- UnverifiableReason.token reason
         | FileOutcome.SameKey -> o["outcome"] <- "sameKey"
 
+        o
+
+    let spotOutcome (file: string, outcome: SpotOutcome) : JsonNode =
+        let o = JsonObject()
+        o["file"] <- file
+
+        match outcome with
+        | SpotOutcome.Equal -> o["outcome"] <- "equal"
+        | SpotOutcome.Mismatch(cached, recomputed) ->
+            o["outcome"] <- "mismatch"
+            o["cached"] <- array (cached |> List.map finding)
+            o["recomputed"] <- array (recomputed |> List.map finding)
+        | SpotOutcome.NotRecomputed reason ->
+            o["outcome"] <- "notRecomputed"
+            o["reason"] <- reason
+
+        o
+
+    let spotOutcomes (outcomes: (string * SpotOutcome) list) : JsonNode =
+        array (outcomes |> List.map spotOutcome)
+
+    let spotChecks (s: SpotChecks) : JsonNode =
+        let o = JsonObject()
+        o["seed"] <- s.Seed
+        o["analyzers"] <- spotOutcomes s.Analyzers
+        o["lint"] <- spotOutcomes s.Lint
+        o
+
+    let spotCounts (c: SpotCheckCounts) : JsonNode =
+        let o = JsonObject()
+        o["sampled"] <- c.Sampled
+        o["equal"] <- c.Equal
+        o["mismatch"] <- c.Mismatch
+        o["notRecomputed"] <- c.NotRecomputed
+        o
+
+    let spotSummary (s: SpotCheckSummary) : JsonNode =
+        let o = JsonObject()
+        o["seed"] <- s.Seed
+        o["analyzers"] <- spotCounts s.Analyzers
+        o["lint"] <- spotCounts s.Lint
         o
 
     let plugin (p: PluginComparison) : JsonNode =
@@ -599,6 +747,33 @@ module private Read =
 
         str e "file", outcome
 
+    let spotOutcome (e: JsonElement) : string * SpotOutcome =
+        let outcome =
+            match str e "outcome" with
+            | "equal" -> SpotOutcome.Equal
+            | "mismatch" ->
+                SpotOutcome.Mismatch(items e "cached" |> List.map finding, items e "recomputed" |> List.map finding)
+            | "notRecomputed" -> SpotOutcome.NotRecomputed(str e "reason")
+            | other -> raise (MalformedException $"spot-check outcome %s{other}")
+
+        str e "file", outcome
+
+    let spotChecks (e: JsonElement) : SpotChecks =
+        { Seed = int e "seed"
+          Analyzers = items e "analyzers" |> List.map spotOutcome
+          Lint = items e "lint" |> List.map spotOutcome }
+
+    let spotCounts (e: JsonElement) : SpotCheckCounts =
+        { Sampled = int e "sampled"
+          Equal = int e "equal"
+          Mismatch = int e "mismatch"
+          NotRecomputed = int e "notRecomputed" }
+
+    let spotSummary (e: JsonElement) : SpotCheckSummary =
+        { Seed = int e "seed"
+          Analyzers = spotCounts (prop e "analyzers")
+          Lint = spotCounts (prop e "lint") }
+
     let plugin (e: JsonElement) : PluginComparison =
         { Plugin = str e "plugin"
           Files = items e "files" |> List.map fileOutcome }
@@ -659,6 +834,7 @@ module Report =
             o["analyzers"] <- Write.plugin c.Analyzers
             o["lint"] <- Write.plugin c.Lint
             o["testPrune"] <- Write.testPrune c.TestPrune
+            o["spotChecks"] <- Write.spotChecks c.SpotChecks
 
         o.ToJsonString()
 
@@ -672,7 +848,8 @@ module Report =
                         { Servable = Read.int root "servable"
                           Analyzers = Read.plugin (Read.prop root "analyzers")
                           Lint = Read.plugin (Read.prop root "lint")
-                          TestPrune = Read.testPrune (Read.prop root "testPrune") }
+                          TestPrune = Read.testPrune (Read.prop root "testPrune")
+                          SpotChecks = Read.spotChecks (Read.prop root "spotChecks") }
                 | other -> raise (MalformedException $"result %s{other}")
 
             { RunId = Read.str root "runId"
@@ -689,6 +866,10 @@ module Summary =
                     { Servable = c.Servable
                       Analyzers = PluginComparison.counts c.Analyzers
                       Lint = PluginComparison.counts c.Lint
+                      SpotChecks =
+                        { Seed = c.SpotChecks.Seed
+                          Analyzers = SpotCheck.counts c.SpotChecks.Analyzers
+                          Lint = SpotCheck.counts c.SpotChecks.Lint }
                       TestPrune =
                         match c.TestPrune with
                         | TestPruneSection.NotCompared reason -> TestPruneSummary.NotCompared reason
@@ -733,6 +914,7 @@ module Summary =
                 Write.impactDbCopy tp t.ImpactDbCopy
 
             o["testPrune"] <- tp
+            o["spotChecks"] <- Write.spotSummary c.SpotChecks
 
         o.ToJsonString()
 
@@ -748,6 +930,7 @@ module Summary =
                         { Servable = Read.int root "servable"
                           Analyzers = Read.counts (Read.prop root "analyzers")
                           Lint = Read.counts (Read.prop root "lint")
+                          SpotChecks = Read.spotSummary (Read.prop root "spotChecks")
                           TestPrune =
                             match Read.str tp "result" with
                             | "notCompared" -> TestPruneSummary.NotCompared(Read.str tp "reason")
@@ -837,6 +1020,47 @@ module PluginReply =
 
     let tryOfJson (text: string) : PluginComparison option =
         Read.document PluginReplySchema text Read.plugin
+
+/// The analyzers plugin's spot-check command: given `SpotCheckRequest`'s files (sampled from its
+/// `sameKey` files), each one's result recomputed with the plugin's cache bypassed against the result
+/// this run served (`SpotCheckReply`). Nothing recomputed is reported, filed or served.
+[<Literal>]
+let AnalyzersSpotCheckCommand = "references-shadow-analyzers-spot-check"
+
+/// The lint plugin's spot-check command: as `AnalyzersSpotCheckCommand`, for lint.
+[<Literal>]
+let LintSpotCheckCommand = "references-shadow-lint-spot-check"
+
+/// `SpotCheckRequest.toJson`'s schema.
+[<Literal>]
+let SpotCheckRequestSchema = "fshw-references-shadow-spot-check-request-v1"
+
+/// `SpotCheckReply.toJson`'s schema.
+[<Literal>]
+let SpotCheckReplySchema = "fshw-references-shadow-spot-check-v1"
+
+/// The sampled files a plugin is asked to recompute, by repository-relative path.
+module SpotCheckRequest =
+    let toJson (files: string list) : string =
+        let o = JsonObject()
+        o["schema"] <- SpotCheckRequestSchema
+        o["files"] <- Write.array (files |> List.map (fun f -> JsonValue.Create f :> JsonNode))
+        o.ToJsonString()
+
+    let tryOfJson (text: string) : string list option =
+        Read.document SpotCheckRequestSchema text (fun root ->
+            Read.items root "files" |> List.map (fun e -> e.ToString()))
+
+/// A plugin's spot-check, as its command replies with it.
+module SpotCheckReply =
+    let toJson (outcomes: (string * SpotOutcome) list) : string =
+        let o = JsonObject()
+        o["schema"] <- SpotCheckReplySchema
+        o["files"] <- Write.spotOutcomes outcomes
+        o.ToJsonString()
+
+    let tryOfJson (text: string) : (string * SpotOutcome) list option =
+        Read.document SpotCheckReplySchema text (fun root -> Read.items root "files" |> List.map Read.spotOutcome)
 
 /// The comparison of `plugin` over `servable`: per file, what `reused` says reuse would have
 /// handed it against `fresh`, this run's findings for the file (by repository-relative path).

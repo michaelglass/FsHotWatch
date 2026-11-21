@@ -5933,6 +5933,9 @@ module Daemon =
             host.SetCheckDemand(fun replayed ->
                 pipeline.CheckFileLive(replayed.File, replayed.ProjectOptions, daemonCtRef.Value))
 
+            // AUTOMATION-1816 step 2b: the nightly shadow's spot-check recomputes on a live check too.
+            host.SetRecheck(fun file options -> pipeline.CheckFileLive(file, options, daemonCtRef.Value))
+
             let delayForChange change =
                 match change with
                 | ProjectChanged _

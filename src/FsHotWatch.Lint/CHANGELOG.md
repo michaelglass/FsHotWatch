@@ -7,6 +7,11 @@
 - chore: rebuild to bundle updated dependencies
 
 
+- feat!: `createWith` takes a `LintPlugin.Shadow` (`Off`, or `On` with the displaced entries and a `Recheck`) in place
+  of a `TaskCache.DisplacementCapture`. On, `references-shadow-lint-spot-check` lints each sampled `sameKey` file again on
+  a live check, the task cache bypassed, against the findings this run served; nothing it lints is reported, filed or
+  served (AUTOMATION-1816 step 2b).
+
 - feat: `references-shadow-lint` answers `sameKey` for a file this run keyed by the reused key (its result may be the
   cached entry itself), before looking for a displaced entry (AUTOMATION-1816 step 2b).
 

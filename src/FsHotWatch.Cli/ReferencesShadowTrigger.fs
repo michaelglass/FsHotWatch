@@ -146,8 +146,25 @@ let private pluginComparison (send: Send) (command: string) (plugin: string) (se
         |> List.map (fun f -> f.File, FileOutcome.Unverifiable UnverifiableReason.NoReusedKey)
         |> PluginComparison.ofFiles plugin
 
+/// One plugin's spot-check, through `send`: up to `SpotCheckSize` of its `sameKey` files, drawn by
+/// `seed`, recomputed by the plugin with its cache bypassed. No `sameKey` file asks nothing; a host
+/// without the command leaves each sampled file not recomputed, saying so.
+let private spotCheck (send: Send) (command: string) (seed: int) (comparison: PluginComparison) =
+    match SpotCheck.sample seed SpotCheckSize (PluginComparison.sameKeyFiles comparison) with
+    | [] -> []
+    | files ->
+        match send command (SpotCheckRequest.toJson files) with
+        | Some reply ->
+            match SpotCheckReply.tryOfJson reply with
+            | Some outcomes -> outcomes
+            | None -> invalidOp $"`%s{command}` answered something that is not a spot-check"
+        | None ->
+            files
+            |> List.map (fun file -> file, SpotOutcome.NotRecomputed $"the daemon has no `%s{command}` command")
+
 /// The report for the run `runId`, through `send`, on `host`: `hostMismatch` before any lookup
 /// anywhere but `landHost`.
+/// Each plugin's `sameKey` sample is drawn by `seed`, and recorded with it.
 let compare
     (landHost: string)
     (host: string)
@@ -155,6 +172,7 @@ let compare
     (before: Before)
     (rows: unit -> TestRow list)
     (runId: Guid)
+    (seed: int)
     (writtenAt: DateTimeOffset)
     : Report =
     let result =
@@ -180,11 +198,18 @@ let compare
                     | None -> invalidOp $"`%s{TestPruneCommand}` answered something that is not selections"
                 | None -> TestPruneSection.NotCompared "no test-prune plugin"
 
+            let analyzers = pluginComparison send AnalyzersCommand "analyzers" servable
+            let lint = pluginComparison send LintCommand "lint" servable
+
             Compared
                 { Servable = servable.Length
-                  Analyzers = pluginComparison send AnalyzersCommand "analyzers" servable
-                  Lint = pluginComparison send LintCommand "lint" servable
-                  TestPrune = testPrune })
+                  Analyzers = analyzers
+                  Lint = lint
+                  TestPrune = testPrune
+                  SpotChecks =
+                    { Seed = seed
+                      Analyzers = spotCheck send AnalyzersSpotCheckCommand seed analyzers
+                      Lint = spotCheck send LintSpotCheckCommand seed lint } })
 
     { RunId = runId.ToString "N"
       WrittenAt = writtenAt
@@ -220,7 +245,15 @@ let aroundConfirm
         | Graded.Skip reason -> Logging.info "references-shadow" $"no report: %s{reason}"
         | Graded.Compare runId ->
             try
-                compare landHost host send before (fun () -> testRows repoRoot before runId) runId DateTimeOffset.UtcNow
+                compare
+                    landHost
+                    host
+                    send
+                    before
+                    (fun () -> testRows repoRoot before runId)
+                    runId
+                    (Random.Shared.Next())
+                    DateTimeOffset.UtcNow
                 |> write repoRoot
             with ex ->
                 let run = runId.ToString "N"

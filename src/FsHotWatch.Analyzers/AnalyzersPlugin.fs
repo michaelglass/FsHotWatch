@@ -101,11 +101,17 @@ type ReplayStamps internal () =
         | true, inputs -> Some inputs
         | false, _ -> None
 
-/// Each file's latest analysis key parts, kept only for the nightly shadow.
+/// Each file's latest analysis key parts and the options it was checked under, kept only for the
+/// nightly shadow, with how its spot-check gets a live check.
 [<NoComparison; NoEquality>]
 type internal ReuseParts =
     | NotKept
-    | Kept of Collections.Concurrent.ConcurrentDictionary<string, AnalyzeRecords.KeyParts>
+    | Kept of
+        Collections.Concurrent.ConcurrentDictionary<
+            string,
+            AnalyzeRecords.KeyParts * FSharp.Compiler.CodeAnalysis.FSharpProjectOptions
+         > *
+        FsHotWatch.ReferencesShadowReport.Recheck
 
 /// A key as a weak table holds it: the table's values must be reference types.
 [<Sealed>]
@@ -139,9 +145,18 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
     /// them (AUTOMATION-1816 step 2b).
     let reuseParts =
         match wiring with
-        | Some(w, _) when w.ReuseKeys = AnalyzeRecords.ReuseKeys.Kept ->
-            ReuseParts.Kept(Collections.Concurrent.ConcurrentDictionary<string, AnalyzeRecords.KeyParts>())
-        | _ -> ReuseParts.NotKept
+        | Some(w, _) ->
+            match w.ReuseKeys with
+            | AnalyzeRecords.ReuseKeys.Kept recheck ->
+                ReuseParts.Kept(
+                    Collections.Concurrent.ConcurrentDictionary<
+                        string,
+                        AnalyzeRecords.KeyParts * FSharp.Compiler.CodeAnalysis.FSharpProjectOptions
+                     >(),
+                    recheck
+                )
+            | AnalyzeRecords.ReuseKeys.NotKept -> ReuseParts.NotKept
+        | None -> ReuseParts.NotKept
 
     /// Whether records are filed (and so the task cache is guarded).
     member internal _.Active = wiring.IsSome
@@ -156,8 +171,9 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
     /// when it is off.
     member internal _.KeepParts(result: FileCheckResult, parts: AnalyzeRecords.KeyParts) =
         match wiring, reuseParts with
-        | Some(_, root), ReuseParts.Kept byFile ->
-            byFile[Path.GetRelativePath(root, AbsFilePath.value result.File).Replace('\\', '/')] <- parts
+        | Some(_, root), ReuseParts.Kept(byFile, _) ->
+            byFile[Path.GetRelativePath(root, AbsFilePath.value result.File).Replace('\\', '/')] <-
+                (parts, result.ProjectOptions)
         | _ -> ()
 
     /// AUTOMATION-1816 step 2b: per servable file, what reuse would have handed the analyzers
@@ -168,11 +184,11 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
         : FsHotWatch.ReferencesShadowReport.PluginComparison =
         let reused =
             match wiring, reuseParts with
-            | Some(w, root), ReuseParts.Kept byFile ->
+            | Some(w, root), ReuseParts.Kept(byFile, _) ->
                 fun (file: FsHotWatch.ReferencesShadowReport.ServableFile) ->
                     let parts =
                         match byFile.TryGetValue file.File with
-                        | true, parts -> Some parts
+                        | true, (parts, _) -> Some parts
                         | false, _ -> None
 
                     AnalyzeRecords.reused w.Store root parts file
@@ -182,6 +198,22 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
                         FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedKey
 
         FsHotWatch.ReferencesShadowReport.comparePlugin "analyzers" reused fresh servable
+
+    /// AUTOMATION-1816 step 2b: a live check of `file` (repository-relative) under the options this
+    /// run checked it with, for the spot-check to analyse it again; why not, when there is none.
+    member internal _.LiveCheck(file: string) : Async<Result<FileCheckResult, string>> =
+        async {
+            match wiring, reuseParts with
+            | Some(_, root), ReuseParts.Kept(byFile, recheck) ->
+                match byFile.TryGetValue file with
+                | true, (_, options) ->
+                    match! recheck (AbsFilePath.create (Path.Combine(root, file))) options with
+                    | Some({ CheckResults = FullCheck _ } as live) -> return Result.Ok live
+                    | Some _ -> return Result.Error "the live check did not complete fully"
+                    | None -> return Result.Error "the live check did not complete"
+                | false, _ -> return Result.Error "this run analysed no check of the file"
+            | _ -> return Result.Error "the nightly shadow is off"
+        }
 
     /// The key `result`'s analysis is filed under, when one was computed for it.
     member internal _.KeyOf(result: FileCheckResult) = keyOf result
@@ -806,6 +838,20 @@ let taskKeyWith (host: AnalyzerHost) (terms: (string * string) list) : ContentHa
 /// The handler under a given `host` (the analyzers task-cache key's host terms) and `records`
 /// (the box-wide analyze records, AUTOMATION-1585; `None` files none), with two
 /// test seams: `slowHook` is invoked inside the timeout-guarded region before the analyzers
+/// One analyzer message on `result`'s file as a ledger entry.
+let internal entryOf (result: FileCheckResult) (m: Message) : ErrorEntry =
+    { Message = FileCheckResult.textToReal result m.Message
+      Severity =
+        match m.Severity with
+        | Severity.Error -> DiagnosticSeverity.Error
+        | Severity.Warning -> DiagnosticSeverity.Warning
+        | Severity.Info -> DiagnosticSeverity.Info
+        | Severity.Hint -> DiagnosticSeverity.Hint
+      Line = m.Range.StartLine
+      Column = m.Range.StartColumn
+      Code = if String.IsNullOrEmpty m.Code then None else Some m.Code
+      Detail = None }
+
 /// run, and `runAnalyzersOver` stands in for the SDK's run so a test can supply analyzers
 /// without loading an assembly. Every keyed analysis is also observed by `shadow` as a Need
 /// trace under `oracles` (AUTOMATION-1636); the shadow decides nothing.
@@ -1045,6 +1091,51 @@ let internal createShadowedWithSeams
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
         TimeSpan.FromSeconds(float secs)
 
+    /// The ledger entries for one run of the analyzers on `result`, and the crashes among them:
+    /// the findings promoted at `failOnSeverity`, then one entry per crashed analyzer.
+    let entriesFrom (result: FileCheckResult) (results: AnalysisResult list) =
+        let findings, crashes = foldResults (entryOf result) results
+
+        (findings |> List.map (promoteIfFailing failOnSeverity))
+        @ (crashes |> List.map crashFinding),
+        crashes
+
+    /// AUTOMATION-1816 step 2b, the spot-check: the analyzers run again on the live check `result`,
+    /// as a live analysis runs them, with no record, task cache, ledger or status touched.
+    // MGA-ERROR-REPORT-001:ok — an analyzer that throws on the re-run is that file's answer (not
+    // recomputed, named by its exception); it decides nothing.
+    let analyseAgain (result: FileCheckResult) : Result<ErrorEntry list, string> =
+        match Volatile.Read(&loaded), result.CheckResults with
+        | AnalyzerLoad.AnalyzerSet.RefusedFcsMismatch _, _ -> Result.Error "the analyzer set is refused"
+        | AnalyzerLoad.AnalyzerSet.Loaded paths, FullCheck(parseResults, checkResults) ->
+            let fileStr = AbsFilePath.value result.File
+
+            let activeClients =
+                paths |> List.filter (fun path -> admits path.Path fileStr) |> List.map _.Client
+
+            let context =
+                createCliContext
+                    (box (FsHotWatch.PathFrame.nameIn result.Frame fileStr))
+                    (box (SourceText.ofString result.Source))
+                    (box parseResults)
+                    (box checkResults)
+                    (typedTreeOf result.CheckResults)
+                    (box result.ProjectOptions)
+
+            let run (workCt: Threading.CancellationToken) =
+                try
+                    Result.Ok(
+                        Async.RunSynchronously(runAnalyzersOver activeClients context, cancellationToken = workCt)
+                    )
+                with ex ->
+                    Result.Error ex
+
+            match fst (runWithCancellableTimeoutTracked analyzerTimeout run) with
+            | WorkTimedOut after -> Result.Error $"timed out after %d{int after.TotalSeconds}s"
+            | WorkCompleted(Result.Ok results) -> Result.Ok(fst (entriesFrom result results))
+            | WorkCompleted(Result.Error ex) -> Result.Error ex.Message
+        | AnalyzerLoad.AnalyzerSet.Loaded _, _ -> Result.Error "the live check did not complete fully"
+
     { Name = PluginName.create FsHotWatch.PluginActivity.AnalyzersPluginName
       Init =
         { DiagnosticsByFile = Map.empty
@@ -1276,30 +1367,9 @@ let internal createShadowedWithSeams
 
                                                             return Choice1Of3()
                                                         | WorkCompleted results ->
-                                                            let toEntry (m: Message) : ErrorEntry =
-                                                                { Message = FileCheckResult.textToReal result m.Message
-                                                                  Severity =
-                                                                    match m.Severity with
-                                                                    | Severity.Error -> DiagnosticSeverity.Error
-                                                                    | Severity.Warning -> DiagnosticSeverity.Warning
-                                                                    | Severity.Info -> DiagnosticSeverity.Info
-                                                                    | Severity.Hint -> DiagnosticSeverity.Hint
-                                                                  Line = m.Range.StartLine
-                                                                  Column = m.Range.StartColumn
-                                                                  Code =
-                                                                    if String.IsNullOrEmpty m.Code then
-                                                                        None
-                                                                    else
-                                                                        Some m.Code
-                                                                  Detail = None }
-
-                                                            let findings, crashes = foldResults toEntry results
+                                                            let entries, crashes = entriesFrom result results
 
                                                             crashes |> List.iter (logCrashOnce fileStr)
-
-                                                            let entries =
-                                                                (findings |> List.map (promoteIfFailing failOnSeverity))
-                                                                @ (crashes |> List.map crashFinding)
 
                                                             debug
                                                                 "analyzers"
@@ -1420,7 +1490,45 @@ let internal createShadowedWithSeams
             }
       PrepareCommit = None
       Commands =
-        [ // AUTOMATION-1816 step 2b: what reuse would have handed this plugin for each servable
+        [ // AUTOMATION-1816 step 2b: each sampled `sameKey` file (the request:
+          // `FsHotWatch.ReferencesShadowReport.SpotCheckRequest`) analysed again on a live check, records
+          // and task cache bypassed, against what this run served. Nothing analysed here is reported,
+          // filed or served.
+          FsHotWatch.ReferencesShadowReport.AnalyzersSpotCheckCommand,
+          PluginCommand.Observe(fun _ctx (state: AnalyzersState) args ->
+              async {
+                  let files =
+                      match
+                          args
+                          |> Array.tryHead
+                          |> Option.bind FsHotWatch.ReferencesShadowReport.SpotCheckRequest.tryOfJson
+                      with
+                      | Some files -> files
+                      | None ->
+                          invalidArg
+                              "args"
+                              "expects the sampled files (FsHotWatch.ReferencesShadowReport.SpotCheckRequest)"
+
+                  let recompute (file: string) =
+                      async {
+                          match! state.Records.LiveCheck file with
+                          | Result.Ok live -> return analyseAgain live
+                          | Result.Error reason -> return Result.Error reason
+                      }
+
+                  let cached (file: string) =
+                      match repoRoot with
+                      | Some root ->
+                          state.DiagnosticsByFile
+                          |> Map.tryFind (AbsFilePath.create (Path.Combine(root, file)))
+                          |> Option.defaultValue []
+                      | None -> []
+
+                  let! outcomes = FsHotWatch.ReferencesShadowReport.SpotCheck.run files recompute cached
+                  return FsHotWatch.ReferencesShadowReport.SpotCheckReply.toJson outcomes
+              })
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SpotCheckReplySchema
+          // AUTOMATION-1816 step 2b: what reuse would have handed this plugin for each servable
           // file (the request: `FsHotWatch.ReferencesShadowReport.Servable`), against what it found here.
           FsHotWatch.ReferencesShadowReport.AnalyzersCommand,
           PluginCommand.Observe(fun _ctx (state: AnalyzersState) args ->

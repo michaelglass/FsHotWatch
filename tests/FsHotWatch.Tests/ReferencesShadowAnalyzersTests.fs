@@ -58,6 +58,29 @@ let private findingsFor (wording: string) (source: string) : FSharp.Analyzers.SD
 let private files =
     [ "src/A.fs", "module A\nlet a = 1\n"; "src/B.fs", "module B\nlet b = BAD\n" ]
 
+/// How a start's analyzers word their finding from now on, by repository root, when a test rewords
+/// them after the run (the spot-check then analyses with the analyzers as they are now).
+let private reworded =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string>()
+
+/// A live check of a repository file, as the daemon's pipeline would answer the spot-check: the
+/// fixture's full check of the file's own bytes; none for a file outside `files`.
+let private liveRecheck: ReferencesShadowReport.Recheck =
+    fun file options ->
+        async {
+            return
+                files
+                |> List.tryFind (fun (rel, _) -> (AbsFilePath.value file).EndsWith rel)
+                |> Option.map (fun (_, source) ->
+                    { fakeFileCheckResult (AbsFilePath.value file) with
+                        Source = source
+                        ProjectOptions = options
+                        CheckResults = fixtureFullCheck () })
+        }
+
+/// The key parts kept, with `liveRecheck` for the spot-check.
+let private kept = AnalyzeRecords.ReuseKeys.Kept liveRecheck
+
 /// A daemon start at `root` with records in `storeRoot` and its own task cache (a fresh
 /// `start` name is a checkout whose entries are gone, so only the records hold the analyses): each of `files`
 /// analysed live by analyzers that word their finding `wording`, then `ask` run against the
@@ -90,7 +113,14 @@ let private startWith
 
                 return
                     [ { AnalyzerName = "Fixture"
-                        Output = Result.Ok(findingsFor wording sources[context.FileName]) } ]
+                        Output =
+                          Result.Ok(
+                              findingsFor
+                                  (match reworded.TryGetValue root with
+                                   | true, now -> now
+                                   | false, _ -> wording)
+                                  sources[context.FileName]
+                          ) } ]
             }
 
     let store =
@@ -157,11 +187,10 @@ let ``the analyzers answer equal, mismatch or unverifiable for what reuse would 
             files
             |> List.map (fun (rel, src) -> servableAs fixtureWarnedFullCheck root rel src)
 
-        startWith fixtureWarnedFullCheck "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun _ _ ->
-            ())
+        startWith fixtureWarnedFullCheck "first" storeRoot kept root "BAD is bad" (fun _ _ -> ())
 
         let comparison, afterDelete =
-            startThen "second" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is worse" (fun host _ ->
+            startThen "second" storeRoot kept root "BAD is worse" (fun host _ ->
                 let comparison = compare host servable
                 Directory.Delete(storeRoot, true)
                 comparison, compare host servable)
@@ -198,11 +227,10 @@ let ``a nightly key equal to the reused key is sameKey, never equal or unverifia
         let root = Path.Combine(dir, "repo")
         let servable = files |> List.map (fun (rel, src) -> servableOf root rel src)
 
-        startThen "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun _ _ -> ())
+        startThen "first" storeRoot kept root "BAD is bad" (fun _ _ -> ())
 
         let comparison =
-            startThen "second" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is worse" (fun host _ ->
-                compare host servable)
+            startThen "second" storeRoot kept root "BAD is worse" (fun host _ -> compare host servable)
 
         test <@ comparison.Files = [ "src/A.fs", FileOutcome.SameKey; "src/B.fs", FileOutcome.SameKey ] @>
 
@@ -213,6 +241,64 @@ let ``a nightly key equal to the reused key is sameKey, never equal or unverifia
                                                        Unverifiable = 0
                                                        SameKey = 2 }
             @>)
+
+/// The analyzers' spot-check over `files`, through their command.
+let private spotCheck (host: PluginHost) (files: string list) : (string * SpotOutcome) list =
+    match
+        host.RunCommand(AnalyzersSpotCheckCommand, [| SpotCheckRequest.toJson files |])
+        |> Async.RunSynchronously
+    with
+    | Some reply ->
+        match SpotCheckReply.tryOfJson reply with
+        | Some outcomes -> outcomes
+        | None -> failwith $"not a spot-check reply: %s{reply}"
+    | None -> failwith "the analyzers plugin has no spot-check command"
+
+/// ITEM 3. After the run, the analyzers are reworded; the spot-check analyses the sampled files
+/// again on a live check, records and cache bypassed, so it sees the analyzers as they are now:
+/// a file with no finding is equal, the reworded finding is a mismatch naming both lists, and a
+/// file with no live check, or with the parts not kept, is not recomputed.
+[<Fact(Timeout = 120000)>]
+let ``the spot-check analyses sampled sameKey files again with the cache bypassed and compares`` () =
+    withTempDir "refshadow-analyzers-spot" (fun dir ->
+        let storeRoot = Path.Combine(dir, "outcomes")
+        let root = Path.Combine(dir, "repo")
+
+        let outcomes, notKept =
+            startThen "first" storeRoot kept root "BAD is bad" (fun host _ ->
+                reworded[root] <- "BAD is worse"
+                spotCheck host [ "src/A.fs"; "src/B.fs"; "src/Gone.fs" ], ())
+
+        test <@ notKept = () @>
+        test <@ outcomes |> List.map fst = [ "src/A.fs"; "src/B.fs"; "src/Gone.fs" ] @>
+        test <@ snd outcomes[0] = SpotOutcome.Equal @>
+
+        match snd outcomes[1] with
+        | SpotOutcome.Mismatch(cached, recomputed) ->
+            test <@ cached |> List.map _.Message = [ "BAD is bad" ] @>
+            test <@ recomputed |> List.map _.Message = [ "BAD is worse" ] @>
+        | other -> failwith $"expected a mismatch, got %A{other}"
+
+        test <@ snd outcomes[2] = SpotOutcome.NotRecomputed "this run analysed no check of the file" @>
+
+        let other = Path.Combine(dir, "repo2")
+
+        let failed =
+            startThen
+                "second"
+                storeRoot
+                (AnalyzeRecords.ReuseKeys.Kept(fun _ _ -> async { return None }))
+                other
+                "BAD is bad"
+                (fun host _ -> spotCheck host [ "src/A.fs" ])
+
+        test <@ failed = [ "src/A.fs", SpotOutcome.NotRecomputed "the live check did not complete" ] @>
+
+        let off =
+            startThen "third" storeRoot AnalyzeRecords.ReuseKeys.NotKept other "BAD is bad" (fun host _ ->
+                spotCheck host [ "src/A.fs" ])
+
+        test <@ off = [ "src/A.fs", SpotOutcome.NotRecomputed "the nightly shadow is off" ] @>)
 
 /// Reuse keys a result only by signatures its record names: a record whose check's shape was
 /// not described would have served nothing, and a handler that does not keep the key parts
@@ -225,7 +311,7 @@ let ``no reused key is unverifiable, never equal`` () =
         let servable = files |> List.map (fun (rel, src) -> servableOf root rel src)
 
         let undescribed =
-            startThen "undescribed" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun host _ ->
+            startThen "undescribed" storeRoot kept root "BAD is bad" (fun host _ ->
                 compare
                     host
                     (servable
@@ -257,6 +343,11 @@ let ``keeping the key parts changes nothing the analyzers analyse, report, file 
         let root = Path.Combine(dir, "repo")
 
         let observe (host: PluginHost) (analyzed: string list) =
+            // Kept, the spot-check runs first: it must change nothing below either.
+            match reuseKeys with
+            | AnalyzeRecords.ReuseKeys.Kept _ -> spotCheck host (files |> List.map fst) |> ignore
+            | AnalyzeRecords.ReuseKeys.NotKept -> ()
+
             let entries =
                 host.GetErrorsByPlugin "analyzers"
                 |> Map.toList
@@ -274,7 +365,7 @@ let ``keeping the key parts changes nothing the analyzers analyse, report, file 
 
         first, second, records
 
-    let kept = withTempDir "refshadow-gate-kept" (run AnalyzeRecords.ReuseKeys.Kept)
+    let kept = withTempDir "refshadow-gate-kept" (run kept)
 
     let notKept =
         withTempDir "refshadow-gate-notkept" (run AnalyzeRecords.ReuseKeys.NotKept)
