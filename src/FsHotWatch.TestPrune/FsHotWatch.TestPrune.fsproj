@@ -50,6 +50,7 @@
     <Compile Include="ArtifactFreshness.fs" />
     <Compile Include="StaleArtifactPreflight.fs" />
     <Compile Include="ImpactDbPool.fs" />
+    <Compile Include="ReferencesShadowSelection.fs" />
     <Compile Include="Traces.fs" />
     <Compile Include="ScopeVocabulary.fs" />
     <Compile Include="TestMode.fs" />

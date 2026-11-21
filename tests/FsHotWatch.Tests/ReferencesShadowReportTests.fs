@@ -122,9 +122,18 @@ let ``the changed-outcome table`` () =
 let private s = set [ "T"; "U" ]
 let private sPrime = set [ "U" ] // the stale analysis dropped the edge to T
 
+/// S and S' with `differing` analyses substituted and nothing copied.
+let private selected (s: Set<string>) (sPrime: Set<string>) (differing: int) : Selections =
+    { S = s
+      SPrime = sPrime
+      DifferingAnalyses = differing
+      UnverifiableAnalyses = 0
+      Copy = ImpactDbCopy.NotCopied }
+
 [<Fact>]
 let ``T in S but not S-prime that fails in the nightly is attributable`` () =
-    let result = compareTests s sPrime 1 [ row TestOutcome.Passed TestOutcome.Failed ]
+    let result =
+        compareTests (selected s sPrime 1) [ row TestOutcome.Passed TestOutcome.Failed ]
 
     test <@ result.Attributable |> List.map _.Test = [ "T" ] @>
     test <@ List.isEmpty result.SelectorMiss @>
@@ -133,7 +142,9 @@ let ``T in S but not S-prime that fails in the nightly is attributable`` () =
 
 [<Fact>]
 let ``T passing as it did in the watermark run counts nothing`` () =
-    let result = compareTests s sPrime 1 [ row TestOutcome.Passed TestOutcome.Passed ]
+    let result =
+        compareTests (selected s sPrime 1) [ row TestOutcome.Passed TestOutcome.Passed ]
+
     test <@ List.isEmpty result.Attributable @>
     test <@ List.isEmpty result.SelectorMiss @>
     test <@ List.isEmpty result.FlakyChanged @>
@@ -143,9 +154,7 @@ let ``T passing as it did in the watermark run counts nothing`` () =
 let ``a failing test outside S is a selector miss, and one inside S-prime is not counted`` () =
     let result =
         compareTests
-            s
-            sPrime
-            0
+            (selected s sPrime 0)
             [ { row TestOutcome.Passed TestOutcome.Failed with
                   Test = "V" }
               { row TestOutcome.Passed TestOutcome.Failed with
@@ -207,8 +216,8 @@ let private sample: Report =
                     [ "src/C.fs", FileOutcome.Unverifiable UnverifiableReason.ConfigChanged ]
               TestPrune =
                 TestPruneSection.Compared(
-                    { compareTests s sPrime 2 [ row TestOutcome.Passed TestOutcome.Failed ] with
-                        ImpactDbCopyBytes = 4096L }
+                    { compareTests (selected s sPrime 2) [ row TestOutcome.Passed TestOutcome.Failed ] with
+                        ImpactDbCopy = ImpactDbCopy.Copied(4096L, 12L) }
                 ) } }
 
 [<Fact>]
@@ -247,7 +256,7 @@ let ``the report and its summary line round-trip`` () =
         match counts.TestPrune with
         | TestPruneSummary.Compared tp ->
             test <@ tp.Attributable = 1 && tp.SelectorMiss = 0 && tp.DifferingAnalyses = 2 @>
-            test <@ tp.ImpactDbCopyBytes = 4096L @>
+            test <@ tp.ImpactDbCopy = ImpactDbCopy.Copied(4096L, 12L) @>
         | TestPruneSummary.NotCompared why -> failwith $"expected test-prune counts, got %s{why}"
     | SummaryResult.HostMismatch _ -> failwith "expected counts"
 
@@ -309,9 +318,7 @@ let ``a report whose test-prune side was not compared, with every outcome token,
                       TestPrune =
                         TestPruneSection.Compared(
                             compareTests
-                                Set.empty
-                                Set.empty
-                                0
+                                (selected Set.empty Set.empty 0)
                                 [ { row TestOutcome.Skipped TestOutcome.Absent with
                                       Test = "A" }
                                   { row TestOutcome.Absent TestOutcome.Skipped with

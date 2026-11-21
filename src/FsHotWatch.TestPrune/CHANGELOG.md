@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1816 step 2b. A `references-shadow-test-prune` command: given C (the symbols changed since the
+  watermark) and the servable files, it reads each file's reused `testprune-analysis` record (the identity of its bytes
+  and the stored check's signatures) and answers S (C selected over this run's index) and S' (the same over a copy with
+  the differing reused analyses re-indexed), with how many analyses differed or could not be read. The copy is a SQLite
+  backup under the system temporary directory, named for the run, deleted in a `finally`, its size and copy time in
+  the reply; none is made when no analysis differs. The index the gate selects from is never written.
+
 ## 0.13.0-alpha.121 - 2026-11-21
 
 - fix: AUTOMATION-1835. A zero-affected green stands on a passing `tests.beforeRun` over the tree it answers for

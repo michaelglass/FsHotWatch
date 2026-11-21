@@ -469,6 +469,27 @@ let internal createWithEvidenceAndQueries
         runTestsWithImpactWith runEnv ctx configs inputs hasCachedResults fanoutProjects
 
 
+    // AUTOMATION-1816 step 2b: S and S' for a nightly's request. The copy S' needs is made
+    // under the system temporary directory, named for the run, and deleted.
+    let shadowSelections (request: FsHotWatch.ReferencesShadowReport.TestPruneRequest) =
+        let reused =
+            match analysisRecords with
+            | Some store ->
+                let fileKeys = db.GetFileKeys()
+
+                request.Files
+                |> List.map (ReferencesShadowSelection.reusedAnalysisOf store repoRoot fileKeys)
+            | None ->
+                request.Files
+                |> List.map (fun _ -> ReferencesShadowSelection.ReusedAnalysis.Unverifiable)
+
+        let unique = Guid.NewGuid().ToString "N"
+
+        let copyDir =
+            Path.Combine(Path.GetTempPath(), $"fshw-references-shadow-%s{request.RunId}-%s{unique}")
+
+        ReferencesShadowSelection.selections db dbPath copyDir request.Changed reused
+
     let commandForceRun ctx mode configs filter reply =
         commandForceRunWith runEnv ctx mode configs filter reply
 
@@ -479,7 +500,8 @@ let internal createWithEvidenceAndQueries
               RunnableProjects = runnableProjects
               CurrentOutcomeKeys = currentOutcomeKeys
               BaselineInvalidReason = baselineInvalidReason
-              Queries = queries }
+              Queries = queries
+              ShadowSelections = shadowSelections }
 
 
 

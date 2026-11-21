@@ -58,6 +58,9 @@ type internal CommandEnv =
         /// The impact queries the plugin runs against its index.
         Queries: ImpactQueries
         BaselineInvalidReason: VerificationDebt -> string option
+        /// AUTOMATION-1816 step 2b: S and S' for a nightly's request (`ReferencesShadowSelection`).
+        ShadowSelections:
+            FsHotWatch.ReferencesShadowReport.TestPruneRequest -> FsHotWatch.ReferencesShadowReport.Selections
     }
 
 /// The `run-tests` request: a forced run of the projects and filter it names, answered once the run completes.
@@ -597,7 +600,21 @@ let internal pluginCommands (env: CommandEnv) =
     let queries = env.Queries
 
     let commands =
-        [ "affected-tests",
+        [ FsHotWatch.ReferencesShadowReport.TestPruneCommand,
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (args: string array) ->
+              async {
+                  match
+                      args
+                      |> Array.tryHead
+                      |> Option.bind FsHotWatch.ReferencesShadowReport.TestPruneRequest.tryOfJson
+                  with
+                  | Some request ->
+                      return FsHotWatch.ReferencesShadowReport.SelectionsReply.toJson (env.ShadowSelections request)
+                  | None -> return invalidArg "args" "expects a ReferencesShadowReport.TestPruneRequest"
+              })
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SelectionsSchema
+
+          "affected-tests",
           PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->
               async {
                   // Compute on demand from state.ChangedSymbols against current DB
