@@ -78,6 +78,24 @@ let fixtureFullCheck () : FileCheckState = FullCheck fixtureChecked.Value
 /// An aborted check of the shared fixture: its parse alone.
 let fixtureParseOnly () : FileCheckState = ParseOnly(fixtureParse ())
 
+/// A real check of the fixture script edited to carry one warning (an incomplete match), made
+/// once and shared: a completed check whose FCS signature differs from `fixtureFullCheck`'s,
+/// under the same options.
+let private fixtureWarnedChecked =
+    lazy
+        (let source =
+            FSharp.Compiler.Text.SourceText.ofString "module Fixture\nlet value x = match x with | 1 -> 0\n"
+
+         match
+             sharedChecker.Value.ParseAndCheckFileInProject(fixtureFile, 1, source, fixtureScriptOptions.Value)
+             |> Async.RunSynchronously
+         with
+         | parse, FSharpCheckFileAnswer.Succeeded check -> parse, check
+         | _, FSharpCheckFileAnswer.Aborted -> failwith "the warned fixture script's check was aborted")
+
+/// A completed check of the fixture with one warning: another FCS signature than `fixtureFullCheck`.
+let fixtureWarnedFullCheck () : FileCheckState = FullCheck fixtureWarnedChecked.Value
+
 /// Every file matching `pattern` under `root`, recursively, as full paths — through
 /// `SafeWalk`, never `SearchOption.AllDirectories`, which follows directory symlinks
 /// (FSHW-WALK-001). A directory named in `excluded` is not walked; neither is a

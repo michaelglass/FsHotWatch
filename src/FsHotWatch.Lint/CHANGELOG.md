@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `references-shadow-lint` answers `sameKey` for a file this run keyed by the reused key (its result may be the
+  cached entry itself), before looking for a displaced entry (AUTOMATION-1816 step 2b).
+
 - feat!: AUTOMATION-1816 step 2b. `createWith` takes a `TaskCache.DisplacementCapture` (`create` is `createWith Off`).
   Captured, lint keeps each file's key base and answers `references-shadow-lint`: per servable file, the entry its own
   write displaced, compared only when that entry's key equals the key reuse would have read (this run's key base with

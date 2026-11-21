@@ -241,12 +241,17 @@ let private startThen
 
 /// The servable files as the nightly's scan names them: what their stored checks were typed
 /// against, which here is the parse-only check of the first start.
-let private servable (root: string) : ServableFile list =
+let private servableAs (check: FileCheckState option) (root: string) : ServableFile list =
     files
     |> List.map (fun (rel, source) ->
         let stored =
             { fakeFileCheckResult (Path.Combine(root, rel)) with
                 Source = source }
+
+        let stored =
+            match check with
+            | Some check -> { stored with CheckResults = check }
+            | None -> stored
 
         { File = rel
           Project = "Fixture.fsproj"
@@ -255,6 +260,8 @@ let private servable (root: string) : ServableFile list =
             match CacheInputs.usedSignaturesHash (Some root) stored.ProjectOptions stored.CheckResults with
             | Some hash -> UsedSignaturesKey.Described hash
             | None -> UsedSignaturesKey.Undescribed })
+
+let private servable (root: string) : ServableFile list = servableAs None root
 
 let private compare (host: PluginHost) (servable: ServableFile list) : PluginComparison =
     match
@@ -302,6 +309,43 @@ let ``equal keys compare findings: equal, or a mismatch naming both lists`` () =
             test <@ reused |> List.map _.Message = [ "BAD is bad" ] @>
             test <@ fresh |> List.map _.Message = [ "BAD is worse" ] @>
         | other -> failwith $"expected a mismatch, got %A{other}")
+
+/// The nightly keyed the file by the very key reuse would have read (here the record's check is
+/// this run's): its result may be the cached entry itself, so it is `sameKey`, never equal, and
+/// never unverifiable either. That holds whether this run's write displaced something (a first
+/// start under other keys) or replayed the cached entry (a second start under the same keys).
+[<Fact(Timeout = 120000)>]
+let ``a nightly key equal to the reused key is sameKey, never equal or unverifiable`` () =
+    withTempDir "refshadow-lint-samekey" (fun dir ->
+        let store = Path.Combine(dir, "tasks")
+        let root = Path.Combine(dir, "repo")
+
+        let fullServable () =
+            servableAs (Some(fixtureFullCheck ())) root
+
+        startThen store root true fixtureParseOnly "BAD is bad" (fun _ _ -> ())
+
+        let displacedSomething =
+            startThen store root true fixtureFullCheck "BAD is worse" (fun host linted ->
+                test <@ linted = [ "src/A.fs"; "src/B.fs" ] @>
+                compare host (fullServable ()))
+
+        let replayed =
+            startThen store root true fixtureFullCheck "BAD is worst" (fun host linted ->
+                // Served from the cache: nothing linted, so the cache is all the run has.
+                test <@ List.isEmpty linted @>
+                compare host (fullServable ()))
+
+        for comparison in [ displacedSomething; replayed ] do
+            test <@ comparison.Files = [ "src/A.fs", FileOutcome.SameKey; "src/B.fs", FileOutcome.SameKey ] @>
+
+            test
+                <@
+                    PluginComparison.counts comparison = { Equal = 0
+                                                           Mismatch = 0
+                                                           Unverifiable = 0
+                                                           SameKey = 2 }
+                @>)
 
 /// The displaced entry was filed under another key than the one reuse would have read (here the
 /// record names other signatures): it says nothing about reuse's answer, so it is unverifiable.

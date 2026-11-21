@@ -72,11 +72,39 @@ let ``a plugin's comparison names the file and the plugin of each mismatch and c
         <@
             PluginComparison.counts comparison = { Equal = 1
                                                    Mismatch = 1
-                                                   Unverifiable = 1 }
+                                                   Unverifiable = 1
+                                                   SameKey = 0 }
         @>
 
     test
         <@ PluginComparison.mismatches comparison |> List.map (fun m -> m.Plugin, m.File) = [ "analyzers", "src/B.fs" ] @>
+
+/// The nightly keyed the file by the very key reuse would have read, so its "fresh" result may be
+/// that cached entry: comparing would compare the cache with itself. It is its own outcome,
+/// counted as neither equal nor unverifiable, whatever the findings.
+[<Fact>]
+let ``a file the nightly keyed by the reused key is sameKey, neither equal nor unverifiable`` () =
+    test <@ compareFile Reused.SameKey fresh = FileOutcome.SameKey @>
+    test <@ compareFile Reused.SameKey [] = FileOutcome.SameKey @>
+
+    let comparison =
+        PluginComparison.ofFiles
+            "lint"
+            [ "src/A.fs", FileOutcome.SameKey
+              "src/B.fs", FileOutcome.SameKey
+              "src/C.fs", FileOutcome.Equal
+              "src/D.fs", FileOutcome.Unverifiable UnverifiableReason.NoReusedEntry ]
+
+    test
+        <@
+            PluginComparison.counts comparison = { Equal = 1
+                                                   Mismatch = 0
+                                                   Unverifiable = 1
+                                                   SameKey = 2 }
+        @>
+
+    test <@ PluginComparison.mismatches comparison |> List.isEmpty @>
+    test <@ PluginComparison.sameKeyFiles comparison = [ "src/A.fs"; "src/B.fs" ] @>
 
 // --- test 5: the changed-outcome table ---------------------------------------------------
 
@@ -213,7 +241,8 @@ let private sample: Report =
               Lint =
                 PluginComparison.ofFiles
                     "lint"
-                    [ "src/C.fs", FileOutcome.Unverifiable UnverifiableReason.ConfigChanged ]
+                    [ "src/C.fs", FileOutcome.Unverifiable UnverifiableReason.ConfigChanged
+                      "src/D.fs", FileOutcome.SameKey ]
               TestPrune =
                 TestPruneSection.Compared(
                     { compareTests (selected s sPrime 2) [ row TestOutcome.Passed TestOutcome.Failed ] with
@@ -243,14 +272,16 @@ let ``the report and its summary line round-trip`` () =
             <@
                 counts.Analyzers = { Equal = 1
                                      Mismatch = 1
-                                     Unverifiable = 0 }
+                                     Unverifiable = 0
+                                     SameKey = 0 }
             @>
 
         test
             <@
                 counts.Lint = { Equal = 0
                                 Mismatch = 0
-                                Unverifiable = 1 }
+                                Unverifiable = 1
+                                SameKey = 1 }
             @>
 
         match counts.TestPrune with

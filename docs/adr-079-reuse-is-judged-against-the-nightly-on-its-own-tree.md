@@ -45,8 +45,10 @@ compare. Rejected:
 
 - **Blind spot: intermediate lands.** Only the nightly's tree is judged. A reuse error on a land
   tree that never becomes a nightly tree, or that a later land overwrites, is never seen.
-- When the reused key equals the fresh key, the analyzer and lint comparison checks only that the
-  plugin's cache is sound for that key.
+- `confirm --fresh` bypasses no plugin result cache (only the stored verdict, and the build's via
+  `force-rebuild`). When the reused key equals the nightly's own key, the nightly's result may be the
+  cached entry itself, so the analyzer and lint comparison reports such a file as `sameKey`:
+  counted as neither equal nor unverifiable.
 - An evicted entry or a changed plugin config gives no answer. The report counts these as
   unverifiable, per plugin.
 - Test-prune sees only tests the nightly ran, and a stale dependency edge that matters only for a

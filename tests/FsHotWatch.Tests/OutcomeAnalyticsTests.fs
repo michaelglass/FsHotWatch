@@ -761,11 +761,13 @@ let ``the nightly references shadow summaries are shown, and their absence is a 
                   Analyzers =
                     { Equal = 11
                       Mismatch = 0
-                      Unverifiable = 1 }
+                      Unverifiable = 1
+                      SameKey = 0 }
                   Lint =
                     { Equal = 0
                       Mismatch = 0
-                      Unverifiable = 12 }
+                      Unverifiable = 12
+                      SameKey = 0 }
                   TestPrune =
                     FsHotWatch.ReferencesShadowReport.TestPruneSummary.Compared
                         { DifferingAnalyses = 1
