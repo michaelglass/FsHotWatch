@@ -7,6 +7,10 @@
 - chore: rebuild to bundle updated dependencies
 
 
+- feat: AUTOMATION-1816 step 2b. S' re-derives C under the stale analyses, not only their edges: a symbol on which a
+  stale analysis and this run's disagree (content or presence) counts as changed under reuse exactly when it did not in
+  this run; symbols both agree on keep their status. Read on the copy, before the substitution.
+
 - feat: AUTOMATION-1816 step 2b. A `references-shadow-test-prune` command: given C (the symbols changed since the
   watermark) and the servable files, it reads each file's reused `testprune-analysis` record (the identity of its bytes
   and the stored check's signatures) and answers S (C selected over this run's index) and S' (the same over a copy with

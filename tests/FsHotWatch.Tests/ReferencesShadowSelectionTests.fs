@@ -171,6 +171,65 @@ let ``no differing analysis copies nothing, and an unreadable one is unverifiabl
         test <@ selections.UnverifiableAnalyses = 1 && selections.DifferingAnalyses = 0 @>
         test <@ not (Directory.Exists copyDir) @>)
 
+/// Substituting a stale analysis changes C as well as the edges: which of a file's symbols count
+/// as changed depends on the analysis that was diffed. Here the stale analysis of `src/Lib.fs`
+/// holds other content for both symbols and the same (absent) edges. This run counted `Lib.f`
+/// changed and `Lib.g` not; under reuse a symbol whose content the two analyses disagree on counts
+/// the other way, so C′ is `Lib.g` alone: S selects T, S′ selects U.
+[<Fact>]
+let ``a stale analysis changing which symbols count as changed changes S-prime`` () =
+    withTempDir "refshadow-selection-c" (fun dir ->
+        let root = Path.Combine(dir, "repo")
+        Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+        let libSource = "module Lib\nlet f () = 1\nlet g () = 2\n"
+        File.WriteAllText(Path.Combine(root, "src", "Lib.fs"), libSource)
+        let dbPath = Path.Combine(dir, "test-impact.db")
+        let db = Database(dbPath)
+        db.RebuildProjects([ libAnalysis; testsAnalysis true ], fileKeys = [ "src/Lib.fs", "fresh-identity" ])
+        let store = OutcomeRecords.InMemoryOutcomeStore()
+
+        let staleLib =
+            AnalysisResult.Create(
+                [ for name in [ "Lib.f"; "Lib.g" ] ->
+                      { symbol "src/Lib.fs" name Function with
+                          Location = InSource("src/Lib.fs", 1, 2, "stale-" + name) } ],
+                [],
+                []
+            )
+
+        AnalysisRecords.file
+            store
+            root
+            "src/Lib.fs"
+            (AnalysisRecords.keyOf (IndexedAnalysis.identity libSource "reused-fcs" "reused-used") "src/Lib.fs" "Lib")
+            staleLib
+        |> ignore
+
+        let libServable =
+            { servable with
+                File = "src/Lib.fs"
+                Project = "src/Lib.fsproj" }
+
+        let reused = reusedAnalysisOf store root (db.GetFileKeys()) libServable
+
+        test
+            <@
+                match reused with
+                | ReusedAnalysis.Differs _ -> true
+                | ReusedAnalysis.Same
+                | ReusedAnalysis.Unverifiable -> false
+            @>
+
+        let copyDir = Path.Combine(dir, "copy")
+        let selections = selections db dbPath copyDir [ "Lib.f" ] [ reused ]
+
+        test <@ selections.S = set [ "Tests.T" ] @>
+        test <@ selections.SPrime = set [ "Tests.U" ] @>
+        test <@ not (Directory.Exists copyDir) @>
+        // The index the gate selects from still holds this run's analysis.
+        test
+            <@ db.GetSymbolsInFile "src/Lib.fs" |> List.map _.ContentHash |> List.sort = [ "hash-Lib.f"; "hash-Lib.g" ] @>)
+
 /// TEST 7, test-prune's half (gates the land): computing S′ changes nothing the gate selects
 /// from. The index answers every selection, file key, symbol and edge exactly as before.
 [<Fact>]
