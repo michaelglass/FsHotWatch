@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: AUTOMATION-1816 step 2b. A servable file gone from disk since the scan named it is unverifiable in
+  `references-shadow-test-prune`; it threw, and the nightly lost the report for the whole run.
+
 - feat: AUTOMATION-1816 step 2b. S' re-derives C under the stale analyses, not only their edges: a symbol on which a
   stale analysis and this run's disagree (content or presence) counts as changed under reuse exactly when it did not in
   this run; symbols both agree on keep their status. Read on the copy, before the substitution.

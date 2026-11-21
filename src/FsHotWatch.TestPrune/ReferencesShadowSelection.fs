@@ -27,8 +27,8 @@ type internal ReusedAnalysis =
     | Same
     /// Reuse would have kept another analysis of `file` (repository-relative), substituted for S′.
     | Differs of file: string * AnalysisResult
-    /// No reused analysis can be read: no record under its identity, or a record naming no
-    /// used signatures.
+    /// No reused analysis can be read: no record under its identity, a record naming no used
+    /// signatures, or a file gone from disk since the scan named it.
     | Unverifiable
 
 /// What reuse would have kept for `servable`. `fileKeys` are this run's indexed identities by
@@ -39,10 +39,14 @@ let internal reusedAnalysisOf
     (fileKeys: Map<string, string>)
     (servable: ServableFile)
     : ReusedAnalysis =
+    let path = Path.Combine(repoRoot, servable.File)
+
     match servable.UsedSignatures with
     | UsedSignaturesKey.Undescribed -> ReusedAnalysis.Unverifiable
+    // Gone since the scan named it: no bytes to name the reused identity by.
+    | UsedSignaturesKey.Described _ when not (File.Exists path) -> ReusedAnalysis.Unverifiable
     | UsedSignaturesKey.Described used ->
-        let source = File.ReadAllText(Path.Combine(repoRoot, servable.File))
+        let source = File.ReadAllText path
         let reusedIdentity = IndexedAnalysis.identity source servable.FcsSignature used
         let project = AnalysisRecords.projectNameOf servable.Project
 
