@@ -2691,6 +2691,48 @@
         "reason": "provisional Linux floor (2026-11-21): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
         "platform": "linux"
       }
+    ],
+    "ReferencesShadowJson.fs": [
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "new file (AUTOMATION-1816 step 2b, the JSON half of the ReferencesShadowReport split). Measured 2026-11-21 from a full confirm run: lines 367/367, branches 101/103 (98.1%); the two not taken are the compiler-generated rethrow arm of Read.document's exception filter, which no input reaches, and TestPruneRequest.tryOfJson's missing-files arm. Floor = the measured value.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 on Linux with the same counts as macOS: lines 367/367, branches 101/103 (98.1%). Floor = the measured value.",
+        "platform": "linux"
+      }
+    ],
+    "ReferencesShadowSelection.fs": [
+      {
+        "line": 100,
+        "branch": 93,
+        "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 from a full confirm run: lines 72/72, branches 30/32 (93.8%); the two not taken are the compiler-generated null checks of the two `use` connections' disposal. Floor = the measured value.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 93,
+        "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 on Linux with the same counts as macOS: lines 72/72, branches 30/32 (93.8%). Floor = the measured value.",
+        "platform": "linux"
+      }
+    ],
+    "ReferencesShadowTrigger.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 from a full confirm run: lines 148/148, branches 61/61. Floor = the measured value.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 on Linux with the same counts as macOS: lines 148/148, branches 61/61. Floor = the measured value.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
