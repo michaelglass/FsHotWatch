@@ -287,3 +287,44 @@ let ``computing S-prime leaves the index the gate selects from exactly as it was
         // The shadow did substitute: S′ lost T.
         test <@ shadow.SPrime <> shadow.S @>
         test <@ gate () = before @>)
+
+/// The plugin answers the nightly's request through its own command: C selected over its index.
+/// A servable file gone from disk since the scan named it is unverifiable, not a failure of the
+/// request (it threw, and the report for the whole run was lost).
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``the test-prune plugin answers the nightly's request through its command`` () =
+    withTempDir "refshadow-selection-command" (fun dir ->
+        let dbPath = Path.Combine(dir, "tp.db")
+        let database = Database.create dbPath
+
+        FsHotWatch.Tests.TestPrunePluginTestSupport.PendingQueueHelpers.seedCoveredSymbol
+            database
+            "Lib.foo"
+            "Lib.fs"
+            "P1"
+            "P1Tests"
+            "fooTest"
+
+        let host = FsHotWatch.PluginHost.PluginHost.create (Unchecked.defaultof<_>) dir
+
+        host.RegisterHandler(FsHotWatch.TestPrune.TestPrunePlugin.create dbPath dir (Some []) None None None None [])
+
+        try
+            let request: TestPruneRequest =
+                { RunId = "0123456789abcdef0123456789abcdef"
+                  Changed = [ "Lib.foo" ]
+                  Files = [ servable ] }
+
+            let reply =
+                host.RunCommand(TestPruneCommand, [| TestPruneRequest.toJson request |])
+                |> Async.RunSynchronously
+                |> Option.bind SelectionsReply.tryOfJson
+
+            match reply with
+            | Some selections ->
+                test <@ selections.S = set [ "P1Tests.fooTest" ] && selections.SPrime = selections.S @>
+                test <@ selections.UnverifiableAnalyses = 1 && selections.DifferingAnalyses = 0 @>
+                test <@ selections.Copy = ImpactDbCopy.NotCopied @>
+            | None -> failwith "the test-prune plugin did not answer the request"
+        finally
+            host.Teardown())
