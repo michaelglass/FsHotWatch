@@ -5844,6 +5844,17 @@ module Daemon =
                 | FsHotWatch.InMemoryCheckCache.ReferencesKey.Off -> pipeline.MeasureAlternativeKeys store
                 | FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow nightly ->
                     pipeline.ShadowReferencesKey(store, nightly)
+
+                    // Step 2b: the files the references key would have served, for the nightly
+                    // shadow's comparison after a fresh confirm.
+                    match nightly with
+                    | FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost _ ->
+                        host.RegisterHostCommand(
+                            ReferencesShadowReport.ServableCommand,
+                            Plugin.ReplySchema.Typed ReferencesShadowReport.ServableSchema,
+                            fun _ -> async { return ReferencesShadowReport.Servable.toJson pipeline.ServableFiles }
+                        )
+                    | FsHotWatch.InMemoryCheckCache.NightlyShadow.Off -> ()
             | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off
             | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.OffInThisCheckout _ -> ()
 

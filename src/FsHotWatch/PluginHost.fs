@@ -448,6 +448,10 @@ type PluginHost
         setPluginStatus plugin.Name Idle
         registeredPlugins.Add(plugin)
 
+    /// Register a command the host itself answers, under `name`, beside the plugins' commands.
+    member internal _.RegisterHostCommand(name: string, schema: Plugin.ReplySchema, handler: CommandHandler) =
+        commands[name] <- (schema, handler)
+
     /// Register a preprocessor (runs before events are dispatched).
     member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
         setStatus preprocessor.Name Idle

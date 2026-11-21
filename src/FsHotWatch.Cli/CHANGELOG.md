@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1816 step 2b. With `cache.nightlyShadow` on, a `confirm --fresh` that kept no prior verdict and graded
+  a run files the output-level shadow report after writing `.fshw/verdict.json`: it reads C, the quarantined classes and
+  the watermark run (the full-suite run the previous verdict was relative to) before the run, then asks the daemon for
+  the servable files and each plugin for its comparison, reads the tests' outcomes from the two runs' CTRF reports,
+  and writes `.fshw/references-shadow/<runId>.json` plus a line in `.fshw/references-shadow.jsonl`. On another host
+  than `landHost` the report says `hostMismatch` before any lookup. A filtered `check`, a reused confirm and the switch
+  off write nothing and ask nothing; the exit code is always the confirm's.
+
 ## 0.14.0-alpha.158 - 2026-11-21
 
 - chore: rebuild to bundle updated dependencies
