@@ -230,6 +230,116 @@ let ``a stale analysis changing which symbols count as changed changes S-prime``
         test
             <@ db.GetSymbolsInFile "src/Lib.fs" |> List.map _.ContentHash |> List.sort = [ "hash-Lib.f"; "hash-Lib.g" ] @>)
 
+/// ITEM 4, the claim in `changedUnder`'s comment, tested: C was derived against a THIRD version V3
+/// of Lib (the index before this run), neither the stale analysis nor this run's. Per symbol:
+/// X differs in all three; Y is stale = V3 ≠ current; Z is current = V3 ≠ stale; W is stale =
+/// current ≠ V3. Each symbol has its own test. The exact S′ re-derives C as reuse would have:
+/// the stale analysis diffed against V3, selected over an index holding the stale analysis. The
+/// computed attributable set must be a SUPERSET of the exact one: with every test failing (every
+/// test counted, the most demanding rows), and so for any rows.
+[<Fact>]
+let ``with a third version in the index the attributable set is a superset of the exact one`` () =
+    withTempDir "refshadow-selection-v3" (fun dir ->
+        let root = Path.Combine(dir, "repo")
+        Directory.CreateDirectory(Path.Combine(root, "src")) |> ignore
+
+        let libSource =
+            "module Lib\nlet x () = 1\nlet y () = 2\nlet z () = 3\nlet w () = 4\n"
+
+        File.WriteAllText(Path.Combine(root, "src", "Lib.fs"), libSource)
+
+        let lib (hashes: (string * string) list) =
+            AnalysisResult.Create(
+                [ for name, hash in hashes ->
+                      { symbol "src/Lib.fs" name Function with
+                          Location = InSource("src/Lib.fs", 1, 2, hash) } ],
+                [],
+                []
+            )
+
+        let v3 = lib [ "Lib.x", "v3-x"; "Lib.y", "s-y"; "Lib.z", "c-z"; "Lib.w", "v3-w" ]
+
+        let current =
+            lib [ "Lib.x", "c-x"; "Lib.y", "c-y"; "Lib.z", "c-z"; "Lib.w", "sc-w" ]
+
+        let stale = lib [ "Lib.x", "s-x"; "Lib.y", "s-y"; "Lib.z", "s-z"; "Lib.w", "sc-w" ]
+
+        let tests =
+            AnalysisResult.Create(
+                [ for name in [ "TX"; "TY"; "TZ"; "TW" ] -> symbol "tests/Tests.fs" ("Tests." + name) Function ],
+                [ for name in [ "x"; "y"; "z"; "w" ] -> edge ("Tests.T" + name.ToUpperInvariant()) ("Lib." + name) ],
+                [ for name in [ "TX"; "TY"; "TZ"; "TW" ] -> testOf name ]
+            )
+
+        let changesAgainst (db: Database) (analysis: AnalysisResult) =
+            TestPrune.SymbolDiff.detectChanges analysis.Symbols (db.GetSymbolsInFile "src/Lib.fs")
+            |> fst
+            |> TestPrune.SymbolDiff.changedSymbolNames
+            |> List.sort
+
+        // The index before this run holds V3; this run's C is its analysis diffed against V3, and
+        // the run then indexes its own analysis, as the nightly's index holds it when S′ is asked.
+        let dbPath = Path.Combine(dir, "test-impact.db")
+        let db = Database(dbPath)
+        db.RebuildProjects([ v3; tests ], fileKeys = [ "src/Lib.fs", "v3-identity" ])
+        let changed = changesAgainst db current
+        test <@ changed = [ "Lib.w"; "Lib.x"; "Lib.y" ] @>
+
+        // What reuse would have derived: the stale analysis diffed against the same V3.
+        let changedExact = changesAgainst db stale
+        test <@ changedExact = [ "Lib.w"; "Lib.x"; "Lib.z" ] @>
+
+        db.RebuildProjects([ current; tests ], fileKeys = [ "src/Lib.fs", "fresh-identity" ])
+
+        // The exact S′: C as reuse would have derived it, over an index holding the stale analysis.
+        let exactDb = Database(Path.Combine(dir, "exact-impact.db"))
+        exactDb.RebuildProjects([ stale; tests ])
+
+        let sPrimeExact =
+            (exactDb.QueryAffectedSelection changedExact).Tests
+            |> List.map testName
+            |> Set.ofList
+
+        let store = OutcomeRecords.InMemoryOutcomeStore()
+
+        AnalysisRecords.file
+            store
+            root
+            "src/Lib.fs"
+            (AnalysisRecords.keyOf (IndexedAnalysis.identity libSource "reused-fcs" "reused-used") "src/Lib.fs" "Lib")
+            stale
+        |> ignore
+
+        let reused =
+            reusedAnalysisOf
+                store
+                root
+                (db.GetFileKeys())
+                { servable with
+                    File = "src/Lib.fs"
+                    Project = "src/Lib.fsproj" }
+
+        let computed = selections db dbPath (Path.Combine(dir, "copy")) changed [ reused ]
+        let exact = { computed with SPrime = sPrimeExact }
+
+        let everyTestFails =
+            [ for name in [ "TX"; "TY"; "TZ"; "TW" ] -> row ("Tests." + name) TestOutcome.Passed TestOutcome.Failed ]
+
+        let attributable (selections: Selections) =
+            (compareTests selections everyTestFails).Attributable
+            |> List.map _.Test
+            |> Set.ofList
+
+        test <@ computed.S = set [ "Tests.TW"; "Tests.TX"; "Tests.TY" ] @>
+        test <@ sPrimeExact = set [ "Tests.TW"; "Tests.TX"; "Tests.TZ" ] @>
+        // The computed S′ never selects what the exact one does not ...
+        test <@ Set.isSubset computed.SPrime sPrimeExact @>
+        // ... so its attributable set holds every exactly attributable test.
+        test <@ Set.isSubset (attributable exact) (attributable computed) @>
+        test <@ attributable exact = set [ "Tests.TY" ] @>
+        // The one inexact symbol is X, the one V3 differs on from both: its test is over-attributed.
+        test <@ attributable computed = set [ "Tests.TX"; "Tests.TY" ] @>)
+
 /// The analysis this run filed may sit under another identity and still be the reused one: the
 /// same record is the same analysis. A file this run never indexed differs whatever it holds.
 [<Fact>]
