@@ -2677,6 +2677,20 @@
         "reason": "new file (AUTOMATION-1765). Not yet measured on Linux CI: set equal to the macOS measurement, as for TestRowsLog.fs; the IO-failure tests use Unix file modes, which Linux honours for a non-root user. Re-baseline from CI (mise run loosen-from-ci) if the Linux report differs.",
         "platform": "linux"
       }
+    ],
+    "ReferencesShadowReport.fs": [
+      {
+        "line": 100,
+        "branch": 98,
+        "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 on macOS from ReferencesShadowReportTests alone: lines 660/660, branches 190/192; the two not taken are the compiler-generated rethrow arm of Read.document's exception filter, which no input reaches. A full run can only cover more.",
+        "platform": "macos"
+      },
+      {
+        "line": 98,
+        "branch": 95,
+        "reason": "provisional Linux floor (2026-11-21): not measured; set below the macOS value by the margin this repo sees on pure-logic files, to be settled from CI artifacts via loosen-from-ci. NOT a licence to loosen the macOS floor.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {
