@@ -245,6 +245,17 @@ let ``each plugin's sameKey files are sampled by the seed, spot-checked, and rec
         test <@ (PluginComparison.counts c.Lint).SameKey = 60 @>
     | HostMismatch _ -> failwith "expected a comparison"
 
+    // A spot-check reply that is not one is a failure, as every malformed reply is.
+    let malformed: ScopeCommands.Send =
+        fun name args ->
+            if name = LintSpotCheckCommand then
+                Some "{}"
+            else
+                send name args
+
+    raises<InvalidOperationException>
+        <@ compare "land-box" "land-box" malformed nothingBefore (fun () -> []) runId 99 DateTimeOffset.UnixEpoch @>
+
 [<Fact>]
 let ``the rows read each test's outcome in the nightly and the watermark run`` () =
     withTempDir "refshadow-trigger-rows" (fun repoRoot ->

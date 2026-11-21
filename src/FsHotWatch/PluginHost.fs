@@ -364,10 +364,10 @@ type PluginHost
     member _.SetRecheck(live: ReferencesShadowReport.Recheck) = recheck <- live
 
     /// A live check of a file under its options, never from a filed check record, for the nightly
-    /// shadow's spot-check (AUTOMATION-1816 step 2b). Read at each call, so a plugin may take it before
-    /// the daemon installs its pipeline's. Not counted as any plugin's demand.
-    member _.Recheck: ReferencesShadowReport.Recheck =
-        fun file options -> recheck file options
+    /// shadow's spot-check (AUTOMATION-1816 step 2b). Reads the installed check at each call, so a
+    /// plugin may be wired to it before the daemon installs its pipeline's. Not counted as any plugin's demand.
+    member _.Recheck(file: AbsFilePath, options: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions) =
+        recheck file options
 
     /// Each plugin's demanded live checks so far, as `name n` pairs by name, comma-separated;
     /// empty when none demanded any (AUTOMATION-1482).
