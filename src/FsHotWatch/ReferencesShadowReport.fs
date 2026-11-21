@@ -239,10 +239,16 @@ type SpotChecks =
     }
 
 type SpotCheckCounts =
-    { Sampled: int
-      Equal: int
-      Mismatch: int
-      NotRecomputed: int }
+    {
+        Sampled: int
+        Equal: int
+        /// The sampled files whose recomputed result differed from what the run served, in path
+        /// order: kept by name in the summary line, so every night's mismatches can be rolled up.
+        Mismatched: string list
+        NotRecomputed: int
+    }
+
+    member this.Mismatch = this.Mismatched.Length
 
 module SpotCheck =
     /// Up to `size` of `files`, drawn by `seed`, in path order: the same seed and files draw the
@@ -293,17 +299,22 @@ module SpotCheck =
     let counts (outcomes: (string * SpotOutcome) list) : SpotCheckCounts =
         outcomes
         |> List.fold
-            (fun c (_, outcome) ->
+            (fun (c: SpotCheckCounts) (file, outcome) ->
                 match outcome with
                 | SpotOutcome.Equal -> { c with Equal = c.Equal + 1 }
-                | SpotOutcome.Mismatch _ -> { c with Mismatch = c.Mismatch + 1 }
+                | SpotOutcome.Mismatch _ ->
+                    { c with
+                        Mismatched = file :: c.Mismatched }
                 | SpotOutcome.NotRecomputed _ ->
                     { c with
                         NotRecomputed = c.NotRecomputed + 1 })
             { Sampled = outcomes.Length
               Equal = 0
-              Mismatch = 0
+              Mismatched = []
               NotRecomputed = 0 }
+        |> fun (c: SpotCheckCounts) ->
+            { c with
+                Mismatched = List.sort c.Mismatched }
 
 // --- test-prune --------------------------------------------------------------------------
 
@@ -637,7 +648,7 @@ module private Write =
         let o = JsonObject()
         o["sampled"] <- c.Sampled
         o["equal"] <- c.Equal
-        o["mismatch"] <- c.Mismatch
+        o["mismatched"] <- array (c.Mismatched |> List.map (fun file -> JsonValue.Create file :> JsonNode))
         o["notRecomputed"] <- c.NotRecomputed
         o
 
@@ -781,7 +792,7 @@ module private Read =
     let spotCounts (e: JsonElement) : SpotCheckCounts =
         { Sampled = int e "sampled"
           Equal = int e "equal"
-          Mismatch = int e "mismatch"
+          Mismatched = items e "mismatched" |> List.map (fun file -> file.GetString())
           NotRecomputed = int e "notRecomputed" }
 
     let spotSummary (e: JsonElement) : SpotCheckSummary =
@@ -1223,3 +1234,52 @@ let readSummaries (repoRoot: string) : Summary list =
         File.ReadAllLines path |> Array.choose Summary.tryOfJson |> List.ofArray
     else
         []
+
+// --- every night's spot-checks -----------------------------------------------------------
+
+/// One spot-check mismatch as a summary line recorded it: the night (its run, and when its report
+/// was written), the plugin, and the file.
+type SpotCheckMismatch =
+    { RunId: string
+      WrittenAt: DateTimeOffset
+      Plugin: string
+      File: string }
+
+/// The spot-checks of every recorded night together: every line of `references-shadow.jsonl`,
+/// not only the nights a window or the retained reports keep. A night on another host than the
+/// land host has no spot-check and is not counted.
+type SpotCheckRollUp =
+    {
+        /// Nights compared on the land host.
+        Nights: int
+        /// Files sampled over those nights, both plugins.
+        Sampled: int
+        /// Every mismatch, oldest night first, then by plugin and file.
+        Mismatches: SpotCheckMismatch list
+    }
+
+module SpotCheckRollUp =
+    /// `summaries` (oldest first, as `readSummaries` returns them) rolled up.
+    let ofSummaries (summaries: Summary list) : SpotCheckRollUp =
+        let compared =
+            summaries
+            |> List.choose (fun s ->
+                match s.Result with
+                | SummaryResult.Compared c -> Some(s, c.SpotChecks)
+                | SummaryResult.HostMismatch _ -> None)
+
+        { Nights = compared.Length
+          Sampled =
+            compared
+            |> List.sumBy (fun (_, spot) -> spot.Analyzers.Sampled + spot.Lint.Sampled)
+          Mismatches =
+            compared
+            |> List.collect (fun (summary, spot) ->
+                [ "analyzers", spot.Analyzers; "lint", spot.Lint ]
+                |> List.collect (fun (plugin, counts) ->
+                    counts.Mismatched
+                    |> List.map (fun file ->
+                        { RunId = summary.RunId
+                          WrittenAt = summary.WrittenAt
+                          Plugin = plugin
+                          File = file }))) }

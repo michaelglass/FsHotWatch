@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `fshw analytics` rolls up the nightly spot-check mismatches of every recorded night, whatever `--since`:
+  nights, files sampled and mismatches in total, then each mismatch's night, plugin and file; `--json` carries them
+  as `referencesShadowSpotChecks` (AUTOMATION-1816 step 2b).
+
 - feat: when test-prune refuses S' because its index did not hold the run's analysis, the nightly shadow report files
   the test-prune comparison as invalid with the reason, logs it as a warning, and `fshw analytics` shows
   `test-prune INVALID`; the other plugins are still compared and the confirm's exit code is untouched (AUTOMATION-1816

@@ -773,12 +773,12 @@ let ``the nightly references shadow summaries are shown, and their absence is a 
                       Analyzers =
                         { Sampled = 0
                           Equal = 0
-                          Mismatch = 0
+                          Mismatched = []
                           NotRecomputed = 0 }
                       Lint =
                         { Sampled = 3
                           Equal = 2
-                          Mismatch = 1
+                          Mismatched = [ "src/L.fs" ]
                           NotRecomputed = 0 } }
                   TestPrune =
                     FsHotWatch.ReferencesShadowReport.TestPruneSummary.Compared
@@ -837,4 +837,77 @@ let ``the nightly references shadow summaries are shown, and their absence is a 
         <@
             later.ReferencesShadow.IsEmpty
             && later.Gaps |> List.exists (fun g -> g.StartsWith "references shadow")
+        @>
+
+/// `fshw analytics` rolls up the spot-check mismatches of every recorded night, whatever the
+/// window: a night outside `--since` still counts, with its night, plugin and file named.
+[<Fact>]
+let ``analytics rolls up every recorded night's spot-check mismatches, whatever the window`` () =
+    let night (runId: string) (day: int) (lintMismatched: string list) : FsHotWatch.ReferencesShadowReport.Summary =
+        { RunId = runId
+          WrittenAt = DateTimeOffset(2026, 11, day, 3, 0, 0, TimeSpan.Zero)
+          Result =
+            FsHotWatch.ReferencesShadowReport.SummaryResult.Compared
+                { Servable = 2
+                  Analyzers =
+                    { Equal = 2
+                      Mismatch = 0
+                      Unverifiable = 0
+                      SameKey = 0 }
+                  Lint =
+                    { Equal = 0
+                      Mismatch = 0
+                      Unverifiable = 0
+                      SameKey = 2 }
+                  SpotChecks =
+                    { Seed = day
+                      Analyzers =
+                        { Sampled = 0
+                          Equal = 0
+                          Mismatched = []
+                          NotRecomputed = 0 }
+                      Lint =
+                        { Sampled = 2
+                          Equal = 2 - lintMismatched.Length
+                          Mismatched = lintMismatched
+                          NotRecomputed = 0 } }
+                  TestPrune = FsHotWatch.ReferencesShadowReport.TestPruneSummary.NotCompared "no watermark" } }
+
+    let report =
+        analyze
+            (Some(DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero)))
+            (one { Records = []; Unreadable = 0 } noRows noLog)
+            (readShadowLogs [])
+            [ night "old-night" 2 [ "src/Old.fs" ]; night "new-night" 21 [] ]
+
+    // The window shows only the new night; the roll-up counts both.
+    test <@ report.ReferencesShadow |> List.map _.RunId = [ "new-night" ] @>
+
+    test
+        <@
+            report.ReferencesShadowSpotChecks.Nights = 2
+            && report.ReferencesShadowSpotChecks.Sampled = 4
+        @>
+
+    let lines = render 10 report
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l.Contains "all 2 recorded night(s): sampled 4, mismatches 1")
+        @>
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l.Contains "mismatch 2026-11-02 03:00Z run old-night lint src/Old.fs")
+        @>
+
+    let json = toJson report
+    test <@ json.Contains "\"referencesShadowSpotChecks\":{\"nights\":2,\"sampled\":4,\"mismatches\":1" @>
+
+    test
+        <@
+            json.Contains "\"runId\":\"old-night\""
+            && json.Contains "\"file\":\"src/Old.fs\""
         @>
