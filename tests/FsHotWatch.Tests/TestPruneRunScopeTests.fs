@@ -4916,6 +4916,7 @@ let ``the completion line names both generations, the graded run and the evidenc
 
     let receipt: TestEvidenceReceipt =
         { InputTreeHash = Some "tree"
+          BeforeRun = noBeforeRunWitness
           ModelGeneration = Some 7L
           ProjectInputs = None
           RunId = receiptRun
@@ -5082,6 +5083,7 @@ let ``a run-tests reply leaves out the projects a mid-run model change revoked``
 let ``a receipt speaks for a later model only while every project it covered is unchanged`` () =
     let receipt: TestEvidenceReceipt =
         { InputTreeHash = Some "tree"
+          BeforeRun = noBeforeRunWitness
           ModelGeneration = Some 1L
           ProjectInputs =
             Some(Map.ofList [ "ProjA", ("/repo/ProjA.fsproj", "a"); "ProjB", ("/repo/ProjB.fsproj", "b") ])
@@ -5524,6 +5526,7 @@ let ``a completion warns when its receipt and its evidence name different runs``
 
     let receipt: TestEvidenceReceipt =
         { InputTreeHash = Some "tree"
+          BeforeRun = noBeforeRunWitness
           ModelGeneration = Some 7L
           ProjectInputs = None
           RunId = receiptRun

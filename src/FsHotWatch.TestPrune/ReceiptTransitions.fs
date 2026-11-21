@@ -378,18 +378,27 @@ module ReceiptTransition =
             if narrowerThanPrevious then
                 ReceiptTransition.Narrower
             else
-                ReceiptTransition.Earned
-                    { InputTreeHash = currentInputTree
-                      ModelGeneration = currentModelGeneration
-                      ProjectInputs = launch.ProjectInputs
-                      RunId = completed.RunId
-                      Coverage = coverage
-                      Seeds = launch.Seeds
-                      ZeroSelection = launch.ZeroSelection
-                      FullSuiteCause = launch.FullSuiteCause
-                      SelectedBy = launch.SelectedBy
-                      SeedFanout = launch.SeedFanout
-                      Price = launch.Price }
+                // Earned only with a witness that `beforeRun` holds for the tree it binds
+                // (AUTOMATION-1835): a later zero-affected skip of that tree stands on it.
+                match launch.BeforeRun with
+                | Some witness when BeforeRunWitness.covers currentInputTree witness ->
+                    ReceiptTransition.Earned
+                        { InputTreeHash = currentInputTree
+                          BeforeRun = witness
+                          ModelGeneration = currentModelGeneration
+                          ProjectInputs = launch.ProjectInputs
+                          RunId = completed.RunId
+                          Coverage = coverage
+                          Seeds = launch.Seeds
+                          ZeroSelection = launch.ZeroSelection
+                          FullSuiteCause = launch.FullSuiteCause
+                          SelectedBy = launch.SelectedBy
+                          SeedFanout = launch.SeedFanout
+                          Price = launch.Price }
+                | Some _
+                | None ->
+                    ReceiptTransition.Revoked
+                        "no passing beforeRun settled the tree this run ran against: it moved a compile input, or the tree could not be read after it"
 
     /// Fold one transition into the store. Total, and the only place the store changes
     /// on a completion.

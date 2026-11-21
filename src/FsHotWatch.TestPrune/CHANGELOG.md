@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: AUTOMATION-1835. A zero-affected green stands on a passing `tests.beforeRun` over the tree it answers for
+  (ADR-080). The nothing-to-verify skip (every changed symbol uncovered) returned green without running `beforeRun`
+  over a tree no passing hook had seen. It now runs `beforeRun` first under its own run id, and skips only when the
+  hook passed and moved nothing a build compiles. A failing hook aborts the run, and a moved compile input runs the
+  launch. The baseline-equivalent skip and repositories with no `beforeRun` are unchanged. A run whose tree could not
+  be read after `beforeRun` no longer earns a receipt. BREAKING: new public type `BeforeRunWitness`; its cases are
+  private, and only a completed `beforeRun` (or none configured) builds one. `TestEvidenceReceipt` gains
+  `BeforeRun: BeforeRunWitness`, `TestRunLaunch` gains `BeforeRun: BeforeRunWitness option`, and `TestRunInputs`
+  gains `EvidenceWitness: BeforeRunWitness option`.
+
 ## 0.13.0-alpha.120 - 2026-11-18
 
 - fix: testprune-analysis records name every path under the analysed root relative to it, attribute arguments included

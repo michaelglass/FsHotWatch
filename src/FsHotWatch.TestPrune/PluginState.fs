@@ -598,6 +598,10 @@ type TestRunInputs =
         EvidenceTree: string option
         /// The entries of `EvidenceTree`, when they are held.
         EvidenceManifest: ReceiptTree option
+        /// The witness the standing receipt's run earned with: that `tests.beforeRun` holds for
+        /// its tree (AUTOMATION-1835). `None` when no receipt stands; a held checkout baseline
+        /// vouches for no `beforeRun` of this session.
+        EvidenceWitness: BeforeRunWitness option
         /// The tree the last `BatchChecked` folded its check results over: the symbol
         /// diff has run over this tree.
         SealedTree: string option
@@ -629,6 +633,11 @@ module TestRunInputs =
             state.EvidenceReceipt
             |> Option.bind (fun receipt -> receipt.InputTreeHash)
             |> Option.orElse (state.CheckoutBaseline |> Option.map _.Tree)
+          EvidenceWitness =
+            match state.Receipt with
+            | HeldReceipt.Standing(receipt, _) -> Some receipt.BeforeRun
+            | HeldReceipt.NoneYet
+            | HeldReceipt.Revoked _ -> None
           EvidenceManifest =
             match state.Receipt with
             | HeldReceipt.Standing(receipt, manifest) ->

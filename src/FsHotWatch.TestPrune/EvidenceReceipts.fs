@@ -34,6 +34,9 @@ open FsHotWatch.TestPrune.InputTrees
 type TestEvidenceReceipt =
     {
         InputTreeHash: string option
+        /// What vouches that `tests.beforeRun` holds for `InputTreeHash`: the witness of the
+        /// run that earned it. A zero-affected skip over this tree stands on it.
+        BeforeRun: BeforeRunWitness
         /// The project model the run was launched AND completed under. A receipt speaks for
         /// one tree under one model; under a later model it speaks only for the projects
         /// whose compile inputs are unchanged (`receiptSpeaksFor`).

@@ -110,6 +110,7 @@ let internal commandForceRunWith
     // covered by nothing — exactly right, they did not run.
     let commandLaunch: TestRunLaunch =
         { InputTree = None
+          BeforeRun = None
           ModelGeneration = observeModelGeneration ctx
           ProjectInputs = observeTestInputs ctx
           Symbols = Set.empty
@@ -166,7 +167,7 @@ let internal commandForceRunWith
 
         try
             try
-                let! results, started, completed, boundTree, testHostStartedAt, _ =
+                let! results, started, completed, settlement, testHostStartedAt, _ =
                     executeTests
                         db
                         None
@@ -215,7 +216,8 @@ let internal commandForceRunWith
                         started,
                         completed,
                         { commandLaunch with
-                            InputTree = boundTree
+                            InputTree = Settlement.bound settlement
+                            BeforeRun = Settlement.witness settlement
                             TestHostStartedAt = Some testHostStartedAt },
                         reply,
                         fun revoked -> formatStandingResultsJson revoked filter runReports results

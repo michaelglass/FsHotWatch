@@ -551,6 +551,7 @@ let private launchRecordingCtx (claim: SharedRunClaim) =
 /// The evidence a completed run leaves for the tree `tree`.
 let private receiptOver (tree: string option) : TestEvidenceReceipt =
     { InputTreeHash = tree
+      BeforeRun = noBeforeRunWitness
       ModelGeneration = None
       ProjectInputs = None
       RunId = Guid.NewGuid()

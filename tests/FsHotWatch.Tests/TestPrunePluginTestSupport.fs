@@ -29,6 +29,7 @@ open FsHotWatch.TestPrune.SelectionAssembly
 open FsHotWatch.TestPrune.RunLaunch
 open FsHotWatch.TestPrune.PluginState
 open FsHotWatch.TestPrune.PluginTypes
+open FsHotWatch.TestPrune.InputTrees
 open FsHotWatch.TestPrune.CoverageArtifacts
 open TestPrune.AstAnalyzer
 open TestPrune.Coverage
@@ -38,11 +39,30 @@ open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.TestPrune
 
+/// The witness a run of a plugin with no `tests.beforeRun` settles with. Built the only way a
+/// witness can be, through `BeforeRunWitness.settle`; with no hook it runs nothing and binds
+/// the launch tree as it is.
+let noBeforeRunWitness: BeforeRunWitness =
+    match
+        BeforeRunWitness.settle
+            BeforeRunHook.NotConfigured
+            Guid.Empty
+            (fun _ ->
+                { new IDisposable with
+                    member _.Dispose() = () })
+            (fun () _ -> false)
+            None
+            (fun () -> None)
+    with
+    | Settlement.Settled witnessed -> witnessed.Witness
+    | Settlement.Unsettled _ -> failwith "with no beforeRun configured the launch tree always settles"
+
 /// An empty launch: commits nothing and covers nothing, so it clears no outstanding red.
 /// For tests that build `TestsFinished` directly. Runs that must CLEAR something use
 /// `fullSuiteLaunch` / `filteredLaunch` below.
 let emptyLaunch: TestRunLaunch =
     { InputTree = None
+      BeforeRun = Some noBeforeRunWitness
       ModelGeneration = None
       ProjectInputs = None
       Symbols = Set.empty
@@ -67,6 +87,7 @@ let emptyLaunch: TestRunLaunch =
 /// plain `test-rerun`) has, and the only one whose green may clear an arbitrary red.
 let fullSuiteLaunch (projects: string list) : TestRunLaunch =
     { InputTree = None
+      BeforeRun = Some noBeforeRunWitness
       ModelGeneration = None
       ProjectInputs = None
       Symbols = Set.empty
@@ -91,6 +112,7 @@ let fullSuiteLaunch (projects: string list) : TestRunLaunch =
 /// selection. Projects NOT named were skipped entirely.
 let filteredLaunch (selection: (string * string list) list) : TestRunLaunch =
     { InputTree = None
+      BeforeRun = Some noBeforeRunWitness
       ModelGeneration = None
       ProjectInputs = None
       Symbols = Set.empty

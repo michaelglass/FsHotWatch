@@ -57,7 +57,7 @@ type internal RunConfig =
         RunnableProjects: Set<string>
         LaunchDeadline: TimeSpan
         MaxParallelProjects: int option
-        BeforeRun: (Guid -> HookStep.Tracker -> unit) option
+        BeforeRun: BeforeRunHook
         AfterRun: (TestResults -> unit) option
         CoveragePaths: (string -> CoveragePaths option) option
         /// The projects whose `runtimeSelection` is shadow. While any is configured, every
@@ -889,6 +889,8 @@ let internal assembleLaunch
 
     let launch =
         { InputTree = inputTree
+          // Nothing has settled the tree yet: the run's `beforeRun` does, or the skip's witness.
+          BeforeRun = None
           ModelGeneration = observeModelGeneration ctx
           ProjectInputs = observeTestInputs ctx
           Symbols = launchedSymbols
@@ -914,32 +916,35 @@ let internal assembleLaunch
       Launch = launch }
 
 /// The zero-affected skip: an impact run with nothing to verify finishes green with a
-/// degenerate lifecycle that executed nothing, so it covers and clears nothing.
+/// degenerate lifecycle that executed nothing, so it covers and clears nothing. It binds
+/// the tree `witnessed` vouches for and carries that witness: a green with nothing run
+/// stands on a passing `tests.beforeRun` over its tree, or on there being none
+/// (AUTOMATION-1835). `started` is its lifecycle's start, not yet emitted; a `beforeRun`
+/// run for this skip filed its timings under that run id.
 let internal zeroAffectedSkip
     (emitStarted: TestRunStarted -> unit)
     (inputs: TestRunInputs)
     (launch: TestRunLaunch)
     (nothingToVerify: bool)
+    (started: TestRunStarted)
+    (witnessed: WitnessedTree)
     : Async<TestPruneMsg> =
     async {
+        let witness = string witnessed.Witness
+
         if nothingToVerify then
             Logging.info
                 "test-prune"
-                "Every changed symbol has no covering test — nothing to verify, skipping tests (green, 0 ran)"
+                $"Every changed symbol has no covering test — nothing to verify, skipping tests (green, 0 ran; %s{witness})"
         else
             Logging.info
                 "test-prune"
-                "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
+                $"No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests (%s{witness})"
 
         // Build a degenerate lifecycle (Started → Completed with empty
         // Results). Start fires immediately; the synchronous Custom handler
         // emits completion inside the cache-write capture window.
-        let runId = Guid.NewGuid()
-
-        let started: TestRunStarted =
-            { RunId = runId
-              StartedAt = DateTime.UtcNow }
-
+        let runId = started.RunId
         emitStarted started
 
         let completed: TestRunCompleted =
@@ -963,6 +968,8 @@ let internal zeroAffectedSkip
                 started,
                 completed,
                 { launch with
+                    InputTree = witnessed.Tree
+                    BeforeRun = Some witnessed.Witness
                     Selection = Map.empty
                     SelectedBy = []
                     SeedFanout = SeedFanoutReading.NoSelection

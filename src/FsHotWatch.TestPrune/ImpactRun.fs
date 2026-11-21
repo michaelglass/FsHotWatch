@@ -98,6 +98,10 @@ let internal runTestsWithImpactWith
 
         let mutable emittedStart: TestRunStarted option = None
 
+        // The lifecycle a zero-affected skip opened by running `beforeRun` before emitting
+        // its start: an aborted lifecycle closes it under the run id the hook filed under.
+        let mutable skipLifecycle: TestRunStarted option = None
+
         let emitStarted started =
             emittedStart <- Some started
             ctx.EmitTestRunStarted started
@@ -187,10 +191,61 @@ let internal runTestsWithImpactWith
             let nothingForced =
                 totalClasses = 0 && Set.isEmpty forceRunProjects && not hasQuarantinedFailures
 
-            if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
+            // Either route's green must also stand on `tests.beforeRun` over this tree
+            // (AUTOMATION-1835, ADR-080): the skip runs no test, so it never reaches the run
+            // that is the only other place `beforeRun` executes. Route 1 holds the witness
+            // of the receipt whose tree it matched; with no hook configured every skip holds
+            // one. Route 2 has no tree requirement, so without a held witness it runs
+            // `beforeRun` first, under the skip's own run id, and skips only when the hook
+            // passed and left a tree the symbol diff still describes. A failing hook throws
+            // to the aborted lifecycle below, which closes the skip's lifecycle.
+            let skipGround =
+                if nothingForced && not alwaysOnly && (baselineEquivalent || nothingToVerify) then
+                    let started: TestRunStarted =
+                        { RunId = Guid.NewGuid()
+                          StartedAt = DateTime.UtcNow }
+
+                    match BeforeRunWitness.held beforeRun inputs.EvidenceWitness launch.InputTree with
+                    | Some witnessed -> Some(started, witnessed)
+                    | None when nothingToVerify ->
+                        Logging.info
+                            "test-prune"
+                            "Every changed symbol has no covering test, but no passing beforeRun has seen this tree — running beforeRun before deciding"
+
+                        skipLifecycle <- Some started
+
+                        match
+                            BeforeRunWitness.settle
+                                beforeRun
+                                started.RunId
+                                (HookStep.asSubtasks ctx.StartSubtask ctx.EndSubtask)
+                                (compileInputsOf ctx)
+                                launch.InputTree
+                                (fun () -> ReceiptInputTree.readTree repoRoot)
+                        with
+                        | Settlement.Settled witnessed -> Some(started, witnessed)
+                        | Settlement.Unsettled _ ->
+                            skipLifecycle <- None
+
+                            Logging.info
+                                "test-prune"
+                                "beforeRun moved a compile input, so the symbol diff no longer describes the tree — running instead of skipping"
+
+                            None
+                    | None ->
+                        Logging.info
+                            "test-prune"
+                            "No affected classes, but no passing beforeRun is held for this tree — running instead of skipping"
+
+                        None
+                else
+                    None
+
+            match skipGround with
+            | Some(started, witnessed) ->
                 logRuntimeShadow Map.empty
-                return! zeroAffectedSkip emitStarted inputs launch nothingToVerify
-            else
+                return! zeroAffectedSkip emitStarted inputs launch nothingToVerify started witnessed
+            | None ->
                 let launch = priceSelection launch
                 logRuntimeShadow launch.Selection
 
@@ -254,7 +309,7 @@ let internal runTestsWithImpactWith
                     treeUnverified
                     answeredByRecords
 
-                let! results, started, completed, boundTree, testHostStartedAt, evidenceHeld =
+                let! results, started, completed, settlement, testHostStartedAt, evidenceHeld =
                     executeTests
                         db
                         (Some ctx)
@@ -283,7 +338,7 @@ let internal runTestsWithImpactWith
                 // Completed for cache replay.
                 ignore results
 
-                fileStaticRecord completed (boundTree |> Option.map _.Identity)
+                fileStaticRecord completed (Settlement.bound settlement |> Option.map _.Identity)
 
                 // The skip on records holds only if every runnable project's green was
                 // filed from its record over the SETTLED tree and still held at
@@ -316,7 +371,8 @@ let internal runTestsWithImpactWith
                         started,
                         completed,
                         { launch with
-                            InputTree = boundTree
+                            InputTree = Settlement.bound settlement
+                            BeforeRun = Settlement.witness settlement
                             TestHostStartedAt = Some testHostStartedAt
                             Reused = evidenceHeld
                             ZeroSelection = zeroSelection }
@@ -326,7 +382,8 @@ let internal runTestsWithImpactWith
 
             // Build an Aborted lifecycle so subscribers see a coherent end
             // to this run rather than hanging at TestRunStarted.
-            let started, completed = abortedRunLifecycle emittedStart (abortReasonOf ex)
+            let started, completed =
+                abortedRunLifecycle (emittedStart |> Option.orElse skipLifecycle) (abortReasonOf ex)
 
             if emittedStart.IsNone then
                 emitStarted started
@@ -342,6 +399,7 @@ let internal runTestsWithImpactWith
             // aborted run executed nothing, so it clears nothing.
             let launch =
                 { InputTree = None
+                  BeforeRun = None
                   ModelGeneration = observeModelGeneration ctx
                   ProjectInputs = observeTestInputs ctx
                   Symbols = launchedSymbols

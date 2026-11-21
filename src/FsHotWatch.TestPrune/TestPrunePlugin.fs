@@ -438,7 +438,7 @@ let internal createWithEvidenceAndQueries
               RunnableProjects = runnableProjects
               LaunchDeadline = launchDeadline
               MaxParallelProjects = maxParallelProjects
-              BeforeRun = beforeRun
+              BeforeRun = BeforeRunHook.ofOption beforeRun
               AfterRun = afterRun
               CoveragePaths = coveragePaths
               RuntimeShadowProjects = shadowRuntimeProjects

@@ -321,32 +321,15 @@ let internal beginRun
     emitStarted started
 
     // The tree this run's receipt binds to: re-read once `beforeRun` has done its
-    // generating, so its own output does not count as an edit made mid-run. `settled`
-    // says whether that is the tree the tests run against: no `beforeRun`, or one that
-    // moved nothing a build compiles. Test evidence is keyed only over a settled tree.
-    let boundTree, settled =
-        match beforeRun with
-        | Some setup ->
-            Logging.info "test-prune" "Running beforeRun setup..."
-            setup runId trackHookStep
-            Logging.info "test-prune" "beforeRun complete"
+    // generating, so its own output does not count as an edit made mid-run. `Settled`
+    // when that is the tree the tests run against: no `beforeRun`, or one that passed and
+    // moved nothing a build compiles; it then carries the witness a receipt binds with
+    // (`BeforeRunWitness.settle`). Test evidence is keyed only over a settled tree.
+    let settlement =
+        BeforeRunWitness.settle beforeRun runId trackHookStep feedsCompile launchTree (fun () ->
+            ReceiptInputTree.readTree repoRoot)
 
-            let afterSetup = ReceiptInputTree.readTree repoRoot
-
-            let binding, why =
-                ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree afterSetup
-
-            why |> Option.iter (Logging.info "test-prune")
-
-            let settled =
-                match binding, afterSetup with
-                | Some bound, Some after -> bound.Identity = after.Identity
-                | _ -> false
-
-            binding, settled
-        | None -> launchTree, true
-
-    traces, started, boundTree, settled
+    traces, started, settlement
 
 /// Conclude a run whose groups have all finished: record flakiness, ingest its traces,
 /// tidy the run directories, stop the clock and close the primary subtask, and build the
@@ -461,7 +444,7 @@ let internal executeTests
     (feedsCompile: unit -> string -> bool)
     // Receives the run id so the hook's own timings can be filed
     // under this run, beside the CTRF reports the verdict already reads.
-    (beforeRun: (Guid -> HookStep.Tracker -> unit) option)
+    (beforeRun: BeforeRunHook)
     // Where each step `beforeRun` runs is held while it runs: the plugin's subtasks, on
     // every path, so a wait or wedge inside the setup names the step it is on.
     (trackHookStep: HookStep.Tracker)
@@ -499,7 +482,7 @@ let internal executeTests
         | :? UnauthorizedAccessException as ex ->
             Logging.warn "test-prune" $"could not create the run directory %s{runDir}: %s{ex.Message}"
 
-        let traces, started, boundTree, settled =
+        let traces, started, settlement =
             beginRun
                 ctx
                 traces
@@ -522,13 +505,15 @@ let internal executeTests
         let evidence =
             match evidencePlan with
             | None -> None
-            | Some planOf when settled -> planOf ()
-            | Some _ ->
-                Logging.info
-                    "test-prune"
-                    "test evidence: none reused or published — beforeRun moved a compile input, so the tests run against a tree they were not built from"
+            | Some planOf ->
+                match settlement with
+                | Settlement.Settled _ -> planOf ()
+                | Settlement.Unsettled _ ->
+                    Logging.info
+                        "test-prune"
+                        "test evidence: none reused or published — beforeRun moved a compile input, so the tests run against a tree they were not built from"
 
-                None
+                    None
 
         let testHostStartedAt = DateTime.UtcNow
 
@@ -575,7 +560,7 @@ let internal executeTests
                             (TestPrune.Ports.toSymbolStore db)
                             host.IndexFold
                             (runId.ToString("N"))
-                            (boundTree |> Option.map _.Identity)
+                            (Settlement.bound settlement |> Option.map _.Identity)
                             (fun () -> ReceiptInputTree.read repoRoot)
                             runs
                             host.TraceLog),
@@ -786,5 +771,5 @@ let internal executeTests
             "test-prune"
             $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
-        return testResults, started, completed, boundTree, testHostStartedAt, evidenceHeld
+        return testResults, started, completed, settlement, testHostStartedAt, evidenceHeld
     }

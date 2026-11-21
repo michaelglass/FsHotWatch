@@ -377,3 +377,130 @@ module internal ReceiptInputTree =
             + $"does not observe these paths): %s{namePaths paths} — each was written after the test host "
             + "started. If a re-run on a settled tree writes them again, the tests are not hermetic: "
             + "make them write outside the repository"
+
+/// The `tests.beforeRun` a plugin is configured with, or the explicit statement that it has
+/// none. Read once from the configuration, so no run asks an option what it means.
+[<RequireQualifiedAccess>]
+type internal BeforeRunHook =
+    | NotConfigured
+    /// Runs the hook under a run id. It returns only when every step passed; a failing
+    /// step throws.
+    | Configured of run: (Guid -> FsHotWatch.HookStep.Tracker -> unit)
+
+module internal BeforeRunHook =
+    let ofOption (hook: (Guid -> FsHotWatch.HookStep.Tracker -> unit) option) : BeforeRunHook =
+        match hook with
+        | Some run -> BeforeRunHook.Configured run
+        | None -> BeforeRunHook.NotConfigured
+
+/// What vouches that `tests.beforeRun` holds for a tree (AUTOMATION-1835, ADR-080): no hook
+/// is configured, or the hook ran to completion and left exactly this tree.
+///
+/// The cases are private. `PassedOn` is built in one place, `BeforeRunWitness.settle`,
+/// after the configured hook has returned; nothing else can name it. A receipt carries the
+/// witness of the run that earned it, and a zero-affected green carries the witness it
+/// stands on (`WitnessedTree`), so a green with nothing run over a tree no passing
+/// `beforeRun` saw cannot be built.
+[<RequireQualifiedAccess>]
+type BeforeRunWitness =
+    private
+    | NoHookConfigured
+    | PassedOn of tree: string
+
+    override this.ToString() =
+        match this with
+        | NoHookConfigured -> "no beforeRun configured"
+        | PassedOn tree -> $"beforeRun passed on tree %s{tree}"
+
+/// A tree a run may bind, with the witness that `tests.beforeRun` holds for it. Built only
+/// by `BeforeRunWitness.settle` and `BeforeRunWitness.held`, so its witness always covers
+/// its tree.
+type internal WitnessedTree =
+    private
+        { BoundTo: ReceiptTree option
+          VouchedBy: BeforeRunWitness }
+
+    member this.Tree = this.BoundTo
+    member this.Witness = this.VouchedBy
+
+/// What `tests.beforeRun` left a run.
+[<RequireQualifiedAccess>]
+type internal Settlement =
+    /// The tests run against this tree, and the witness says `beforeRun` holds for it.
+    | Settled of WitnessedTree
+    /// `beforeRun` moved a compile input, or the tree could not be read after it: the
+    /// receipt keeps this launch binding, and nothing vouches for it.
+    | Unsettled of launchBinding: ReceiptTree option
+
+module internal Settlement =
+    /// The tree a run's receipt binds to.
+    let bound (settlement: Settlement) : ReceiptTree option =
+        match settlement with
+        | Settlement.Settled witnessed -> witnessed.Tree
+        | Settlement.Unsettled binding -> binding
+
+    /// The witness for that tree, when there is one.
+    let witness (settlement: Settlement) : BeforeRunWitness option =
+        match settlement with
+        | Settlement.Settled witnessed -> Some witnessed.Witness
+        | Settlement.Unsettled _ -> None
+
+module internal BeforeRunWitness =
+    /// Run the configured hook and bind the tree it leaves (`ReceiptInputTree.afterBeforeRun`).
+    /// The only place a `PassedOn` witness is built: after the hook returned, over the tree
+    /// read once it had, and only when that is the tree the tests run against. A failing
+    /// hook throws out of here, so it yields no witness. With no hook configured, nothing
+    /// runs and the launch tree is settled as it is.
+    let settle
+        (hook: BeforeRunHook)
+        (runId: Guid)
+        (track: FsHotWatch.HookStep.Tracker)
+        (feedsCompile: unit -> string -> bool)
+        (launchTree: ReceiptTree option)
+        (readTree: unit -> ReceiptTree option)
+        : Settlement =
+        match hook with
+        | BeforeRunHook.NotConfigured ->
+            Settlement.Settled
+                { BoundTo = launchTree
+                  VouchedBy = BeforeRunWitness.NoHookConfigured }
+        | BeforeRunHook.Configured run ->
+            Logging.info "test-prune" "Running beforeRun setup..."
+            run runId track
+            Logging.info "test-prune" "beforeRun complete"
+
+            let afterSetup = readTree ()
+
+            let binding, why =
+                ReceiptInputTree.afterBeforeRun (feedsCompile ()) launchTree afterSetup
+
+            why |> Option.iter (Logging.info "test-prune")
+
+            match binding, afterSetup with
+            | Some bound, Some after when String.Equals(bound.Identity, after.Identity, StringComparison.Ordinal) ->
+                Settlement.Settled
+                    { BoundTo = Some after
+                      VouchedBy = BeforeRunWitness.PassedOn after.Identity }
+            | _ -> Settlement.Unsettled binding
+
+    /// The witness a zero-affected skip over `tree` already holds, without running anything:
+    /// any tree when no hook is configured; with one, the witness of the receipt the skip
+    /// stands on, when that receipt's run passed `beforeRun` on this very tree.
+    let held (hook: BeforeRunHook) (receiptWitness: BeforeRunWitness option) (tree: ReceiptTree option) =
+        match hook, receiptWitness with
+        | BeforeRunHook.NotConfigured, _ ->
+            Some
+                { BoundTo = tree
+                  VouchedBy = BeforeRunWitness.NoHookConfigured }
+        | BeforeRunHook.Configured _, Some(BeforeRunWitness.PassedOn seen as witness) when
+            ReceiptInputTree.matches (Some seen) (tree |> Option.map _.Identity)
+            ->
+            Some { BoundTo = tree; VouchedBy = witness }
+        | BeforeRunHook.Configured _,
+          (Some BeforeRunWitness.NoHookConfigured | Some(BeforeRunWitness.PassedOn _) | None) -> None
+
+    /// Whether the witness vouches for the tree with this identity.
+    let covers (tree: string option) (witness: BeforeRunWitness) : bool =
+        match witness with
+        | BeforeRunWitness.NoHookConfigured -> true
+        | BeforeRunWitness.PassedOn seen -> ReceiptInputTree.matches (Some seen) tree

@@ -61,6 +61,12 @@ type TestRunLaunch =
         /// Immutable input tree captured before this run executes, entries and all: what
         /// moved by completion is named from these, never looked up.
         InputTree: ReceiptTree option
+        /// The witness that `tests.beforeRun` holds for `InputTree` (AUTOMATION-1835): set from
+        /// the run's `Settlement`, or, for the zero-affected skip, from the witness it stands on.
+        /// `None` for a launch nothing vouches for: one whose `beforeRun` moved a compile input,
+        /// one that never reached it, and the aborted lifecycle. A receipt is earned only with
+        /// one that covers the tree it binds.
+        BeforeRun: BeforeRunWitness option
         /// The available project-model generation this run was selected under. A
         /// completion observed under a different model keeps the results of the projects
         /// whose compile inputs it did not change (`ProjectInputs`) and discharges nothing
