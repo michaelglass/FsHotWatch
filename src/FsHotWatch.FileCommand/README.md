@@ -73,12 +73,14 @@ When `pattern` targets a non-source file (e.g. `*.ratchet.json` or
 watcher to cover that pattern so real edits trigger the plugin.
 
 When `args` names an F# script (an `.fsx` token, as in `fsi --typecheck-only
-build.fsx`), every file that script `#load`s, transitively, is an input too:
-a change to one runs the command, and its content is part of the cache key,
-although `pattern` does not match it. The closure is read from the scripts at
-each event (each `#load` relative to the file it is in, `__SOURCE_DIRECTORY__`
-included); a loaded file that does not exist is keyed as missing. `#r`
-references and `#I` search paths are not followed.
+build.fsx`), every file that script `#load`s or `#r`-references by local
+path, transitively, is an input too: a change to one runs the command, and its
+content is part of the cache key, although `pattern` does not match it. Each
+`#I` directory is a key term as well. The closure is read from the scripts at
+each event: a name resolves relative to the file it is in, then in each `#I`
+directory declared before it, `__SOURCE_DIRECTORY__` included; a file that
+does not exist is keyed as missing. `#r "nuget: ..."` names no file (its text
+is already part of the script).
 
 ### Environment variables on `afterTests` commands
 

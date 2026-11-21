@@ -20,20 +20,24 @@ type InputSpec =
     /// scope, `Watcher.acceptsUnderRoot`). `entry` digests the plugin's own configuration entry,
     /// so editing its command re-keys it and nothing else.
     | Matching of pattern: WatchScope.FilePattern * entry: string
-    /// Every file the scripts (repository-relative, as a command's arguments name them) `#load`,
-    /// transitively, and the scripts themselves (`loadClosure`; AUTOMATION-1840). A command
+    /// Every file the scripts (repository-relative, as a command's arguments name them) `#load` or
+    /// `#r` (a local path), transitively, each `#I` directory, and the scripts themselves (`loadClosure`; AUTOMATION-1840). A command
     /// such as `fsi --typecheck-only build.fsx` reads each of them, although its pattern
     /// names none, so an edit to one must re-key it.
     | LoadClosure of scripts: string list
 
-/// A file of a script's `#load` closure, repository-relative with `/` separators.
+/// A member of a script's closure (`loadClosure`): a file or an include directory, repository-relative
+/// with `/` separators.
 [<RequireQualifiedAccess>]
 type Loaded =
     /// On disk: its content is an input.
     | Present of path: string
-    /// Named by a `#load` (or as a script) but not on disk. The name is still an input: a file
+    /// Named by a `#load` or `#r` (or as a script) but not on disk. The name is still an input: a file
     /// appearing there changes what the script compiles.
     | Missing of path: string
+    /// An `#I` directory, absolute when outside the repository: where later relative names are
+    /// looked up, so the place a name resolves to can change without any file in the closure changing.
+    | Included of path: string
 
 /// The scripts a command's arguments name: its `.fsx` tokens. A glob names no one script.
 let scriptsIn (args: string) : string list =
@@ -92,58 +96,110 @@ let rec private literals (text: string) (at: int) (found: string list) : string 
     else
         literals text (at + 1) found
 
-/// The files a `#load` directive in `text` (the content of `file`) names, absolute: each
-/// relative to `file`'s own directory, with `__SOURCE_DIRECTORY__` read as that directory.
-/// One directive may name several files. A directive inside a block comment or an inactive
-/// `#if` branch is counted too: a superset costs a cache miss at worst, never a replay.
-let internal loadTargets (file: string) (text: string) : string list =
+/// A directive of a script that names an input, with its path as written and
+/// `__SOURCE_DIRECTORY__` read as the directory of the file it is in.
+[<RequireQualifiedAccess>]
+type internal Directive =
+    /// `#load`: a source file, compiled with the script, whose own directives count.
+    | Load of path: string
+    /// `#r` / `#reference` to a local file: an assembly, whose bytes count and which is not parsed.
+    | Reference of path: string
+    /// `#I` / `#include`: a directory later relative names are also looked up in.
+    | Include of dir: string
+
+/// The directives in `text` (the content of `file`) that name inputs. One directive may name
+/// several paths. A reference that names a package manager (`#r "nuget: X"`: a scheme of two or
+/// more characters before a colon, so `C:\` stays a path) names no file; its text is already
+/// keyed in the script. A directive inside a block comment or an inactive `#if` branch is
+/// counted too: a superset costs a cache miss at worst, never a replay.
+let internal directivesIn (file: string) (text: string) : Directive list =
     let dir = Path.GetDirectoryName(Path.GetFullPath file)
+
+    // Longer names first: `#r` must not claim `#reference`, nor `#I` claim `#include`.
+    let kinds =
+        [ "#load", Directive.Load
+          "#reference", Directive.Reference
+          "#r", Directive.Reference
+          "#include", Directive.Include
+          "#I", Directive.Include ]
 
     text.Split('\n')
     |> Array.toList
     |> List.collect (fun line ->
         let directive = line.TrimStart()
 
-        if
-            directive.StartsWith("#load", StringComparison.Ordinal)
-            && (directive.Length = 5 || not (Char.IsLetterOrDigit directive[5]))
-        then
-            literals directive 5 []
-            |> List.map (fun path ->
-                let path = path.Replace("__SOURCE_DIRECTORY__", dir)
+        kinds
+        |> List.tryFind (fun (name, _) ->
+            directive.StartsWith(name, StringComparison.Ordinal)
+            && (directive.Length = name.Length
+                || not (Char.IsLetterOrDigit directive[name.Length])))
+        |> Option.map (fun (name, make) ->
+            literals directive name.Length []
+            |> List.filter (fun path -> path.IndexOf ':' < 2)
+            |> List.map (fun path -> make (path.Replace("__SOURCE_DIRECTORY__", dir))))
+        |> Option.defaultValue [])
 
-                Path.GetFullPath(
-                    if Path.IsPathRooted path then
-                        path
-                    else
-                        Path.Combine(dir, path)
-                ))
-        else
-            [])
+/// What the closure walk has still to visit, in order.
+[<RequireQualifiedAccess>]
+type private Pending =
+    /// A file, absolute; `parse` when its own directives count (a script or source, not an assembly).
+    | File of path: string * parse: bool
+    /// A directive of a file in directory `dir`, resolved when the walk reaches it, against the
+    /// include directories declared before it.
+    | Declared of dir: string * Directive
 
-/// The transitive `#load` closure of `scripts` (repository-relative, or absolute), the scripts
-/// first: each file once, in the order a depth-first walk of the directives meets it, so a
-/// cycle ends where it closes. Computed from the files as they are now, never listed by hand.
-/// A file that exists but cannot be read is `Present`: its digest says it is unreadable.
+/// The transitive closure of `scripts` (repository-relative, or absolute) over `#load`, local
+/// `#r` and `#I`, the scripts first: each file once, in the order a depth-first walk of the
+/// directives meets it, so a cycle ends where it closes. Computed from the files as they are
+/// now, never listed by hand.
+///
+/// A relative name resolves against the directory of the file declaring it first, then each
+/// `#I` directory declared before it, in declaration order and across files as one FSI session
+/// accumulates them; a name found nowhere is missing where its declaring file would hold it.
+/// Not modelled: the framework and SDK directories FSI also searches for a bare assembly name
+/// (`#r "System.Xml.dll"` keys as missing: a constant term). A file that exists but cannot be
+/// read is `Present`: its digest says it is unreadable.
 let loadClosure (repoRoot: string) (scripts: string list) : Loaded list =
     let root = Path.GetFullPath repoRoot
 
     let relative (abs: string) =
         Path.GetRelativePath(root, abs).Replace('\\', '/')
 
-    // A file that cannot be read loads nothing we can see; its own term says it is unreadable.
-    let loadsOf (abs: string) =
-        VerdictInputs.tryRead [] (fun () -> loadTargets abs (File.ReadAllText abs))
+    // A file that cannot be read declares nothing we can see; its own term says it is unreadable.
+    let directivesOf (abs: string) =
+        VerdictInputs.tryRead [] (fun () -> directivesIn abs (File.ReadAllText abs))
+        |> List.map (fun directive -> Pending.Declared(Path.GetDirectoryName abs, directive))
 
-    let rec visit (pending: string list) (seen: Set<string>) (found: Loaded list) =
+    // A rooted `path` combines to itself, so every candidate is that path.
+    let resolve (dir: string) (includes: string list) (path: string) =
+        let candidates =
+            dir :: includes
+            |> List.map (fun under -> Path.GetFullPath(Path.Combine(under, path)))
+
+        candidates |> List.tryFind File.Exists |> Option.defaultValue candidates.Head
+
+    let rec visit (pending: Pending list) (includes: string list) (seen: Set<string>) (found: Loaded list) =
         match pending with
         | [] -> List.rev found
-        | abs :: rest when seen.Contains abs -> visit rest seen found
-        | abs :: rest when File.Exists abs ->
-            visit (loadsOf abs @ rest) (seen.Add abs) (Loaded.Present(relative abs) :: found)
-        | abs :: rest -> visit rest (seen.Add abs) (Loaded.Missing(relative abs) :: found)
+        | Pending.Declared(dir, Directive.Include path) :: rest ->
+            let abs = Path.GetFullPath(Path.Combine(dir, path))
+            visit rest (includes @ [ abs ]) seen (Loaded.Included(relative abs) :: found)
+        | Pending.Declared(dir, Directive.Load path) :: rest ->
+            visit (Pending.File(resolve dir includes path, true) :: rest) includes seen found
+        | Pending.Declared(dir, Directive.Reference path) :: rest ->
+            visit (Pending.File(resolve dir includes path, false) :: rest) includes seen found
+        | Pending.File(abs, _) :: rest when seen.Contains abs -> visit rest includes seen found
+        | Pending.File(abs, parse) :: rest when File.Exists abs ->
+            let declared = if parse then directivesOf abs else []
+            visit (declared @ rest) includes (seen.Add abs) (Loaded.Present(relative abs) :: found)
+        | Pending.File(abs, _) :: rest -> visit rest includes (seen.Add abs) (Loaded.Missing(relative abs) :: found)
 
-    visit (scripts |> List.map (fun script -> Path.GetFullPath(Path.Combine(root, script)))) Set.empty []
+    visit
+        (scripts
+         |> List.map (fun script -> Pending.File(Path.GetFullPath(Path.Combine(root, script)), true)))
+        []
+        Set.empty
+        []
 
 /// The key terms of a load closure: each present file's content under `load:<path>`, and each
 /// missing one as `missing:<path>`.
@@ -151,7 +207,8 @@ let loadTerms (repoRoot: string) (scripts: string list) : (string * string) list
     loadClosure repoRoot scripts
     |> List.map (function
         | Loaded.Present rel -> "load:" + rel, ContentHash.ofFile (Path.Combine(Path.GetFullPath repoRoot, rel))
-        | Loaded.Missing rel -> "missing:" + rel, "absent")
+        | Loaded.Missing rel -> "missing:" + rel, "absent"
+        | Loaded.Included rel -> "include:" + rel, "dir")
 
 /// Whether a plugin's last outcome may answer for a tree it did not run on.
 [<RequireQualifiedAccess; NoComparison>]

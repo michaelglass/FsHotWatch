@@ -212,7 +212,8 @@ let internal computeArgsSaltWith
                 "load:" + rel,
                 hashFile (System.IO.Path.Combine(repoRoot, rel))
                 |> Option.defaultValue "unreadable"
-            | FsHotWatch.PluginInputs.Loaded.Missing rel -> "missing:" + rel, "absent")
+            | FsHotWatch.PluginInputs.Loaded.Missing rel -> "missing:" + rel, "absent"
+            | FsHotWatch.PluginInputs.Loaded.Included rel -> "include:" + rel, "dir")
 
     let inputs = [ "command", command; "args", args ] @ fileHashes @ loadHashes
 
@@ -236,7 +237,8 @@ let internal loadedFiles (repoRoot: string) (args: string) : Set<string> =
     |> List.choose (function
         | FsHotWatch.PluginInputs.Loaded.Present rel ->
             Some(System.IO.Path.GetFullPath(System.IO.Path.Combine(repoRoot, rel)))
-        | FsHotWatch.PluginInputs.Loaded.Missing _ -> None)
+        | FsHotWatch.PluginInputs.Loaded.Missing _
+        | FsHotWatch.PluginInputs.Loaded.Included _ -> None)
     |> Set.ofList
 
 /// The files of a change that `filter` matched: the inputs a FileChanged run fires for.
