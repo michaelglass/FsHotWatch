@@ -4774,7 +4774,11 @@ let private executeCommandRendered
                     |> OutcomeAnalytics.shadowLogsFor repoRoot)
 
             let report =
-                OutcomeAnalytics.analyze setup.Since stores (OutcomeAnalytics.readShadowLogs logs)
+                OutcomeAnalytics.analyze
+                    setup.Since
+                    stores
+                    (OutcomeAnalytics.readShadowLogs logs)
+                    (FsHotWatch.ReferencesShadowReport.readSummaries repoRoot)
 
             if setup.Json then
                 printfn "%s" (OutcomeAnalytics.toJson report)

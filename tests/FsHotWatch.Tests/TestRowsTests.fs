@@ -350,6 +350,7 @@ let ``a red run and a later green one on the same tree and tool are reported fla
                     { Head = FsHotWatch.Cli.OutcomeAnalytics.StoreSource.ofPath root
                       Tail = [] })
                 (FsHotWatch.Cli.OutcomeAnalytics.readShadowLogs [])
+                []
 
         test
             <@

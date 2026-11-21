@@ -699,6 +699,7 @@ let ``analytics finds a flake whose red record was evicted, from the daily log a
                       Log = log }
                   Tail = [] }
                 (FsHotWatch.Cli.OutcomeAnalytics.readShadowLogs [])
+                []
 
         // The index alone has only the green: no flake.
         test

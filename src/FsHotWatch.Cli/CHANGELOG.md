@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw analytics` shows the nightly's references-shadow summaries in its window (servable, analyzers and lint
+  equal/mismatch/unverifiable, test-prune attributable/selector miss/flaky/differing/unverifiable and the impact-DB copy,
+  or a host mismatch), and `--json` carries them as `referencesShadow`; with none in the window it lists the gap instead
+  (AUTOMATION-1816 step 2b).
+
 - feat: AUTOMATION-1816 step 2b. With `cache.nightlyShadow` on, a `confirm --fresh` that kept no prior verdict and graded
   a run files the output-level shadow report after writing `.fshw/verdict.json`: it reads C, the quarantined classes and
   the watermark run (the full-suite run the previous verdict was relative to) before the run, then asks the daemon for
