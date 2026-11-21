@@ -2141,6 +2141,58 @@ let ``a preprocessor pass is recorded on the host's phase ledger under the prepr
         test <@ record.Elapsed >= TimeSpan.FromMilliseconds 50.0 @>
     | other -> failwith $"expected one ledger record for the preprocessor pass, got %A{other}"
 
+// AUTOMATION-1840: every prod `confirm --fresh` of 2026-11-20/21 reported `format: rewrote 0 of
+// 0 file(s)`. Its scan had judged the whole registered tree ("rewrote 0 of 3206"); a later
+// change batch holding no F# file then ran the pass over nothing, and that pass's line replaced
+// the scan's as the status the verdict prints. A pass that considered nothing has nothing to
+// report about the tree, so its status says so and names the last pass that considered files.
+let private countingPreprocessor (name: string) =
+    { new IFsHotWatchPreprocessor with
+        member _.Name = name
+
+        member _.Process (repoFiles: FsHotWatch.RepoFiles.RepoFile list) (_repoRoot: string) =
+            Ok
+                { Modified = []
+                  Considered = repoFiles.Length
+                  Failures = []
+                  Evidence = "stub formatter" }
+
+        member _.Dispose() = () }
+
+let private summaryOf (host: PluginHost) (name: string) =
+    match host.GetStatus name with
+    | Some(Completed(_, verdict)) -> verdict.Summary
+    | other -> failwith $"expected %s{name} completed, got %A{other}"
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a pass over no file keeps the last pass over files as the status it reports`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    host.RegisterPreprocessor(countingPreprocessor "format")
+
+    host.JudgePreprocessors([ "src/Lib.fs"; "src/App.fs" ]) |> ignore
+    test <@ summaryOf host "format" = "format: rewrote 0 of 2 file(s) — stub formatter" @>
+
+    host.RunPreprocessors([]) |> ignore
+    let summary = summaryOf host "format"
+    test <@ not (summary.Contains "0 of 0") @>
+
+    test
+        <@
+            summary = "format: this pass had no file to process; its last pass over files: rewrote 0 of 2 file(s) — stub formatter"
+        @>
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a first pass over no file says that nothing was processed`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    host.RegisterPreprocessor(countingPreprocessor "format")
+
+    host.RunPreprocessors([]) |> ignore
+
+    test
+        <@
+            summaryOf host "format" = "format: this pass had no file to process, and no pass has had one yet — stub formatter"
+        @>
+
 // ---------------------------------------------------------------------------
 // Preprocessor ordering: registration order is run order, and each pass sees what
 // the passes before it rewrote.

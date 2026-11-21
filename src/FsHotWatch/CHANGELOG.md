@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a preprocessor pass offered no file it processes no longer reports `rewrote 0 of 0 file(s)` (AUTOMATION-1840).
+  Every production `confirm --fresh` of 2026-11-20/21 printed `format: rewrote 0 of 0 file(s)` although its scan
+  had judged the whole registered tree (`rewrote 0 of 3206`): a later change batch holding no F# file ran the pass
+  over nothing, and its line replaced the scan's as the status the verdict prints. Such a pass now says
+  `<name>: this pass had no file to process; its last pass over files: <that pass's line>`, or that no pass has had
+  a file yet.
+
 ## 0.10.0-alpha.124 - 2026-11-21
 
 - feat!: the REFERENCES key runs in shadow behind `cache.referencesKey: "shadow"` (AUTOMATION-1816 step 2), off by

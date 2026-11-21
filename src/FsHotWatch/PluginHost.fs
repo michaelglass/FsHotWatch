@@ -223,6 +223,31 @@ type PluginHost
         | true, rewritten -> rewritten
         | false, _ -> []
 
+    /// preprocessor name → the outcome of its last pass that was offered at least one file it
+    /// processes (AUTOMATION-1840). A pass offered none (a change batch of only non-F# files, for
+    /// the formatter) says nothing about the tree, so its status names this line instead of
+    /// reading "rewrote 0 of 0 file(s)" where the scan before it had judged the whole tree.
+    let lastPassOverFiles = ConcurrentDictionary<string, string>()
+
+    /// The status line of a pass of `name` that returned `result`, recording it as the last
+    /// pass over files when it considered any.
+    let passSummary (name: string) (result: PreprocessResult) : string =
+        let outcome =
+            match result.Failures with
+            | [] -> $"rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
+            | failed ->
+                $"could not process %d{failed.Length} of %d{result.Considered} file(s), rewrote %d{result.Modified.Length} — %s{result.Evidence}"
+
+        match result.Considered, result.Failures with
+        | 0, [] when result.Modified.IsEmpty ->
+            match lastPassOverFiles.TryGetValue name with
+            | true, prior -> $"%s{name}: this pass had no file to process; its last pass over files: %s{prior}"
+            | false, _ ->
+                $"%s{name}: this pass had no file to process, and no pass has had one yet — %s{result.Evidence}"
+        | _ ->
+            lastPassOverFiles[name] <- outcome
+            $"%s{name}: %s{outcome}"
+
     // Plugin statuses are one immutable map, replaced wholesale under `statusGate`
     // and published with a volatile write. Readers take no lock and post no message:
     // they read the last published map. The scan's build wait, `WaitForComplete`,
@@ -502,12 +527,7 @@ type PluginHost
                             modifiedFiles <- result.Modified @ modifiedFiles
                             let finishedAt = System.DateTime.UtcNow
 
-                            let summary =
-                                match result.Failures with
-                                | [] ->
-                                    $"%s{preprocessor.Name}: rewrote %d{result.Modified.Length} of %d{result.Considered} file(s) — %s{result.Evidence}"
-                                | failed ->
-                                    $"%s{preprocessor.Name}: could not process %d{failed.Length} of %d{result.Considered} file(s), rewrote %d{result.Modified.Length} — %s{result.Evidence}"
+                            let summary = passSummary preprocessor.Name result
 
                             lines <- summary :: lines
                             evidence <- result.Evidence :: evidence
