@@ -49,6 +49,11 @@ compare. Rejected:
   `force-rebuild`). When the reused key equals the nightly's own key, the nightly's result may be the
   cached entry itself, so the analyzer and lint comparison reports such a file as `sameKey`:
   counted as neither equal nor unverifiable.
+- Because a `sameKey` file's nightly result is not a cold answer, each nightly SPOT-CHECKS a random
+  sample of them (50 per plugin, or all if fewer): the plugin recomputes each sampled file on a live
+  check with its result cache bypassed and compares it with what the run served. The report records
+  the seed, the sampled files and each outcome (equal, mismatch, not recomputed). Record and compare
+  only: nothing recomputed is reported, filed or served.
 - An evicted entry or a changed plugin config gives no answer. The report counts these as
   unverifiable, per plugin.
 - Test-prune sees only tests the nightly ran, and a stale dependency edge that matters only for a

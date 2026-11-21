@@ -3082,7 +3082,10 @@ let registerPluginsIn
 
         daemon.RegisterHandler(
             FsHotWatch.Lint.LintPlugin.createWith
-                daemon.Displacement
+                (match daemon.Displacement with
+                 | FsHotWatch.TaskCache.DisplacementCapture.Captured displaced ->
+                     FsHotWatch.Lint.LintPlugin.Shadow.On(displaced, daemon.Host.Recheck)
+                 | FsHotWatch.TaskCache.DisplacementCapture.Off -> FsHotWatch.Lint.LintPlugin.Shadow.Off)
                 outsideRepoScope
                 lintConfigPath
                 None
@@ -3154,7 +3157,7 @@ let registerPluginsIn
                       ReuseKeys =
                         match nightlyShadowOf config.Cache with
                         | FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost _ ->
-                            FsHotWatch.Analyzers.AnalyzeRecords.ReuseKeys.Kept
+                            FsHotWatch.Analyzers.AnalyzeRecords.ReuseKeys.Kept daemon.Host.Recheck
                         | FsHotWatch.InMemoryCheckCache.NightlyShadow.Off ->
                             FsHotWatch.Analyzers.AnalyzeRecords.ReuseKeys.NotKept }
 

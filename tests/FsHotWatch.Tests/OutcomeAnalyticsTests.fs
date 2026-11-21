@@ -768,6 +768,18 @@ let ``the nightly references shadow summaries are shown, and their absence is a 
                       Mismatch = 0
                       Unverifiable = 12
                       SameKey = 0 }
+                  SpotChecks =
+                    { Seed = 5
+                      Analyzers =
+                        { Sampled = 0
+                          Equal = 0
+                          Mismatch = 0
+                          NotRecomputed = 0 }
+                      Lint =
+                        { Sampled = 3
+                          Equal = 2
+                          Mismatch = 1
+                          NotRecomputed = 0 } }
                   TestPrune =
                     FsHotWatch.ReferencesShadowReport.TestPruneSummary.Compared
                         { DifferingAnalyses = 1
@@ -795,7 +807,9 @@ let ``the nightly references shadow summaries are shown, and their absence is a 
             |> List.exists (fun l ->
                 l.Contains "run run-1"
                 && l.Contains "analyzers equal 11 / mismatch 0 / unverifiable 1"
-                && l.Contains "impact-DB copy 2048 bytes in 5 ms")
+                && l.Contains "impact-DB copy 2048 bytes in 5 ms"
+                && l.Contains "same-key spot-check (seed 5)"
+                && l.Contains "lint 3 sampled: equal 2 / mismatch 1 / not recomputed 0")
         @>
 
     test

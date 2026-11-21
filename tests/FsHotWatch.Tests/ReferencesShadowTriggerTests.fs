@@ -82,6 +82,7 @@ let ``on another host than the land host the report says so before any lookup`` 
             nothingBefore
             (fun () -> failwith "no rows")
             runId
+            7
             DateTimeOffset.UnixEpoch
 
     test <@ report.Result = HostMismatch("laptop", "land-box") @>
@@ -135,6 +136,7 @@ let ``on the land host each plugin is asked about the servable files and the rep
                     Changed = [ "Lib.f" ] }
                 rows
                 runId
+                7
                 DateTimeOffset.UnixEpoch
 
         write repoRoot report
@@ -152,7 +154,96 @@ let ``on the land host each plugin is asked about the servable files and the rep
             | TestPruneSummary.NotCompared why -> failwith why
         | other -> failwith $"expected one compared summary, got %A{other}"
 
-        test <@ asked |> Seq.contains LintCommand @>)
+        test <@ asked |> Seq.contains LintCommand @>
+        // No sameKey file anywhere: no spot-check is asked for.
+        test <@ not (asked |> Seq.contains AnalyzersSpotCheckCommand) @>
+        test <@ not (asked |> Seq.contains LintSpotCheckCommand) @>)
+
+/// ITEM 3. Each plugin's `sameKey` files are sampled by the report's seed, at most
+/// `SpotCheckSize` of them, and only the sample is sent to the plugin's spot-check command; the
+/// report records the seed and each sampled file's outcome. A host without the command leaves
+/// each sampled file not recomputed. Record and compare only: the plugin replies are all it reads.
+[<Fact>]
+let ``each plugin's sameKey files are sampled by the seed, spot-checked, and recorded with it`` () =
+    let lintFiles = [ for i in 1..60 -> $"src/L%02d{i}.fs" ]
+    let analyzerFiles = [ "src/A1.fs"; "src/A2.fs" ]
+
+    let servable =
+        (lintFiles @ analyzerFiles)
+        |> List.map (fun file ->
+            { File = file
+              Project = "src/P.fsproj"
+              FcsSignature = "fcs"
+              UsedSignatures = UsedSignaturesKey.Described "used" })
+
+    let sentToLint = Collections.Generic.List<string list>()
+
+    let send: ScopeCommands.Send =
+        fun name args ->
+            match name with
+            | n when n = ServableCommand -> Some(Servable.toJson servable)
+            | n when n = LintCommand ->
+                Some(
+                    PluginReply.toJson (
+                        PluginComparison.ofFiles
+                            "lint"
+                            ((lintFiles |> List.map (fun f -> f, FileOutcome.SameKey))
+                             @ (analyzerFiles |> List.map (fun f -> f, FileOutcome.Equal)))
+                    )
+                )
+            | n when n = AnalyzersCommand ->
+                Some(
+                    PluginReply.toJson (
+                        PluginComparison.ofFiles
+                            "analyzers"
+                            ((analyzerFiles |> List.map (fun f -> f, FileOutcome.SameKey))
+                             @ (lintFiles
+                                |> List.map (fun f -> f, FileOutcome.Unverifiable UnverifiableReason.NoReusedEntry)))
+                    )
+                )
+            | n when n = LintSpotCheckCommand ->
+                let files = SpotCheckRequest.tryOfJson args |> Option.defaultValue []
+                sentToLint.Add files
+
+                Some(
+                    SpotCheckReply.toJson (
+                        files
+                        |> List.mapi (fun i f ->
+                            f,
+                            if i = 0 then
+                                SpotOutcome.Mismatch(
+                                    [],
+                                    [ Finding.ofEntry (FsHotWatch.ErrorLedger.ErrorEntry.error "now") ]
+                                )
+                            else
+                                SpotOutcome.Equal)
+                    )
+                )
+            | _ -> None
+
+    let report =
+        compare "land-box" "land-box" send nothingBefore (fun () -> []) runId 99 DateTimeOffset.UnixEpoch
+
+    match report.Result with
+    | Compared c ->
+        let expected = SpotCheck.sample 99 SpotCheckSize lintFiles
+        test <@ c.SpotChecks.Seed = 99 @>
+        test <@ List.ofSeq sentToLint = [ expected ] @>
+        test <@ c.SpotChecks.Lint |> List.map fst = expected @>
+        test <@ (SpotCheck.counts c.SpotChecks.Lint).Mismatch = 1 @>
+        test <@ (SpotCheck.counts c.SpotChecks.Lint).Equal = SpotCheckSize - 1 @>
+
+        test
+            <@
+                c.SpotChecks.Analyzers = (analyzerFiles
+                                          |> List.map (fun f ->
+                                              f,
+                                              SpotOutcome.NotRecomputed
+                                                  $"the daemon has no `%s{AnalyzersSpotCheckCommand}` command"))
+            @>
+
+        test <@ (PluginComparison.counts c.Lint).SameKey = 60 @>
+    | HostMismatch _ -> failwith "expected a comparison"
 
 [<Fact>]
 let ``the rows read each test's outcome in the nightly and the watermark run`` () =
@@ -244,7 +335,7 @@ let ``a daemon without the servable command or a malformed reply is a failure, a
     let answer (replies: Map<string, string>) : ScopeCommands.Send = fun name _ -> Map.tryFind name replies
 
     let run send =
-        compare "land-box" "land-box" send nothingBefore rows runId DateTimeOffset.UnixEpoch
+        compare "land-box" "land-box" send nothingBefore rows runId 7 DateTimeOffset.UnixEpoch
 
     raises<InvalidOperationException> <@ run (answer Map.empty) @>
     raises<InvalidOperationException> <@ run (answer (Map.ofList [ ServableCommand, "{}" ])) @>

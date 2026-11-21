@@ -196,6 +196,74 @@ let ``a failing test outside S is a selector miss, and one inside S-prime is not
     test <@ result.FlakyChanged |> List.map _.Test = [ "T" ] @>
     test <@ result.OutsideSPrimeFailedOrChanged = 1 @>
 
+// --- the spot-check of sameKey files -------------------------------------------------------
+
+let private noSpotChecks: SpotChecks = { Seed = 7; Analyzers = []; Lint = [] }
+
+let private sampleSpotChecks: SpotChecks =
+    { Seed = 42
+      Analyzers = []
+      Lint =
+        [ "src/D.fs",
+          SpotOutcome.Mismatch(
+              [ Finding.ofEntry (entry "X" 1 "cached") ],
+              [ Finding.ofEntry (entry "X" 1 "recomputed") ]
+          )
+          "src/E.fs", SpotOutcome.Equal
+          "src/F.fs", SpotOutcome.NotRecomputed "the live check did not complete" ] }
+
+let private manyFiles = [ for i in 1..120 -> $"src/F%03d{i}.fs" ]
+
+/// The sample is a pure function of the seed and the files: the same seed draws the same files
+/// whatever order they are named in, at most `size` of them, all of them when there are fewer,
+/// never one twice, and in path order.
+[<Fact>]
+let ``the spot-check sample is drawn by its seed: fixed size, or every file when there are fewer`` () =
+    let drawn = SpotCheck.sample 1234 SpotCheckSize manyFiles
+
+    test <@ SpotCheckSize = 50 @>
+    test <@ drawn.Length = 50 @>
+    test <@ drawn = List.distinct drawn && drawn = List.sort drawn @>
+    test <@ drawn |> List.forall (fun f -> List.contains f manyFiles) @>
+    test <@ SpotCheck.sample 1234 SpotCheckSize (List.rev manyFiles) = drawn @>
+    test <@ SpotCheck.sample 1235 SpotCheckSize manyFiles <> drawn @>
+
+    let few = [ "src/B.fs"; "src/A.fs"; "src/C.fs" ]
+    test <@ SpotCheck.sample 1234 SpotCheckSize few = [ "src/A.fs"; "src/B.fs"; "src/C.fs" ] @>
+    test <@ SpotCheck.sample 1234 SpotCheckSize [] = [] @>
+
+/// The recomputed result against the cached one: equal in any order and whatever the detail; a
+/// mismatch keeps both lists; a file whose result could not be recomputed says why.
+[<Fact>]
+let ``each sampled file's recomputed result is compared with the cached one`` () =
+    let recomputed = fresh |> List.rev |> List.map (fun e -> { e with Detail = None })
+
+    test <@ SpotCheck.compare fresh (Result.Ok recomputed) = SpotOutcome.Equal @>
+
+    match SpotCheck.compare fresh (Result.Ok []) with
+    | SpotOutcome.Mismatch(cached, again) ->
+        test <@ cached = (fresh |> List.map Finding.ofEntry |> List.sort) @>
+        test <@ List.isEmpty again @>
+    | other -> failwith $"expected a mismatch, got %A{other}"
+
+    test <@ SpotCheck.compare fresh (Result.Error "gone") = SpotOutcome.NotRecomputed "gone" @>
+
+    let counts = SpotCheck.counts sampleSpotChecks.Lint
+
+    test
+        <@
+            counts = { Sampled = 3
+                       Equal = 1
+                       Mismatch = 1
+                       NotRecomputed = 1 }
+        @>
+
+    // The wire formats a plugin's spot-check command speaks round-trip.
+    let request = [ "src/A.fs"; "src/B.fs" ]
+    test <@ SpotCheckRequest.tryOfJson (SpotCheckRequest.toJson request) = Some request @>
+    test <@ SpotCheckReply.tryOfJson (SpotCheckReply.toJson sampleSpotChecks.Lint) = Some sampleSpotChecks.Lint @>
+    test <@ SpotCheckRequest.tryOfJson "{}" = None && SpotCheckReply.tryOfJson "[]" = None @>
+
 // --- the land host -------------------------------------------------------------------------
 
 [<Fact>]
@@ -205,6 +273,7 @@ let ``on any host but the land host the result is hostMismatch, with no per-file
             { Servable = 3
               Analyzers = PluginComparison.ofFiles "analyzers" []
               Lint = PluginComparison.ofFiles "lint" []
+              SpotChecks = noSpotChecks
               TestPrune = TestPruneSection.NotCompared "no watermark" }
 
     test <@ onHost "laptop" "land-host" compared = HostMismatch("laptop", "land-host") @>
@@ -243,6 +312,7 @@ let private sample: Report =
                     "lint"
                     [ "src/C.fs", FileOutcome.Unverifiable UnverifiableReason.ConfigChanged
                       "src/D.fs", FileOutcome.SameKey ]
+              SpotChecks = sampleSpotChecks
               TestPrune =
                 TestPruneSection.Compared(
                     { compareTests (selected s sPrime 2) [ row TestOutcome.Passed TestOutcome.Failed ] with
@@ -282,6 +352,17 @@ let ``the report and its summary line round-trip`` () =
                                 Mismatch = 0
                                 Unverifiable = 1
                                 SameKey = 1 }
+            @>
+
+        test <@ counts.SpotChecks.Seed = 42 @>
+        test <@ counts.SpotChecks.Analyzers.Sampled = 0 @>
+
+        test
+            <@
+                counts.SpotChecks.Lint = { Sampled = 3
+                                           Equal = 1
+                                           Mismatch = 1
+                                           NotRecomputed = 1 }
             @>
 
         match counts.TestPrune with
@@ -333,6 +414,7 @@ let ``a report whose test-prune side was not compared, with every outcome token,
                             "analyzers"
                             [ "src/A.fs", FileOutcome.Unverifiable UnverifiableReason.NoReusedEntry ]
                       Lint = PluginComparison.ofFiles "lint" []
+                      SpotChecks = noSpotChecks
                       TestPrune = TestPruneSection.NotCompared "no watermark run" } }
 
     test <@ Report.tryOfJson (Report.toJson report) = Some report @>
@@ -346,6 +428,7 @@ let ``a report whose test-prune side was not compared, with every outcome token,
                     { Servable = 0
                       Analyzers = PluginComparison.ofFiles "analyzers" []
                       Lint = PluginComparison.ofFiles "lint" []
+                      SpotChecks = noSpotChecks
                       TestPrune =
                         TestPruneSection.Compared(
                             compareTests

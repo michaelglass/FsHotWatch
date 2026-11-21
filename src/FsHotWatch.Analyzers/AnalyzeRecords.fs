@@ -76,10 +76,12 @@ module RecordMode =
 /// Whether the plugin keeps, per file, the key parts of its latest analysis, so the nightly
 /// shadow (AUTOMATION-1816 step 2b) can rebuild the key reuse would have read. Keeping them
 /// changes nothing the plugin reads, files or serves.
-[<RequireQualifiedAccess>]
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
 type ReuseKeys =
     | NotKept
-    | Kept
+    /// Kept, with how the spot-check gets a live check of a sampled `sameKey` file to analyse it
+    /// again with the plugin's records and cache bypassed.
+    | Kept of recheck: ReferencesShadowReport.Recheck
 
 /// Where and how analyses are filed.
 [<NoComparison; NoEquality>]

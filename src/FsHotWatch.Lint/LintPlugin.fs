@@ -181,14 +181,42 @@ let private keyOf (keyBase: KeyBase) (usedSignatures: string) (fcsSignature: str
             "fcs-signature", fcsSignature ]
     )
 
-/// Each file's latest key base, and the key this run built from it, kept only for the nightly
-/// shadow, with what reads the entries lint's writes displaced.
+/// What the nightly shadow keeps of one file's latest lint: its key base, the key this run built
+/// from it, and the options it was checked under (what the spot-check re-checks it with).
+[<NoComparison; NoEquality>]
+type private Keyed =
+    { Base: KeyBase
+      Key: ContentHash
+      Options: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions }
+
+/// Each file's `Keyed`, kept only for the nightly shadow, with what reads the entries lint's writes
+/// displaced and how the spot-check gets a live check.
 [<NoComparison; NoEquality>]
 type private ReuseKeyBases =
     | NotKept
     | Kept of
-        bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase * ContentHash> *
-        displaced: FsHotWatch.TaskCache.DisplacedEntries
+        bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, Keyed> *
+        displaced: FsHotWatch.TaskCache.DisplacedEntries *
+        recheck: FsHotWatch.ReferencesShadowReport.Recheck
+
+/// Lint's part in the nightly shadow (AUTOMATION-1816 step 2b, the daemon's `cache.nightlyShadow`).
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type Shadow =
+    | Off
+    /// Read the entries lint's writes displaced, and re-check sampled `sameKey` files live with
+    /// `recheck` to lint them again with the cache bypassed.
+    | On of displaced: FsHotWatch.TaskCache.DisplacedEntries * recheck: FsHotWatch.ReferencesShadowReport.Recheck
+
+/// The ledger entries for FSharpLint's `warnings` on one file.
+let private entriesOf (warnings: FSharpLint.Framework.Suggestion.LintWarning list) : ErrorEntry list =
+    warnings
+    |> List.map (fun w ->
+        { Message = w.Details.Message
+          Severity = DiagnosticSeverity.Warning
+          Line = w.Details.Range.StartLine
+          Column = w.Details.Range.StartColumn
+          Code = None
+          Detail = None })
 
 /// AUTOMATION-1816 step 2b: what reuse would have handed lint for `servable`, read from the entry
 /// lint's own write displaced. Reuse would have read the key built from this run's key base and
@@ -198,7 +226,7 @@ type private ReuseKeyBases =
 /// unverifiable, never equal.
 let private reusedFor
     (repoRoot: string)
-    (bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase * ContentHash>)
+    (bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, Keyed>)
     (displaced: FsHotWatch.TaskCache.DisplacedEntries)
     (servable: FsHotWatch.ReferencesShadowReport.ServableFile)
     : FsHotWatch.ReferencesShadowReport.Reused =
@@ -210,10 +238,10 @@ let private reusedFor
         | false, _ -> None
 
     match keyed, servable.UsedSignatures with
-    | Some(keyBase, runKey), FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Described used ->
-        let reused = keyOf keyBase used servable.FcsSignature
+    | Some keyed, FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Described used ->
+        let reused = keyOf keyed.Base used servable.FcsSignature
 
-        if reused = runKey then
+        if reused = keyed.Key then
             FsHotWatch.ReferencesShadowReport.Reused.SameKey
         else
             let reusedKey = displaced.Stored reused
@@ -250,11 +278,12 @@ let private reusedFor
 /// file's check resolved outside the file); jj commit_id is not
 /// consulted.
 ///
-/// With `displacement` captured (the daemon's `cache.nightlyShadow`), lint keeps each file's key
-/// base and answers `references-shadow-lint` from the entries its writes displaced. That changes
-/// nothing it lints, reports, files or serves.
+/// With `shadow` on (the daemon's `cache.nightlyShadow`), lint keeps each file's key base and
+/// answers `references-shadow-lint` from the entries its writes displaced, and
+/// `references-shadow-lint-spot-check` by linting sampled files again on a live check, its cache
+/// bypassed. That changes nothing it lints, reports, files or serves.
 let createWith
-    (displacement: FsHotWatch.TaskCache.DisplacementCapture)
+    (shadow: Shadow)
     (repoRoot: string option)
     (lintConfigPath: string option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
@@ -296,10 +325,10 @@ let createWith
             config
 
     let reuseKeyBases =
-        match displacement with
-        | FsHotWatch.TaskCache.DisplacementCapture.Captured displaced ->
-            Kept(Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase * ContentHash>(), displaced)
-        | FsHotWatch.TaskCache.DisplacementCapture.Off -> NotKept
+        match shadow with
+        | Shadow.On(displaced, recheck) ->
+            Kept(Collections.Concurrent.ConcurrentDictionary<AbsFilePath, Keyed>(), displaced, recheck)
+        | Shadow.Off -> NotKept
 
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
         match event with
@@ -323,7 +352,11 @@ let createWith
                 let key = keyOf keyBase usedSignatures (FsHotWatch.CheckCache.fcsCheckSignature r)
 
                 match reuseKeyBases with
-                | Kept(bases, _) -> bases[r.File] <- (keyBase, key)
+                | Kept(bases, _, _) ->
+                    bases[r.File] <-
+                        { Base = keyBase
+                          Key = key
+                          Options = r.ProjectOptions }
                 | NotKept -> ()
 
                 key)
@@ -456,15 +489,7 @@ let createWith
 
                                         let newWarnings = state.WarningsByFile |> Map.add result.File msgs
 
-                                        let entries =
-                                            warnings
-                                            |> List.map (fun w ->
-                                                { Message = w.Details.Message
-                                                  Severity = DiagnosticSeverity.Warning
-                                                  Line = w.Details.Range.StartLine
-                                                  Column = w.Details.Range.StartColumn
-                                                  Code = None
-                                                  Detail = None })
+                                        let entries = entriesOf warnings
 
                                         PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
@@ -523,7 +548,7 @@ let createWith
 
                   let reused =
                       match reuseKeyBases with
-                      | Kept(bases, displaced) -> reusedFor ctx.RepoRoot bases displaced
+                      | Kept(bases, displaced, _) -> reusedFor ctx.RepoRoot bases displaced
                       | NotKept ->
                           fun _ ->
                               FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
@@ -539,7 +564,66 @@ let createWith
                           FsHotWatch.ReferencesShadowReport.comparePlugin "lint" reused fresh servable
                       )
               })
-          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.PluginReplySchema ]
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.PluginReplySchema
+          // AUTOMATION-1816 step 2b: each sampled `sameKey` file (the request:
+          // `FsHotWatch.ReferencesShadowReport.SpotCheckRequest`) linted again on a live check, the
+          // task cache bypassed, against what this run served. Nothing linted here is reported,
+          // filed or served.
+          FsHotWatch.ReferencesShadowReport.LintSpotCheckCommand,
+          PluginCommand.Observe(fun ctx state args ->
+              async {
+                  let files =
+                      match
+                          args
+                          |> Array.tryHead
+                          |> Option.bind FsHotWatch.ReferencesShadowReport.SpotCheckRequest.tryOfJson
+                      with
+                      | Some files -> files
+                      | None ->
+                          invalidArg
+                              "args"
+                              "expects the sampled files (FsHotWatch.ReferencesShadowReport.SpotCheckRequest)"
+
+                  let absolute (file: string) =
+                      AbsFilePath.create (IO.Path.Combine(ctx.RepoRoot, file))
+
+                  // MGA-ERROR-REPORT-001:ok — a runner that throws on the re-lint is that file's
+                  // answer (not recomputed, named by its exception); it decides nothing.
+                  let recompute (file: string) : Async<Result<ErrorEntry list, string>> =
+                      async {
+                          match reuseKeyBases with
+                          | NotKept -> return Result.Error "the nightly shadow is off"
+                          | Kept(bases, _, recheck) ->
+                              match bases.TryGetValue(absolute file) with
+                              | false, _ -> return Result.Error "this run linted no check of the file"
+                              | true, keyed ->
+                                  match! recheck (absolute file) keyed.Options with
+                                  | Some({ CheckResults = FullCheck _ } as live) ->
+                                      let lintOrError _ct =
+                                          try
+                                              Result.Ok(runLint live)
+                                          with ex ->
+                                              Result.Error ex
+
+                                      match runWithCancellableTimeout lintTimeout lintOrError with
+                                      | WorkTimedOut after ->
+                                          return Result.Error $"timed out after %d{int after.TotalSeconds}s"
+                                      | WorkCompleted(Result.Ok(Lint.LintResult.Success warnings)) ->
+                                          return Result.Ok(entriesOf warnings)
+                                      | WorkCompleted(Result.Ok(Lint.LintResult.Failure failure)) ->
+                                          return Result.Error failure.Description
+                                      | WorkCompleted(Result.Error ex) -> return Result.Error(describeLintException ex)
+                                  | Some _ -> return Result.Error "the live check did not complete fully"
+                                  | None -> return Result.Error "the live check did not complete"
+                      }
+
+                  let cached (file: string) =
+                      state.FindingsByFile |> Map.tryFind (absolute file) |> Option.defaultValue []
+
+                  let! outcomes = FsHotWatch.ReferencesShadowReport.SpotCheck.run files recompute cached
+                  return FsHotWatch.ReferencesShadowReport.SpotCheckReply.toJson outcomes
+              })
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SpotCheckReplySchema ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = Some(fun _state event -> cacheKey event)
       Teardown = None }
@@ -551,4 +635,4 @@ let create
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
     (timeoutSec: int option)
     : PluginHandler<LintState, unit> =
-    createWith FsHotWatch.TaskCache.DisplacementCapture.Off repoRoot lintConfigPath lintRunner timeoutSec
+    createWith Shadow.Off repoRoot lintConfigPath lintRunner timeoutSec

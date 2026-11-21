@@ -133,6 +133,11 @@ type PluginHost
     let demandsByPlugin =
         System.Collections.Concurrent.ConcurrentDictionary<string, int>(System.StringComparer.Ordinal)
 
+    /// How the nightly shadow's spot-check gets a live check of a file (AUTOMATION-1816 step 2b). Until
+    /// the daemon installs its pipeline's, no check completes.
+    let mutable recheck: ReferencesShadowReport.Recheck =
+        fun _ _ -> async { return None }
+
     /// How a plugin with no cached answer for a replayed check gets a real one (ADR-059 §17).
     /// Until the daemon installs its pipeline's, asking is a defect, and says so.
     let mutable checkDemand: FileCheckResult -> Async<FileCheckResult option> =
@@ -354,6 +359,15 @@ type PluginHost
 
     /// Install how a replayed check is turned into a real one (`PluginHostServices.DemandCheck`).
     member _.SetCheckDemand(demand: FileCheckResult -> Async<FileCheckResult option>) = checkDemand <- demand
+
+    /// Install how the nightly shadow's spot-check gets a live check (`Recheck`).
+    member _.SetRecheck(live: ReferencesShadowReport.Recheck) = recheck <- live
+
+    /// A live check of a file under its options, never from a filed check record, for the nightly
+    /// shadow's spot-check (AUTOMATION-1816 step 2b). Read at each call, so a plugin may take it before
+    /// the daemon installs its pipeline's. Not counted as any plugin's demand.
+    member _.Recheck: ReferencesShadowReport.Recheck =
+        fun file options -> recheck file options
 
     /// Each plugin's demanded live checks so far, as `name n` pairs by name, comma-separated;
     /// empty when none demanded any (AUTOMATION-1482).

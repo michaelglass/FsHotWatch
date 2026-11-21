@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat!: the nightly shadow's SPOT-CHECK of `sameKey` files (AUTOMATION-1816 step 2b). `ReferencesShadowReport` gains
+  `SpotCheckSize` (50), `Recheck` (a live FCS check, never from a filed record), `SpotOutcome` (`Equal`, `Mismatch`
+  of cached and recomputed findings, `NotRecomputed` with why), `SpotChecks` (the seed and each plugin's sampled files
+  with their outcomes), `SpotCheck.sample` / `compare` / `run` / `counts`, the `references-shadow-analyzers-spot-check`
+  and `references-shadow-lint-spot-check` command names and their `SpotCheckRequest` / `SpotCheckReply` wire formats.
+  `PluginHost.Recheck` (installed by the daemon from its pipeline's `CheckFileLive`) is the live check plugins
+  recompute on. Record and compare only: nothing recomputed is reported, filed or served. **Breaking:** `Comparison`
+  gains `SpotChecks` and `SummaryCounts` gains `SpotChecks` (`"spotChecks"` in the report and summary).
+
 - feat!: `ReferencesShadowReport` gains the `sameKey` outcome (AUTOMATION-1816 step 2b): a servable file this run keyed
   by the very key reuse would have read. `confirm --fresh` bypasses no plugin result cache, so that run's result may be
   the cached entry itself; it is reported apart and counted as neither equal nor unverifiable (`Counts.SameKey`,

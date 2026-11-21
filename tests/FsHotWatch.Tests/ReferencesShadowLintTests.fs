@@ -183,7 +183,23 @@ let private warningsFor (wording: string) (result: FileCheckResult) : Lint.LintR
 /// linted by a runner wording its warning `wording`; then `ask` against the host. With `capture`
 /// the store sits under the capturing wrapper and lint compares through it, as the daemon wires
 /// it when `cache.nightlyShadow` is on.
-let private startThen
+/// A live check of a repository file, as the daemon's pipeline would answer the spot-check: the
+/// fixture's full check of the file's own bytes; none for a file outside `files`.
+let private liveRecheck (root: string) : ReferencesShadowReport.Recheck =
+    fun file options ->
+        async {
+            return
+                files
+                |> List.tryFind (fun (rel, _) -> Path.Combine(root, rel) = AbsFilePath.value file)
+                |> Option.map (fun (_, source) ->
+                    { fakeFileCheckResult (AbsFilePath.value file) with
+                        Source = source
+                        ProjectOptions = options
+                        CheckResults = fixtureFullCheck () })
+        }
+
+let private startThenWith
+    (recheck: string -> ReferencesShadowReport.Recheck)
     (store: string)
     (root: string)
     (capture: bool)
@@ -204,13 +220,15 @@ let private startThen
 
     let cache = ToolchainScopedTaskCache(below, toolchain) :> ITaskCache
 
-    let displacement =
+    let shadow =
         if capture then
-            DisplacementCapture.Captured
+            LintPlugin.Shadow.On(
                 { Displaced = capturing.Displaced
-                  Stored = scopeToToolchain toolchain }
+                  Stored = scopeToToolchain toolchain },
+                recheck root
+            )
         else
-            DisplacementCapture.Off
+            LintPlugin.Shadow.Off
 
     let host = PluginHost(Unchecked.defaultof<_>, root, taskCache = cache)
     host.WorkStore.PublishProjectModel fixtureModel
@@ -220,7 +238,7 @@ let private startThen
         linted.Enqueue(Path.GetRelativePath(root, AbsFilePath.value result.File))
         warningsFor wording result
 
-    host.RegisterHandler(LintPlugin.createWith displacement (Some root) None (Some runner) None)
+    host.RegisterHandler(LintPlugin.createWith shadow (Some root) None (Some runner) None)
 
     try
         for rel, source in files do
@@ -238,6 +256,8 @@ let private startThen
         ask host (List.ofSeq linted |> List.sort)
     finally
         host.Teardown()
+
+let private startThen store = startThenWith liveRecheck store
 
 /// The servable files as the nightly's scan names them: what their stored checks were typed
 /// against, which here is the parse-only check of the first start.
@@ -347,6 +367,62 @@ let ``a nightly key equal to the reused key is sameKey, never equal or unverifia
                                                            SameKey = 2 }
                 @>)
 
+/// Lint's spot-check over `files`, through its command.
+let private spotCheck (host: PluginHost) (files: string list) : (string * SpotOutcome) list =
+    match
+        host.RunCommand(LintSpotCheckCommand, [| SpotCheckRequest.toJson files |])
+        |> Async.RunSynchronously
+    with
+    | Some reply ->
+        match SpotCheckReply.tryOfJson reply with
+        | Some outcomes -> outcomes
+        | None -> failwith $"not a spot-check reply: %s{reply}"
+    | None -> failwith "the lint plugin has no spot-check command"
+
+/// ITEM 3. The third start is served from the cache (it lints nothing), so what it reports for a
+/// `sameKey` file IS the cached entry the second start wrote. The spot-check lints the sampled files
+/// again on a live check, the cache bypassed, with the linter as it is now: unchanged findings are
+/// equal, findings the linter now words differently are a mismatch naming both lists, and a file
+/// with no live check, or none this run linted, is not recomputed.
+[<Fact(Timeout = 120000)>]
+let ``the spot-check lints sampled sameKey files again with the cache bypassed and compares`` () =
+    withTempDir "refshadow-lint-spot" (fun dir ->
+        let store = Path.Combine(dir, "tasks")
+        let root = Path.Combine(dir, "repo")
+
+        startThen store root true fixtureParseOnly "BAD is bad" (fun _ _ -> ())
+        startThen store root true fixtureFullCheck "BAD is worse" (fun _ _ -> ())
+
+        let outcomes, linted =
+            startThen store root true fixtureFullCheck "BAD is worst" (fun host linted ->
+                spotCheck host [ "src/A.fs"; "src/B.fs"; "src/Gone.fs" ], linted)
+
+        test <@ List.isEmpty linted @>
+        test <@ outcomes |> List.map fst = [ "src/A.fs"; "src/B.fs"; "src/Gone.fs" ] @>
+        test <@ snd outcomes[0] = SpotOutcome.Equal @>
+
+        match snd outcomes[1] with
+        | SpotOutcome.Mismatch(cached, recomputed) ->
+            test <@ cached |> List.map _.Message = [ "BAD is worse" ] @>
+            test <@ recomputed |> List.map _.Message = [ "BAD is worst" ] @>
+        | other -> failwith $"expected a mismatch, got %A{other}"
+
+        test <@ snd outcomes[2] = SpotOutcome.NotRecomputed "this run linted no check of the file" @>
+
+        let noLiveCheck: string -> ReferencesShadowReport.Recheck =
+            fun _ _ _ -> async { return None }
+
+        let failed =
+            startThenWith noLiveCheck store root true fixtureFullCheck "BAD is worst" (fun host _ ->
+                spotCheck host [ "src/A.fs" ])
+
+        test <@ failed = [ "src/A.fs", SpotOutcome.NotRecomputed "the live check did not complete" ] @>
+
+        let off =
+            startThen store root false fixtureFullCheck "BAD is worst" (fun host _ -> spotCheck host [ "src/A.fs" ])
+
+        test <@ off = [ "src/A.fs", SpotOutcome.NotRecomputed "the nightly shadow is off" ] @>)
+
 /// The displaced entry was filed under another key than the one reuse would have read (here the
 /// record names other signatures): it says nothing about reuse's answer, so it is unverifiable.
 [<Fact(Timeout = 120000)>]
@@ -416,6 +492,10 @@ let ``the capture changes nothing lint checks, reports or files`` () =
         let root = Path.Combine(dir, "repo")
 
         let observe (host: PluginHost) (linted: string list) =
+            // Captured, the spot-check runs first: it must change nothing below either.
+            if capture then
+                spotCheck host (files |> List.map fst) |> ignore
+
             let entries =
                 host.GetErrorsByPlugin "lint"
                 |> Map.toList
