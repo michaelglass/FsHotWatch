@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.125 - 2026-11-21
+
 - fix: a preprocessor pass offered no file it processes no longer reports `rewrote 0 of 0 file(s)` (AUTOMATION-1840).
   Every production `confirm --fresh` of 2026-11-20/21 printed `format: rewrote 0 of 0 file(s)` although its scan
   had judged the whole registered tree (`rewrote 0 of 3206`): a later change batch holding no F# file ran the pass

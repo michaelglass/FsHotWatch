@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.35 - 2026-11-21
+
 - fix: a script command's closure also follows `#r` to a local path (the assembly's bytes are keyed; missing is
   `missing:<path>`) and `#I` (each directory is a key term, and a relative name not found beside its declaring file
   resolves in the `#I` directories declared before it, in order). `#r "nuget: ..."` adds no file (AUTOMATION-1840).

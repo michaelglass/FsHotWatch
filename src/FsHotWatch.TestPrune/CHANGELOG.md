@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.122 - 2026-11-21
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.13.0-alpha.121 - 2026-11-21
 
 - fix: AUTOMATION-1835. A zero-affected green stands on a passing `tests.beforeRun` over the tree it answers for
