@@ -2,8 +2,9 @@
 ///
 /// For each file the references key would have served, the analysis reuse would have kept is
 /// the `testprune-analysis` record under `IndexedAnalysis.identity` of the file's bytes and the
-/// stored check's signatures. Where it differs from this run's, S′ (the selection for C over an
-/// index holding the reused analyses) can differ from S (the same over this run's index).
+/// stored check's signatures. Where it differs from this run's, S′ can differ from S (the selection for C
+/// over this run's index): S′ is the selection for C re-derived under the reused analyses
+/// (`changedUnder`), over an index holding them. Substituting changes both C and the edges.
 ///
 /// S′ is computed on a COPY of the impact DB, taken with SQLite's backup API (a consistent
 /// snapshot, WAL included) under the run's own temporary directory and deleted in a `finally`:
@@ -24,8 +25,8 @@ open TestPrune.Database
 type internal ReusedAnalysis =
     /// Reuse would have kept this run's analysis.
     | Same
-    /// Reuse would have kept another analysis, substituted for S′.
-    | Differs of AnalysisResult
+    /// Reuse would have kept another analysis of `file` (repository-relative), substituted for S′.
+    | Differs of file: string * AnalysisResult
     /// No reused analysis can be read: no record under its identity, or a record naming no
     /// used signatures.
     | Unverifiable
@@ -54,10 +55,36 @@ let internal reusedAnalysisOf
             match lookup reusedIdentity with
             | None -> ReusedAnalysis.Unverifiable
             | Some reused when Some reused = (fresh |> Option.bind lookup) -> ReusedAnalysis.Same
-            | Some reused -> ReusedAnalysis.Differs reused
+            | Some reused -> ReusedAnalysis.Differs(servable.File, reused)
 
 /// A test as both selections name it.
 let internal testName (t: TestMethodInfo) = $"%s{t.TestClass}.%s{t.TestMethod}"
+
+/// C under the stale analyses: which of a file's symbols count as changed depends on the analysis
+/// diffed. A symbol on which the stale analysis and this run's (the rows `copy` holds for its file
+/// before the substitution) disagree, in content or presence, counts the other way from this run:
+/// reuse serves the analysis the index already agreed with, so a change this run saw goes unseen,
+/// and content this run saw unchanged reads as changed. Symbols both analyses agree on keep their
+/// status. (Exact when, for each disputed symbol, the index held one of the two analyses' versions;
+/// a third version reads here as unchanged under reuse, the side that can only add attributable
+/// tests, never hide them.)
+let private changedUnder
+    (copy: Database)
+    (changed: string list)
+    (reused: (string * AnalysisResult) list)
+    : string list =
+    let disputed =
+        reused
+        |> List.collect (fun (file, analysis) ->
+            TestPrune.SymbolDiff.detectChanges analysis.Symbols (copy.GetSymbolsInFile file)
+            |> fst
+            |> TestPrune.SymbolDiff.changedSymbolNames)
+        |> Set.ofList
+
+    let before = Set.ofList changed
+
+    Set.union (Set.difference before disputed) (Set.difference disputed before)
+    |> Set.toList
 
 let private select (db: Database) (changed: string list) : Set<string> =
     if changed.IsEmpty then
@@ -65,14 +92,14 @@ let private select (db: Database) (changed: string list) : Set<string> =
     else
         (db.QueryAffectedSelection changed).Tests |> List.map testName |> Set.ofList
 
-/// S′: `changed` selected over a copy of `db` with `reused` re-indexed, the copy in the new
+/// S′: `changed`, re-derived under the stale analyses (`changedUnder`), selected over a copy of `db` with `reused` re-indexed, the copy in the new
 /// directory `dir`, deleted before this returns, whatever happens.
 let private selectOnCopy
     (db: Database)
     (dbPath: string)
     (dir: string)
     (changed: string list)
-    (reused: AnalysisResult list)
+    (reused: (string * AnalysisResult) list)
     : Set<string> * ImpactDbCopy =
     Directory.CreateDirectory dir |> ignore
     let copyPath = Path.Combine(dir, "test-impact.db")
@@ -90,8 +117,9 @@ let private selectOnCopy
         watch.Stop()
         let bytes = FileInfo(copyPath).Length
         let copy = Database(copyPath, db.WalkPolicy)
-        copy.RebuildProjects reused
-        let sPrime = select copy changed
+        let changedPrime = changedUnder copy changed reused
+        copy.RebuildProjects(reused |> List.map snd)
+        let sPrime = select copy changedPrime
         sPrime, ImpactDbCopy.Copied(bytes, watch.ElapsedMilliseconds)
     finally
         ImpactDbPool.clear copyPath
@@ -111,7 +139,7 @@ let internal selections
         reused
         |> List.choose (fun r ->
             match r with
-            | ReusedAnalysis.Differs analysis -> Some analysis
+            | ReusedAnalysis.Differs(file, analysis) -> Some(file, analysis)
             | ReusedAnalysis.Same
             | ReusedAnalysis.Unverifiable -> None)
 
