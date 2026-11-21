@@ -745,6 +745,10 @@ let ServableCommand = "references-shadow-servable"
 [<Literal>]
 let AnalyzersCommand = "references-shadow-analyzers"
 
+/// The lint plugin's command: as `AnalyzersCommand`, for lint.
+[<Literal>]
+let LintCommand = "references-shadow-lint"
+
 /// `Servable.toJson`'s schema.
 [<Literal>]
 let ServableSchema = "fshw-references-shadow-servable-v1"

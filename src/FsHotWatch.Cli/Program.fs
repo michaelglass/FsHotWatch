@@ -4652,7 +4652,17 @@ let private executeCommandRendered
                             if confirmsRunOnce flags then
                                 runOnceIn invocation CheckVerdict.Confirmation
                             else
-                                queryPluginIn invocation CheckVerdict.Confirmation freshness mode "")
+                                // AUTOMATION-1816 step 2b: with `cache.nightlyShadow` on, a fresh
+                                // confirm also files the output-level shadow report after its
+                                // verdict. It never changes the exit code.
+                                ReferencesShadowTrigger.aroundConfirm
+                                    repoRoot
+                                    (DaemonConfig.nightlyShadowOf config.Cache)
+                                    Environment.MachineName
+                                    freshness
+                                    (scopeSend ipc pipeName)
+                                    (fun () -> invocation.KeptPriorVerdict)
+                                    (fun () -> queryPluginIn invocation CheckVerdict.Confirmation freshness mode ""))
                     finally
                         if releasesDaemon command cameBy.Value then
                             releaseUnlessShared repoRoot link.Release

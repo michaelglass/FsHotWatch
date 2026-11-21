@@ -80,6 +80,7 @@
         <Compile Include="DeadCode.fs" />
         <Compile Include="Explain.fs" />
         <Compile Include="Headroom.fs" />
+        <Compile Include="ReferencesShadowTrigger.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

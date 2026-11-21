@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: with `cache.nightlyShadow` on, the daemon answers `references-shadow-servable`: the files the references key
+  would have served since it started, with their recorded signatures (AUTOMATION-1816 step 2b).
+
 - feat!: `ReferencesShadowReport` test-prune: `Selections` (S, S', differing and unverifiable analyses, the impact-DB
   copy) with the `TestPruneRequest` and `SelectionsReply` wire formats; `compareTests` takes a `Selections`.
   **Breaking:** `TestPruneComparison` and the summary's `TestPruneCounts` replace `ImpactDbCopyBytes` (0 for none) with
