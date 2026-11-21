@@ -1345,16 +1345,34 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | other -> refuse $"scope '%s{other}' is not \"all\" or \"default-workspace\""
                 | true, _ -> refuse "scope must be \"all\" or \"default-workspace\""
 
+            // `{"landHost": "<host>"}`: the host whose lands file the alternative-upstreams records.
+            let nightlyShadow () =
+                match v.TryGetProperty "nightlyShadow" with
+                | false, _ -> FsHotWatch.InMemoryCheckCache.NightlyShadow.Off
+                | true, n when n.ValueKind = JsonValueKind.Object ->
+                    match n.TryGetProperty "landHost" with
+                    | true, h when h.ValueKind = JsonValueKind.String && h.GetString() <> "" ->
+                        FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost(h.GetString())
+                    | _ -> refuse "nightlyShadow.landHost must name the land host, e.g. \"build-box\""
+                | true, _ -> refuse "nightlyShadow must be an object: {\"landHost\": \"<host>\"}"
+
             let referencesKey =
                 match v.TryGetProperty "referencesKey" with
                 | false, _ -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
                 | true, k when k.ValueKind = JsonValueKind.String ->
                     match k.GetString() with
                     | "off" -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
-                    | "shadow" -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow
+                    | "shadow" -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow(nightlyShadow ())
                     // Serving from it is not built: nothing else may start a daemon.
                     | other -> refuse $"referencesKey '%s{other}' is not \"off\" or \"shadow\""
                 | true, _ -> refuse "referencesKey must be \"off\" or \"shadow\""
+
+            // AUTOMATION-1816 step 2b exists only inside the references key's shadow: a
+            // nightlyShadow beside any other referencesKey compares nothing, so it is refused.
+            match referencesKey, v.TryGetProperty "nightlyShadow" with
+            | FsHotWatch.InMemoryCheckCache.ReferencesKey.Off, (true, _) ->
+                refuse "nightlyShadow needs referencesKey \"shadow\": it compares what that shadow would have served"
+            | _ -> ()
 
             InMemory
                 { MaxEntries = maxEntries

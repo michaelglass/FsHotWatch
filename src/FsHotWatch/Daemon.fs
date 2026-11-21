@@ -5842,7 +5842,8 @@ module Daemon =
 
                 match referencesKey with
                 | FsHotWatch.InMemoryCheckCache.ReferencesKey.Off -> pipeline.MeasureAlternativeKeys store
-                | FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow -> pipeline.ShadowReferencesKey store
+                | FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow nightly ->
+                    pipeline.ShadowReferencesKey(store, nightly)
             | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off
             | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.OffInThisCheckout _ -> ()
 

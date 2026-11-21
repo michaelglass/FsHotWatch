@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `cache.nightlyShadow: {"landHost": "<host>"}` (AUTOMATION-1816 step 2b), off by default and refused unless
+  `cache.referencesKey` is `"shadow"`: each settle also collects every file the references key would have served,
+  with the FCS and used signatures its record names (what reuse would key each plugin's result by). It changes nothing
+  a scan checks, stores or serves. **Breaking:** `ReferencesKey.Shadow` carries a `NightlyShadow` (`Off` or
+  `OnLandHost`).
+
 - feat: `ReferencesShadowReport`, the report model of AUTOMATION-1816 step 2b's output-level shadow (record and
   compare only; not yet produced by any run, and nothing reads it to decide anything). Per shadow-servable file and
   plugin (`analyzers`, `lint`): `equal`, `mismatch` (both normalised finding lists: rule, line, column, severity,

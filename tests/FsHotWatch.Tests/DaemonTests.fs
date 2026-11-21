@@ -5885,7 +5885,9 @@ let ``a scan's measurement record says whether the daemon ran a check-result cac
               noAlternatives,
               FsHotWatch.ScanMetrics.ReferencesShadowRecord.NotRun
           )
-          runningWith FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow,
+          runningWith (
+              FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow FsHotWatch.InMemoryCheckCache.NightlyShadow.Off
+          ),
           FsHotWatch.ScanMetrics.CheckCacheRecord.On(
               idleCache,
               noAlternatives,
