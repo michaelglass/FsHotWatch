@@ -261,6 +261,223 @@ let ``a daemon without the servable command or a malformed reply is a failure, a
     | Compared c -> test <@ c.TestPrune = TestPruneSection.NotCompared "no test-prune plugin" @>
     | HostMismatch _ -> failwith "expected a comparison"
 
+/// A `confirm` verdict in `repoRoot` with `outcome`, graded from the run `graded`.
+let private writeVerdict (repoRoot: string) (graded: Guid option) (outcome: Verdict.Outcome) =
+    Verdict.create
+        Verdict.Confirm
+        { BaselineFixtures.reportOf (IpcParsing.FullSuite(1, None)) with
+            RunId = graded }
+        ({ Hash = "sha256:fixture"
+           FileCount = 1
+           SkippedCount = 0
+           DeclaredCount = 0
+           AbsentDeclarationCount = 0 }
+        : TreeHash.Tree)
+        (Some [])
+        outcome
+        0
+        []
+        []
+        Verdict.CheckComparison.notRecorded
+        []
+        ProjectModelFixtures.available
+        (fun _ -> Map.empty)
+    |> Verdict.write repoRoot
+
+/// The watermark is the run the prior verdict's full-suite green was earned by; a verdict that is
+/// not a green, or cannot be read, names none.
+[<Fact>]
+let ``before the run the watermark is the run a full-suite green verdict was earned by`` () =
+    withTempDir "refshadow-trigger-watermark" (fun repoRoot ->
+        writeVerdict repoRoot (Some runId) (Verdict.Green BaselineFixtures.baseline)
+        test <@ (readBefore repoRoot).WatermarkRun = Some BaselineFixtures.runId @>
+
+        writeVerdict repoRoot (Some runId) (Verdict.Incomplete "fixture")
+        test <@ (readBefore repoRoot).WatermarkRun = None @>
+
+        // An unreadable verdict names no watermark either.
+        File.WriteAllText(FsHwPaths.verdictFile repoRoot, "{ torn")
+        test <@ (readBefore repoRoot).WatermarkRun = None @>)
+
+/// A transport answering the servable file, the analyzers and test-prune, recording what it was asked.
+let private answering (asked: Collections.Generic.List<string>) : ScopeCommands.Send =
+    let servable =
+        [ { File = "src/A.fs"
+            Project = "src/P.fsproj"
+            FcsSignature = "fcs"
+            UsedSignatures = UsedSignaturesKey.Described "used" } ]
+
+    fun name _ ->
+        asked.Add name
+
+        match name with
+        | n when n = ServableCommand -> Some(Servable.toJson servable)
+        | n when n = AnalyzersCommand ->
+            Some(PluginReply.toJson (PluginComparison.ofFiles "analyzers" [ "src/A.fs", FileOutcome.Equal ]))
+        | n when n = LintCommand ->
+            Some(
+                PluginReply.toJson (
+                    PluginComparison.ofFiles
+                        "lint"
+                        [ "src/A.fs", FileOutcome.Unverifiable UnverifiableReason.DisplacedKeyDiffers ]
+                )
+            )
+        | n when n = TestPruneCommand ->
+            Some(
+                SelectionsReply.toJson
+                    { S = set [ "M.T" ]
+                      SPrime = Set.empty
+                      DifferingAnalyses = 1
+                      UnverifiableAnalyses = 0
+                      Copy = ImpactDbCopy.Copied(4096L, 3L) }
+            )
+        | _ -> None
+
+/// The whole path on the land host: the confirm publishes a verdict naming the run it graded, and
+/// the trigger reads C, the watermark from the prior green and the run's CTRF rows, asks each
+/// plugin, and files the report for that run. The exit code is the run's.
+[<Fact>]
+let ``a fresh confirm that graded a run on the land host files that run's report`` () =
+    withTempDir "refshadow-trigger-files" (fun repoRoot ->
+        // The prior green, earned by the watermark run, and C.
+        writeVerdict repoRoot (Some BaselineFixtures.runId) (Verdict.Green BaselineFixtures.baseline)
+        FsHotWatch.TestPrune.PendingVerification.save repoRoot (set [ "Lib.f" ])
+
+        let ctrf (run: Guid) (status: string) =
+            let dir = Ctrf.runDir repoRoot run
+            Directory.CreateDirectory dir |> ignore
+
+            File.WriteAllText(
+                Path.Combine(dir, "P" + Ctrf.ReportSuffix),
+                $"{{\"results\":{{\"summary\":{{}},\"tests\":[{{\"name\":\"M.T\",\"status\":\"%s{status}\",\"duration\":1}}]}}}}"
+            )
+
+        ctrf BaselineFixtures.runId "passed"
+        let asked = Collections.Generic.List<string>()
+
+        let exitCode =
+            aroundConfirm
+                repoRoot
+                onLandHost
+                "land-box"
+                CheckVerdict.Freshness.RequireNewRun
+                (answering asked)
+                (fun () -> false)
+                (fun () ->
+                    // The run: M.T fails, and the confirm publishes a verdict graded from it.
+                    ctrf runId "failed"
+                    writeVerdict repoRoot (Some runId) (Verdict.Incomplete "fixture")
+                    1)
+
+        test <@ exitCode = 1 @>
+        test <@ List.ofSeq asked = [ ServableCommand; TestPruneCommand; AnalyzersCommand; LintCommand ] @>
+
+        match readSummaries repoRoot with
+        | [ summary ] ->
+            test <@ summary.RunId = runId.ToString "N" @>
+
+            match summary.Result with
+            | SummaryResult.Compared counts ->
+                test
+                    <@
+                        counts.Servable = 1
+                        && counts.Analyzers.Equal = 1
+                        && counts.Lint.Unverifiable = 1
+                    @>
+
+                match counts.TestPrune with
+                // M.T passed in the watermark run and failed here, in S and not S′: attributable.
+                | TestPruneSummary.Compared tp -> test <@ tp.Attributable = 1 && tp.SelectorMiss = 0 @>
+                | TestPruneSummary.NotCompared why -> failwith why
+            | SummaryResult.HostMismatch _ -> failwith "expected a comparison"
+        | other -> failwith $"expected one summary, got %A{other}")
+
+/// The report is measurement: a comparison that fails is logged and dropped, never the confirm's.
+[<Fact>]
+let ``a comparison that fails files nothing and keeps the run's exit code`` () =
+    withTempDir "refshadow-trigger-fails" (fun repoRoot ->
+        let exitCode =
+            aroundConfirm
+                repoRoot
+                onLandHost
+                "land-box"
+                CheckVerdict.Freshness.RequireNewRun
+                (fun _ _ -> None)
+                (fun () -> false)
+                (fun () ->
+                    writeVerdict repoRoot (Some runId) (Verdict.Incomplete "fixture")
+                    1)
+
+        test <@ exitCode = 1 @>
+        test <@ not (File.Exists(summaryPath repoRoot)) @>)
+
+/// A test is unstable when it timed out or was cancelled in either run, or when its last runs
+/// flip; a skipped test is skipped; a watermark run with no reports reads every test as absent.
+[<Fact>]
+let ``the rows mark stopped and flaky tests unstable, and read a missing watermark run as absent`` () =
+    withTempDir "refshadow-trigger-unstable" (fun repoRoot ->
+        let dir = Ctrf.runDir repoRoot runId
+        Directory.CreateDirectory dir |> ignore
+
+        let row (name: string) (status: string) (exn: string option) =
+            let extra =
+                match exn with
+                | Some e -> $",\"extra\":{{\"exception\":\"%s{e}\"}}"
+                | None -> ""
+
+            $"{{\"name\":\"%s{name}\",\"status\":\"%s{status}\",\"duration\":1%s{extra}}}"
+
+        let rows =
+            [ row "M.TimedOut" "failed" (Some "Xunit.Sdk.TestTimeoutException")
+              row "M.Cancelled" "failed" (Some "System.OperationCanceledException")
+              row "M.Skipped" "skipped" None
+              row "M.Odd" "weird" None
+              row "M.Flaky" "passed" None
+              row "M.Steady" "passed" None ]
+            |> String.concat ","
+
+        File.WriteAllText(
+            Path.Combine(dir, "P" + Ctrf.ReportSuffix),
+            $"{{\"results\":{{\"summary\":{{}},\"tests\":[%s{rows}]}}}}"
+        )
+
+        let at (minutes: float) =
+            DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes minutes
+
+        FsHotWatch.TestPrune.Flakiness.appendRecords
+            (FsHotWatch.TestPrune.Flakiness.historyPath repoRoot)
+            20
+            [ for i, outcome in
+                  List.indexed
+                      [ FsHotWatch.TestPrune.Flakiness.Passed
+                        FsHotWatch.TestPrune.Flakiness.Failed
+                        FsHotWatch.TestPrune.Flakiness.Passed ] do
+                  { FsHotWatch.TestPrune.Flakiness.TestRunRecord.Name = "M.Flaky"
+                    Outcome = outcome
+                    DurationMs = 1
+                    RunStartedAt = at (float i) }
+
+                  { FsHotWatch.TestPrune.Flakiness.TestRunRecord.Name = "M.Steady"
+                    Outcome = FsHotWatch.TestPrune.Flakiness.Passed
+                    DurationMs = 1
+                    RunStartedAt = at (float i) } ]
+
+        let read =
+            testRows
+                repoRoot
+                { nothingBefore with
+                    WatermarkRun = Some(Guid.Parse "fedcba9876543210fedcba9876543210") }
+                runId
+            |> List.map (fun r -> r.Test, (r.Watermark, r.Nightly, r.Unstable))
+            |> Map.ofList
+
+        test <@ read["M.TimedOut"] = (TestOutcome.Absent, TestOutcome.Failed, true) @>
+        test <@ read["M.Cancelled"] = (TestOutcome.Absent, TestOutcome.Failed, true) @>
+        test <@ read["M.Skipped"] = (TestOutcome.Absent, TestOutcome.Skipped, false) @>
+        test <@ read["M.Odd"] = (TestOutcome.Absent, TestOutcome.Failed, true) @>
+        test <@ read["M.Flaky"] = (TestOutcome.Absent, TestOutcome.Passed, true) @>
+        test <@ read["M.Steady"] = (TestOutcome.Absent, TestOutcome.Passed, false) @>)
+
 /// TEST 7, the trigger's half (gates the land): with the nightly shadow on, the confirm runs the
 /// same, answers the same exit code, and leaves the verdict and the ledgers the run reads
 /// byte for byte as with it off.
