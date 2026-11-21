@@ -230,6 +230,42 @@ let ``a stale analysis changing which symbols count as changed changes S-prime``
         test
             <@ db.GetSymbolsInFile "src/Lib.fs" |> List.map _.ContentHash |> List.sort = [ "hash-Lib.f"; "hash-Lib.g" ] @>)
 
+/// The analysis this run filed may sit under another identity and still be the reused one: the
+/// same record is the same analysis. A file this run never indexed differs whatever it holds.
+[<Fact>]
+let ``the same record under another identity is the same analysis, and an unindexed file differs`` () =
+    withTempDir "refshadow-selection-identity" (fun dir ->
+        let root, db, _, store = fixture dir (Some(testsAnalysis true))
+
+        // This run's identity files the very analysis reuse would have kept.
+        AnalysisRecords.file
+            store
+            root
+            "tests/Tests.fs"
+            (AnalysisRecords.keyOf "fresh-identity" "tests/Tests.fs" "Tests")
+            (testsAnalysis true)
+        |> ignore
+
+        test <@ reusedAnalysisOf store root (db.GetFileKeys()) servable = ReusedAnalysis.Same @>
+
+        test
+            <@
+                match reusedAnalysisOf store root Map.empty servable with
+                | ReusedAnalysis.Differs(file, _) -> file = "tests/Tests.fs"
+                | ReusedAnalysis.Same
+                | ReusedAnalysis.Unverifiable -> false
+            @>)
+
+/// Nothing changed since the watermark selects nothing, under either analysis.
+[<Fact>]
+let ``an empty C selects nothing in S or S-prime`` () =
+    withTempDir "refshadow-selection-empty" (fun dir ->
+        let root, db, dbPath, store = fixture dir (Some(testsAnalysis false))
+        let reused = reusedAnalysisOf store root (db.GetFileKeys()) servable
+        let selections = selections db dbPath (Path.Combine(dir, "copy")) [] [ reused ]
+        test <@ selections.S.IsEmpty && selections.SPrime.IsEmpty @>
+        test <@ selections.DifferingAnalyses = 1 @>)
+
 /// TEST 7, test-prune's half (gates the land): computing S′ changes nothing the gate selects
 /// from. The index answers every selection, file key, symbol and edge exactly as before.
 [<Fact>]
