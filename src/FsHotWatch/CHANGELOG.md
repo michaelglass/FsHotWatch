@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `ReferencesShadowReport` gains the `sameKey` outcome (AUTOMATION-1816 step 2b): a servable file this run keyed
+  by the very key reuse would have read. `confirm --fresh` bypasses no plugin result cache, so that run's result may be
+  the cached entry itself; it is reported apart and counted as neither equal nor unverifiable (`Counts.SameKey`,
+  `PluginComparison.sameKeyFiles`; `"sameKey"` in the report and summary). **Breaking:** `Reused`, `FileOutcome` and
+  `Counts` gain `SameKey`.
+
 - feat!: `TaskCache.DisplacementCapturingTaskCache` keeps, for named plugins, the per-file entries a write displaces
   WITH THEIR KEYS (read before the write is handed on, since the file store deletes them), and
   `FileTaskCache.EntriesOf` lists one plugin and file's entries with their keys. With `cache.nightlyShadow` on, the

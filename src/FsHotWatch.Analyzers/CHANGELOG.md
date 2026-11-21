@@ -7,6 +7,9 @@
 - chore: rebuild to bundle updated dependencies
 
 
+- feat: `references-shadow-analyzers` answers `sameKey` for a file this run keyed by the reused key (its analysis may be
+  the record itself), and looks nothing up for it (AUTOMATION-1816 step 2b).
+
 - feat!: AUTOMATION-1816 step 2b. `AnalyzeRecords.Wiring` has a `ReuseKeys` field (`NotKept` or `Kept`; breaking for
   anyone constructing the record). With `Kept`, which the daemon sets when `cache.nightlyShadow` is on, the plugin keeps
   each file's latest analysis key parts, and its new `references-shadow-analyzers` command answers, per servable file,

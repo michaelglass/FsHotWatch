@@ -344,7 +344,9 @@ let reusedKey (parts: KeyParts) (fcsSignature: string) (usedSignatures: string) 
             UsedSignatures = usedSignatures }
 
 /// What reuse would have handed the analyzers for `servable`, read from `store` under
-/// `reusedKey`. `parts` is this run's key for the file: none when it keyed no analysis of it.
+/// `reusedKey`. `parts` is this run's key for the file: none when it keyed no analysis of it. When the
+/// reused key IS this run's key, this run's analysis may be that record itself: `SameKey`, never
+/// looked up.
 let reused
     (store: OutcomeRecords.IOutcomeStore)
     (root: string)
@@ -353,10 +355,15 @@ let reused
     : ReferencesShadowReport.Reused =
     match parts, servable.UsedSignatures with
     | Some parts, ReferencesShadowReport.UsedSignaturesKey.Described used ->
-        match lookup store root (reusedKey parts servable.FcsSignature used) with
-        | Some entries ->
-            ReferencesShadowReport.Reused.Found(entries |> List.map ReferencesShadowReport.Finding.ofEntry)
-        | None -> ReferencesShadowReport.Reused.Unverifiable ReferencesShadowReport.UnverifiableReason.NoReusedEntry
+        let key = reusedKey parts servable.FcsSignature used
+
+        if key = keyWith parts then
+            ReferencesShadowReport.Reused.SameKey
+        else
+            match lookup store root key with
+            | Some entries ->
+                ReferencesShadowReport.Reused.Found(entries |> List.map ReferencesShadowReport.Finding.ofEntry)
+            | None -> ReferencesShadowReport.Reused.Unverifiable ReferencesShadowReport.UnverifiableReason.NoReusedEntry
     | None, _
     | _, ReferencesShadowReport.UsedSignaturesKey.Undescribed ->
         ReferencesShadowReport.Reused.Unverifiable ReferencesShadowReport.UnverifiableReason.NoReusedKey

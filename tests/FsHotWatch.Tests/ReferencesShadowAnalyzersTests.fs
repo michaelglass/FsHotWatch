@@ -16,16 +16,18 @@ open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers
 
 /// A live check of `rel` under `root` with `source`, over the shared fixture's real check.
-let private liveAt (root: string) (rel: string) (source: string) : FileCheckResult =
+let private liveAs (check: unit -> FileCheckState) (root: string) (rel: string) (source: string) : FileCheckResult =
     { fakeFileCheckResult (Path.Combine(root, rel)) with
         Source = source
         ProjectOptions = fixtureOptions ()
-        CheckResults = fixtureFullCheck () }
+        CheckResults = check () }
+
+let private liveAt = liveAs fixtureFullCheck
 
 /// The file as the nightly's scan would name it servable: the signatures of its stored check,
 /// which for an unchanged check are this one's.
-let private servableOf (root: string) (rel: string) (source: string) : ServableFile =
-    let result = liveAt root rel source
+let private servableAs (check: unit -> FileCheckState) (root: string) (rel: string) (source: string) : ServableFile =
+    let result = liveAs check root rel source
 
     { File = rel
       Project = "Fixture.fsproj"
@@ -34,6 +36,8 @@ let private servableOf (root: string) (rel: string) (source: string) : ServableF
         match CacheInputs.usedSignaturesHash (Some root) result.ProjectOptions result.CheckResults with
         | Some hash -> UsedSignaturesKey.Described hash
         | None -> UsedSignaturesKey.Undescribed }
+
+let private servableOf = servableAs fixtureFullCheck
 
 /// One Error finding for a source that contains "BAD", worded by `wording`.
 let private findingsFor (wording: string) (source: string) : FSharp.Analyzers.SDK.Message list =
@@ -58,7 +62,8 @@ let private files =
 /// `start` name is a checkout whose entries are gone, so only the records hold the analyses): each of `files`
 /// analysed live by analyzers that word their finding `wording`, then `ask` run against the
 /// host before it is torn down.
-let private startThen
+let private startWith
+    (check: unit -> FileCheckState)
     (start: string)
     (storeRoot: string)
     (reuseKeys: AnalyzeRecords.ReuseKeys)
@@ -112,13 +117,15 @@ let private startThen
     try
         for rel, source in files do
             let before = committedBy host "analyzers"
-            host.EmitFileChecked(liveAt root rel source)
+            host.EmitFileChecked(liveAs check root rel source)
             test <@ waitForCommitted host "analyzers" before 1L 15000 @>
 
         waitForQuiescent host 15000
         ask host (List.ofSeq analyzed |> List.sort)
     finally
         host.Teardown()
+
+let private startThen start = startWith fixtureFullCheck start
 
 /// The analyzers plugin's comparison over `servable`, through its command.
 let private compare (host: PluginHost) (servable: ServableFile list) : PluginComparison =
@@ -135,8 +142,9 @@ let private compare (host: PluginHost) (servable: ServableFile list) : PluginCom
 let private outcomeOf (comparison: PluginComparison) (file: string) =
     comparison.Files |> List.find (fun (f, _) -> f = file) |> snd
 
-/// TEST 2. The first start files each analysis; the second, at the same tree, finds what it
-/// finds. A stored analysis equal to the second start's findings is equal; one the analyzers now
+/// TEST 2. The first start files each analysis of a check that carried a warning; the second, at
+/// the same bytes, checks cleanly (another key) and finds what it finds. Reuse would have served
+/// the first check's record. A stored analysis equal to the second start's findings is equal; one the analyzers now
 /// word differently is a mismatch naming the file, the plugin and both findings; a deleted
 /// record is unverifiable.
 [<Fact(Timeout = 120000)>]
@@ -144,9 +152,13 @@ let ``the analyzers answer equal, mismatch or unverifiable for what reuse would 
     withTempDir "refshadow-analyzers" (fun dir ->
         let storeRoot = Path.Combine(dir, "outcomes")
         let root = Path.Combine(dir, "repo")
-        let servable = files |> List.map (fun (rel, src) -> servableOf root rel src)
 
-        startThen "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun _ _ -> ())
+        let servable =
+            files
+            |> List.map (fun (rel, src) -> servableAs fixtureWarnedFullCheck root rel src)
+
+        startWith fixtureWarnedFullCheck "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun _ _ ->
+            ())
 
         let comparison, afterDelete =
             startThen "second" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is worse" (fun host _ ->
@@ -174,6 +186,32 @@ let ``the analyzers answer equal, mismatch or unverifiable for what reuse would 
                 afterDelete.Files
                 |> List.forall (fun (_, outcome) ->
                     outcome = FileOutcome.Unverifiable UnverifiableReason.NoReusedEntry)
+            @>)
+
+/// The nightly keyed the file by the very key reuse would have read (the record's check is this
+/// run's): its analysis may be that record itself, so it is `sameKey`, neither equal nor
+/// unverifiable, and nothing is looked up for it.
+[<Fact(Timeout = 120000)>]
+let ``a nightly key equal to the reused key is sameKey, never equal or unverifiable`` () =
+    withTempDir "refshadow-analyzers-samekey" (fun dir ->
+        let storeRoot = Path.Combine(dir, "outcomes")
+        let root = Path.Combine(dir, "repo")
+        let servable = files |> List.map (fun (rel, src) -> servableOf root rel src)
+
+        startThen "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun _ _ -> ())
+
+        let comparison =
+            startThen "second" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is worse" (fun host _ ->
+                compare host servable)
+
+        test <@ comparison.Files = [ "src/A.fs", FileOutcome.SameKey; "src/B.fs", FileOutcome.SameKey ] @>
+
+        test
+            <@
+                PluginComparison.counts comparison = { Equal = 0
+                                                       Mismatch = 0
+                                                       Unverifiable = 0
+                                                       SameKey = 2 }
             @>)
 
 /// Reuse keys a result only by signatures its record names: a record whose check's shape was

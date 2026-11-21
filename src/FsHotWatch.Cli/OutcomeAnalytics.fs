@@ -699,7 +699,7 @@ let private referencesShadowText (result: FsHotWatch.ReferencesShadowReport.Summ
         $"host mismatch (ran on %s{host}, land host %s{landHost}): nothing compared"
     | FsHotWatch.ReferencesShadowReport.SummaryResult.Compared c ->
         let plugin (name: string) (counts: FsHotWatch.ReferencesShadowReport.Counts) =
-            $"%s{name} equal %d{counts.Equal} / mismatch %d{counts.Mismatch} / unverifiable %d{counts.Unverifiable}"
+            $"%s{name} equal %d{counts.Equal} / mismatch %d{counts.Mismatch} / unverifiable %d{counts.Unverifiable} / same key %d{counts.SameKey}"
 
         let testPrune =
             match c.TestPrune with

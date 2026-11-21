@@ -109,6 +109,10 @@ module UnverifiableReason =
 type Reused =
     | Found of Finding list
     | Unverifiable of UnverifiableReason
+    /// This run keyed the file's result by the very key reuse would have read. Neither `confirm
+    /// --fresh` nor anything else bypasses a plugin's result cache, so this run's result may BE
+    /// the cached entry: comparing the two would compare the cache with itself.
+    | SameKey
 
 /// One shadow-servable file, for one plugin.
 [<RequireQualifiedAccess>]
@@ -117,11 +121,15 @@ type FileOutcome =
     /// Both lists, normalised: what reuse would have served, then what the nightly found.
     | Mismatch of reused: Finding list * fresh: Finding list
     | Unverifiable of UnverifiableReason
+    /// This run keyed the file by the reused key too (`Reused.SameKey`): reported apart, and
+    /// counted as neither equal nor unverifiable.
+    | SameKey
 
 /// Compare what reuse would have served with the nightly's own findings for the file.
 let compareFile (reused: Reused) (fresh: ErrorEntry list) : FileOutcome =
     match reused with
     | Reused.Unverifiable reason -> FileOutcome.Unverifiable reason
+    | Reused.SameKey -> FileOutcome.SameKey
     | Reused.Found reusedFindings ->
         let reusedNormal = Finding.normalise reusedFindings
         let freshNormal = fresh |> List.map Finding.ofEntry |> Finding.normalise
@@ -132,9 +140,13 @@ let compareFile (reused: Reused) (fresh: ErrorEntry list) : FileOutcome =
             FileOutcome.Mismatch(reusedNormal, freshNormal)
 
 type Counts =
-    { Equal: int
-      Mismatch: int
-      Unverifiable: int }
+    {
+        Equal: int
+        Mismatch: int
+        Unverifiable: int
+        /// Files this run keyed by the reused key (`FileOutcome.SameKey`).
+        SameKey: int
+    }
 
 /// A mismatch, named for whoever must fix it.
 type Mismatch =
@@ -163,10 +175,12 @@ module PluginComparison =
                 | FileOutcome.Mismatch _ -> { c with Mismatch = c.Mismatch + 1 }
                 | FileOutcome.Unverifiable _ ->
                     { c with
-                        Unverifiable = c.Unverifiable + 1 })
+                        Unverifiable = c.Unverifiable + 1 }
+                | FileOutcome.SameKey -> { c with SameKey = c.SameKey + 1 })
             { Equal = 0
               Mismatch = 0
-              Unverifiable = 0 }
+              Unverifiable = 0
+              SameKey = 0 }
 
     let mismatches (comparison: PluginComparison) : Mismatch list =
         comparison.Files
@@ -179,6 +193,17 @@ module PluginComparison =
                       Reused = reused
                       Fresh = fresh }
             | FileOutcome.Equal
+            | FileOutcome.Unverifiable _
+            | FileOutcome.SameKey -> None)
+
+    /// The files this run keyed by the reused key, by path.
+    let sameKeyFiles (comparison: PluginComparison) : string list =
+        comparison.Files
+        |> List.choose (fun (file, outcome) ->
+            match outcome with
+            | FileOutcome.SameKey -> Some file
+            | FileOutcome.Equal
+            | FileOutcome.Mismatch _
             | FileOutcome.Unverifiable _ -> None)
 
 // --- test-prune --------------------------------------------------------------------------
@@ -443,6 +468,7 @@ module private Write =
         o["equal"] <- c.Equal
         o["mismatch"] <- c.Mismatch
         o["unverifiable"] <- c.Unverifiable
+        o["sameKey"] <- c.SameKey
         o
 
     let fileOutcome (file: string, outcome: FileOutcome) : JsonNode =
@@ -458,6 +484,7 @@ module private Write =
         | FileOutcome.Unverifiable reason ->
             o["outcome"] <- "unverifiable"
             o["reason"] <- UnverifiableReason.token reason
+        | FileOutcome.SameKey -> o["outcome"] <- "sameKey"
 
         o
 
@@ -556,7 +583,8 @@ module private Read =
     let counts (e: JsonElement) : Counts =
         { Equal = int e "equal"
           Mismatch = int e "mismatch"
-          Unverifiable = int e "unverifiable" }
+          Unverifiable = int e "unverifiable"
+          SameKey = int e "sameKey" }
 
     let fileOutcome (e: JsonElement) : string * FileOutcome =
         let outcome =
@@ -566,6 +594,7 @@ module private Read =
                 FileOutcome.Mismatch(items e "reused" |> List.map finding, items e "fresh" |> List.map finding)
             | "unverifiable" ->
                 FileOutcome.Unverifiable(UnverifiableReason.tryParse (str e "reason") |> parsed "reason")
+            | "sameKey" -> FileOutcome.SameKey
             | other -> raise (MalformedException $"outcome %s{other}")
 
         str e "file", outcome

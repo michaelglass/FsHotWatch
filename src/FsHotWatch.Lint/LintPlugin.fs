@@ -181,57 +181,64 @@ let private keyOf (keyBase: KeyBase) (usedSignatures: string) (fcsSignature: str
             "fcs-signature", fcsSignature ]
     )
 
-/// Each file's latest key base, kept only for the nightly shadow, with what reads the entries
-/// lint's writes displaced.
+/// Each file's latest key base, and the key this run built from it, kept only for the nightly
+/// shadow, with what reads the entries lint's writes displaced.
 [<NoComparison; NoEquality>]
 type private ReuseKeyBases =
     | NotKept
     | Kept of
-        bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase> *
+        bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase * ContentHash> *
         displaced: FsHotWatch.TaskCache.DisplacedEntries
 
 /// AUTOMATION-1816 step 2b: what reuse would have handed lint for `servable`, read from the entry
 /// lint's own write displaced. Reuse would have read the key built from this run's key base and
-/// the record's signatures; the displaced entry answers only when it was filed under exactly that
-/// key. Any other key, or nothing displaced, is unverifiable, never equal.
+/// the record's signatures. When that IS the key this run built, this run's result may be the
+/// cached entry itself: `SameKey`, never compared. Otherwise the displaced entry answers only when
+/// it was filed under exactly the reused key; any other key, or nothing displaced, is
+/// unverifiable, never equal.
 let private reusedFor
     (repoRoot: string)
-    (bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase>)
+    (bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase * ContentHash>)
     (displaced: FsHotWatch.TaskCache.DisplacedEntries)
     (servable: FsHotWatch.ReferencesShadowReport.ServableFile)
     : FsHotWatch.ReferencesShadowReport.Reused =
     let file = IO.Path.Combine(repoRoot, servable.File)
 
-    let keyBase =
+    let keyed =
         match bases.TryGetValue(AbsFilePath.create file) with
-        | true, keyBase -> Some keyBase
+        | true, keyed -> Some keyed
         | false, _ -> None
 
-    match keyBase, servable.UsedSignatures with
-    | Some keyBase, FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Described used ->
-        let reusedKey = displaced.Stored(keyOf keyBase used servable.FcsSignature)
+    match keyed, servable.UsedSignatures with
+    | Some(keyBase, runKey), FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Described used ->
+        let reused = keyOf keyBase used servable.FcsSignature
 
-        let compositeKey: FsHotWatch.TaskCache.CompositeKey =
-            { Plugin = "lint"
-              File =
-                Some(
-                    FsHotWatch.CachePathIdentity.ofPath repoRoot file
-                    |> FsHotWatch.CachePathIdentity.toKey
-                ) }
+        if reused = runKey then
+            FsHotWatch.ReferencesShadowReport.Reused.SameKey
+        else
+            let reusedKey = displaced.Stored reused
 
-        match displaced.Displaced compositeKey with
-        | [] ->
-            FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
-                FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedEntry
-        | entries ->
-            match entries |> List.tryFind (fun e -> e.Key = reusedKey) with
-            | Some entry ->
-                FsHotWatch.TaskCache.findingsFor file entry.Result
-                |> List.map FsHotWatch.ReferencesShadowReport.Finding.ofEntry
-                |> FsHotWatch.ReferencesShadowReport.Reused.Found
-            | None ->
+            let compositeKey: FsHotWatch.TaskCache.CompositeKey =
+                { Plugin = "lint"
+                  File =
+                    Some(
+                        FsHotWatch.CachePathIdentity.ofPath repoRoot file
+                        |> FsHotWatch.CachePathIdentity.toKey
+                    ) }
+
+            match displaced.Displaced compositeKey with
+            | [] ->
                 FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
-                    FsHotWatch.ReferencesShadowReport.UnverifiableReason.DisplacedKeyDiffers
+                    FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedEntry
+            | entries ->
+                match entries |> List.tryFind (fun e -> e.Key = reusedKey) with
+                | Some entry ->
+                    FsHotWatch.TaskCache.findingsFor file entry.Result
+                    |> List.map FsHotWatch.ReferencesShadowReport.Finding.ofEntry
+                    |> FsHotWatch.ReferencesShadowReport.Reused.Found
+                | None ->
+                    FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
+                        FsHotWatch.ReferencesShadowReport.UnverifiableReason.DisplacedKeyDiffers
     | None, _
     | _, FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Undescribed ->
         FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
@@ -291,7 +298,7 @@ let createWith
     let reuseKeyBases =
         match displacement with
         | FsHotWatch.TaskCache.DisplacementCapture.Captured displaced ->
-            Kept(Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase>(), displaced)
+            Kept(Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase * ContentHash>(), displaced)
         | FsHotWatch.TaskCache.DisplacementCapture.Off -> NotKept
 
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
@@ -313,11 +320,13 @@ let createWith
                       "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value r.File)
                       "source", r.Source ]
 
+                let key = keyOf keyBase usedSignatures (FsHotWatch.CheckCache.fcsCheckSignature r)
+
                 match reuseKeyBases with
-                | Kept(bases, _) -> bases[r.File] <- keyBase
+                | Kept(bases, _) -> bases[r.File] <- (keyBase, key)
                 | NotKept -> ()
 
-                keyOf keyBase usedSignatures (FsHotWatch.CheckCache.fcsCheckSignature r))
+                key)
         | _ -> None
 
 
