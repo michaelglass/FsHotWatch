@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: `ReferencesShadowReport`, the report model of AUTOMATION-1816 step 2b's output-level shadow (record and
+  compare only; not yet produced by any run, and nothing reads it to decide anything). Per shadow-servable file and
+  plugin (`analyzers`, `lint`): `equal`, `mismatch` (both normalised finding lists: rule, line, column, severity,
+  message) or `unverifiable` (`no-reused-entry`, `config-changed`). For test-prune: tests outside S' (the selection
+  the stale analyses would make) that failed or changed outcome since the watermark run, split into `attributable` (in
+  the fresh selection S) and `selectorMiss`; a quarantined test that stays red is not a change, and an unstable one
+  (flaky, timed out, cancelled) is listed as `flakyChanged`, not counted; `differingAnalyses` and the temporary
+  impact-DB copy's size. Off the land host the result is `hostMismatch`, with no per-file counts. Written to
+  `.fshw/references-shadow/<runId>.json` (the last 30 kept) with one summary line in `.fshw/references-shadow.jsonl`.
+  ADR-079 records the design, the rejected land-time capture and the blind spot.
+
 - feat: AUTOMATION-1816's alternative-upstreams records move from each workspace's `.fshw/cache/alternative-keys/`
   into the box-wide outcome store as kind `alternative-upstreams` (step 2b), so a daemon in any workspace on a host
   reads what a land's daemon filed. One record per key: a rewrite supersedes it. GC drops a record not rewritten

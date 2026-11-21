@@ -301,6 +301,7 @@
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="AlternativeKeyTests.fs" />
     <Compile Include="AlternativeKeyStoreTests.fs" />
+    <Compile Include="ReferencesShadowReportTests.fs" />
     <Compile Include="ReferencesShadowTests.fs" />
     <Compile Include="CheckPipelineCancellationTests.fs" />
     <Compile Include="WorkSchedulerTests.fs" />
