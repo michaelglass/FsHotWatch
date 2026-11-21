@@ -207,28 +207,6 @@ let ``measuring changes neither the cache key nor what the cache serves`` () =
     test <@ plain.Unknown = 3L @>
 
 [<Fact>]
-let ``the file store keeps alternative upstreams across daemons, and reads a damaged record as none`` () =
-    withTempDir "alt-file-store" (fun tmpDir ->
-        let dir = Path.Combine(tmpDir, "alternative-keys")
-
-        let recorded =
-            { Signature = "sig"
-              References = [ "${repo}/src/A.fs"; "${repo}/src/B.fs" ]
-              ReferencesFingerprint = "refs" }
-
-        (FileAlternativeKeyStore(dir) :> IAlternativeKeyStore).Write "k1" (AlternativeRecord.Upstreams recorded)
-
-        // A later daemon's store over the same directory.
-        let later = FileAlternativeKeyStore(dir) :> IAlternativeKeyStore
-        test <@ later.TryRead "k1" = Some(AlternativeRecord.Upstreams recorded) @>
-        test <@ later.TryRead "k2" = None @>
-
-        for file in Directory.GetFiles dir do
-            File.WriteAllText(file, "{ not json")
-
-        test <@ later.TryRead "k1" = None @>)
-
-[<Fact>]
 let ``a record that is not exactly this schema reads as none`` () =
     let recorded =
         { Signature = "sig"
@@ -253,29 +231,6 @@ let ``a record that is not exactly this schema reads as none`` () =
           """{"schema":"fshw-alternative-upstreams-v1"}"""
           """{"schema":5}""" ] do
         test <@ tryOfJson text = None @>
-
-[<Fact>]
-let ``the file store drops a record it cannot write, and leaves nothing half-written`` () =
-    withTempDir "alt-file-store-fail" (fun tmpDir ->
-        let recorded =
-            { Signature = "sig"
-              References = []
-              ReferencesFingerprint = "refs" }
-
-        // Its directory is a file: nothing can be created under it.
-        let blocked = Path.Combine(tmpDir, "blocked")
-        File.WriteAllText(blocked, "")
-        let store = FileAlternativeKeyStore(blocked) :> IAlternativeKeyStore
-        store.Write "k" (AlternativeRecord.Upstreams recorded)
-        test <@ store.TryRead "k" = None @>
-
-        // The record's own path is a directory: the rename fails after the write.
-        let dir = Path.Combine(tmpDir, "alternative-keys")
-        Directory.CreateDirectory(Path.Combine(dir, "k.json")) |> ignore
-        let occupied = FileAlternativeKeyStore(dir) :> IAlternativeKeyStore
-        occupied.Write "k" (AlternativeRecord.Upstreams recorded)
-        test <@ occupied.TryRead "k" = None @>
-        test <@ Directory.GetFiles dir |> Array.isEmpty @>)
 
 [<Fact>]
 let ``a check that is not live has no declaration files to record`` () =

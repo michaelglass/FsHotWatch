@@ -96,6 +96,22 @@ type Settings =
 
 let defaultTtl = TimeSpan.FromDays 14.0
 
+/// The kind AUTOMATION-1816's alternative-upstreams records are filed as (step 2b): moved here from
+/// each workspace's `.fshw/cache/alternative-keys/` so every daemon on a host reads them.
+[<Literal>]
+let AlternativeUpstreamsKind = "alternative-upstreams"
+
+/// How long an alternative-upstreams record is kept past its last rewrite, whatever the
+/// store's own TTL.
+let AlternativeUpstreamsRetention = TimeSpan.FromDays 14.0
+
+/// Kinds kept SHORTER than the store's TTL: GC evicts such a key once its newest record is
+/// older than the lesser of the two.
+let private kindTtl (storeTtl: TimeSpan) (kind: string) : TimeSpan =
+    match kind with
+    | AlternativeUpstreamsKind -> min storeTtl AlternativeUpstreamsRetention
+    | _ -> storeTtl
+
 /// AUTOMATION-1506: 2 GiB. One intelligence tree (2731 files) files about 300 MB, most of
 /// it TestPrune analyses (about 120 KB a file); at 256 MB a cold daemon's own GC evicted its first
 /// analyses minutes after filing them. Workspaces at different trees share the store.
@@ -944,7 +960,7 @@ type Store(settings: Settings, testRowsLog: Lazy<Result<TestRowsLog.Retention, s
         let expired, live =
             entries
             |> List.filter (fun e -> not (Set.contains e.Key keep))
-            |> List.partition (fun e -> now - e.Newest > settings.Ttl)
+            |> List.partition (fun e -> now - e.Newest > kindTtl settings.Ttl e.Kind)
 
         let expiredKeys = expired |> List.map _.Key |> Set.ofList
 

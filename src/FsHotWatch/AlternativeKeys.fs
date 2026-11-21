@@ -270,34 +270,86 @@ type InMemoryAlternativeKeyStore() =
 
         member _.Write key record = records[key] <- record
 
-/// One JSON file per record in `dir`, written whole and then renamed into place, so a
-/// reader sees the old record or the new one. Measurement must not take the daemon down:
-/// a failed write is logged and dropped (the next miss on those inputs reads as unknown),
-/// and a missing or unreadable record reads as none.
-type FileAlternativeKeyStore(dir: string) =
-    let pathOf (key: string) = Path.Combine(dir, key + ".json")
+/// How long a record is kept past its last rewrite (the store's GC applies it per kind).
+let Retention = OutcomeStore.AlternativeUpstreamsRetention
+
+/// Records in the box-wide outcome store, as kind `alternative-upstreams` (AUTOMATION-1816
+/// step 2b): every workspace's daemon on a host reads what any other wrote, so the nightly's
+/// daemon sees the records the land daemons filed. One record per key: a rewrite supersedes it
+/// and moves its date, which the 14-day retention counts from. `clock` dates each write: its wall time, a time of day.
+/// Measurement must not take the daemon down: a record not filed is logged and dropped, and a
+/// missing or unreadable one reads as none.
+type OutcomeAlternativeKeyStore(store: OutcomeRecords.IOutcomeStore, root: string, clock: HostClock.Clock) =
+
+    /// The store key a record filed under `recordKey` has.
+    static member KeyOf(recordKey: string) : ActionKey.ActionKey =
+        ActionKey.create OutcomeStore.AlternativeUpstreamsKind [ "record", recordKey ]
+
+    /// File `record` under `recordKey`, dated `recordedAt`. Whether it was filed.
+    member _.WriteAt(recordKey: string, record: AlternativeRecord, recordedAt: DateTimeOffset) : bool =
+        let filed =
+            OutcomeStore.Through.supersede
+                store
+                (OutcomeStore.Record.ofAction
+                    (OutcomeAlternativeKeyStore.KeyOf recordKey)
+                    OutcomeStore.AlternativeUpstreamsKind
+                    OutcomeStore.Outcome.Pass
+                    CheckCache.producerIdentity
+                    root
+                    recordedAt)
+                (Some(toJson record))
+
+        if filed.IsNone then
+            Logging.debug "cache" $"alternative upstreams %s{recordKey} not filed in the outcome store"
+
+        filed.IsSome
+
+    /// Move each record of a per-workspace records directory (step 1 and 2's
+    /// `.fshw/cache/alternative-keys/`) into the store, dated by the file's last write so the
+    /// retention counts from when it was really written, then delete the directory. Damaged
+    /// and partial files are dropped. Returns how many records it moved.
+    static member ImportLegacy (dir: string) (target: OutcomeAlternativeKeyStore) : int =
+        // MGA-ERROR-REPORT-001:ok — a legacy file that cannot be read, or a directory that cannot
+        // be removed, is a record lost to measurement, never a fault: a miss it was for counts as
+        // unknown, and a directory left behind is moved again (as no records) next start.
+        let attempt (what: string) (work: unit -> int) =
+            try
+                work ()
+            with ex ->
+                Logging.debug "cache" $"alternative upstreams %s{what} not moved: %s{ex.Message}"
+                0
+
+        let moveOne (path: string) () =
+            match tryOfJson (File.ReadAllText path) with
+            | Some record when
+                target.WriteAt(
+                    Path.GetFileNameWithoutExtension path,
+                    record,
+                    DateTimeOffset(File.GetLastWriteTimeUtc path, TimeSpan.Zero)
+                )
+                ->
+                1
+            | _ -> 0
+
+        if Directory.Exists dir then
+            let moved =
+                Directory.GetFiles(dir, "*.json")
+                |> Array.sumBy (fun path -> attempt path (moveOne path))
+
+            attempt dir (fun () ->
+                Directory.Delete(dir, true)
+                0)
+            |> ignore
+
+            moved
+        else
+            0
 
     interface IAlternativeKeyStore with
-        // MGA-ERROR-REPORT-001:ok — no record and an unreadable one both mean nothing to
-        // compare with: the miss counts as unknown, which is what the count is for.
         member _.TryRead key =
-            try
-                tryOfJson (File.ReadAllText(pathOf key))
-            with _ ->
-                None
+            OutcomeStore.Through.lookupWithOutputs store (OutcomeAlternativeKeyStore.KeyOf key).Value
+            |> Option.bind snd
+            |> Option.bind tryOfJson
 
-        // MGA-ERROR-REPORT-001:ok — measurement is never load-bearing: a record not written
-        // is logged, and a later miss on these inputs counts as unknown.
-        member _.Write key record =
-            let path = pathOf key
-            let temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp"
-
-            try
-                Directory.CreateDirectory dir |> ignore
-                File.WriteAllText(temporary, toJson record)
-                File.Move(temporary, path, true)
-            with ex ->
-                Logging.debug "cache" $"alternative upstreams not written to %s{path}: %s{ex.Message}"
-
-                if File.Exists temporary then
-                    File.Delete temporary
+        member this.Write key record =
+            this.WriteAt(key, record, DateTimeOffset(clock.WallNow(), TimeSpan.Zero)) |> ignore
