@@ -203,7 +203,18 @@ let internal computeArgsSaltWith
         collectArgFiles repoRoot args
         |> List.choose (fun path -> hashFile path |> Option.map (fun h -> $"file:%s{path}", h))
 
-    let inputs = [ "command", command; "args", args ] @ fileHashes
+    // AUTOMATION-1840: a script argument reads every file it `#load`s, transitively; each is an
+    // input although no argument names it. Computed from the script, never listed.
+    let loadHashes =
+        FsHotWatch.PluginInputs.loadClosure repoRoot (FsHotWatch.PluginInputs.scriptsIn args)
+        |> List.map (function
+            | FsHotWatch.PluginInputs.Loaded.Present rel ->
+                "load:" + rel,
+                hashFile (System.IO.Path.Combine(repoRoot, rel))
+                |> Option.defaultValue "unreadable"
+            | FsHotWatch.PluginInputs.Loaded.Missing rel -> "missing:" + rel, "absent")
+
+    let inputs = [ "command", command; "args", args ] @ fileHashes @ loadHashes
 
     FsHotWatch.TaskCache.merkleCacheKey inputs
     |> FsHotWatch.Events.ContentHash.value
@@ -216,6 +227,17 @@ let internal resolveChange (repoRoot: string) (change: FileChangeKind) : FileCha
     | SourceChanged paths -> SourceChanged(paths |> List.map (resolveArgPath repoRoot))
     | ProjectChanged paths -> ProjectChanged(paths |> List.map (resolveArgPath repoRoot))
     | SolutionChanged -> SolutionChanged
+
+/// The files on disk that the scripts `args` names `#load`, transitively, the scripts included
+/// (`PluginInputs.loadClosure`), absolute under `repoRoot`. A change to one runs the command
+/// as a change to a pattern match does: the command reads it (AUTOMATION-1840).
+let internal loadedFiles (repoRoot: string) (args: string) : Set<string> =
+    FsHotWatch.PluginInputs.loadClosure repoRoot (FsHotWatch.PluginInputs.scriptsIn args)
+    |> List.choose (function
+        | FsHotWatch.PluginInputs.Loaded.Present rel ->
+            Some(System.IO.Path.GetFullPath(System.IO.Path.Combine(repoRoot, rel)))
+        | FsHotWatch.PluginInputs.Loaded.Missing _ -> None)
+    |> Set.ofList
 
 /// The files of a change that `filter` matched: the inputs a FileChanged run fires for.
 let internal matchingFiles (filter: string -> bool) (change: FileChangeKind) : string list =
@@ -618,6 +640,15 @@ let internal createWith
                 |> Option.iter (FsHotWatch.Logging.warn "file-command")
         )
 
+    // A file fires the command when the pattern matches it, or when a script argument loads it:
+    // read from disk at each event, so a `#load` added or removed is seen at once.
+    let firesOn (fileFilter: string -> bool) : string -> bool =
+        let loaded = loadedFiles repoRoot args
+
+        fun path ->
+            fileFilter path
+            || loaded.Contains(System.IO.Path.GetFullPath(resolveArgPath repoRoot path))
+
     // The digests the key hashes with: a listed file is read again only when it moved or the
     // event names it (`DigestCache`).
     let digests = DigestCache tryHashFile
@@ -637,7 +668,7 @@ let internal createWith
                     match trigger.FilePattern with
                     | None -> return state
                     | Some fileFilter ->
-                        match matchingFiles fileFilter change with
+                        match matchingFiles (firesOn fileFilter) change with
                         | [] -> return state
                         | first :: _ ->
                             let! result = runCommand ctx (FileMatched first) []
@@ -708,7 +739,7 @@ let internal createWith
 
                 let matched =
                     (trigger.FilePattern
-                     |> Option.map (fun fileFilter -> matchingFiles fileFilter change)
+                     |> Option.map (fun fileFilter -> matchingFiles (firesOn fileFilter) change)
                      |> Option.defaultValue [])
                     @ inputListing.Files()
 

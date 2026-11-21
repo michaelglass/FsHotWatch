@@ -2141,3 +2141,67 @@ let ``a listed file rewritten to other bytes of the same size, its mtime restore
 
         test <@ before.IsSome && after.IsSome @>
         test <@ before <> after @>)
+
+// AUTOMATION-1840: `fsi --typecheck-only build.fsx` reads every file build.fsx `#load`s. Its
+// pattern (`*.fsx`) names none of them, so an edit to a loaded `.fs` that broke the script
+// neither ran the command nor moved its key, and the last green replayed.
+
+/// A repository whose `build.fsx` loads `src/Lib.fs`, which loads nothing.
+let private withLoadingScript (name: string) (body: string -> string -> unit) =
+    withTempDir name (fun root ->
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "src"))
+        |> ignore
+
+        System.IO.File.WriteAllText(System.IO.Path.Combine(root, "build.fsx"), "#load \"src/Lib.fs\"\n")
+        let lib = System.IO.Path.Combine(root, "src", "Lib.fs")
+        System.IO.File.WriteAllText(lib, "module Lib\nlet ok = 1\n")
+        body root lib)
+
+let private scriptTrigger = fileTrigger (fun path -> path.EndsWith ".fsx")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an edit to a file the script argument loads moves the key`` () =
+    withLoadingScript "fc-load-key" (fun root lib ->
+        let handler =
+            create
+                (FsHotWatch.PluginFramework.PluginName.create "fsx-check")
+                scriptTrigger
+                "true"
+                "fsi --typecheck-only build.fsx"
+                root
+                None
+
+        let keyFn = handler.CacheKey.Value handler.Init
+        let event = FileChanged(SourceChanged [ System.IO.Path.Combine(root, "build.fsx") ])
+        let before = keyFn event
+        System.IO.File.WriteAllText(lib, "module Lib\nlet broken =\n")
+        let after = keyFn event
+
+        test <@ before.IsSome && after.IsSome @>
+        test <@ before <> after @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a change naming only a file the script argument loads runs the command`` () =
+    withLoadingScript "fc-load-run" (fun root lib ->
+        let runs = System.IO.Path.Combine(root, "runs.log")
+        System.IO.File.WriteAllText(System.IO.Path.Combine(root, "count.sh"), $"echo ran >> '%s{runs}'\n")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) root
+
+        host.RegisterHandler(
+            create
+                (FsHotWatch.PluginFramework.PluginName.create "fsx-check")
+                scriptTrigger
+                "sh"
+                "count.sh build.fsx"
+                root
+                None
+        )
+
+        System.IO.File.WriteAllText(lib, "module Lib\nlet broken =\n")
+        host.EmitFileChanged(SourceChanged [ lib ])
+
+        let ran =
+            waitUntilTrue (fun () -> System.IO.File.Exists runs && (System.IO.File.ReadAllLines runs).Length = 1) 5000
+
+        test <@ ran @>)

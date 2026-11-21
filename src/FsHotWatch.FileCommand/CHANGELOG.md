@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: a script command re-runs, and re-keys, when a file its script `#load`s changes (AUTOMATION-1840). A file
+  command whose arguments name an `.fsx` script (`fsi --typecheck-only build.fsx`) reads every file the script
+  `#load`s, transitively, but its key covered only the command, its argument files and its pattern's matches, and a
+  change to a loaded `.fs` (which `*.fsx` does not match) did not fire it: an edit that broke the script replayed
+  the last green, also under `confirm --fresh`. The closure is computed from the scripts at each event
+  (`PluginInputs.loadClosure`: each `#load` relative to its own file, several files per directive,
+  `__SOURCE_DIRECTORY__`, cycles), never listed; a loaded file that is missing is the key term `missing:<path>`. A
+  change naming a loaded file now runs the command as a pattern match does. `#r` references and `#I` search paths
+  are not followed.
+
 ## 0.7.0-alpha.34 - 2026-11-18
 
 - chore: rebuild to bundle updated dependencies

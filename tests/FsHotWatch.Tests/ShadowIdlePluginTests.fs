@@ -245,3 +245,27 @@ let ``a start runs only the plugins that declare inputs, never one keyed by the 
     withCheckout """{ "format": "auto", "lint": false, "build": false,
              "fileCommands": [ { "pattern": "*.fsx", "command": "true" } ] }""" (fun repo store configured ->
         test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>)
+
+[<Fact>]
+let ``a script command whose loaded file changed has no record, so a start runs it`` () =
+    // AUTOMATION-1840: `fsi --typecheck-only build.fsx` reads every file build.fsx `#load`s. Its
+    // pattern matches only `.fsx` files, so an edit to a loaded `.fs` left the key, and the
+    // recorded pass, standing over a script that may no longer type-check.
+    withCheckout
+        """{ "format": "off", "lint": false, "build": false,
+  "fileCommands": [ { "pattern": "*.fsx", "command": "dotnet", "args": "fsi --typecheck-only build.fsx" } ] }"""
+        (fun repo store configured ->
+            write repo "build.fsx" "#load \"src/A/a.fs\"\nprintfn \"build\""
+
+            observeWith
+                repo
+                store
+                None
+                (collectDue store)
+                configured
+                (check repo "sha256:t0" 0.0 [ fsx, Some OutcomeStore.Outcome.Pass ])
+            |> ignore
+
+            test <@ List.isEmpty (unrecordedDeclared repo "fshw 1" store configured) @>
+            write repo "src/A/a.fs" "module A\nlet broken ="
+            test <@ unrecordedDeclared repo "fshw 1" store configured = [ fsx ] @>)

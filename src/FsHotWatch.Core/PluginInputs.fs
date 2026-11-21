@@ -20,6 +20,138 @@ type InputSpec =
     /// scope, `Watcher.acceptsUnderRoot`). `entry` digests the plugin's own configuration entry,
     /// so editing its command re-keys it and nothing else.
     | Matching of pattern: WatchScope.FilePattern * entry: string
+    /// Every file the scripts (repository-relative, as a command's arguments name them) `#load`,
+    /// transitively, and the scripts themselves (`loadClosure`; AUTOMATION-1840). A command
+    /// such as `fsi --typecheck-only build.fsx` reads each of them, although its pattern
+    /// names none, so an edit to one must re-key it.
+    | LoadClosure of scripts: string list
+
+/// A file of a script's `#load` closure, repository-relative with `/` separators.
+[<RequireQualifiedAccess>]
+type Loaded =
+    /// On disk: its content is an input.
+    | Present of path: string
+    /// Named by a `#load` (or as a script) but not on disk. The name is still an input: a file
+    /// appearing there changes what the script compiles.
+    | Missing of path: string
+
+/// The scripts a command's arguments name: its `.fsx` tokens. A glob names no one script.
+let scriptsIn (args: string) : string list =
+    args.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+    |> Array.filter (fun token ->
+        token.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
+        && token.IndexOfAny([| '*'; '?' |]) < 0)
+    |> List.ofArray
+
+/// The string literals in `text` from `at` on, up to a line comment: regular (`\"` and `\\`
+/// escape; any other backslash stays, as F# keeps it), verbatim (`@"..."`, `""` is a quote)
+/// and triple-quoted. An unterminated literal ends the list.
+let rec private literals (text: string) (at: int) (found: string list) : string list =
+    let startsAt (i: int) (s: string) =
+        String.CompareOrdinal(text, i, s, 0, s.Length) = 0
+
+    let rec regular (i: int) (chars: char list) =
+        if i >= text.Length then
+            None
+        elif text[i] = '"' then
+            Some(String(Array.ofList (List.rev chars)), i + 1)
+        elif
+            text[i] = '\\'
+            && i + 1 < text.Length
+            && (text[i + 1] = '"' || text[i + 1] = '\\')
+        then
+            regular (i + 2) (text[i + 1] :: chars)
+        else
+            regular (i + 1) (text[i] :: chars)
+
+    let rec verbatim (i: int) (chars: char list) =
+        if i >= text.Length then
+            None
+        elif startsAt i "\"\"" then
+            verbatim (i + 2) ('"' :: chars)
+        elif text[i] = '"' then
+            Some(String(Array.ofList (List.rev chars)), i + 1)
+        else
+            verbatim (i + 1) (text[i] :: chars)
+
+    let continueWith (literal: (string * int) option) =
+        match literal with
+        | Some(value, next) -> literals text next (value :: found)
+        | None -> List.rev found
+
+    if at >= text.Length || startsAt at "//" then
+        List.rev found
+    elif startsAt at "\"\"\"" then
+        match text.IndexOf("\"\"\"", at + 3, StringComparison.Ordinal) with
+        | -1 -> List.rev found
+        | close -> literals text (close + 3) (text.Substring(at + 3, close - at - 3) :: found)
+    elif startsAt at "@\"" then
+        continueWith (verbatim (at + 2) [])
+    elif text[at] = '"' then
+        continueWith (regular (at + 1) [])
+    else
+        literals text (at + 1) found
+
+/// The files a `#load` directive in `text` (the content of `file`) names, absolute: each
+/// relative to `file`'s own directory, with `__SOURCE_DIRECTORY__` read as that directory.
+/// One directive may name several files. A directive inside a block comment or an inactive
+/// `#if` branch is counted too: a superset costs a cache miss at worst, never a replay.
+let internal loadTargets (file: string) (text: string) : string list =
+    let dir = Path.GetDirectoryName(Path.GetFullPath file)
+
+    text.Split('\n')
+    |> Array.toList
+    |> List.collect (fun line ->
+        let directive = line.TrimStart()
+
+        if
+            directive.StartsWith("#load", StringComparison.Ordinal)
+            && (directive.Length = 5 || not (Char.IsLetterOrDigit directive[5]))
+        then
+            literals directive 5 []
+            |> List.map (fun path ->
+                let path = path.Replace("__SOURCE_DIRECTORY__", dir)
+
+                Path.GetFullPath(
+                    if Path.IsPathRooted path then
+                        path
+                    else
+                        Path.Combine(dir, path)
+                ))
+        else
+            [])
+
+/// The transitive `#load` closure of `scripts` (repository-relative, or absolute), the scripts
+/// first: each file once, in the order a depth-first walk of the directives meets it, so a
+/// cycle ends where it closes. Computed from the files as they are now, never listed by hand.
+/// A file that exists but cannot be read is `Present`: its digest says it is unreadable.
+let loadClosure (repoRoot: string) (scripts: string list) : Loaded list =
+    let root = Path.GetFullPath repoRoot
+
+    let relative (abs: string) =
+        Path.GetRelativePath(root, abs).Replace('\\', '/')
+
+    // A file that cannot be read loads nothing we can see; its own term says it is unreadable.
+    let loadsOf (abs: string) =
+        VerdictInputs.tryRead [] (fun () -> loadTargets abs (File.ReadAllText abs))
+
+    let rec visit (pending: string list) (seen: Set<string>) (found: Loaded list) =
+        match pending with
+        | [] -> List.rev found
+        | abs :: rest when seen.Contains abs -> visit rest seen found
+        | abs :: rest when File.Exists abs ->
+            visit (loadsOf abs @ rest) (seen.Add abs) (Loaded.Present(relative abs) :: found)
+        | abs :: rest -> visit rest (seen.Add abs) (Loaded.Missing(relative abs) :: found)
+
+    visit (scripts |> List.map (fun script -> Path.GetFullPath(Path.Combine(root, script)))) Set.empty []
+
+/// The key terms of a load closure: each present file's content under `load:<path>`, and each
+/// missing one as `missing:<path>`.
+let loadTerms (repoRoot: string) (scripts: string list) : (string * string) list =
+    loadClosure repoRoot scripts
+    |> List.map (function
+        | Loaded.Present rel -> "load:" + rel, ContentHash.ofFile (Path.Combine(Path.GetFullPath repoRoot, rel))
+        | Loaded.Missing rel -> "missing:" + rel, "absent")
 
 /// Whether a plugin's last outcome may answer for a tree it did not run on.
 [<RequireQualifiedAccess; NoComparison>]
@@ -68,7 +200,8 @@ let internal ScopeExcludedDirs =
 [<NoComparison; NoEquality>]
 type Scope =
     private
-        { Files: (string * string) list
+        { Root: string
+          Files: (string * string) list
           Holes: string list
           Toolchain: Lazy<(string * string) list> }
 
@@ -85,7 +218,8 @@ let scopeOf (repoRoot: string) : Scope =
     // which is exactly the `/bin/`-or-`/obj/` segment rule `PathFilter.isGeneratedUnder` applies.
     let walked = SafeWalk.walk ScopeExcludedDirs "*" root
 
-    { Files =
+    { Root = root
+      Files =
         walked.Files
         |> List.map (fun f -> relative f.FullName, f.FullName)
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
@@ -125,6 +259,10 @@ let digestIn (scope: Scope) (spec: InputSpec) : string =
            |> List.map (fun rel -> "hole:" + rel + "/", ContentHash.UnhashableContent))
         @ [ "entry", entry ]
         @ scope.Toolchain.Value
+        |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
+        |> TreeHash.hashEntries
+    | InputSpec.LoadClosure scripts ->
+        loadTerms scope.Root scripts
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
         |> TreeHash.hashEntries
 

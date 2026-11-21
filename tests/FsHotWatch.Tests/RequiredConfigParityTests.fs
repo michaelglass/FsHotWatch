@@ -59,7 +59,9 @@ let private eligibilityOf (config: DaemonConfig.DaemonConfiguration) (name: stri
                         Watcher.FilePattern.parse pattern,
                         PluginInputs.entryDigest name pattern fc.Command fc.Args fc.TimeoutSec
                     ),
-                    []
+                    [ match PluginInputs.scriptsIn fc.Args with
+                      | [] -> ()
+                      | scripts -> PluginInputs.InputSpec.LoadClosure scripts ]
                 )
             | _, Some _ -> wholeTree $"file command %s{name} runs after the tests, so its inputs are their outcomes"
             | None, None -> wholeTree $"file command %s{name} declares no pattern"

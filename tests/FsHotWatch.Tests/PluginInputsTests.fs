@@ -168,3 +168,140 @@ let ``every unreadable directory is in the key, in a stable order`` () =
                     dir,
                     UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
                 ))
+
+// AUTOMATION-1840: a script command reads every file its script `#load`s, transitively. Those
+// files are inputs of the command although no pattern names them, so they are computed from
+// the script, never listed by hand.
+
+/// A script tree: `build.fsx` loads two files on one directive and a script in a subdirectory,
+/// which loads a file relative to ITSELF, one through `__SOURCE_DIRECTORY__`, a missing file,
+/// and `build.fsx` again (a cycle). Commented-out directives name files that must not count.
+let private scriptTree (root: string) =
+    write
+        root
+        "build.fsx"
+        "#!/usr/bin/env -S dotnet fsi\n// #load \"src/commented.fs\"\n#load \"src/A.fs\" @\"src/B.fs\" // trailing \"src/also-commented.fs\"\n  #load \"tools/helper.fsx\"\nprintfn \"build\"\n"
+
+    write
+        root
+        "tools/helper.fsx"
+        "#load \"\"\"../lib/C.fs\"\"\"\n#load \"__SOURCE_DIRECTORY__/D.fs\"\n#load \"missing.fs\"\n#load \"../build.fsx\"\n"
+
+    for rel in
+        [ "src/A.fs"
+          "src/B.fs"
+          "lib/C.fs"
+          "tools/D.fs"
+          "src/commented.fs"
+          "src/also-commented.fs" ] do
+        write root rel rel
+
+let private closureOf (root: string) =
+    PluginInputs.loadClosure root [ "build.fsx" ]
+    |> List.map (function
+        | PluginInputs.Loaded.Present rel -> "present:" + rel
+        | PluginInputs.Loaded.Missing rel -> "missing:" + rel)
+
+[<Fact>]
+let ``a script's load closure is every file it loads, transitively, each relative to its loader`` () =
+    withTempDir "plugin-inputs-load-closure" (fun root ->
+        scriptTree root
+
+        test
+            <@
+                closureOf root = [ "present:build.fsx"
+                                   "present:src/A.fs"
+                                   "present:src/B.fs"
+                                   "present:tools/helper.fsx"
+                                   "present:lib/C.fs"
+                                   "present:tools/D.fs"
+                                   "missing:tools/missing.fs" ]
+            @>)
+
+[<Fact>]
+let ``a script that is itself missing is a missing term, not an empty closure`` () =
+    withTempDir "plugin-inputs-load-missing-root" (fun root ->
+        test <@ PluginInputs.loadClosure root [ "build.fsx" ] = [ PluginInputs.Loaded.Missing "build.fsx" ] @>)
+
+[<Fact>]
+let ``the script names in a command's arguments are its fsx tokens`` () =
+    test <@ PluginInputs.scriptsIn "fsi --typecheck-only build.fsx" = [ "build.fsx" ] @>
+    test <@ PluginInputs.scriptsIn "fsi  scripts/A.FSX  other.fs" = [ "scripts/A.FSX" ] @>
+    test <@ List.isEmpty (PluginInputs.scriptsIn "lint migrations/") @>
+    test <@ List.isEmpty (PluginInputs.scriptsIn "fsi *.fsx") @>
+
+[<Fact>]
+let ``a load-closure key moves with a loaded file, and with a missing one appearing, and nothing else`` () =
+    withTempDir "plugin-inputs-load-key" (fun root ->
+        scriptTree root
+        let spec = PluginInputs.InputSpec.LoadClosure [ "build.fsx" ]
+        let digest () = PluginInputs.digest root spec
+        let before = digest ()
+
+        // Unrelated files, and a file named only in a comment, leave it alone.
+        write root "src/unrelated.fs" "edited"
+        write root "src/commented.fs" "edited"
+        test <@ digest () = before @>
+
+        write root "lib/C.fs" "edited"
+        let edited = digest ()
+        test <@ edited <> before @>
+
+        write root "tools/missing.fs" "now here"
+        test <@ digest () <> edited @>)
+
+[<Fact>]
+let ``a load directive's paths are read as F# reads its string literals`` () =
+    let script = Path.GetFullPath "/repo/scripts/s.fsx"
+
+    let targets (text: string) =
+        PluginInputs.loadTargets script text
+        |> List.map (fun path -> Path.GetRelativePath(Path.GetFullPath "/repo", path))
+
+    test <@ targets "#load @\"q\"\"uote.fs\"" = [ "scripts/q\"uote.fs" ] @>
+    test <@ targets "#load \"es\\\"c.fs\" \"back\\\\slash.fs\"" = [ "scripts/es\"c.fs"; "scripts/back\\slash.fs" ] @>
+    test <@ targets "#load \"/elsewhere/x.fs\"" = [ "../elsewhere/x.fs" ] @>
+    // A directive whose literal never closes names nothing, nor does another directive.
+    test <@ List.isEmpty (targets "#load \"open.fs") @>
+    test <@ List.isEmpty (targets "#load @\"open.fs") @>
+    test <@ List.isEmpty (targets "#load \"\"\"open.fs") @>
+    test <@ List.isEmpty (targets "#loader \"x.fs\"") @>
+    test <@ List.isEmpty (targets "#r \"x.dll\"") @>
+    test <@ List.isEmpty (targets "#load") @>
+
+[<Fact>]
+let ``a loaded file that cannot be read is present, and its own loads are not followed`` () =
+    withTempDir "plugin-inputs-load-unreadable" (fun root ->
+        write root "build.fsx" "#load \"sealed.fsx\"\n"
+        write root "sealed.fsx" "#load \"hidden.fs\"\n"
+        write root "hidden.fs" "module Hidden"
+        let sealedScript = Path.Combine(root, "sealed.fsx")
+
+        try
+            File.SetUnixFileMode(sealedScript, UnixFileMode.None)
+
+            test
+                <@
+                    PluginInputs.loadClosure root [ "build.fsx" ] = [ PluginInputs.Loaded.Present "build.fsx"
+                                                                      PluginInputs.Loaded.Present "sealed.fsx" ]
+                @>
+        finally
+            File.SetUnixFileMode(sealedScript, UnixFileMode.UserRead ||| UnixFileMode.UserWrite))
+
+[<Fact>]
+let ``a loaded file another process holds exclusively is present, and its own loads are not followed`` () =
+    withTempDir "plugin-inputs-load-locked" (fun root ->
+        write root "build.fsx" "#load \"held.fsx\"\n"
+        write root "held.fsx" "#load \"hidden.fs\"\n"
+        write root "hidden.fs" "module Hidden"
+
+        // .NET takes an exclusive advisory lock for FileShare.None on Unix too, so the read
+        // fails with an IOException while the stream is open.
+        use _held =
+            new FileStream(Path.Combine(root, "held.fsx"), FileMode.Open, FileAccess.ReadWrite, FileShare.None)
+
+        test
+            <@
+                PluginInputs.loadClosure root [ "build.fsx" ] = [ PluginInputs.Loaded.Present "build.fsx"
+                                                                  PluginInputs.Loaded.Present "held.fsx" ]
+            @>)

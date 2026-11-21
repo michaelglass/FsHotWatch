@@ -72,6 +72,14 @@ When `pattern` targets a non-source file (e.g. `*.ratchet.json` or
 `coverage-ratchet.json`), the daemon automatically extends its file
 watcher to cover that pattern so real edits trigger the plugin.
 
+When `args` names an F# script (an `.fsx` token, as in `fsi --typecheck-only
+build.fsx`), every file that script `#load`s, transitively, is an input too:
+a change to one runs the command, and its content is part of the cache key,
+although `pattern` does not match it. The closure is read from the scripts at
+each event (each `#load` relative to the file it is in, `__SOURCE_DIRECTORY__`
+included); a loaded file that does not exist is keyed as missing. `#r`
+references and `#I` search paths are not followed.
+
 ### Environment variables on `afterTests` commands
 
 The following environment variables are set on every `afterTests` command:

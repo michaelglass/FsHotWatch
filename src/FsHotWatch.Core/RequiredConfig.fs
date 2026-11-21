@@ -149,7 +149,9 @@ let private fileCommandPlugins (root: JsonElement) : PluginInputs.RequiredPlugin
                                   WatchScope.FilePattern.parse pattern,
                                   PluginInputs.entryDigest name pattern command args timeoutSec
                               ),
-                              []
+                              [ match PluginInputs.scriptsIn args with
+                                | [] -> ()
+                                | scripts -> PluginInputs.InputSpec.LoadClosure scripts ]
                           ) }
                   | Some _, false, None ->
                       PluginInputs.RequiredPlugin.wholeTree name ("file command " + name + " names no command")

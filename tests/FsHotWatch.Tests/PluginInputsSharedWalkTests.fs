@@ -56,6 +56,9 @@ let private oracleDigest (repoRoot: string) (spec: PluginInputs.InputSpec) =
         @ toolchain
         |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal(a, b))
         |> TreeHash.hashEntries
+    // A load closure reads the files its scripts name, never the walk, so sharing the walk
+    // cannot change it: its digest is its own.
+    | PluginInputs.InputSpec.LoadClosure _ -> PluginInputs.digest repoRoot spec
 
 let private oracleKey (repoRoot: string) (producer: string) (name: string) (specs: PluginInputs.InputSpec list) =
     ActionKey.create

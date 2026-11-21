@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: a file command whose arguments name an `.fsx` script declares the script's transitive `#load` closure as
+  inputs (`PluginInputs.InputSpec.LoadClosure`, AUTOMATION-1840), so the shadow lookup no longer answers it from a
+  pass recorded before a loaded file changed, and a start re-runs it. Its key changes once on upgrade, so such a
+  command runs once at the first start.
+
 ## 0.14.0-alpha.158 - 2026-11-21
 
 - chore: rebuild to bundle updated dependencies
