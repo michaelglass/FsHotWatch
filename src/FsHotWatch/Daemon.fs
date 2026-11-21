@@ -5817,16 +5817,28 @@ module Daemon =
                     )
 
             // AUTOMATION-1816, measurement only: what each stored entry was typed against under
-            // the alternative keys, kept beside this workspace's daemon state so the next
-            // daemon (a land's starts cold) can say whether its no-entry misses would have hit.
+            // the alternative keys, kept in the box-wide outcome store so a later daemon
+            // (a land's starts cold, and the nightly runs in another workspace) can say whether its no-entry misses would have hit.
             // With `cache.referencesKey: "shadow"` each record carries its verdict too, and
             // every miss the references key would have served is verified; nothing is served.
             match opts.CheckCache with
             | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(_, _, _, referencesKey) ->
+                // Box-wide (step 2b): any daemon on this host reads what a land daemon filed. The
+                // per-workspace directory steps 1 and 2 kept is moved in once.
                 let store =
-                    FsHotWatch.AlternativeKeys.FileAlternativeKeyStore(
-                        Path.Combine(FsHwPaths.root repoRoot, "cache", "alternative-keys")
+                    FsHotWatch.AlternativeKeys.OutcomeAlternativeKeyStore(
+                        OutcomeStore.openFor repoRoot (Logging.info "alternative-keys"),
+                        repoRoot,
+                        HostClock.system
                     )
+
+                let moved =
+                    FsHotWatch.AlternativeKeys.OutcomeAlternativeKeyStore.ImportLegacy
+                        (Path.Combine(FsHwPaths.root repoRoot, "cache", "alternative-keys"))
+                        store
+
+                if moved > 0 then
+                    Logging.info "cache" $"alternative upstreams: moved %d{moved} record(s) into the outcome store"
 
                 match referencesKey with
                 | FsHotWatch.InMemoryCheckCache.ReferencesKey.Off -> pipeline.MeasureAlternativeKeys store

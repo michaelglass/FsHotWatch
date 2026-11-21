@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1816's alternative-upstreams records move from each workspace's `.fshw/cache/alternative-keys/`
+  into the box-wide outcome store as kind `alternative-upstreams` (step 2b), so a daemon in any workspace on a host
+  reads what a land's daemon filed. One record per key: a rewrite supersedes it. GC drops a record not rewritten
+  within 14 days whatever the store's own TTL, and its usual byte budget applies. A daemon moves an existing
+  per-workspace directory in once at start (each record dated by its file's last write, damaged files dropped) and
+  deletes it.
+
 - fix!: the record audit judges an INDEX kind by its answer only (AUTOMATION-1841). `options-inputs` and
   `options-portable-inputs` are keyed by the request, not by content: each evaluation appends what that request read
   on the tree of the day, so an older record under the key describes an older tree. The audit compared every stored
