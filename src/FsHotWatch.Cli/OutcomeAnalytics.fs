@@ -273,6 +273,9 @@ type Report =
         ShadowUnreadable: int
         ShadowLogs: string list
         LookupReads: LookupReads
+        /// The nightly's output-level shadow reports in the window (AUTOMATION-1816 step 2b),
+        /// oldest first, from `.fshw/references-shadow.jsonl`.
+        ReferencesShadow: FsHotWatch.ReferencesShadowReport.Summary list
         Gaps: string list
     }
 
@@ -552,7 +555,12 @@ let private storeReport
 /// The report over `stores`, analysed as a union (AUTOMATION-1744), and `shadow`'s lines, each
 /// limited to `since` when given. The sections grouped by key stay per store; the flaky tests pair
 /// runs across stores and machines; a record or run two stores hold counts once in the union.
-let analyze (since: DateTimeOffset option) (stores: FsHotWatch.Core.NonEmpty<StoreRead>) (shadow: ShadowRead) : Report =
+let analyze
+    (since: DateTimeOffset option)
+    (stores: FsHotWatch.Core.NonEmpty<StoreRead>)
+    (shadow: ShadowRead)
+    (referencesShadow: FsHotWatch.ReferencesShadowReport.Summary list)
+    : Report =
     let inWindow (at: DateTimeOffset) =
         since |> Option.forall (fun s -> at >= s)
 
@@ -645,7 +653,11 @@ let analyze (since: DateTimeOffset option) (stores: FsHotWatch.Core.NonEmpty<Sto
         { Reads = reads.Length
           Satisfied = reads.Length - missing
           Missing = missing }
-      Gaps = gaps rowRuns.Length durations records.Length shadow reads.Length }
+      ReferencesShadow = referencesShadow |> List.filter (fun s -> inWindow s.WrittenAt)
+      Gaps =
+        gaps rowRuns.Length durations records.Length shadow reads.Length
+        @ [ if referencesShadow |> List.forall (fun s -> not (inWindow s.WrittenAt)) then
+                "references shadow: no nightly report in the window (.fshw/references-shadow.jsonl): cache.nightlyShadow is off, or no fresh confirm has run with it." ] }
 
 let private seconds (ms: int64) =
     (float ms / 1000.0).ToString("0.0", Globalization.CultureInfo.InvariantCulture)
@@ -680,6 +692,32 @@ let private talliesText (name: 'K -> string) (tallies: FsHotWatch.Core.NonEmpty<
     |> String.concat "; "
 
 /// The human report; `top` bounds the flaky and slow lists.
+/// One nightly shadow summary, as `render` shows it.
+let private referencesShadowText (result: FsHotWatch.ReferencesShadowReport.SummaryResult) =
+    match result with
+    | FsHotWatch.ReferencesShadowReport.SummaryResult.HostMismatch(host, landHost) ->
+        $"host mismatch (ran on %s{host}, land host %s{landHost}): nothing compared"
+    | FsHotWatch.ReferencesShadowReport.SummaryResult.Compared c ->
+        let plugin (name: string) (counts: FsHotWatch.ReferencesShadowReport.Counts) =
+            $"%s{name} equal %d{counts.Equal} / mismatch %d{counts.Mismatch} / unverifiable %d{counts.Unverifiable}"
+
+        let testPrune =
+            match c.TestPrune with
+            | FsHotWatch.ReferencesShadowReport.TestPruneSummary.NotCompared reason ->
+                $"test-prune not compared (%s{reason})"
+            | FsHotWatch.ReferencesShadowReport.TestPruneSummary.Compared tp ->
+                let copy =
+                    match tp.ImpactDbCopy with
+                    | FsHotWatch.ReferencesShadowReport.ImpactDbCopy.NotCopied -> "no impact-DB copy"
+                    | FsHotWatch.ReferencesShadowReport.ImpactDbCopy.Copied(bytes, ms) ->
+                        $"impact-DB copy %d{bytes} bytes in %d{ms} ms"
+
+                $"test-prune attributable %d{tp.Attributable}, selector miss %d{tp.SelectorMiss}, flaky %d{tp.FlakyChanged}, differing analyses %d{tp.DifferingAnalyses}, unverifiable %d{tp.UnverifiableAnalyses}, %s{copy}"
+
+        let analyzers = plugin "analyzers" c.Analyzers
+        let lint = plugin "lint" c.Lint
+        $"servable %d{c.Servable}; %s{analyzers}; %s{lint}; %s{testPrune}"
+
 let render (top: int) (r: Report) : string list =
     [ let stores = FsHotWatch.Core.NonEmpty.toList r.Stores
 
@@ -783,6 +821,9 @@ let render (top: int) (r: Report) : string list =
               |> String.concat ", "
 
           yield $"  %s{d.Day} shadow: agree %d{d.Agree}/%d{d.Lines} (%s{directions})"
+
+      for s in r.ReferencesShadow do
+          yield $"  references shadow %s{stamp s.WrittenAt} run %s{s.RunId}: %s{referencesShadowText s.Result}"
 
       yield ""
       yield "Not recorded:"
@@ -952,6 +993,11 @@ let toJson (r: Report) : string =
                     )
                     "shadowUnreadable", ji r.ShadowUnreadable
                     "shadowLogs", arr (r.ShadowLogs |> List.map js) ]
+              "referencesShadow",
+              arr (
+                  r.ReferencesShadow
+                  |> List.map (fun s -> JsonNode.Parse(FsHotWatch.ReferencesShadowReport.Summary.toJson s))
+              )
               "gaps", arr (r.Gaps |> List.map js) ]
 
     root.ToJsonString()

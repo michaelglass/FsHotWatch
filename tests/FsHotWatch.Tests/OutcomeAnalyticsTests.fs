@@ -94,7 +94,7 @@ let private home (r: Report) = r.Stores.Head
 
 let private analyzeFixture (since: DateTimeOffset option) =
     withLog shadowLines (fun path ->
-        analyze since (one { Records = fixture; Unreadable = 1 } noRows noLog) (readShadowLogs [ path ]))
+        analyze since (one { Records = fixture; Unreadable = 1 } noRows noLog) (readShadowLogs [ path ]) [])
 
 [<Fact>]
 let ``a shadow line is read back by its fields, and anything else is not a line`` () =
@@ -233,6 +233,7 @@ let ``what the store does not record is reported as a gap, never as a zero`` () 
                 noRows
                 noLog)
             (readShadowLogs [])
+            []
 
     test <@ List.isEmpty r.Slow @>
     test <@ r.Gaps |> List.exists (fun g -> g.Contains "durationMs") @>
@@ -256,7 +257,7 @@ let ``the human report names each section and its numbers`` () =
 [<Fact>]
 let ``an empty store renders as empty, not as a failure`` () =
     let text =
-        render 10 (analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs []))
+        render 10 (analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs []) [])
         |> String.concat "\n"
 
     test <@ text.Contains "0 records" @>
@@ -389,6 +390,7 @@ let private analyzeRows (since: DateTimeOffset option) =
         since
         (one { Records = fixture; Unreadable = 0 } { Indexes = rowRuns; Unreadable = 2 } noLog)
         (readShadowLogs [])
+        []
 
 [<Fact>]
 let ``flaky test: one test on one tree and tool recorded passed and red, with each outcome counted and both runs`` () =
@@ -474,7 +476,7 @@ let ``flaky test: the human and JSON reports name each flaky test, its counts, b
 [<Fact>]
 let ``flaky test: no rows is a gap and an empty section, never a zero rate`` () =
     let r =
-        analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs [])
+        analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs []) []
 
     test <@ List.isEmpty r.FlakyTests @>
     test <@ r.Gaps |> List.exists (fun g -> g.StartsWith "flaky tests:") @>
@@ -495,6 +497,7 @@ let private analyzeSources (indexed: TestRows.Index list) (logged: TestRows.Inde
               UnreadableFiles = 1
               UnreadableLines = 2 })
         (readShadowLogs [])
+        []
 
 let private red =
     runOf "A.Tests" "r1" "t1" "f1" t0 [ "A.flaky", TestRows.Outcome.Failed ]
@@ -543,6 +546,7 @@ let ``flaky test: --since leaves out logged runs older than it`` () =
                   UnreadableFiles = 0
                   UnreadableLines = 0 })
             (readShadowLogs [])
+            []
 
     test <@ List.isEmpty r.FlakyTests && (home r).LogRuns = 1 && r.TestRowRuns = 1 @>
 
@@ -593,7 +597,7 @@ let private storeOf (source: StoreSource) (records: Record list) (indexed: TestR
           UnreadableLines = 0 } }
 
 let private analyzeStores (stores: StoreRead list) =
-    analyze None (nonEmpty stores) (readShadowLogs [])
+    analyze None (nonEmpty stores) (readShadowLogs []) []
 
 let private onServer = runOn "server" "A.Tests"
 let private onLaptop = runOn "laptop" "A.Tests"
@@ -743,3 +747,78 @@ let ``a store is read from its directory, which names it; an absent directory is
                 && List.isEmpty read.Rows.Indexes
                 && List.isEmpty read.Log.Runs
             @>)
+
+// --- AUTOMATION-1816 step 2b: the nightly's references shadow ------------------------------
+
+[<Fact>]
+let ``the nightly references shadow summaries are shown, and their absence is a gap`` () =
+    let summary: FsHotWatch.ReferencesShadowReport.Summary =
+        { RunId = "run-1"
+          WrittenAt = DateTimeOffset(2026, 11, 21, 3, 0, 0, TimeSpan.Zero)
+          Result =
+            FsHotWatch.ReferencesShadowReport.SummaryResult.Compared
+                { Servable = 12
+                  Analyzers =
+                    { Equal = 11
+                      Mismatch = 0
+                      Unverifiable = 1 }
+                  Lint =
+                    { Equal = 0
+                      Mismatch = 0
+                      Unverifiable = 12 }
+                  TestPrune =
+                    FsHotWatch.ReferencesShadowReport.TestPruneSummary.Compared
+                        { DifferingAnalyses = 1
+                          UnverifiableAnalyses = 0
+                          OutsideSPrimeFailedOrChanged = 0
+                          Attributable = 0
+                          SelectorMiss = 0
+                          FlakyChanged = 0
+                          ImpactDbCopy = FsHotWatch.ReferencesShadowReport.ImpactDbCopy.Copied(2048L, 5L) } } }
+
+    let mismatch: FsHotWatch.ReferencesShadowReport.Summary =
+        { summary with
+            RunId = "run-2"
+            Result = FsHotWatch.ReferencesShadowReport.SummaryResult.HostMismatch("laptop", "land-box") }
+
+    let reportWith summaries =
+        analyze None (one { Records = []; Unreadable = 0 } noRows noLog) (readShadowLogs []) summaries
+
+    let shown = reportWith [ summary; mismatch ]
+    let lines = render 10 shown
+
+    test
+        <@
+            lines
+            |> List.exists (fun l ->
+                l.Contains "run run-1"
+                && l.Contains "analyzers equal 11 / mismatch 0 / unverifiable 1"
+                && l.Contains "impact-DB copy 2048 bytes in 5 ms")
+        @>
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l.Contains "run run-2" && l.Contains "host mismatch")
+        @>
+
+    test <@ not (shown.Gaps |> List.exists (fun g -> g.StartsWith "references shadow")) @>
+    test <@ (toJson shown).Contains "\"referencesShadow\":[{" @>
+
+    // Outside the window, or none at all: said, never shown as zeros.
+    let none = reportWith []
+    test <@ none.Gaps |> List.exists (fun g -> g.StartsWith "references shadow") @>
+    test <@ none.ReferencesShadow.IsEmpty @>
+
+    let later =
+        analyze
+            (Some(DateTimeOffset(2026, 11, 22, 0, 0, 0, TimeSpan.Zero)))
+            (one { Records = []; Unreadable = 0 } noRows noLog)
+            (readShadowLogs [])
+            [ summary ]
+
+    test
+        <@
+            later.ReferencesShadow.IsEmpty
+            && later.Gaps |> List.exists (fun g -> g.StartsWith "references shadow")
+        @>

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: `fshw analytics` shows the nightly's references-shadow summaries in its window (servable, analyzers and lint
+  equal/mismatch/unverifiable, test-prune attributable/selector miss/flaky/differing/unverifiable and the impact-DB copy,
+  or a host mismatch), and `--json` carries them as `referencesShadow`; with none in the window it lists the gap instead
+  (AUTOMATION-1816 step 2b).
+
 ## 0.14.0-alpha.159 - 2026-11-21
 
 - fix: a file command whose arguments name an `.fsx` script declares the script's transitive `#load` closure as
