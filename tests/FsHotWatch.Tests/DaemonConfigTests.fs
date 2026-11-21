@@ -1018,7 +1018,7 @@ let ``the references key is off unless cache.referencesKey says shadow`` () =
     test <@ parsed """{"cache": "memory"}""" = Some ReferencesKey.Off @>
     test <@ parsed """{"cache": {"maxEntries": "all"}}""" = Some ReferencesKey.Off @>
     test <@ parsed """{"cache": {"referencesKey": "off"}}""" = Some ReferencesKey.Off @>
-    test <@ parsed """{"cache": {"referencesKey": "shadow"}}""" = Some ReferencesKey.Shadow @>
+    test <@ parsed """{"cache": {"referencesKey": "shadow"}}""" = Some(ReferencesKey.Shadow NightlyShadow.Off) @>
 
 [<Theory>]
 [<InlineData("""{"cache": {"referencesKey": "on"}}""")>]
@@ -1030,6 +1030,36 @@ let ``cache.referencesKey refuses anything but off and shadow`` (json: string) =
     Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
+// --- cache.nightlyShadow: AUTOMATION-1816 step 2b, inside the references key's shadow only ---
+
+[<Fact(Timeout = 15000)>]
+let ``the nightly shadow is off unless cache.nightlyShadow names the land host, beside referencesKey shadow`` () =
+    let parsed json =
+        match (parseConfig json defaults).Cache with
+        | InMemory settings -> Some settings.ReferencesKey
+        | NoCache -> None
+
+    test <@ parsed """{"cache": {"referencesKey": "shadow"}}""" = Some(ReferencesKey.Shadow NightlyShadow.Off) @>
+
+    test
+        <@
+            parsed """{"cache": {"referencesKey": "shadow", "nightlyShadow": {"landHost": "land-box"}}}""" = Some(
+                ReferencesKey.Shadow(NightlyShadow.OnLandHost "land-box")
+            )
+        @>
+
+[<Theory>]
+// Without the references key in shadow there is nothing to compare: refused, never ignored.
+[<InlineData("""{"cache": {"nightlyShadow": {"landHost": "land-box"}}}""")>]
+[<InlineData("""{"cache": {"referencesKey": "off", "nightlyShadow": {"landHost": "land-box"}}}""")>]
+[<InlineData("""{"cache": {"referencesKey": "shadow", "nightlyShadow": {}}}""")>]
+[<InlineData("""{"cache": {"referencesKey": "shadow", "nightlyShadow": {"landHost": ""}}}""")>]
+[<InlineData("""{"cache": {"referencesKey": "shadow", "nightlyShadow": {"landHost": 5}}}""")>]
+[<InlineData("""{"cache": {"referencesKey": "shadow", "nightlyShadow": true}}""")>]
+let ``cache.nightlyShadow refuses anything but a land host beside referencesKey shadow`` (json: string) =
+    Assert.Throws<ConfigErrorException>(fun () -> parseConfig json defaults |> ignore)
+    |> ignore
+
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``createCacheComponents carries the references key to the running cache, and its startup line says shadow`` () =
     withTempDir "cfg-cc-references" (fun tmpDir ->
@@ -1038,13 +1068,15 @@ let ``createCacheComponents carries the references key to the running cache, and
                 tmpDir
                 (InMemory
                     { defaultInMemoryCache with
-                        ReferencesKey = ReferencesKey.Shadow })
+                        ReferencesKey = ReferencesKey.Shadow(NightlyShadow.OnLandHost "land-box") })
 
         match setup with
-        | CheckCacheSetup.On(_, _, _, referencesKey) -> test <@ referencesKey = ReferencesKey.Shadow @>
+        | CheckCacheSetup.On(_, _, _, referencesKey) ->
+            test <@ referencesKey = ReferencesKey.Shadow(NightlyShadow.OnLandHost "land-box") @>
         | other -> failwith $"expected a running cache, got %A{other}"
 
         test <@ (describeCheckCache setup).Contains "references key: shadow" @>
+        test <@ (describeCheckCache setup).Contains "nightly shadow on land host land-box" @>
 
         let off = createCacheComponents tmpDir (InMemory defaultInMemoryCache)
         test <@ not ((describeCheckCache off).Contains "references key") @>)

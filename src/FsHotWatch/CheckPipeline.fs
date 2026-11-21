@@ -303,6 +303,14 @@ type internal StoredForAlternatives =
         References: string list
     }
 
+/// Whether the nightly shadow (AUTOMATION-1816 step 2b) collects the files the references key
+/// would have served, and where.
+[<NoComparison; NoEquality>]
+type internal NightlyCollection =
+    | NotCollecting
+    /// By repository-relative path; a later settle's finding for a file replaces an earlier one.
+    | Collecting of ConcurrentDictionary<string, AlternativeKeys.ServableFile>
+
 /// How AUTOMATION-1816's alternative keys run in a pipeline, and the state each needs.
 [<NoComparison; NoEquality>]
 type internal AlternativeMeasurement =
@@ -315,13 +323,14 @@ type internal AlternativeMeasurement =
     /// the references key would have served against it.
     | Shadow of
         store: AlternativeKeys.IAlternativeKeyStore *
-        coldVerdicts: ConcurrentDictionary<struct (string * string), struct (string * AlternativeKeys.CheckVerdict)>
+        coldVerdicts: ConcurrentDictionary<struct (string * string), struct (string * AlternativeKeys.CheckVerdict)> *
+        nightly: NightlyCollection
 
 module internal AlternativeMeasurement =
     let store (measurement: AlternativeMeasurement) =
         match measurement with
         | Measure store
-        | Shadow(store, _) -> store
+        | Shadow(store, _, _) -> store
 
 /// A walk of the check records for one project, read for replays.
 [<NoComparison; NoEquality>]
@@ -603,6 +612,12 @@ type CheckPipeline
     /// worktree's identical output verifies it too.
     let outputName (path: string) = relativizeOption repoRoot path
 
+    /// `path` relative to the repository, `/`-separated, as the plugins name a file (step 2b).
+    let repoRelative (path: string) =
+        match repoRoot with
+        | Some root -> Path.GetRelativePath(root, path).Replace('\\', '/')
+        | None -> path
+
     /// The path an entry's recorded output names in this worktree.
     let outputPath (name: string) =
         repoRoot
@@ -622,6 +637,9 @@ type CheckPipeline
     /// keyed or served by them. Without one every `NoEntry` miss is compared with nothing:
     /// unknown.
     let mutable alternativeKeys: AlternativeMeasurement option = None
+
+    /// The nightly shadow setting `ShadowReferencesKey` was given, for `ReferencesKey` to report.
+    let mutable nightlyShadow = FsHotWatch.InMemoryCheckCache.NightlyShadow.Off
 
     /// The `NoEntry` misses since the last settle, to compare under the alternative keys:
     /// (file, options, the content hash the lookup read).
@@ -693,13 +711,25 @@ type CheckPipeline
                     cacheTally.ComparedAlternative outcome
 
                     match measurement, recorded with
-                    | Shadow(_, coldVerdicts), Some recorded when AlternativeKeys.referencesKeyServes outcome ->
+                    | Shadow(_, coldVerdicts, nightly), Some recorded when AlternativeKeys.referencesKeyServes outcome ->
                         cacheTally.Shadowed(
                             AlternativeKeys.verify
                                 (outputName path)
                                 recorded
                                 (coldVerdictOf coldVerdicts (struct (path, options.ProjectFileName)) contentHash)
                         )
+
+                        // Step 2b: what reuse would key each plugin by, for the nightly to look up.
+                        match nightly, recorded with
+                        | Collecting servable, AlternativeKeys.AlternativeRecord.WithVerdict(_, cached) ->
+                            let file = repoRelative path
+
+                            servable[file] <-
+                                AlternativeKeys.ServableFile.ofVerdict
+                                    file
+                                    (repoRelative options.ProjectFileName)
+                                    cached
+                        | _ -> ()
                     | _ -> ()
                 | _ -> cacheTally.ComparedAlternative NoEntryAlternative.Unknown
 
@@ -726,7 +756,7 @@ type CheckPipeline
                 let record =
                     match measurement with
                     | Measure _ -> AlternativeKeys.AlternativeRecord.Upstreams upstreams
-                    | Shadow(_, coldVerdicts) ->
+                    | Shadow(_, coldVerdicts, _) ->
                         match coldVerdictOf coldVerdicts slot stored.ContentHash with
                         | Some verdict -> AlternativeKeys.AlternativeRecord.WithVerdict(upstreams, verdict)
                         | None -> AlternativeKeys.AlternativeRecord.Upstreams upstreams
@@ -745,7 +775,7 @@ type CheckPipeline
         // to the daemon's memory between settles.
         let held =
             match alternativeKeys with
-            | Some(Shadow(_, coldVerdicts)) ->
+            | Some(Shadow(_, coldVerdicts, _)) ->
                 let held =
                     List.ofSeq coldVerdicts
                     |> List.sumBy (fun entry ->
@@ -1219,13 +1249,32 @@ type CheckPipeline
     /// 2): each record carries its entry's verdict, and each miss the references key would
     /// have served is verified against the cold check that answered it. Never serves. Set
     /// once, before the first check.
-    member internal _.ShadowReferencesKey(store: AlternativeKeys.IAlternativeKeyStore) =
-        alternativeKeys <- Some(Shadow(store, ConcurrentDictionary()))
+    /// With `nightly` on (step 2b), each settle also collects the files the references key would
+    /// have served, with the signatures their records name (`ServableFiles`); nothing else changes.
+    member internal _.ShadowReferencesKey
+        (store: AlternativeKeys.IAlternativeKeyStore, nightly: FsHotWatch.InMemoryCheckCache.NightlyShadow)
+        =
+        let collection =
+            match nightly with
+            | FsHotWatch.InMemoryCheckCache.NightlyShadow.Off -> NotCollecting
+            | FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost _ -> Collecting(ConcurrentDictionary())
+
+        alternativeKeys <- Some(Shadow(store, ConcurrentDictionary(), collection))
+        nightlyShadow <- nightly
+
+    /// The files the references key would have served since this pipeline started, as the
+    /// nightly shadow collected them; empty unless it runs (step 2b).
+    member internal _.ServableFiles: AlternativeKeys.ServableFile list =
+        match alternativeKeys with
+        | Some(Shadow(_, _, Collecting servable)) -> servable.Values |> List.ofSeq
+        | Some(Shadow(_, _, NotCollecting))
+        | Some(Measure _)
+        | None -> []
 
     /// Whether the references key runs in shadow here.
     member internal _.ReferencesKey: FsHotWatch.InMemoryCheckCache.ReferencesKey =
         match alternativeKeys with
-        | Some(Shadow _) -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow
+        | Some(Shadow _) -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow nightlyShadow
         | Some(Measure _)
         | None -> FsHotWatch.InMemoryCheckCache.ReferencesKey.Off
 
@@ -2118,7 +2167,7 @@ type CheckPipeline
                                     // would-be-served miss of this check against and to
                                     // record with its entry.
                                     match measurement with
-                                    | Shadow(_, coldVerdicts) ->
+                                    | Shadow(_, coldVerdicts, _) ->
                                         CheckRecords.CheckOutputs.ofResult repoRoot r
                                         |> Option.iter (fun outputs ->
                                             coldVerdicts[slot] <-

@@ -63,7 +63,7 @@ module CheckCacheRecord =
                 CheckCacheTally.NoEntryAlternatives.ofTally scan,
                 match referencesKey with
                 | InMemoryCheckCache.ReferencesKey.Off -> ReferencesShadowRecord.NotRun
-                | InMemoryCheckCache.ReferencesKey.Shadow ->
+                | InMemoryCheckCache.ReferencesKey.Shadow _ ->
                     ReferencesShadowRecord.Ran(CheckCacheTally.ReferencesShadowScan.ofTally scan)
             )
         | ScanCache.Off -> CheckCacheRecord.Off

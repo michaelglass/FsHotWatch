@@ -658,7 +658,9 @@ let ``a shadow scan's record names every disagreement's file and checks`` () =
     let scan = shadowTally ()
 
     let line =
-        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Shadow) scan) scan)
+        toJsonLine (
+            cacheSample (CheckCacheRecord.ofScan (ScanCache.On(ReferencesKey.Shadow NightlyShadow.Off)) scan) scan
+        )
 
     use doc = System.Text.Json.JsonDocument.Parse line
     let shadow = doc.RootElement.GetProperty "referencesShadow"
@@ -691,7 +693,7 @@ let ``a shadow scan's record round-trips`` () =
     let scan = shadowTally ()
 
     let original =
-        cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Shadow) scan) scan
+        cacheSample (CheckCacheRecord.ofScan (ScanCache.On(ReferencesKey.Shadow NightlyShadow.Off)) scan) scan
 
     test
         <@
@@ -726,7 +728,9 @@ let ``a shadow record naming a facet this fshw does not know is not a sample`` (
     let scan = shadowTally ()
 
     let line =
-        toJsonLine (cacheSample (CheckCacheRecord.ofScan (ScanCache.On ReferencesKey.Shadow) scan) scan)
+        toJsonLine (
+            cacheSample (CheckCacheRecord.ofScan (ScanCache.On(ReferencesKey.Shadow NightlyShadow.Off)) scan) scan
+        )
 
     test <@ (tryParseLine line).IsSome @>
     test <@ tryParseLine (line.Replace("\"apiSignature\"", "\"someFutureFacet\"")) = None @>

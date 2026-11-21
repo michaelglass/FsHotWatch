@@ -25,6 +25,8 @@ type private Mode =
     | Measure of IAlternativeKeyStore
     /// The references key in shadow.
     | Shadow of IAlternativeKeyStore
+    /// The references key in shadow with the nightly shadow on (step 2b).
+    | ShadowNightly of IAlternativeKeyStore
 
 /// What one cold daemon's scan did with its cache.
 type private Scan =
@@ -34,6 +36,8 @@ type private Scan =
         Stored: int
         /// FCS checks it started.
         CheckStarts: int64
+        /// Files the references key would have served, as the nightly shadow collected them.
+        Servable: ServableFile list
     }
 
 /// A project of `files` (name, lines), loaded in order by a script, in `tmpDir`.
@@ -64,7 +68,9 @@ let private coldScan checker (options: FSharp.Compiler.CodeAnalysis.FSharpProjec
     match mode with
     | Mode.Unmeasured -> ()
     | Mode.Measure store -> pipeline.MeasureAlternativeKeys store
-    | Mode.Shadow store -> pipeline.ShadowReferencesKey store
+    | Mode.Shadow store -> pipeline.ShadowReferencesKey(store, FsHotWatch.InMemoryCheckCache.NightlyShadow.Off)
+    | Mode.ShadowNightly store ->
+        pipeline.ShadowReferencesKey(store, FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost "land-box")
 
     pipeline.RegisterProject(Path.Combine(tmpDir, "D.fsproj"), options)
     pipeline.BeginGeneration()
@@ -80,7 +86,8 @@ let private coldScan checker (options: FSharp.Compiler.CodeAnalysis.FSharpProjec
 
     { Tally = CacheTally.since before pipeline.CacheTally
       Stored = cache.Count
-      CheckStarts = pipeline.CheckStarts - startsBefore }
+      CheckStarts = pipeline.CheckStarts - startsBefore
+      Servable = pipeline.ServableFiles |> List.sortBy _.File }
 
 let private shadow (scan: Scan) = ReferencesShadowScan.ofTally scan.Tally
 
@@ -424,3 +431,85 @@ let ``a verdict's diagnostics name each diagnostic, with in-repository paths rel
                 [ { diagnostic "/one" with
                       ErrorNumber = 2 } ]
         @>
+
+// --- step 2b ---------------------------------------------------------------------------------
+
+/// Misses the references key would have served: verified one way or another.
+let private wouldServe (scan: Scan) =
+    let s = shadow scan
+
+    s.Agreed
+    + int64 s.Disagreements.Length
+    + s.Unverified.NoCachedVerdict
+    + s.Unverified.NoColdVerdict
+
+/// TEST 7 (gates the land): with the nightly shadow on, the scan checks, stores, serves and
+/// measures exactly what it does with it off; the only difference is the files it collects.
+[<Fact(Timeout = 240000)>]
+let ``the nightly shadow changes nothing the scan checks, stores or serves`` () =
+    let run nightly =
+        withTempDir (if nightly then "nightly-on" else "nightly-off") (fun tmpDir ->
+            let checker, options = project tmpDir abc
+            let store = InMemoryAlternativeKeyStore() :> IAlternativeKeyStore
+
+            let mode =
+                if nightly then
+                    Mode.ShadowNightly store
+                else
+                    Mode.Shadow store
+
+            let first = coldScan checker options tmpDir mode files
+            editBody tmpDir
+            let second = coldScan checker options tmpDir mode files
+            first, second)
+
+    let offFirst, offSecond = run false
+    let onFirst, onSecond = run true
+
+    let gate (scan: Scan) =
+        scan.Tally, scan.Stored, scan.CheckStarts
+
+    test <@ gate onFirst = gate offFirst @>
+    test <@ gate onSecond = gate offSecond @>
+    test <@ offSecond.Servable.IsEmpty && offFirst.Servable.IsEmpty @>
+    // The shadow did run: the second scan had misses the references key would have served.
+    test <@ wouldServe onSecond > 0L @>
+
+[<Fact(Timeout = 240000)>]
+let ``the nightly shadow collects each file the references key would have served, with its recorded signatures`` () =
+    withTempDir "nightly-servable" (fun tmpDir ->
+        let checker, options = project tmpDir abc
+        let store = InMemoryAlternativeKeyStore() :> IAlternativeKeyStore
+        let first = coldScan checker options tmpDir (Mode.ShadowNightly store) files
+        // Nothing was recorded before the first scan: nothing would have been served.
+        test <@ first.Servable.IsEmpty @>
+        editBody tmpDir
+        let second = coldScan checker options tmpDir (Mode.ShadowNightly store) files
+
+        // B and C reference nothing A's body edit moved; A itself changed bytes.
+        test <@ second.Servable |> List.map _.File = [ "B.fs"; "C.fs" ] @>
+        test <@ int64 second.Servable.Length = wouldServe second @>
+
+        for servable in second.Servable do
+            test <@ servable.FcsSignature <> "" @>
+
+            match servable.UsedSignatures with
+            | UsedSignaturesKey.Described hash -> test <@ hash <> "" && not (hash.StartsWith "some:") @>
+            | UsedSignaturesKey.Undescribed -> failwith "a full check describes its used signatures")
+
+[<Fact>]
+let ``a servable file's used signatures are read from the recorded verdict`` () =
+    let verdict used =
+        CheckVerdict.ofParts "diag" "fcs" used "none"
+
+    test
+        <@
+            ServableFile.ofVerdict "src/A.fs" "src/P.fsproj" (verdict "some:abc") = { File = "src/A.fs"
+                                                                                      Project = "src/P.fsproj"
+                                                                                      FcsSignature = "fcs"
+                                                                                      UsedSignatures =
+                                                                                        UsedSignaturesKey.Described
+                                                                                            "abc" }
+        @>
+
+    test <@ (ServableFile.ofVerdict "f" "p" (verdict "none")).UsedSignatures = UsedSignaturesKey.Undescribed @>

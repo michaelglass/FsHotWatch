@@ -174,6 +174,17 @@ type InMemoryCheckCache(capacity: CacheCapacity, admits: string -> bool) =
                 lruNodes.Clear()
                 slots.Clear())
 
+/// `cache.nightlyShadow` (AUTOMATION-1816 step 2b): whether a fresh full-suite `confirm` compares what
+/// reuse would have handed each plugin with what it produced (`ReferencesShadowReport`). It exists
+/// only inside the references key's shadow, whose records name the reused keys. Record and
+/// compare only: nothing it does changes what a gate runs, selects or serves.
+[<RequireQualifiedAccess>]
+type NightlyShadow =
+    | Off
+    /// On, on `landHost`: the host whose lands file the records. On any other host the report
+    /// says `hostMismatch`.
+    | OnLandHost of landHost: string
+
 /// `cache.referencesKey` (AUTOMATION-1816 step 2): whether the REFERENCES key runs beside the
 /// check-result key. The references key names a file by its bytes, options and toolchain and
 /// only the files its last stored check resolved symbols in (`AlternativeKeys`). Serving from it
@@ -186,7 +197,7 @@ type ReferencesKey =
     /// Run in shadow: never serves. For each no-entry miss it would have served, the file
     /// is checked cold as always, and the verdict the key would have served is compared with
     /// the cold one (`scan-metrics.jsonl`'s `referencesShadow`).
-    | Shadow
+    | Shadow of nightly: NightlyShadow
 
 /// The daemon's check-result cache, with what its one startup line says about it.
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
@@ -231,7 +242,10 @@ let describeCheckCache (setup: CheckCacheSetup) : string =
         let shadow =
             match referencesKey with
             | ReferencesKey.Off -> ""
-            | ReferencesKey.Shadow -> "; references key: shadow (verified against every cold check, never served)"
+            | ReferencesKey.Shadow NightlyShadow.Off ->
+                "; references key: shadow (verified against every cold check, never served)"
+            | ReferencesKey.Shadow(NightlyShadow.OnLandHost landHost) ->
+                $"; references key: shadow (verified against every cold check, never served); nightly shadow on land host %s{landHost}"
 
         match scope with
         | Some scope -> $"check-result cache: %s{state}%s{shadow} — %s{scope}"
