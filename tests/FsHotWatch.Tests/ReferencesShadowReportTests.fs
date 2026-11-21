@@ -93,17 +93,18 @@ let ``a file the nightly keyed by the reused key is sameKey, neither equal nor u
             [ "src/A.fs", FileOutcome.SameKey
               "src/B.fs", FileOutcome.SameKey
               "src/C.fs", FileOutcome.Equal
-              "src/D.fs", FileOutcome.Unverifiable UnverifiableReason.NoReusedEntry ]
+              "src/D.fs", FileOutcome.Unverifiable UnverifiableReason.NoReusedEntry
+              "src/E.fs", FileOutcome.Mismatch([], [ Finding.ofEntry (entry "X" 1 "x") ]) ]
 
     test
         <@
             PluginComparison.counts comparison = { Equal = 1
-                                                   Mismatch = 0
+                                                   Mismatch = 1
                                                    Unverifiable = 1
                                                    SameKey = 2 }
         @>
 
-    test <@ PluginComparison.mismatches comparison |> List.isEmpty @>
+    test <@ PluginComparison.mismatches comparison |> List.map _.File = [ "src/E.fs" ] @>
     test <@ PluginComparison.sameKeyFiles comparison = [ "src/A.fs"; "src/B.fs" ] @>
 
 // --- test 5: the changed-outcome table ---------------------------------------------------
@@ -230,7 +231,7 @@ let ``the spot-check sample is drawn by its seed: fixed size, or every file when
 
     let few = [ "src/B.fs"; "src/A.fs"; "src/C.fs" ]
     test <@ SpotCheck.sample 1234 SpotCheckSize few = [ "src/A.fs"; "src/B.fs"; "src/C.fs" ] @>
-    test <@ SpotCheck.sample 1234 SpotCheckSize [] = [] @>
+    test <@ List.isEmpty (SpotCheck.sample 1234 SpotCheckSize []) @>
 
 /// The recomputed result against the cached one: equal in any order and whatever the detail; a
 /// mismatch keeps both lists; a file whose result could not be recomputed says why.
@@ -263,6 +264,11 @@ let ``each sampled file's recomputed result is compared with the cached one`` ()
     test <@ SpotCheckRequest.tryOfJson (SpotCheckRequest.toJson request) = Some request @>
     test <@ SpotCheckReply.tryOfJson (SpotCheckReply.toJson sampleSpotChecks.Lint) = Some sampleSpotChecks.Lint @>
     test <@ SpotCheckRequest.tryOfJson "{}" = None && SpotCheckReply.tryOfJson "[]" = None @>
+
+    let unknownOutcome =
+        (SpotCheckReply.toJson [ "src/A.fs", SpotOutcome.Equal ]).Replace("\"equal\"", "\"maybe\"")
+
+    test <@ SpotCheckReply.tryOfJson unknownOutcome = None @>
 
 // --- the land host -------------------------------------------------------------------------
 
