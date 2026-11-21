@@ -111,6 +111,7 @@
     <Compile Include="ContentDedup.fs" />
     <Compile Include="Ctrf.fs" />
     <Compile Include="ReferencesShadowReport.fs" />
+    <Compile Include="ReferencesShadowJson.fs" />
     <Compile Include="RunLog.fs" />
     <Compile Include="TestEvidenceKey.fs" />
     <Compile Include="TestEvidenceStore.fs" />

@@ -10,6 +10,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.Cli
 open FsHotWatch.Cli.ReferencesShadowTrigger
 open FsHotWatch.Tests.TestHelpers

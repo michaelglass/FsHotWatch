@@ -1,6 +1,6 @@
 /// AUTOMATION-1816 step 2b: after a fresh full-suite `confirm` has written `.fshw/verdict.json`,
 /// compare what reuse would have handed each plugin with what this run produced, and file the
-/// report (`ReferencesShadowReport.write`).
+/// report (`ReferencesShadowJson.write`).
 ///
 /// It acts only for a `--fresh` confirm that kept no prior verdict and graded a run, with
 /// `cache.nightlyShadow` on: a filtered `check`, a reused confirm and the switch off write nothing
@@ -13,6 +13,7 @@ open System
 open System.IO
 open FsHotWatch
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.Cli.ScopeCommands
 
 /// What the trigger reads before the run, because the run consumes it: C (the pending

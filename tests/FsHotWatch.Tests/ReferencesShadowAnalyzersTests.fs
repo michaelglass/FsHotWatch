@@ -11,6 +11,7 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.Analyzers
 open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers

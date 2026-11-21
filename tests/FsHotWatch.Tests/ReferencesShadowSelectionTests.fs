@@ -8,6 +8,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.ReferencesShadowSelection
 open TestPrune.AstAnalyzer

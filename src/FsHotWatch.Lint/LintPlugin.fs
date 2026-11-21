@@ -532,19 +532,19 @@ let createWith
               })
           |> PluginCommand.typed LintReplies.WarningsSchema
           // AUTOMATION-1816 step 2b: what reuse would have handed lint for each servable file
-          // (the request: `FsHotWatch.ReferencesShadowReport.Servable`), against what it found here.
-          FsHotWatch.ReferencesShadowReport.LintCommand,
+          // (the request: `FsHotWatch.ReferencesShadowJson.Servable`), against what it found here.
+          FsHotWatch.ReferencesShadowJson.LintCommand,
           PluginCommand.Observe(fun ctx state args ->
               async {
                   let servable =
                       match
                           args
                           |> Array.tryHead
-                          |> Option.bind FsHotWatch.ReferencesShadowReport.Servable.tryOfJson
+                          |> Option.bind FsHotWatch.ReferencesShadowJson.Servable.tryOfJson
                       with
                       | Some servable -> servable
                       | None ->
-                          invalidArg "args" "expects the servable files (FsHotWatch.ReferencesShadowReport.Servable)"
+                          invalidArg "args" "expects the servable files (FsHotWatch.ReferencesShadowJson.Servable)"
 
                   let reused =
                       match reuseKeyBases with
@@ -560,29 +560,29 @@ let createWith
                       |> Option.defaultValue []
 
                   return
-                      FsHotWatch.ReferencesShadowReport.PluginReply.toJson (
+                      FsHotWatch.ReferencesShadowJson.PluginReply.toJson (
                           FsHotWatch.ReferencesShadowReport.comparePlugin "lint" reused fresh servable
                       )
               })
-          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.PluginReplySchema
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowJson.PluginReplySchema
           // AUTOMATION-1816 step 2b: each sampled `sameKey` file (the request:
-          // `FsHotWatch.ReferencesShadowReport.SpotCheckRequest`) linted again on a live check, the
+          // `FsHotWatch.ReferencesShadowJson.SpotCheckRequest`) linted again on a live check, the
           // task cache bypassed, against what this run served. Nothing linted here is reported,
           // filed or served.
-          FsHotWatch.ReferencesShadowReport.LintSpotCheckCommand,
+          FsHotWatch.ReferencesShadowJson.LintSpotCheckCommand,
           PluginCommand.Observe(fun ctx state args ->
               async {
                   let files =
                       match
                           args
                           |> Array.tryHead
-                          |> Option.bind FsHotWatch.ReferencesShadowReport.SpotCheckRequest.tryOfJson
+                          |> Option.bind FsHotWatch.ReferencesShadowJson.SpotCheckRequest.tryOfJson
                       with
                       | Some files -> files
                       | None ->
                           invalidArg
                               "args"
-                              "expects the sampled files (FsHotWatch.ReferencesShadowReport.SpotCheckRequest)"
+                              "expects the sampled files (FsHotWatch.ReferencesShadowJson.SpotCheckRequest)"
 
                   let absolute (file: string) =
                       AbsFilePath.create (IO.Path.Combine(ctx.RepoRoot, file))
@@ -621,9 +621,9 @@ let createWith
                       state.FindingsByFile |> Map.tryFind (absolute file) |> Option.defaultValue []
 
                   let! outcomes = FsHotWatch.ReferencesShadowReport.SpotCheck.run files recompute cached
-                  return FsHotWatch.ReferencesShadowReport.SpotCheckReply.toJson outcomes
+                  return FsHotWatch.ReferencesShadowJson.SpotCheckReply.toJson outcomes
               })
-          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SpotCheckReplySchema ]
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowJson.SpotCheckReplySchema ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = Some(fun _state event -> cacheKey event)
       Teardown = None }

@@ -1491,23 +1491,23 @@ let internal createShadowedWithSeams
       PrepareCommit = None
       Commands =
         [ // AUTOMATION-1816 step 2b: each sampled `sameKey` file (the request:
-          // `FsHotWatch.ReferencesShadowReport.SpotCheckRequest`) analysed again on a live check, records
+          // `FsHotWatch.ReferencesShadowJson.SpotCheckRequest`) analysed again on a live check, records
           // and task cache bypassed, against what this run served. Nothing analysed here is reported,
           // filed or served.
-          FsHotWatch.ReferencesShadowReport.AnalyzersSpotCheckCommand,
+          FsHotWatch.ReferencesShadowJson.AnalyzersSpotCheckCommand,
           PluginCommand.Observe(fun _ctx (state: AnalyzersState) args ->
               async {
                   let files =
                       match
                           args
                           |> Array.tryHead
-                          |> Option.bind FsHotWatch.ReferencesShadowReport.SpotCheckRequest.tryOfJson
+                          |> Option.bind FsHotWatch.ReferencesShadowJson.SpotCheckRequest.tryOfJson
                       with
                       | Some files -> files
                       | None ->
                           invalidArg
                               "args"
-                              "expects the sampled files (FsHotWatch.ReferencesShadowReport.SpotCheckRequest)"
+                              "expects the sampled files (FsHotWatch.ReferencesShadowJson.SpotCheckRequest)"
 
                   let recompute (file: string) =
                       async {
@@ -1525,23 +1525,23 @@ let internal createShadowedWithSeams
                       | None -> []
 
                   let! outcomes = FsHotWatch.ReferencesShadowReport.SpotCheck.run files recompute cached
-                  return FsHotWatch.ReferencesShadowReport.SpotCheckReply.toJson outcomes
+                  return FsHotWatch.ReferencesShadowJson.SpotCheckReply.toJson outcomes
               })
-          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SpotCheckReplySchema
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowJson.SpotCheckReplySchema
           // AUTOMATION-1816 step 2b: what reuse would have handed this plugin for each servable
-          // file (the request: `FsHotWatch.ReferencesShadowReport.Servable`), against what it found here.
-          FsHotWatch.ReferencesShadowReport.AnalyzersCommand,
+          // file (the request: `FsHotWatch.ReferencesShadowJson.Servable`), against what it found here.
+          FsHotWatch.ReferencesShadowJson.AnalyzersCommand,
           PluginCommand.Observe(fun _ctx (state: AnalyzersState) args ->
               async {
                   let servable =
                       match
                           args
                           |> Array.tryHead
-                          |> Option.bind FsHotWatch.ReferencesShadowReport.Servable.tryOfJson
+                          |> Option.bind FsHotWatch.ReferencesShadowJson.Servable.tryOfJson
                       with
                       | Some servable -> servable
                       | None ->
-                          invalidArg "args" "expects the servable files (FsHotWatch.ReferencesShadowReport.Servable)"
+                          invalidArg "args" "expects the servable files (FsHotWatch.ReferencesShadowJson.Servable)"
 
                   let fresh (file: string) =
                       match repoRoot with
@@ -1552,11 +1552,9 @@ let internal createShadowedWithSeams
                       | None -> []
 
                   return
-                      FsHotWatch.ReferencesShadowReport.PluginReply.toJson (
-                          state.Records.CompareReused(servable, fresh)
-                      )
+                      FsHotWatch.ReferencesShadowJson.PluginReply.toJson (state.Records.CompareReused(servable, fresh))
               })
-          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.PluginReplySchema
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowJson.PluginReplySchema
           "diagnostics",
           PluginCommand.Observe(fun _ctx (state: AnalyzersState) _args ->
               async {
