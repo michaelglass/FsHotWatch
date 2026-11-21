@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1816 step 2b. S' is computed only over an index that holds this run's analysis: `selections`
+  takes an `IndexAtRun` witness, built only when the index is sealed (`IndexSeal`: a cohort sealed it and no flush has
+  written rows since), at the tree on disk now, with no analysis pending a flush. Otherwise
+  `references-shadow-test-prune` refuses with the reason, instead of diffing the reused analyses against rows no run
+  vouches for.
+
 - fix: AUTOMATION-1816 step 2b. A servable file gone from disk since the scan named it is unverifiable in
   `references-shadow-test-prune`; it threw, and the nightly lost the report for the whole run.
 

@@ -375,7 +375,8 @@ let ``the report and its summary line round-trip`` () =
         | TestPruneSummary.Compared tp ->
             test <@ tp.Attributable = 1 && tp.SelectorMiss = 0 && tp.DifferingAnalyses = 2 @>
             test <@ tp.ImpactDbCopy = ImpactDbCopy.Copied(4096L, 12L) @>
-        | TestPruneSummary.NotCompared why -> failwith $"expected test-prune counts, got %s{why}"
+        | TestPruneSummary.NotCompared why
+        | TestPruneSummary.Invalid why -> failwith $"expected test-prune counts, got %s{why}"
     | SummaryResult.HostMismatch _ -> failwith "expected counts"
 
     for text in [ "{ not json"; "[]"; """{"schema":"other"}""" ] do
@@ -515,3 +516,35 @@ let ``the servable files and a plugin's reply round-trip, and anything else read
 
     test <@ PluginReply.tryOfJson (PluginReply.toJson comparison) = Some comparison @>
     test <@ PluginReply.tryOfJson (Servable.toJson servable) = None @>
+
+/// A refused S′ is an invalid test-prune comparison with its reason, in the report and the
+/// summary line alike, and test-prune's refused answer reads back as the refusal it was.
+[<Fact>]
+let ``a refused S-prime is an invalid test-prune comparison, with its reason, through every file`` () =
+    let reason = "the impact index is not sealed"
+
+    let report =
+        { sample with
+            Result =
+                Compared
+                    { Servable = 0
+                      Analyzers = PluginComparison.ofFiles "analyzers" []
+                      Lint = PluginComparison.ofFiles "lint" []
+                      SpotChecks = noSpotChecks
+                      TestPrune = TestPruneSection.Invalid reason } }
+
+    test <@ Report.tryOfJson (Report.toJson report) = Some report @>
+    let summary = Summary.ofReport report
+    test <@ Summary.tryOfJson (Summary.toJson summary) = Some summary @>
+
+    match summary.Result with
+    | SummaryResult.Compared counts -> test <@ counts.TestPrune = TestPruneSummary.Invalid reason @>
+    | SummaryResult.HostMismatch _ -> failwith "expected counts"
+
+    let refused = SelectionsAnswer.Refused reason
+    test <@ SelectionsReply.tryOfJson (SelectionsReply.toJson refused) = Some refused @>
+
+    let unknownResult =
+        """{"schema":"fshw-references-shadow-selections-v2","result":"other"}"""
+
+    test <@ SelectionsReply.tryOfJson unknownResult = None @>

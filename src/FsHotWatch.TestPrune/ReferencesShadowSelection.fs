@@ -31,6 +31,35 @@ type internal ReusedAnalysis =
     /// signatures, or a file gone from disk since the scan named it.
     | Unverifiable
 
+/// The premise S′ stands on: the impact index holds THIS run's analysis. `changedUnder` diffs each
+/// reused analysis against the rows the index holds for its file, and those rows stand for this
+/// run's analysis only then; asked earlier, S′ diffs against an older version and means nothing.
+///
+/// Built only by `IndexAtRun.ofSeal`, so `selections` cannot be called without the check: the
+/// index is sealed (`IndexSeal`: a `BatchChecked` folded the cohort and no flush has written rows
+/// since), at the tree on disk now (the tree the nightly ran over), and no analysis is pending a
+/// flush.
+type internal IndexAtRun =
+    private
+    | SealedAt of tree: string
+
+    member this.Tree =
+        match this with
+        | SealedAt tree -> tree
+
+module internal IndexAtRun =
+    /// `sealedAt`: the seal beside the index; `current`: the tree read now; `pendingAnalyses`: the
+    /// analyses accepted but not yet flushed. `Error` says which part of the premise failed.
+    let ofSeal (sealedAt: string option) (current: string option) (pendingAnalyses: int) : Result<IndexAtRun, string> =
+        match sealedAt, current with
+        | None, _ -> Error "the impact index is not sealed: no cohort has sealed it, or a flush wrote rows since"
+        | Some _, None -> Error "the tree could not be read, so nothing says the index describes it"
+        | Some sealedTree, Some now when sealedTree <> now ->
+            Error $"the impact index is sealed at tree %s{sealedTree}, but the tree is now %s{now}"
+        | Some _, Some _ when pendingAnalyses > 0 ->
+            Error $"%d{pendingAnalyses} analyses are pending a flush, so the index does not hold them yet"
+        | Some sealedTree, Some _ -> Ok(SealedAt sealedTree)
+
 /// What reuse would have kept for `servable`. `fileKeys` are this run's indexed identities by
 /// repository-relative path; `store` holds the filed analyses.
 let internal reusedAnalysisOf
@@ -131,8 +160,9 @@ let private selectOnCopy
 
 /// S and S′ for `changed` over `db` (the index at `dbPath`), given each servable file's reused analysis; the copy S′ needs
 /// is made in the new directory `copyDir` and deleted. No copy is made when no analysis differs:
-/// S′ is then S.
+/// S′ is then S. `_atRun` is the premise (`IndexAtRun`): there is no S′ without it.
 let internal selections
+    (_atRun: IndexAtRun)
     (db: Database)
     (dbPath: string)
     (copyDir: string)

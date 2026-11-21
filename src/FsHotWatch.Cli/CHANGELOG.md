@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: when test-prune refuses S' because its index did not hold the run's analysis, the nightly shadow report files
+  the test-prune comparison as invalid with the reason, logs it as a warning, and `fshw analytics` shows
+  `test-prune INVALID`; the other plugins are still compared and the confirm's exit code is untouched (AUTOMATION-1816
+  step 2b).
+
 - feat: the nightly shadow report samples up to 50 `sameKey` files per plugin with a random seed, has each plugin
   recompute them with its cache bypassed, and records the seed, the sampled files and each one's outcome; `fshw
   analytics` shows the spot-check counts and seed (AUTOMATION-1816 step 2b). Nothing a gate runs, selects or serves

@@ -469,26 +469,37 @@ let internal createWithEvidenceAndQueries
         runTestsWithImpactWith runEnv ctx configs inputs hasCachedResults fanoutProjects
 
 
-    // AUTOMATION-1816 step 2b: S and S' for a nightly's request. The copy S' needs is made
-    // under the system temporary directory, named for the run, and deleted.
-    let shadowSelections (request: FsHotWatch.ReferencesShadowReport.TestPruneRequest) =
-        let reused =
-            match analysisRecords with
-            | Some store ->
-                let fileKeys = db.GetFileKeys()
+    // AUTOMATION-1816 step 2b: S and S' for a nightly's request, only over an index that holds this
+    // run's analysis (`IndexAtRun`): sealed, at the tree on disk now, nothing pending a flush. The
+    // copy S' needs is made under the system temporary directory, named for the run, and deleted.
+    let shadowSelections
+        (pendingAnalyses: int)
+        (request: FsHotWatch.ReferencesShadowReport.TestPruneRequest)
+        : FsHotWatch.ReferencesShadowReport.SelectionsAnswer =
+        let current = ReceiptInputTree.readTree repoRoot |> Option.map _.Identity
 
-                request.Files
-                |> List.map (ReferencesShadowSelection.reusedAnalysisOf store repoRoot fileKeys)
-            | None ->
-                request.Files
-                |> List.map (fun _ -> ReferencesShadowSelection.ReusedAnalysis.Unverifiable)
+        match ReferencesShadowSelection.IndexAtRun.ofSeal (IndexSeal.load dbPath) current pendingAnalyses with
+        | Error reason -> FsHotWatch.ReferencesShadowReport.SelectionsAnswer.Refused reason
+        | Ok atRun ->
+            let reused =
+                match analysisRecords with
+                | Some store ->
+                    let fileKeys = db.GetFileKeys()
 
-        let unique = Guid.NewGuid().ToString "N"
+                    request.Files
+                    |> List.map (ReferencesShadowSelection.reusedAnalysisOf store repoRoot fileKeys)
+                | None ->
+                    request.Files
+                    |> List.map (fun _ -> ReferencesShadowSelection.ReusedAnalysis.Unverifiable)
 
-        let copyDir =
-            Path.Combine(Path.GetTempPath(), $"fshw-references-shadow-%s{request.RunId}-%s{unique}")
+            let unique = Guid.NewGuid().ToString "N"
 
-        ReferencesShadowSelection.selections db dbPath copyDir request.Changed reused
+            let copyDir =
+                Path.Combine(Path.GetTempPath(), $"fshw-references-shadow-%s{request.RunId}-%s{unique}")
+
+            FsHotWatch.ReferencesShadowReport.SelectionsAnswer.Selected(
+                ReferencesShadowSelection.selections atRun db dbPath copyDir request.Changed reused
+            )
 
     let commandForceRun ctx mode configs filter reply =
         commandForceRunWith runEnv ctx mode configs filter reply
