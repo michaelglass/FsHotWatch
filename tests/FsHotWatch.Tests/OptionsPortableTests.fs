@@ -346,6 +346,16 @@ let ``an evaluation filed in one checkout would replay in another of a different
         test <@ bool line["generated"] "bytesAgree" @>
         test <@ isNull line["error"] @>)
 
+// AUTOMATION-1841: the portable index is keyed by the request, not by content, so a later
+// evaluation (here another checkout's) rewrites it as its key's only record.
+[<Fact(Timeout = 120000)>]
+let ``a later evaluation of the request replaces its portable index record`` () =
+    withBox (fun box ->
+        plainLoad box box.A |> ignore
+        plainLoad box box.B |> ignore
+        let history = box.Store.History(OptionsPortable.requestKey (request box.B))
+        test <@ history |> List.map _.Producer.Worktree = [ box.B.Root ] @>)
+
 [<Fact(Timeout = 120000)>]
 let ``the first evaluation of a request logs that nothing portable was filed, and compares nothing`` () =
     withBox (fun box ->

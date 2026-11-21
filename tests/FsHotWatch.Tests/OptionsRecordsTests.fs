@@ -287,6 +287,34 @@ let ``an import that changes is evaluated again`` () =
 
         test <@ loads = 1 @>)
 
+// AUTOMATION-1841: the index is keyed by the request, not by content, so each evaluation of a
+// changed tree rewrites it. It is filed as its key's only record: an older one, describing an
+// older tree, is never served and is not kept. The options themselves stay keyed by content.
+[<Fact(Timeout = 120000)>]
+let ``an evaluation of a changed tree replaces the request's index record, and keeps both options records`` () =
+    withTree (fun t ->
+        let loads, _ =
+            restartAfter
+                t
+                (fun () ->
+                    File.WriteAllText(
+                        t.Common,
+                        "<Project><PropertyGroup><Common>2</Common></PropertyGroup></Project>\n"
+                    ))
+                (request t)
+                sameEnvironment
+
+        test <@ loads = 1 @>
+        test <@ t.Store.History(requestKey (request t)).Length = 1 @>
+
+        let optionsKeys =
+            (OutcomeStore.readAllWithOutputs t.Store.Root).Records
+            |> List.filter (fun (r, _) -> r.Key.Kind = "options")
+            |> List.map (fun (r, _) -> r.Key.Value)
+            |> List.distinct
+
+        test <@ optionsKeys.Length = 2 @>)
+
 [<Fact(Timeout = 120000)>]
 let ``an import changed and changed back is byte-identical again and replays`` () =
     withTree (fun t ->

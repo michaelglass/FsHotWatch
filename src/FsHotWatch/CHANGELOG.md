@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix!: the record audit judges an INDEX kind by its answer only (AUTOMATION-1841). `options-inputs` and
+  `options-portable-inputs` are keyed by the request, not by content: each evaluation appends what that request read
+  on the tree of the day, so an older record under the key describes an older tree. The audit compared every stored
+  record with the clean recompute and flagged those older ones as mismatches, although the newest record (the only
+  one ever served) agreed; the nightly audit false-alarmed three nights running. `AuditKind` gains
+  `Judged: Judged` (`EveryRecord` for content-keyed kinds, unchanged; `AnswerOnly` for the two index kinds), and a
+  difference in an index kind's newest record is still a mismatch. A mismatch report now also names the kinds that
+  compared nothing (`; also VACUOUS: options (...)`), so a vacuous kind is never hidden behind a mismatch. Both
+  index records are now filed as their key's only record (`Through.supersede`), so the store keeps no superseded
+  index history either.
+
 ## 0.10.0-alpha.125 - 2026-11-21
 
 - fix: a preprocessor pass offered no file it processes no longer reports `rewrote 0 of 0 file(s)` (AUTOMATION-1840).

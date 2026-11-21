@@ -17,7 +17,9 @@
 /// SAMPLING is seeded and deterministic: the keys the two stores share are ranked by
 /// `sha256(seed LF key)`, so the same seed over the same stores audits the same records and
 /// a red reproduces. Each audited key's whole history is compared, not only its answer: a
-/// record a lookup once served is evidence too.
+/// record a lookup once served is evidence too. Except for an INDEX kind (`Judged.AnswerOnly`),
+/// keyed by the request rather than by content: its older records describe older trees, so
+/// only its answer is judged (AUTOMATION-1841).
 ///
 /// The audit only READS both stores (`OutcomeStore.readKeyAt`): it quarantines nothing, so
 /// it never changes the store it judges.
@@ -90,6 +92,19 @@ module RecordKind =
     let tryParse (text: string) : RecordKind option =
         all |> List.tryFind (fun k -> name k = text)
 
+/// Which of a key's stored records the audit judges (AUTOMATION-1841).
+[<RequireQualifiedAccess>]
+type Judged =
+    /// Every record under the key: a CONTENT-keyed kind, whose key claims each record is what
+    /// these inputs produce, so an older record that differs is a key that missed an input.
+    | EveryRecord
+    /// Only the key's answer, its newest record: an INDEX kind, keyed by the request rather
+    /// than by content (the options evaluation's `options-inputs` and
+    /// `options-portable-inputs`). Each evaluation appends what that request read on the
+    /// tree of the day, so an older record describes an older tree and is superseded, never
+    /// a mismatch; only the answer is ever served.
+    | AnswerOnly
+
 /// How one record kind is audited.
 [<NoComparison; NoEquality>]
 type AuditKind =
@@ -97,6 +112,7 @@ type AuditKind =
         Kind: string
         /// The fields in which `clean` differs from `stored`; empty when they agree.
         Differences: Side -> Side -> string list
+        Judged: Judged
     }
 
 let private outcomeDiffers (stored: Side) (clean: Side) =
@@ -157,6 +173,7 @@ module AuditKind =
     /// outputs file equal bytes).
     let generic (kind: string) : AuditKind =
         { Kind = kind
+          Judged = Judged.EveryRecord
           Differences =
             fun stored clean ->
                 outcomeDiffers stored clean
@@ -187,6 +204,7 @@ module AuditKind =
     /// as `outputs-unreadable`.
     let check: AuditKind =
         { Kind = CheckRecords.CheckKind
+          Judged = Judged.EveryRecord
           Differences =
             fun stored clean ->
                 let parse (side: Side) =
@@ -247,9 +265,11 @@ module AuditKind =
     /// `listings` and `envNames` are SETS, collected concurrently and written in hash
     /// order, so two evaluations of one project file them in different orders: each is
     /// compared as a set (`envNames` case-insensitively, as it is collected), every other
-    /// field exactly, all with the producer's checkout root as a token.
+    /// field exactly, all with the producer's checkout root as a token. An index: only the
+    /// answer is judged (`Judged.AnswerOnly`).
     let optionsInputs: AuditKind =
         { Kind = OptionsRecords.InputsKind
+          Judged = Judged.AnswerOnly
           Differences =
             fun stored clean ->
                 let parse side =
@@ -264,6 +284,7 @@ module AuditKind =
     /// outcome; it differs run to run.
     let test: AuditKind =
         { Kind = "test"
+          Judged = Judged.EveryRecord
           Differences =
             fun stored clean ->
                 outcomeDiffers stored clean
@@ -308,6 +329,7 @@ module AuditKind =
     /// the coverage report (its path names the run; its hit counts follow scheduling).
     let testEvidence: AuditKind =
         { Kind = TestEvidenceKind
+          Judged = Judged.EveryRecord
           Differences =
             fun stored clean ->
                 [ if stored.Record.Subject <> clean.Record.Subject then
@@ -319,16 +341,19 @@ module AuditKind =
                   | Some _, Some _ -> ()
                   | _ -> "report-unreadable" ] }
 
-    /// How `kind` is audited: four kinds have a comparison of their own, the rest `generic`.
+    /// How `kind` is audited: four kinds have a comparison of their own, the rest `generic`;
+    /// the two options index kinds judge only their answer.
     let find (kind: RecordKind) : AuditKind =
         match kind with
         | RecordKind.Check -> check
         | RecordKind.OptionsInputs -> optionsInputs
         | RecordKind.Test -> test
         | RecordKind.TestEvidence -> testEvidence
+        | RecordKind.OptionsPortableInputs ->
+            { generic (RecordKind.name kind) with
+                Judged = Judged.AnswerOnly }
         | RecordKind.Options
         | RecordKind.OptionsPortable
-        | RecordKind.OptionsPortableInputs
         | RecordKind.Format
         | RecordKind.TestPruneAnalysis
         | RecordKind.Analyze -> generic (RecordKind.name kind)
@@ -465,7 +490,7 @@ type KindTally =
         Shared: int
         /// Keys audited (at most the sample).
         Audited: int
-        /// Stored records compared (a key's whole history).
+        /// Stored records compared (a key's whole history; an index kind's answer only).
         Records: int
         /// Audited keys with at least one differing record.
         Mismatched: int
@@ -715,12 +740,21 @@ let rank (seed: string) (key: ActionKey.KeyValue) : string =
 let private hasInput (label: string) (record: OutcomeStore.Record) =
     record.Key.Inputs |> List.exists (fun (l, _) -> l = label)
 
-/// Compare one audited key: every stored record under it against the clean answer.
-let private compareKey (kind: AuditKind) (clean: Side) (stored: Side list) : Mismatch list =
+/// The records of a key's history (oldest first, the answer last) that `kind` judges, each
+/// with whether it is the answer.
+let private judgedRecords (kind: AuditKind) (stored: Side list) : (bool * Side) list =
     let last = List.length stored - 1
+    let all = stored |> List.mapi (fun i side -> i = last, side)
 
-    stored
-    |> List.mapi (fun i side ->
+    match kind.Judged with
+    | Judged.EveryRecord -> all
+    | Judged.AnswerOnly -> all |> List.filter fst
+
+/// Compare one audited key: the stored records under it that `kind` judges against the clean
+/// answer.
+let private compareKey (kind: AuditKind) (clean: Side) (stored: Side list) : Mismatch list =
+    judgedRecords kind stored
+    |> List.map (fun (isAnswer, side) ->
         match kind.Differences side clean with
         | [] -> None
         | fields ->
@@ -729,7 +763,7 @@ let private compareKey (kind: AuditKind) (clean: Side) (stored: Side list) : Mis
                   Key = clean.Record.Key.Value.Text
                   Subject = clean.Record.Subject
                   Fields = fields
-                  IsAnswer = (i = last)
+                  IsAnswer = isAnswer
                   Stored = RecordSummary.ofSide side
                   Clean = RecordSummary.ofSide clean })
     |> List.choose id
@@ -930,7 +964,7 @@ let auditStores (stores: Stores) (options: Options) : Report =
           CleanKeys = candidates.Length
           Shared = shared
           Audited = audited.Length
-          Records = audited |> List.sumBy (fun (_, stored) -> stored.Length)
+          Records = audited |> List.sumBy (fun (_, stored) -> (judgedRecords kind stored).Length)
           Mismatched = mismatches |> List.map _.Key |> List.distinct |> List.length },
         mismatches,
         (kind.Kind, audited |> List.map (fun (clean, _) -> clean.Record.Key.Value.Text))
@@ -1248,7 +1282,18 @@ let render (report: Report) : string list =
           match report.RecordsVerdict with
           | Verdict.Agree -> "AGREE: every audited record equals its clean recompute"
           | Verdict.Mismatch ->
-              $"MISMATCH: %d{report.Mismatches.Length} stored record(s) differ from a clean recompute under the same key: a key missed an input"
+              // A kind that compared nothing is a finding of its own (AUTOMATION-1841): a mismatch
+              // elsewhere outranks it in the verdict, never hides it.
+              let alsoVacuous =
+                  [ for k in report.Kinds do
+                        match KindTally.finding k with
+                        | KindFinding.Vacuous why -> $"%s{k.Kind} (%s{why})"
+                        | KindFinding.Compared -> () ]
+                  |> function
+                      | [] -> ""
+                      | kinds -> "; also VACUOUS: " + String.concat ", " kinds
+
+              $"MISMATCH: %d{report.Mismatches.Length} stored record(s) differ from a clean recompute under the same key: a key missed an input%s{alsoVacuous}"
           | Verdict.Vacuous -> "VACUOUS: a kind or a named key compared nothing, or a kind was not audited; no answer"
 
       $"records: %s{records}"

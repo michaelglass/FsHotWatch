@@ -419,24 +419,29 @@ let file
         then
             Error "an input moved while it was read"
         else
-            let filed (recordKey: ActionKey.ActionKey) (subject: string) (text: string) =
-                OutcomeStore.Through.fileComputed
-                    store
-                    (OutcomeStore.justRan
-                        (OutcomeStore.Record.ofAction
-                            recordKey
-                            subject
-                            OutcomeStore.Outcome.Pass
-                            request.Toolchain
-                            root
-                            DateTimeOffset.UtcNow)
-                        (Some text))
+            let recordOf (recordKey: ActionKey.ActionKey) (subject: string) =
+                OutcomeStore.Record.ofAction
+                    recordKey
+                    subject
+                    OutcomeStore.Outcome.Pass
+                    request.Toolchain
+                    root
+                    DateTimeOffset.UtcNow
 
             // The options first, and only where no checkout filed them already: the record a
-            // later lookup compares against stays the first checkout's.
+            // later lookup compares against stays the first checkout's. The index is keyed by the
+            // request, not by content, so it is REWRITTEN as its key's only record
+            // (AUTOMATION-1841): an older one describes an older tree and is never read.
             if
-                (store.HoldsKey key.Value || filed key OptionsKind outputs)
-                && filed request' RequestKind (IndexJson.toJson index key)
+                (store.HoldsKey key.Value
+                 || OutcomeStore.Through.fileComputed
+                     store
+                     (OutcomeStore.justRan (recordOf key OptionsKind) (Some outputs)))
+                && OutcomeStore.Through.supersede
+                    store
+                    (recordOf request' RequestKind)
+                    (Some(IndexJson.toJson index key))
+                   |> Option.isSome
             then
                 Ok()
             else

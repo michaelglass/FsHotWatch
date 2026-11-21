@@ -1758,7 +1758,9 @@ a key that missed an input. That is `nix build --check` with the build replaced 
   other kind: outcome and the digest of its outputs (`AuditKind.generic`). The kind list is open
   (`--kind`); `check` is the default until another kind's comparison is shown not to red on a
   clean tree. A key's whole history is compared, not only its answer: a record a lookup once
-  served is evidence too.
+  served is evidence too. An INDEX kind (`options-inputs`, `options-portable-inputs`), keyed by
+  the request rather than by content, is the exception: its older records describe older trees,
+  so only its answer is judged (AUTOMATION-1841), and it is filed as its key's only record.
 - **Sampling** is seeded (`sha256(seed LF key)` order), so the same seed over the same stores
   audits the same keys and a red reproduces; the report lists the audited keys and `--key`
   re-audits any one. `--prefer-input <label>` samples a key shape first: AUTOMATION-1613's

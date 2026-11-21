@@ -742,6 +742,168 @@ let ``CONTROL test: a duration differs and agrees; the counts differ and do not`
 
         test <@ fields = [ "counts" ] @>)
 
+// --- index kinds (AUTOMATION-1841) ---
+
+/// What an evaluation read, as an options index record names it.
+let private indexOf (reads: string list) =
+    let strings = reads |> List.map (sprintf "\"%s\"") |> String.concat ","
+    $"""{{"schema":"s","optionsKey":"k","reads":[%s{strings}],"probes":[],"listings":[],"envNames":[]}}"""
+
+let private olderTree = indexOf [ "/w/a/x.fsproj" ]
+
+let private newerTree = indexOf [ "/w/a/x.fsproj"; "/w/a/Directory.Build.props" ]
+
+/// One key of the index kind `kind`: `history` filed in the audited store oldest first, a minute
+/// apart, and `clean` in the clean store a day later. Returns both stores.
+let private indexHistory (dir: string) (kind: RecordAudit.RecordKind) (history: string list) (clean: string) =
+    let key =
+        ActionKey.create (RecordAudit.RecordKind.name kind) [ "root", "/w/a"; "projects", "p" ]
+
+    let audited = storeAt (Path.Combine(dir, "audited"))
+    let cleanStore = storeAt (Path.Combine(dir, "clean"))
+    let t0 = DateTimeOffset(2026, 11, 19, 0, 0, 0, TimeSpan.Zero)
+
+    history
+    |> List.iteri (fun i outputs ->
+        audited.RecordWithOutputs(recordAt key OutcomeStore.Outcome.Pass (t0.AddMinutes(float i)), Some outputs)
+        |> ignore)
+
+    cleanStore.RecordWithOutputs(recordAt key OutcomeStore.Outcome.Pass (t0.AddDays 1.0), Some clean)
+    |> ignore
+
+    audited, cleanStore
+
+let private indexKinds =
+    [ RecordAudit.RecordKind.OptionsInputs
+      RecordAudit.RecordKind.OptionsPortableInputs ]
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``an index kind's older record describing an older tree never counts as a mismatch`` () =
+    for kind in indexKinds do
+        withTempDir "audit-index-history" (fun dir ->
+            let audited, clean = indexHistory dir kind [ olderTree; newerTree ] newerTree
+
+            let report =
+                RecordAudit.audit audited.Root clean.Root { everyKey with Kinds = [ kind ] }
+
+            test <@ List.isEmpty report.Mismatches @>
+            test <@ report.Verdict = RecordAudit.Verdict.Agree @>
+            // Only the answer is judged: the superseded record is not compared at all.
+            test <@ report.Kinds |> List.map (fun k -> k.Audited, k.Records) = [ 1, 1 ] @>)
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``a difference in an index kind's newest record always counts, and only it is reported`` () =
+    for kind in indexKinds do
+        // An older record that agrees does not excuse the newest.
+        withTempDir "audit-index-newest" (fun dir ->
+            let audited, clean = indexHistory dir kind [ newerTree; olderTree ] newerTree
+
+            let report =
+                RecordAudit.audit audited.Root clean.Root { everyKey with Kinds = [ kind ] }
+
+            test <@ report.Verdict = RecordAudit.Verdict.Mismatch @>
+            test <@ report.Mismatches |> List.map _.IsAnswer = [ true ] @>)
+
+        // Every record differs: one mismatch, the answer's; the history is not judged.
+        withTempDir "audit-index-all-differ" (fun dir ->
+            let audited, clean =
+                indexHistory dir kind [ olderTree; indexOf [ "/w/a/y.fsproj" ] ] newerTree
+
+            let report =
+                RecordAudit.audit audited.Root clean.Root { everyKey with Kinds = [ kind ] }
+
+            test <@ report.Mismatches |> List.map _.IsAnswer = [ true ] @>)
+
+    withTempDir "audit-index-fields" (fun dir ->
+        let audited, clean =
+            indexHistory dir RecordAudit.RecordKind.OptionsInputs [ newerTree; olderTree ] newerTree
+
+        let report =
+            RecordAudit.audit
+                audited.Root
+                clean.Root
+                { everyKey with
+                    Kinds = [ RecordAudit.RecordKind.OptionsInputs ] }
+
+        test <@ report.Mismatches |> List.map _.Fields = [ [ "reads" ] ] @>)
+
+/// The nightly's shape: an `options` record only the clean store holds (its key names an
+/// absolute root no other store shares), beside options-inputs records under one request key.
+let private optionsBesideIndex (dir: string) (history: string list) =
+    let audited, clean =
+        indexHistory dir RecordAudit.RecordKind.OptionsInputs history newerTree
+
+    let options = ActionKey.create "options" [ "request", "r"; "file", "x" ]
+
+    clean.RecordWithOutputs(
+        recordAt options OutcomeStore.Outcome.Pass (DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero)),
+        Some "{}"
+    )
+    |> ignore
+
+    RecordAudit.audit
+        audited.Root
+        clean.Root
+        { everyKey with
+            Kinds = [ RecordAudit.RecordKind.Options; RecordAudit.RecordKind.OptionsInputs ] }
+
+let private vacuousKindsOf (report: RecordAudit.Report) =
+    JsonDocument.Parse(RecordAudit.toJson report).RootElement.GetProperty("vacuousKinds").EnumerateArray()
+    |> Seq.map (fun k -> k.GetString())
+    |> List.ofSeq
+
+let private recordsLine (report: RecordAudit.Report) =
+    RecordAudit.render report |> List.find (fun l -> l.StartsWith "records: ")
+
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``options vacuous is its own finding, never hidden in or mistaken for a mismatch`` () =
+    // Older options-inputs records describe older trees: the night is options-vacuous, not a mismatch.
+    withTempDir "audit-options-vacuous" (fun dir ->
+        let report = optionsBesideIndex dir [ olderTree; newerTree ]
+
+        test <@ List.isEmpty report.Mismatches @>
+        test <@ report.RecordsVerdict = RecordAudit.Verdict.Vacuous @>
+        test <@ RecordAudit.exitCode report.Verdict = 3 @>
+        test <@ vacuousKindsOf report = [ "options" ] @>
+
+        test
+            <@
+                report.Kinds |> List.map (fun k -> k.Kind, RecordAudit.KindTally.finding k) = [ "options",
+                                                                                                RecordAudit.KindFinding.Vacuous
+                                                                                                    "the audited store holds none of its clean keys"
+                                                                                                "options-inputs",
+                                                                                                RecordAudit.KindFinding.Compared ]
+            @>
+
+        test <@ (recordsLine report).StartsWith "records: VACUOUS" @>)
+
+    // A newest record that differs is a mismatch, and the vacuous kind is still named beside it.
+    withTempDir "audit-options-vacuous-and-mismatch" (fun dir ->
+        let report = optionsBesideIndex dir [ newerTree; olderTree ]
+
+        test <@ report.RecordsVerdict = RecordAudit.Verdict.Mismatch @>
+        test <@ report.Mismatches |> List.map _.Kind = [ "options-inputs" ] @>
+        test <@ vacuousKindsOf report = [ "options" ] @>
+        let line = recordsLine report
+        test <@ line.StartsWith "records: MISMATCH" @>
+
+        test <@ line.Contains "; also VACUOUS: options (the audited store holds none of its clean keys)" @>)
+
+// The only kinds keyed by the request rather than by content are the two options indexes; every
+// content-keyed kind keeps judging its whole history (the history test above, for check).
+[<Fact(Timeout = SyncHangBackstopMs)>]
+let ``only the options index kinds judge their answer alone; every content-keyed kind judges every record`` () =
+    let answerOnly =
+        RecordAudit.RecordKind.all
+        |> List.filter (fun k -> (RecordAudit.AuditKind.find k).Judged = RecordAudit.Judged.AnswerOnly)
+
+    test <@ answerOnly = indexKinds @>
+
+    test
+        <@
+            (RecordAudit.AuditKind.ofStoredName "a-kind-this-build-does-not-know").Judged = RecordAudit.Judged.EveryRecord
+        @>
+
 /// A test-evidence entry as `TestEvidenceStore` files it, under `root`.
 let private fileEvidence
     (root: string)

@@ -937,27 +937,28 @@ let file
             match ActionKey.moved key.Inputs (optionsKey request inputs environment).Inputs with
             | _ :: _ as rehashed -> Moved(List.map labelPath rehashed)
             | [] ->
-                let filedRecord (recordKey: ActionKey.ActionKey) (subject: string) (outputs: string) =
-                    OutcomeStore.Through.fileComputed
-                        store
-                        (OutcomeStore.justRan
-                            (OutcomeStore.Record.ofAction
-                                recordKey
-                                subject
-                                OutcomeStore.Outcome.Pass
-                                request.Toolchain
-                                request.Root
-                                DateTimeOffset.UtcNow)
-                            (Some outputs))
+                let recordOf (recordKey: ActionKey.ActionKey) (subject: string) =
+                    OutcomeStore.Record.ofAction
+                        recordKey
+                        subject
+                        OutcomeStore.Outcome.Pass
+                        request.Toolchain
+                        request.Root
+                        DateTimeOffset.UtcNow
 
                 // The options first: an index naming a key that holds nothing is a miss, never a
-                // replay of something else.
+                // replay of something else. The index is keyed by the request, not by content, so
+                // it is REWRITTEN as its key's only record (AUTOMATION-1841): an older one describes
+                // an older tree and is never served.
                 if
-                    filedRecord key "options" (ProjectOptionsJson.toJson projects)
-                    && filedRecord
-                        (requestKey request)
-                        "options-inputs"
-                        (InputsJson.toJson filed (unclassifiedEnvironment inputs.EnvNames environment) key)
+                    OutcomeStore.Through.fileComputed
+                        store
+                        (OutcomeStore.justRan (recordOf key "options") (Some(ProjectOptionsJson.toJson projects)))
+                    && OutcomeStore.Through.supersede
+                        store
+                        (recordOf (requestKey request) "options-inputs")
+                        (Some(InputsJson.toJson filed (unclassifiedEnvironment inputs.EnvNames environment) key))
+                       |> Option.isSome
                 then
                     Filed
                 else
