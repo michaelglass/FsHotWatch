@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat!: AUTOMATION-1816 step 2b. `AnalyzeRecords.Wiring` has a `ReuseKeys` field (`NotKept` or `Kept`; breaking for
+  anyone constructing the record). With `Kept`, which the daemon sets when `cache.nightlyShadow` is on, the plugin keeps
+  each file's latest analysis key parts, and its new `references-shadow-analyzers` command answers, per servable file,
+  what reuse would have handed it (the `analyze` record under the key rebuilt with the stored check's signatures)
+  against what this run found: `equal`, `mismatch` (both lists) or `unverifiable`. Keeping the parts changes nothing the
+  plugin reads, files or serves.
+
 ## 0.7.0-alpha.60 - 2026-11-18
 
 - chore: rebuild to bundle updated dependencies

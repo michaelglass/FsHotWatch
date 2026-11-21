@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: `ReferencesShadowReport` gains the wire formats the nightly shadow's commands speak (`Servable`, the files the
+  references key would have served; `PluginReply`, one plugin's comparison), `comparePlugin`, and the `NoReusedKey`
+  unverifiable reason (reuse would have read no key: the record names no used signatures, or the plugin keyed nothing for
+  the file). **Breaking:** `ServableFile` and `UsedSignaturesKey` move from the internal `AlternativeKeys` into the
+  public `ReferencesShadowReport`, so plugin assemblies can read them.
+
 - feat!: `cache.nightlyShadow: {"landHost": "<host>"}` (AUTOMATION-1816 step 2b), off by default and refused unless
   `cache.referencesKey` is `"shadow"`: each settle also collects every file the references key would have served,
   with the FCS and used signatures its record names (what reuse would key each plugin's result by). It changes nothing

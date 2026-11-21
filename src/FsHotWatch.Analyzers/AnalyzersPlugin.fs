@@ -101,6 +101,12 @@ type ReplayStamps internal () =
         | true, inputs -> Some inputs
         | false, _ -> None
 
+/// Each file's latest analysis key parts, kept only for the nightly shadow.
+[<NoComparison; NoEquality>]
+type internal ReuseParts =
+    | NotKept
+    | Kept of Collections.Concurrent.ConcurrentDictionary<string, AnalyzeRecords.KeyParts>
+
 /// A key as a weak table holds it: the table's values must be reference types.
 [<Sealed>]
 type internal KeyHolder(key: FsHotWatch.ActionKey.ActionKey) =
@@ -129,6 +135,14 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
         | true, holder -> Some holder.Key
         | false, _ -> None
 
+    /// Each file's latest key parts, by repository-relative path, when the nightly shadow keeps
+    /// them (AUTOMATION-1816 step 2b).
+    let reuseParts =
+        match wiring with
+        | Some(w, _) when w.ReuseKeys = AnalyzeRecords.ReuseKeys.Kept ->
+            ReuseParts.Kept(Collections.Concurrent.ConcurrentDictionary<string, AnalyzeRecords.KeyParts>())
+        | _ -> ReuseParts.NotKept
+
     /// Whether records are filed (and so the task cache is guarded).
     member internal _.Active = wiring.IsSome
 
@@ -137,6 +151,37 @@ type AnalyzeRecordBook internal (records: AnalyzeRecords.Wiring option, root: st
         match key with
         | Some key -> keys.AddOrUpdate(result, KeyHolder key)
         | None -> keys.Remove result |> ignore
+
+    /// Keep the key parts `result`'s analysis was keyed by, for the nightly shadow; nothing
+    /// when it is off.
+    member internal _.KeepParts(result: FileCheckResult, parts: AnalyzeRecords.KeyParts) =
+        match wiring, reuseParts with
+        | Some(_, root), ReuseParts.Kept byFile ->
+            byFile[Path.GetRelativePath(root, AbsFilePath.value result.File).Replace('\\', '/')] <- parts
+        | _ -> ()
+
+    /// AUTOMATION-1816 step 2b: per servable file, what reuse would have handed the analyzers
+    /// against `fresh`, this run's findings for the file. Every file is unverifiable when the
+    /// key parts are not kept: nothing names the key reuse would have read.
+    member internal _.CompareReused
+        (servable: FsHotWatch.ReferencesShadowReport.ServableFile list, fresh: string -> ErrorEntry list)
+        : FsHotWatch.ReferencesShadowReport.PluginComparison =
+        let reused =
+            match wiring, reuseParts with
+            | Some(w, root), ReuseParts.Kept byFile ->
+                fun (file: FsHotWatch.ReferencesShadowReport.ServableFile) ->
+                    let parts =
+                        match byFile.TryGetValue file.File with
+                        | true, parts -> Some parts
+                        | false, _ -> None
+
+                    AnalyzeRecords.reused w.Store root parts file
+            | _ ->
+                fun _ ->
+                    FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
+                        FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedKey
+
+        FsHotWatch.ReferencesShadowReport.comparePlugin "analyzers" reused fresh servable
 
     /// The key `result`'s analysis is filed under, when one was computed for it.
     member internal _.KeyOf(result: FileCheckResult) = keyOf result
@@ -1375,7 +1420,36 @@ let internal createShadowedWithSeams
             }
       PrepareCommit = None
       Commands =
-        [ "diagnostics",
+        [ // AUTOMATION-1816 step 2b: what reuse would have handed this plugin for each servable
+          // file (the request: `FsHotWatch.ReferencesShadowReport.Servable`), against what it found here.
+          FsHotWatch.ReferencesShadowReport.AnalyzersCommand,
+          PluginCommand.Observe(fun _ctx (state: AnalyzersState) args ->
+              async {
+                  let servable =
+                      match
+                          args
+                          |> Array.tryHead
+                          |> Option.bind FsHotWatch.ReferencesShadowReport.Servable.tryOfJson
+                      with
+                      | Some servable -> servable
+                      | None ->
+                          invalidArg "args" "expects the servable files (FsHotWatch.ReferencesShadowReport.Servable)"
+
+                  let fresh (file: string) =
+                      match repoRoot with
+                      | Some root ->
+                          state.DiagnosticsByFile
+                          |> Map.tryFind (AbsFilePath.create (Path.Combine(root, file)))
+                          |> Option.defaultValue []
+                      | None -> []
+
+                  return
+                      FsHotWatch.ReferencesShadowReport.PluginReply.toJson (
+                          state.Records.CompareReused(servable, fresh)
+                      )
+              })
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.PluginReplySchema
+          "diagnostics",
           PluginCommand.Observe(fun _ctx (state: AnalyzersState) _args ->
               async {
                   let totalDiags =
@@ -1525,22 +1599,23 @@ let internal createShadowedWithSeams
                             // options, so a replay is exactly the analysis its key names.
                             match records, repoRoot with
                             | Some wiring, Some root when recordBook.Active ->
-                                let recordKey =
-                                    AnalyzeRecords.keyWith
-                                        { RecordSchema = AnalyzeRecords.AnalyzeRecordSchema
-                                          Checker = host.Checker
-                                          AnalyzerSdk = host.AnalyzerSdk
-                                          Toolchain = wiring.Toolchain
-                                          Options = AnalyzeRecords.optionsHashOf root result.ProjectOptions
-                                          AnalyzerPaths = analyzerPathsHash
-                                          AnalyzerInputs = analyzerInputs
-                                          FailOnSeverity = threshold
-                                          AnalyzerConfig = configDigest
-                                          File = fileIdentity
-                                          Source = FsHotWatch.ContentHash.ofText result.Source
-                                          UsedSignatures = usedSignatures
-                                          FcsSignature = fcsSignature }
+                                let parts: AnalyzeRecords.KeyParts =
+                                    { RecordSchema = AnalyzeRecords.AnalyzeRecordSchema
+                                      Checker = host.Checker
+                                      AnalyzerSdk = host.AnalyzerSdk
+                                      Toolchain = wiring.Toolchain
+                                      Options = AnalyzeRecords.optionsHashOf root result.ProjectOptions
+                                      AnalyzerPaths = analyzerPathsHash
+                                      AnalyzerInputs = analyzerInputs
+                                      FailOnSeverity = threshold
+                                      AnalyzerConfig = configDigest
+                                      File = fileIdentity
+                                      Source = FsHotWatch.ContentHash.ofText result.Source
+                                      UsedSignatures = usedSignatures
+                                      FcsSignature = fcsSignature }
 
+                                recordBook.KeepParts(result, parts)
+                                let recordKey = AnalyzeRecords.keyWith parts
                                 recordBook.Put(result, Some recordKey)
                             | _ -> ()
 

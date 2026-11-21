@@ -356,3 +356,34 @@ let ``a report that cannot be written is logged and dropped, and no summary file
         File.WriteAllText(reportsDirectory repoRoot, "")
         write repoRoot sample
         test <@ List.isEmpty (readSummaries repoRoot) @>)
+
+// --- the commands' wire formats ----------------------------------------------------------
+
+[<Fact>]
+let ``the servable files and a plugin's reply round-trip, and anything else reads as none`` () =
+    let servable =
+        [ { File = "src/A.fs"
+            Project = "src/P.fsproj"
+            FcsSignature = "fcs"
+            UsedSignatures = UsedSignaturesKey.Described "used" }
+          { File = "src/B.fs"
+            Project = "src/P.fsproj"
+            FcsSignature = "fcs2"
+            UsedSignatures = UsedSignaturesKey.Undescribed } ]
+
+    test <@ Servable.tryOfJson (Servable.toJson servable) = Some servable @>
+    test <@ Servable.tryOfJson "{\"schema\":\"other\",\"files\":[]}" = None @>
+
+    let comparison =
+        PluginComparison.ofFiles
+            "analyzers"
+            [ "src/A.fs", FileOutcome.Equal
+              "src/B.fs", FileOutcome.Unverifiable UnverifiableReason.NoReusedKey
+              "src/C.fs",
+              FileOutcome.Mismatch(
+                  [ Finding.ofEntry (entry "X" 1 "reused") ],
+                  [ Finding.ofEntry (entry "X" 1 "fresh") ]
+              ) ]
+
+    test <@ PluginReply.tryOfJson (PluginReply.toJson comparison) = Some comparison @>
+    test <@ PluginReply.tryOfJson (Servable.toJson servable) = None @>

@@ -309,7 +309,7 @@ type internal StoredForAlternatives =
 type internal NightlyCollection =
     | NotCollecting
     /// By repository-relative path; a later settle's finding for a file replaces an earlier one.
-    | Collecting of ConcurrentDictionary<string, AlternativeKeys.ServableFile>
+    | Collecting of ConcurrentDictionary<string, ReferencesShadowReport.ServableFile>
 
 /// How AUTOMATION-1816's alternative keys run in a pipeline, and the state each needs.
 [<NoComparison; NoEquality>]
@@ -725,7 +725,7 @@ type CheckPipeline
                             let file = repoRelative path
 
                             servable[file] <-
-                                AlternativeKeys.ServableFile.ofVerdict
+                                ReferencesShadowReport.ServableFile.ofVerdict
                                     file
                                     (repoRelative options.ProjectFileName)
                                     cached
@@ -1264,7 +1264,7 @@ type CheckPipeline
 
     /// The files the references key would have served since this pipeline started, as the
     /// nightly shadow collected them; empty unless it runs (step 2b).
-    member internal _.ServableFiles: AlternativeKeys.ServableFile list =
+    member internal _.ServableFiles: ReferencesShadowReport.ServableFile list =
         match alternativeKeys with
         | Some(Shadow(_, _, Collecting servable)) -> servable.Values |> List.ofSeq
         | Some(Shadow(_, _, NotCollecting))

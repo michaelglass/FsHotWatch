@@ -73,6 +73,14 @@ module RecordMode =
     /// one config value: `"analyzerRecords": "shadow"` or `"off"`, or `FSHW_ANALYZER_RECORDS`.
     let Default = On
 
+/// Whether the plugin keeps, per file, the key parts of its latest analysis, so the nightly
+/// shadow (AUTOMATION-1816 step 2b) can rebuild the key reuse would have read. Keeping them
+/// changes nothing the plugin reads, files or serves.
+[<RequireQualifiedAccess>]
+type ReuseKeys =
+    | NotKept
+    | Kept
+
 /// Where and how analyses are filed.
 [<NoComparison; NoEquality>]
 type Wiring =
@@ -85,6 +93,8 @@ type Wiring =
         Log: string -> unit
         /// Where a shadow agreement is said: one line per live analysis of a filed key.
         Trace: string -> unit
+        /// Whether each file's key parts are kept for the nightly shadow.
+        ReuseKeys: ReuseKeys
     }
 
 /// Every term an analysis record's key is folded from, each a digest or a name.
@@ -323,3 +333,30 @@ let disagreement (recorded: ErrorEntry list) (live: ErrorEntry list) : string op
             |> Option.orElse (differs "column" (string r.Column) (string l.Column))
             |> Option.orElse (differs "code" (optional r.Code) (optional l.Code))
             |> Option.orElse (differs "detail" (optional r.Detail) (optional l.Detail)))
+
+/// The key reuse would have read for a file whose analysis in this run was keyed by `parts`, had
+/// it served the stored check with `fcsSignature` and `usedSignatures` (AUTOMATION-1816 step 2b):
+/// every other term is this run's, since a servable file has this run's bytes and options.
+let reusedKey (parts: KeyParts) (fcsSignature: string) (usedSignatures: string) : ActionKey.ActionKey =
+    keyWith
+        { parts with
+            FcsSignature = fcsSignature
+            UsedSignatures = usedSignatures }
+
+/// What reuse would have handed the analyzers for `servable`, read from `store` under
+/// `reusedKey`. `parts` is this run's key for the file: none when it keyed no analysis of it.
+let reused
+    (store: OutcomeRecords.IOutcomeStore)
+    (root: string)
+    (parts: KeyParts option)
+    (servable: ReferencesShadowReport.ServableFile)
+    : ReferencesShadowReport.Reused =
+    match parts, servable.UsedSignatures with
+    | Some parts, ReferencesShadowReport.UsedSignaturesKey.Described used ->
+        match lookup store root (reusedKey parts servable.FcsSignature used) with
+        | Some entries ->
+            ReferencesShadowReport.Reused.Found(entries |> List.map ReferencesShadowReport.Finding.ofEntry)
+        | None -> ReferencesShadowReport.Reused.Unverifiable ReferencesShadowReport.UnverifiableReason.NoReusedEntry
+    | None, _
+    | _, ReferencesShadowReport.UsedSignaturesKey.Undescribed ->
+        ReferencesShadowReport.Reused.Unverifiable ReferencesShadowReport.UnverifiableReason.NoReusedKey

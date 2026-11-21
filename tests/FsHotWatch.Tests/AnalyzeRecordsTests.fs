@@ -531,7 +531,8 @@ let private startWith
           RecordMode = mode
           Toolchain = "test-toolchain"
           Log = log.Enqueue
-          Trace = log.Enqueue }
+          Trace = log.Enqueue
+          ReuseKeys = AnalyzeRecords.ReuseKeys.NotKept }
 
     host.RegisterHandler(
         createRecordedWithSeams (Some wiring) (Some root) [] Map.empty None DiagnosticSeverity.Warning None runner
@@ -875,7 +876,8 @@ let ``a handler with no repository root files no record`` () =
               RecordMode = AnalyzeRecords.On
               Toolchain = "t"
               Log = ignore
-              Trace = ignore }
+              Trace = ignore
+              ReuseKeys = AnalyzeRecords.ReuseKeys.NotKept }
 
         let host = createModelHost (Unchecked.defaultof<_>) dir
         let analyzed = Collections.Concurrent.ConcurrentQueue<string>()
