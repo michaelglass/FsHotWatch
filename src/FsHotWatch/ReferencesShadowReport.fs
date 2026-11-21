@@ -245,10 +245,34 @@ type TestFinding =
       Watermark: TestOutcome
       Nightly: TestOutcome }
 
+/// The temporary impact-DB copy S′ was computed on.
+[<RequireQualifiedAccess>]
+type ImpactDbCopy =
+    /// No servable file's reused analysis differed: S′ is S, and nothing was copied.
+    | NotCopied
+    /// Its size, and how long the copy took.
+    | Copied of bytes: int64 * milliseconds: int64
+
+/// The two selections for C, the symbols changed since the watermark: S over this run's index,
+/// S′ over a copy with the reused analyses of the servable files substituted.
+type Selections =
+    {
+        S: Set<string>
+        SPrime: Set<string>
+        /// Shadow-servable files whose reused analysis differs from the nightly's.
+        DifferingAnalyses: int
+        /// Shadow-servable files whose reused analysis cannot be read (no record under its
+        /// identity, or a record naming no used signatures).
+        UnverifiableAnalyses: int
+        Copy: ImpactDbCopy
+    }
+
 type TestPruneComparison =
     {
         /// Shadow-servable files whose reused analysis differs from the nightly's.
         DifferingAnalyses: int
+        /// Shadow-servable files whose reused analysis cannot be read.
+        UnverifiableAnalyses: int
         /// Tests outside S′ that failed or changed outcome, flaky ones excluded.
         OutsideSPrimeFailedOrChanged: int
         /// Of those: in S, the fresh selection, but not in S′.
@@ -257,13 +281,15 @@ type TestPruneComparison =
         SelectorMiss: TestFinding list
         /// Outside S′, failed or changed, and unstable: listed, not counted.
         FlakyChanged: TestFinding list
-        /// The temporary impact-DB copy S′ was computed on, in bytes; 0 when no analysis
-        /// differed and no copy was made.
-        ImpactDbCopyBytes: int64
+        /// The temporary impact-DB copy S′ was computed on.
+        ImpactDbCopy: ImpactDbCopy
     }
 
-/// Count the tests outside `sPrime` that failed or changed, split by `s`.
-let compareTests (s: Set<string>) (sPrime: Set<string>) (differingAnalyses: int) (rows: TestRow list) =
+/// Count the tests outside S′ that failed or changed, split by S.
+let compareTests (selections: Selections) (rows: TestRow list) =
+    let s = selections.S
+    let sPrime = selections.SPrime
+
     let finding (row: TestRow) : TestFinding =
         { Test = row.Test
           Watermark = row.Watermark
@@ -283,7 +309,8 @@ let compareTests (s: Set<string>) (sPrime: Set<string>) (differingAnalyses: int)
 
     let byTest (findings: TestFinding list) = findings |> List.sortBy _.Test
 
-    { DifferingAnalyses = differingAnalyses
+    { DifferingAnalyses = selections.DifferingAnalyses
+      UnverifiableAnalyses = selections.UnverifiableAnalyses
       OutsideSPrimeFailedOrChanged = counted.Length
       Attributable =
         counted
@@ -302,7 +329,7 @@ let compareTests (s: Set<string>) (sPrime: Set<string>) (differingAnalyses: int)
             | Counted.FlakyChanged -> Some(finding row)
             | Counted.FailedOrChanged -> None)
         |> byTest
-      ImpactDbCopyBytes = 0L }
+      ImpactDbCopy = selections.Copy }
 
 [<RequireQualifiedAccess>]
 type TestPruneSection =
@@ -348,11 +375,12 @@ let onHost (host: string) (landHost: string) (compare: unit -> ReportResult) : R
 
 type TestPruneCounts =
     { DifferingAnalyses: int
+      UnverifiableAnalyses: int
       OutsideSPrimeFailedOrChanged: int
       Attributable: int
       SelectorMiss: int
       FlakyChanged: int
-      ImpactDbCopyBytes: int64 }
+      ImpactDbCopy: ImpactDbCopy }
 
 [<RequireQualifiedAccess>]
 type TestPruneSummary =
@@ -442,6 +470,13 @@ module private Write =
         o["nightly"] <- TestOutcome.token t.Nightly
         o
 
+    let impactDbCopy (o: JsonObject) (copy: ImpactDbCopy) =
+        match copy with
+        | ImpactDbCopy.NotCopied -> ()
+        | ImpactDbCopy.Copied(bytes, milliseconds) ->
+            o["impactDbCopyBytes"] <- bytes
+            o["impactDbCopyMs"] <- milliseconds
+
     let testPrune (section: TestPruneSection) : JsonNode =
         let o = JsonObject()
 
@@ -452,11 +487,12 @@ module private Write =
         | TestPruneSection.Compared tp ->
             o["result"] <- "compared"
             o["differingAnalyses"] <- tp.DifferingAnalyses
+            o["unverifiableAnalyses"] <- tp.UnverifiableAnalyses
             o["outsideSPrimeFailedOrChanged"] <- tp.OutsideSPrimeFailedOrChanged
             o["attributable"] <- array (tp.Attributable |> List.map testFinding)
             o["selectorMiss"] <- array (tp.SelectorMiss |> List.map testFinding)
             o["flakyChanged"] <- array (tp.FlakyChanged |> List.map testFinding)
-            o["impactDbCopyBytes"] <- tp.ImpactDbCopyBytes
+            impactDbCopy o tp.ImpactDbCopy
 
         o
 
@@ -533,6 +569,11 @@ module private Read =
         { Plugin = str e "plugin"
           Files = items e "files" |> List.map fileOutcome }
 
+    let impactDbCopy (e: JsonElement) : ImpactDbCopy =
+        match e.TryGetProperty "impactDbCopyBytes" with
+        | true, _ -> ImpactDbCopy.Copied(int64 e "impactDbCopyBytes", int64 e "impactDbCopyMs")
+        | false, _ -> ImpactDbCopy.NotCopied
+
     let testFinding (e: JsonElement) : TestFinding =
         { Test = str e "test"
           Watermark = TestOutcome.tryParse (str e "watermark") |> parsed "outcome"
@@ -544,11 +585,12 @@ module private Read =
         | "compared" ->
             TestPruneSection.Compared
                 { DifferingAnalyses = int e "differingAnalyses"
+                  UnverifiableAnalyses = int e "unverifiableAnalyses"
                   OutsideSPrimeFailedOrChanged = int e "outsideSPrimeFailedOrChanged"
                   Attributable = items e "attributable" |> List.map testFinding
                   SelectorMiss = items e "selectorMiss" |> List.map testFinding
                   FlakyChanged = items e "flakyChanged" |> List.map testFinding
-                  ImpactDbCopyBytes = int64 e "impactDbCopyBytes" }
+                  ImpactDbCopy = impactDbCopy e }
         | other -> raise (MalformedException $"test-prune result %s{other}")
 
     /// `read root` for a document of `schema`; None for anything else.
@@ -619,11 +661,12 @@ module Summary =
                         | TestPruneSection.Compared tp ->
                             TestPruneSummary.Compared
                                 { DifferingAnalyses = tp.DifferingAnalyses
+                                  UnverifiableAnalyses = tp.UnverifiableAnalyses
                                   OutsideSPrimeFailedOrChanged = tp.OutsideSPrimeFailedOrChanged
                                   Attributable = tp.Attributable.Length
                                   SelectorMiss = tp.SelectorMiss.Length
                                   FlakyChanged = tp.FlakyChanged.Length
-                                  ImpactDbCopyBytes = tp.ImpactDbCopyBytes } }
+                                  ImpactDbCopy = tp.ImpactDbCopy } }
 
         { RunId = report.RunId
           WrittenAt = report.WrittenAt
@@ -648,11 +691,12 @@ module Summary =
             | TestPruneSummary.Compared t ->
                 tp["result"] <- "compared"
                 tp["differingAnalyses"] <- t.DifferingAnalyses
+                tp["unverifiableAnalyses"] <- t.UnverifiableAnalyses
                 tp["outsideSPrimeFailedOrChanged"] <- t.OutsideSPrimeFailedOrChanged
                 tp["attributable"] <- t.Attributable
                 tp["selectorMiss"] <- t.SelectorMiss
                 tp["flakyChanged"] <- t.FlakyChanged
-                tp["impactDbCopyBytes"] <- t.ImpactDbCopyBytes
+                Write.impactDbCopy tp t.ImpactDbCopy
 
             o["testPrune"] <- tp
 
@@ -676,11 +720,12 @@ module Summary =
                             | "compared" ->
                                 TestPruneSummary.Compared
                                     { DifferingAnalyses = Read.int tp "differingAnalyses"
+                                      UnverifiableAnalyses = Read.int tp "unverifiableAnalyses"
                                       OutsideSPrimeFailedOrChanged = Read.int tp "outsideSPrimeFailedOrChanged"
                                       Attributable = Read.int tp "attributable"
                                       SelectorMiss = Read.int tp "selectorMiss"
                                       FlakyChanged = Read.int tp "flakyChanged"
-                                      ImpactDbCopyBytes = Read.int64 tp "impactDbCopyBytes" }
+                                      ImpactDbCopy = Read.impactDbCopy tp }
                             | other -> raise (MalformedException $"test-prune result %s{other}") }
                 | other -> raise (MalformedException $"result %s{other}")
 
@@ -766,6 +811,69 @@ let comparePlugin
     servable
     |> List.map (fun file -> file.File, compareFile (reused file) (fresh file.File))
     |> PluginComparison.ofFiles plugin
+
+/// The test-prune plugin's command: given a `TestPruneRequest`, the selections S and S′
+/// (`SelectionsReply`).
+[<Literal>]
+let TestPruneCommand = "references-shadow-test-prune"
+
+/// `TestPruneRequest.toJson`'s schema.
+[<Literal>]
+let TestPruneRequestSchema = "fshw-references-shadow-test-prune-request-v1"
+
+/// `SelectionsReply.toJson`'s schema.
+[<Literal>]
+let SelectionsSchema = "fshw-references-shadow-selections-v1"
+
+/// What the test-prune plugin is asked: the run (whose temporary directory holds the impact-DB
+/// copy), C, and the servable files.
+type TestPruneRequest =
+    { RunId: string
+      Changed: string list
+      Files: ServableFile list }
+
+module TestPruneRequest =
+    let toJson (request: TestPruneRequest) : string =
+        let o = JsonObject()
+        o["schema"] <- TestPruneRequestSchema
+        o["runId"] <- request.RunId
+        o["changed"] <- Write.array (request.Changed |> List.map (fun s -> JsonValue.Create s :> JsonNode))
+        o["files"] <- JsonNode.Parse(Servable.toJson request.Files)
+        o.ToJsonString()
+
+    let tryOfJson (text: string) : TestPruneRequest option =
+        Read.document TestPruneRequestSchema text (fun root ->
+            { RunId = Read.str root "runId"
+              Changed = Read.items root "changed" |> List.map (fun e -> e.ToString())
+              Files =
+                match Servable.tryOfJson ((Read.prop root "files").GetRawText()) with
+                | Some files -> files
+                | None -> raise (MalformedException "files") })
+
+module SelectionsReply =
+    let private names (set: Set<string>) =
+        Write.array (set |> Set.toList |> List.map (fun s -> JsonValue.Create s :> JsonNode))
+
+    let toJson (selections: Selections) : string =
+        let o = JsonObject()
+        o["schema"] <- SelectionsSchema
+        o["s"] <- names selections.S
+        o["sPrime"] <- names selections.SPrime
+        o["differingAnalyses"] <- selections.DifferingAnalyses
+        o["unverifiableAnalyses"] <- selections.UnverifiableAnalyses
+        Write.impactDbCopy o selections.Copy
+        o.ToJsonString()
+
+    let tryOfJson (text: string) : Selections option =
+        Read.document SelectionsSchema text (fun root ->
+            let names (name: string) =
+                Read.items root name |> List.map (fun e -> e.ToString()) |> Set.ofList
+
+            { S = names "s"
+              SPrime = names "sPrime"
+              DifferingAnalyses = Read.int root "differingAnalyses"
+              UnverifiableAnalyses = Read.int root "unverifiableAnalyses"
+              Copy = Read.impactDbCopy root })
 
 // --- files -------------------------------------------------------------------------------
 

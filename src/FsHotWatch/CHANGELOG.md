@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat!: `ReferencesShadowReport` test-prune: `Selections` (S, S', differing and unverifiable analyses, the impact-DB
+  copy) with the `TestPruneRequest` and `SelectionsReply` wire formats; `compareTests` takes a `Selections`.
+  **Breaking:** `TestPruneComparison` and the summary's `TestPruneCounts` replace `ImpactDbCopyBytes` (0 for none) with
+  `ImpactDbCopy` (`NotCopied`, or `Copied(bytes, milliseconds)`) and add `UnverifiableAnalyses`.
+
 - feat!: `ReferencesShadowReport` gains the wire formats the nightly shadow's commands speak (`Servable`, the files the
   references key would have served; `PluginReply`, one plugin's comparison), `comparePlugin`, and the `NoReusedKey`
   unverifiable reason (reuse would have read no key: the record names no used signatures, or the plugin keyed nothing for
