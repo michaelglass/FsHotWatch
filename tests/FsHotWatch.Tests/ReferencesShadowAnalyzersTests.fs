@@ -64,7 +64,7 @@ let private startThen
     (reuseKeys: AnalyzeRecords.ReuseKeys)
     (root: string)
     (wording: string)
-    (ask: PluginHost -> 'a)
+    (ask: PluginHost -> string list -> 'a)
     : 'a =
     let cache =
         FsHotWatch.FileTaskCache.FileTaskCache(Path.Combine(storeRoot, "..", start, "tasks"), repoRoot = root)
@@ -76,9 +76,13 @@ let private startThen
     let sources =
         files |> List.map (fun (rel, src) -> Path.Combine(root, rel), src) |> Map.ofList
 
+    let analyzed = System.Collections.Concurrent.ConcurrentQueue<string>()
+
     let runner: AnalyzerRunner =
         fun _clients context ->
             async {
+                analyzed.Enqueue(Path.GetRelativePath(root, context.FileName))
+
                 return
                     [ { AnalyzerName = "Fixture"
                         Output = Result.Ok(findingsFor wording sources[context.FileName]) } ]
@@ -112,7 +116,7 @@ let private startThen
             test <@ waitForCommitted host "analyzers" before 1L 15000 @>
 
         waitForQuiescent host 15000
-        ask host
+        ask host (List.ofSeq analyzed |> List.sort)
     finally
         host.Teardown()
 
@@ -142,10 +146,10 @@ let ``the analyzers answer equal, mismatch or unverifiable for what reuse would 
         let root = Path.Combine(dir, "repo")
         let servable = files |> List.map (fun (rel, src) -> servableOf root rel src)
 
-        startThen "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" ignore
+        startThen "first" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun _ _ -> ())
 
         let comparison, afterDelete =
-            startThen "second" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is worse" (fun host ->
+            startThen "second" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is worse" (fun host _ ->
                 let comparison = compare host servable
                 Directory.Delete(storeRoot, true)
                 comparison, compare host servable)
@@ -183,7 +187,7 @@ let ``no reused key is unverifiable, never equal`` () =
         let servable = files |> List.map (fun (rel, src) -> servableOf root rel src)
 
         let undescribed =
-            startThen "undescribed" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun host ->
+            startThen "undescribed" storeRoot AnalyzeRecords.ReuseKeys.Kept root "BAD is bad" (fun host _ ->
                 compare
                     host
                     (servable
@@ -192,7 +196,7 @@ let ``no reused key is unverifiable, never equal`` () =
                              UsedSignatures = UsedSignaturesKey.Undescribed })))
 
         let notKept =
-            startThen "not-kept" storeRoot AnalyzeRecords.ReuseKeys.NotKept root "BAD is bad" (fun host ->
+            startThen "not-kept" storeRoot AnalyzeRecords.ReuseKeys.NotKept root "BAD is bad" (fun host _ ->
                 compare host servable)
 
         for comparison in [ undescribed; notKept ] do
@@ -204,3 +208,50 @@ let ``no reused key is unverifiable, never equal`` () =
                 @>
 
             test <@ comparison.Files.Length = 2 @>)
+
+/// TEST 7, the analyzers' half (gates the land): keeping the key parts for the nightly shadow
+/// changes nothing the plugin analyses, reports, files or serves. The same two starts, with the
+/// parts kept and not, analyse the same files, report the same findings and leave the same records.
+[<Fact(Timeout = 120000)>]
+let ``keeping the key parts changes nothing the analyzers analyse, report, file or serve`` () =
+    let run (reuseKeys: AnalyzeRecords.ReuseKeys) (dir: string) =
+        let storeRoot = Path.Combine(dir, "outcomes")
+        let root = Path.Combine(dir, "repo")
+
+        let observe (host: PluginHost) (analyzed: string list) =
+            let entries =
+                host.GetErrorsByPlugin "analyzers"
+                |> Map.toList
+                |> List.map (fun (file, entries) -> Path.GetRelativePath(root, file), entries)
+
+            analyzed, entries
+
+        let first = startThen "first" storeRoot reuseKeys root "BAD is bad" observe
+        let second = startThen "second" storeRoot reuseKeys root "BAD is worse" observe
+
+        let records =
+            (OutcomeStore.readAll storeRoot).Records
+            |> List.map (fun r -> r.Key.Value.Text, r.Subject, $"%A{r.Outcome}")
+            |> List.sort
+
+        first, second, records
+
+    let kept = withTempDir "refshadow-gate-kept" (run AnalyzeRecords.ReuseKeys.Kept)
+
+    let notKept =
+        withTempDir "refshadow-gate-notkept" (run AnalyzeRecords.ReuseKeys.NotKept)
+
+    let firstKept, secondKept, recordsKept = kept
+    let firstNot, secondNot, recordsNot = notKept
+
+    test <@ firstKept = firstNot @>
+    test <@ secondKept = secondNot @>
+    test <@ recordsKept = recordsNot @>
+    // The starts did work: every file analysed in each, and records filed.
+    test
+        <@
+            fst firstKept = [ "src/A.fs"; "src/B.fs" ]
+            && fst secondKept = [ "src/A.fs"; "src/B.fs" ]
+        @>
+
+    test <@ not recordsKept.IsEmpty @>
