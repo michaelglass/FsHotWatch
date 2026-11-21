@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor!: `ReferencesShadowReport.fs` (~1,280 lines) is split in two (AUTOMATION-1816 step 2b): the model stays in
+  `ReferencesShadowReport`; its JSON forms and files move to the new module `FsHotWatch.ReferencesShadowJson`. No
+  behaviour change and the JSON written is byte-for-byte the same. **Breaking (paths only):** the schema and command
+  literals, `Report.toJson`/`tryOfJson`, `Summary.toJson`/`tryOfJson` (`Summary.ofReport` stays), `Servable`,
+  `PluginReply`, `SpotCheckRequest`, `SpotCheckReply`, `TestPruneRequest`, `SelectionsReply`, `RetainedReports`,
+  `reportsDirectory`, `summaryPath`, `write` and `readSummaries` are now reached through `ReferencesShadowJson`.
+
 - feat!: every recorded night's spot-check mismatches roll up (AUTOMATION-1816 step 2b). `SpotCheckCounts` keeps the
   mismatched files by name (`Mismatched`, `"mismatched"` in the summary line; `Mismatch` is now their count), and
   `SpotCheckRollUp.ofSummaries` reads every summary line into nights compared, files sampled, and each mismatch's

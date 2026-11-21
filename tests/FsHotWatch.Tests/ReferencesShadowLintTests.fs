@@ -19,6 +19,7 @@ open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.TaskCache
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.Lint
 open FsHotWatch.Tests.TestHelpers
 

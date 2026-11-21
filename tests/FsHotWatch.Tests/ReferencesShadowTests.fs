@@ -14,6 +14,7 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.CheckCacheTally
 open FsHotWatch.AlternativeKeys
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.Events
 open FsHotWatch.Tests.TestHelpers
 

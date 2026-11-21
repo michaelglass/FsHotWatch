@@ -9,6 +9,7 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.ErrorLedger
 open FsHotWatch.ReferencesShadowReport
+open FsHotWatch.ReferencesShadowJson
 open FsHotWatch.Tests.TestHelpers
 
 let private entry (code: string) (line: int) (message: string) : ErrorEntry =

@@ -63,7 +63,7 @@ type internal CommandEnv =
         /// analysis (`IndexAtRun`).
         ShadowSelections:
             int
-                -> FsHotWatch.ReferencesShadowReport.TestPruneRequest
+                -> FsHotWatch.ReferencesShadowJson.TestPruneRequest
                 -> FsHotWatch.ReferencesShadowReport.SelectionsAnswer
     }
 
@@ -604,24 +604,22 @@ let internal pluginCommands (env: CommandEnv) =
     let queries = env.Queries
 
     let commands =
-        [ FsHotWatch.ReferencesShadowReport.TestPruneCommand,
+        [ FsHotWatch.ReferencesShadowJson.TestPruneCommand,
           PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (args: string array) ->
               async {
                   match
                       args
                       |> Array.tryHead
-                      |> Option.bind FsHotWatch.ReferencesShadowReport.TestPruneRequest.tryOfJson
+                      |> Option.bind FsHotWatch.ReferencesShadowJson.TestPruneRequest.tryOfJson
                   with
                   | Some request ->
                       let pending = state.PendingAnalysis |> Map.toSeq |> Seq.sumBy (snd >> List.length)
 
                       return
-                          FsHotWatch.ReferencesShadowReport.SelectionsReply.toJson (
-                              env.ShadowSelections pending request
-                          )
-                  | None -> return invalidArg "args" "expects a ReferencesShadowReport.TestPruneRequest"
+                          FsHotWatch.ReferencesShadowJson.SelectionsReply.toJson (env.ShadowSelections pending request)
+                  | None -> return invalidArg "args" "expects a ReferencesShadowJson.TestPruneRequest"
               })
-          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SelectionsSchema
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowJson.SelectionsSchema
 
           "affected-tests",
           PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (_args: string array) ->

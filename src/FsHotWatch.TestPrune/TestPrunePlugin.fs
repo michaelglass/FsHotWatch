@@ -474,7 +474,7 @@ let internal createWithEvidenceAndQueries
     // copy S' needs is made under the system temporary directory, named for the run, and deleted.
     let shadowSelections
         (pendingAnalyses: int)
-        (request: FsHotWatch.ReferencesShadowReport.TestPruneRequest)
+        (request: FsHotWatch.ReferencesShadowJson.TestPruneRequest)
         : FsHotWatch.ReferencesShadowReport.SelectionsAnswer =
         let current = ReceiptInputTree.readTree repoRoot |> Option.map _.Identity
 

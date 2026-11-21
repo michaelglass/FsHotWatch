@@ -1020,7 +1020,7 @@ let toJson (r: Report) : string =
               "referencesShadow",
               arr (
                   r.ReferencesShadow
-                  |> List.map (fun s -> JsonNode.Parse(FsHotWatch.ReferencesShadowReport.Summary.toJson s))
+                  |> List.map (fun s -> JsonNode.Parse(FsHotWatch.ReferencesShadowJson.Summary.toJson s))
               )
               "referencesShadowSpotChecks",
               obj

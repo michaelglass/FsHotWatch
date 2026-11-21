@@ -5885,9 +5885,9 @@ module Daemon =
                     match nightly with
                     | FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost _ ->
                         host.RegisterHostCommand(
-                            ReferencesShadowReport.ServableCommand,
-                            Plugin.ReplySchema.Typed ReferencesShadowReport.ServableSchema,
-                            fun _ -> async { return ReferencesShadowReport.Servable.toJson pipeline.ServableFiles }
+                            ReferencesShadowJson.ServableCommand,
+                            Plugin.ReplySchema.Typed ReferencesShadowJson.ServableSchema,
+                            fun _ -> async { return ReferencesShadowJson.Servable.toJson pipeline.ServableFiles }
                         )
                     | FsHotWatch.InMemoryCheckCache.NightlyShadow.Off -> ()
             | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.Off
