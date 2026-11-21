@@ -194,7 +194,15 @@ let compare
                 match send TestPruneCommand (TestPruneRequest.toJson request) with
                 | Some reply ->
                     match SelectionsReply.tryOfJson reply with
-                    | Some selections -> TestPruneSection.Compared(compareTests selections (rows ()))
+                    | Some(SelectionsAnswer.Selected selections) ->
+                        TestPruneSection.Compared(compareTests selections (rows ()))
+                    // Loud in the report, silent in the gate: the confirm already published its verdict.
+                    | Some(SelectionsAnswer.Refused reason) ->
+                        Logging.warn
+                            "references-shadow"
+                            $"test-prune refused S', the comparison is invalid: %s{reason}"
+
+                        TestPruneSection.Invalid reason
                     | None -> invalidOp $"`%s{TestPruneCommand}` answered something that is not selections"
                 | None -> TestPruneSection.NotCompared "no test-prune plugin"
 

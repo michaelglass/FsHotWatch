@@ -58,9 +58,13 @@ type internal CommandEnv =
         /// The impact queries the plugin runs against its index.
         Queries: ImpactQueries
         BaselineInvalidReason: VerificationDebt -> string option
-        /// AUTOMATION-1816 step 2b: S and S' for a nightly's request (`ReferencesShadowSelection`).
+        /// AUTOMATION-1816 step 2b: S and S' for a nightly's request (`ReferencesShadowSelection`),
+        /// given how many analyses are pending a flush; refused unless the index holds this run's
+        /// analysis (`IndexAtRun`).
         ShadowSelections:
-            FsHotWatch.ReferencesShadowReport.TestPruneRequest -> FsHotWatch.ReferencesShadowReport.Selections
+            int
+                -> FsHotWatch.ReferencesShadowReport.TestPruneRequest
+                -> FsHotWatch.ReferencesShadowReport.SelectionsAnswer
     }
 
 /// The `run-tests` request: a forced run of the projects and filter it names, answered once the run completes.
@@ -601,7 +605,7 @@ let internal pluginCommands (env: CommandEnv) =
 
     let commands =
         [ FsHotWatch.ReferencesShadowReport.TestPruneCommand,
-          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (_state: TestPruneState) (args: string array) ->
+          PluginCommand.Observe(fun (_ctx: CommandReadCtx) (state: TestPruneState) (args: string array) ->
               async {
                   match
                       args
@@ -609,7 +613,12 @@ let internal pluginCommands (env: CommandEnv) =
                       |> Option.bind FsHotWatch.ReferencesShadowReport.TestPruneRequest.tryOfJson
                   with
                   | Some request ->
-                      return FsHotWatch.ReferencesShadowReport.SelectionsReply.toJson (env.ShadowSelections request)
+                      let pending = state.PendingAnalysis |> Map.toSeq |> Seq.sumBy (snd >> List.length)
+
+                      return
+                          FsHotWatch.ReferencesShadowReport.SelectionsReply.toJson (
+                              env.ShadowSelections pending request
+                          )
                   | None -> return invalidArg "args" "expects a ReferencesShadowReport.TestPruneRequest"
               })
           |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.SelectionsSchema

@@ -705,6 +705,8 @@ let private referencesShadowText (result: FsHotWatch.ReferencesShadowReport.Summ
             match c.TestPrune with
             | FsHotWatch.ReferencesShadowReport.TestPruneSummary.NotCompared reason ->
                 $"test-prune not compared (%s{reason})"
+            | FsHotWatch.ReferencesShadowReport.TestPruneSummary.Invalid reason ->
+                $"test-prune INVALID, S' refused (%s{reason})"
             | FsHotWatch.ReferencesShadowReport.TestPruneSummary.Compared tp ->
                 let copy =
                     match tp.ImpactDbCopy with

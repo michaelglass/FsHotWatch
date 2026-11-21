@@ -82,6 +82,12 @@ let private fixture (dir: string) (stale: AnalysisResult option) =
 
     root, db, dbPath, (store :> OutcomeRecords.IOutcomeStore)
 
+/// The premise held: sealed at the tree on disk, nothing pending (`IndexAtRun`).
+let private atRun =
+    match IndexAtRun.ofSeal (Some "tree") (Some "tree") 0 with
+    | Ok atRun -> atRun
+    | Error reason -> failwith reason
+
 let private row (test: string) (watermark: TestOutcome) (nightly: TestOutcome) : TestRow =
     { Test = test
       Watermark = watermark
@@ -104,7 +110,7 @@ let ``a reused analysis that drops an edge puts T in S but not S-prime, on a cop
             @>
 
         let copyDir = Path.Combine(dir, "run-tmp", "copy")
-        let selections = selections db dbPath copyDir changed [ reused ]
+        let selections = selections atRun db dbPath copyDir changed [ reused ]
 
         test <@ selections.S = set [ "Tests.T"; "Tests.U" ] @>
         test <@ selections.SPrime = set [ "Tests.U" ] @>
@@ -165,7 +171,7 @@ let ``no differing analysis copies nothing, and an unreadable one is unverifiabl
         test <@ same = ReusedAnalysis.Same @>
 
         let copyDir = Path.Combine(dir, "copy")
-        let selections = selections db dbPath copyDir changed [ reused; same ]
+        let selections = selections atRun db dbPath copyDir changed [ reused; same ]
         test <@ selections.SPrime = selections.S @>
         test <@ selections.Copy = ImpactDbCopy.NotCopied @>
         test <@ selections.UnverifiableAnalyses = 1 && selections.DifferingAnalyses = 0 @>
@@ -221,7 +227,7 @@ let ``a stale analysis changing which symbols count as changed changes S-prime``
             @>
 
         let copyDir = Path.Combine(dir, "copy")
-        let selections = selections db dbPath copyDir [ "Lib.f" ] [ reused ]
+        let selections = selections atRun db dbPath copyDir [ "Lib.f" ] [ reused ]
 
         test <@ selections.S = set [ "Tests.T" ] @>
         test <@ selections.SPrime = set [ "Tests.U" ] @>
@@ -319,7 +325,9 @@ let ``with a third version in the index the attributable set is a superset of th
                     File = "src/Lib.fs"
                     Project = "src/Lib.fsproj" }
 
-        let computed = selections db dbPath (Path.Combine(dir, "copy")) changed [ reused ]
+        let computed =
+            selections atRun db dbPath (Path.Combine(dir, "copy")) changed [ reused ]
+
         let exact = { computed with SPrime = sPrimeExact }
 
         let everyTestFails =
@@ -372,7 +380,10 @@ let ``an empty C selects nothing in S or S-prime`` () =
     withTempDir "refshadow-selection-empty" (fun dir ->
         let root, db, dbPath, store = fixture dir (Some(testsAnalysis false))
         let reused = reusedAnalysisOf store root (db.GetFileKeys()) servable
-        let selections = selections db dbPath (Path.Combine(dir, "copy")) [] [ reused ]
+
+        let selections =
+            selections atRun db dbPath (Path.Combine(dir, "copy")) [] [ reused ]
+
         test <@ selections.S.IsEmpty && selections.SPrime.IsEmpty @>
         test <@ selections.DifferingAnalyses = 1 @>)
 
@@ -393,7 +404,9 @@ let ``computing S-prime leaves the index the gate selects from exactly as it was
 
         let before = gate ()
         let reused = reusedAnalysisOf store root (db.GetFileKeys()) servable
-        let shadow = selections db dbPath (Path.Combine(dir, "copy")) changed [ reused ]
+
+        let shadow =
+            selections atRun db dbPath (Path.Combine(dir, "copy")) changed [ reused ]
         // The shadow did substitute: S′ lost T.
         test <@ shadow.SPrime <> shadow.S @>
         test <@ gate () = before @>)
@@ -401,11 +414,17 @@ let ``computing S-prime leaves the index the gate selects from exactly as it was
 /// The plugin answers the nightly's request through its own command: C selected over its index.
 /// A servable file gone from disk since the scan named it is unverifiable, not a failure of the
 /// request (it threw, and the report for the whole run was lost).
+///
+/// S′ stands on the index holding this run's analysis (`IndexAtRun`): asked before any cohort has
+/// sealed the index, or after the tree moved past the seal, the plugin refuses and says why.
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``the test-prune plugin answers the nightly's request through its command`` () =
+let ``the test-prune plugin answers the nightly's request through its command, only over a sealed index`` () =
     withTempDir "refshadow-selection-command" (fun dir ->
         let dbPath = Path.Combine(dir, "tp.db")
         let database = Database.create dbPath
+        // Under a discovery root, so it is an entry of the tree the seal names.
+        let sourceDir = Directory.CreateDirectory(Path.Combine(dir, "src")).FullName
+        File.WriteAllText(Path.Combine(sourceDir, "Lib.fs"), "module Lib\nlet foo () = 1\n")
 
         FsHotWatch.Tests.TestPrunePluginTestSupport.PendingQueueHelpers.seedCoveredSymbol
             database
@@ -415,7 +434,7 @@ let ``the test-prune plugin answers the nightly's request through its command`` 
             "P1Tests"
             "fooTest"
 
-        let host = FsHotWatch.PluginHost.PluginHost.create (Unchecked.defaultof<_>) dir
+        let host = createModelHost (Unchecked.defaultof<_>) dir
 
         host.RegisterHandler(FsHotWatch.TestPrune.TestPrunePlugin.create dbPath dir (Some []) None None None None [])
 
@@ -425,16 +444,51 @@ let ``the test-prune plugin answers the nightly's request through its command`` 
                   Changed = [ "Lib.foo" ]
                   Files = [ servable ] }
 
-            let reply =
+            let ask () =
                 host.RunCommand(TestPruneCommand, [| TestPruneRequest.toJson request |])
                 |> Async.RunSynchronously
                 |> Option.bind SelectionsReply.tryOfJson
 
-            match reply with
-            | Some selections ->
+            let refusedBecause (needle: string) =
+                match ask () with
+                | Some(SelectionsAnswer.Refused reason) -> reason.Contains needle
+                | other -> failwith $"expected a refusal naming `%s{needle}`, got %A{other}"
+
+            // No cohort has sealed the index: S′ would diff against rows no run vouches for.
+            test <@ refusedBecause "not sealed" @>
+
+            FsHotWatch.Tests.TestPrunePluginTestSupport.emitBatchAndQuiesce host []
+
+            match ask () with
+            | Some(SelectionsAnswer.Selected selections) ->
                 test <@ selections.S = set [ "P1Tests.fooTest" ] && selections.SPrime = selections.S @>
                 test <@ selections.UnverifiableAnalyses = 1 && selections.DifferingAnalyses = 0 @>
                 test <@ selections.Copy = ImpactDbCopy.NotCopied @>
-            | None -> failwith "the test-prune plugin did not answer the request"
+            | other -> failwith $"a sealed index at the tree on disk answers selections, got %A{other}"
+
+            // The tree moves past the seal: the index no longer describes the tree the run saw.
+            File.WriteAllText(Path.Combine(sourceDir, "Lib.fs"), "module Lib\nlet foo () = 2\n")
+            test <@ refusedBecause "sealed at tree" @>
         finally
             host.Teardown())
+
+/// Each part of S′'s premise, refused with its own reason; only a seal at the tree on disk with
+/// nothing pending a flush is a witness.
+[<Fact>]
+let ``the premise of S-prime is a seal at the tree on disk with nothing pending`` () =
+    let reasonOf (result: Result<IndexAtRun, string>) : string =
+        match result with
+        | Error reason -> reason
+        | Ok atRun -> failwith $"expected a refusal, got a witness at %s{atRun.Tree}"
+
+    test <@ (reasonOf (IndexAtRun.ofSeal None (Some "t1") 0)).Contains "not sealed" @>
+    test <@ (reasonOf (IndexAtRun.ofSeal (Some "t1") None 0)).Contains "could not be read" @>
+
+    test
+        <@ (reasonOf (IndexAtRun.ofSeal (Some "t1") (Some "t2") 0)).Contains "sealed at tree t1, but the tree is now t2" @>
+
+    test <@ (reasonOf (IndexAtRun.ofSeal (Some "t1") (Some "t1") 3)).Contains "3 analyses are pending" @>
+
+    match IndexAtRun.ofSeal (Some "t1") (Some "t1") 0 with
+    | Ok atRun -> test <@ atRun.Tree = "t1" @>
+    | Error reason -> failwith reason

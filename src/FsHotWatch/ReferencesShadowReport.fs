@@ -396,6 +396,14 @@ type Selections =
         Copy: ImpactDbCopy
     }
 
+/// What test-prune answers a nightly's request. S' diffs the reused analyses against the rows
+/// the impact index holds, so it means something only when those rows are THIS run's analysis.
+[<RequireQualifiedAccess>]
+type SelectionsAnswer =
+    | Selected of Selections
+    /// The index did not hold this run's analysis when asked, so S' was not computed: why.
+    | Refused of reason: string
+
 type TestPruneComparison =
     {
         /// Shadow-servable files whose reused analysis differs from the nightly's.
@@ -465,6 +473,9 @@ type TestPruneSection =
     | Compared of TestPruneComparison
     /// Why S and S′ could not be computed (no watermark run, no test-prune plugin).
     | NotCompared of reason: string
+    /// S′ was refused because its premise did not hold (the impact index did not hold this
+    /// run's analysis): a defect signal, unlike `NotCompared`, and never a gate failure.
+    | Invalid of reason: string
 
 // --- the report --------------------------------------------------------------------------
 
@@ -517,6 +528,7 @@ type TestPruneCounts =
 type TestPruneSummary =
     | Compared of TestPruneCounts
     | NotCompared of reason: string
+    | Invalid of reason: string
 
 type SpotCheckSummary =
     { Seed: int
@@ -664,6 +676,9 @@ module private Write =
         | TestPruneSection.NotCompared reason ->
             o["result"] <- "notCompared"
             o["reason"] <- reason
+        | TestPruneSection.Invalid reason ->
+            o["result"] <- "invalid"
+            o["reason"] <- reason
         | TestPruneSection.Compared tp ->
             o["result"] <- "compared"
             o["differingAnalyses"] <- tp.DifferingAnalyses
@@ -791,6 +806,7 @@ module private Read =
     let testPrune (e: JsonElement) : TestPruneSection =
         match str e "result" with
         | "notCompared" -> TestPruneSection.NotCompared(str e "reason")
+        | "invalid" -> TestPruneSection.Invalid(str e "reason")
         | "compared" ->
             TestPruneSection.Compared
                 { DifferingAnalyses = int e "differingAnalyses"
@@ -873,6 +889,7 @@ module Summary =
                       TestPrune =
                         match c.TestPrune with
                         | TestPruneSection.NotCompared reason -> TestPruneSummary.NotCompared reason
+                        | TestPruneSection.Invalid reason -> TestPruneSummary.Invalid reason
                         | TestPruneSection.Compared tp ->
                             TestPruneSummary.Compared
                                 { DifferingAnalyses = tp.DifferingAnalyses
@@ -902,6 +919,9 @@ module Summary =
             match c.TestPrune with
             | TestPruneSummary.NotCompared reason ->
                 tp["result"] <- "notCompared"
+                tp["reason"] <- reason
+            | TestPruneSummary.Invalid reason ->
+                tp["result"] <- "invalid"
                 tp["reason"] <- reason
             | TestPruneSummary.Compared t ->
                 tp["result"] <- "compared"
@@ -934,6 +954,7 @@ module Summary =
                           TestPrune =
                             match Read.str tp "result" with
                             | "notCompared" -> TestPruneSummary.NotCompared(Read.str tp "reason")
+                            | "invalid" -> TestPruneSummary.Invalid(Read.str tp "reason")
                             | "compared" ->
                                 TestPruneSummary.Compared
                                     { DifferingAnalyses = Read.int tp "differingAnalyses"
@@ -1085,7 +1106,7 @@ let TestPruneRequestSchema = "fshw-references-shadow-test-prune-request-v1"
 
 /// `SelectionsReply.toJson`'s schema.
 [<Literal>]
-let SelectionsSchema = "fshw-references-shadow-selections-v1"
+let SelectionsSchema = "fshw-references-shadow-selections-v2"
 
 /// What the test-prune plugin is asked: the run (whose temporary directory holds the impact-DB
 /// copy), C, and the servable files.
@@ -1116,26 +1137,39 @@ module SelectionsReply =
     let private names (set: Set<string>) =
         Write.array (set |> Set.toList |> List.map (fun s -> JsonValue.Create s :> JsonNode))
 
-    let toJson (selections: Selections) : string =
+    let toJson (answer: SelectionsAnswer) : string =
         let o = JsonObject()
         o["schema"] <- SelectionsSchema
-        o["s"] <- names selections.S
-        o["sPrime"] <- names selections.SPrime
-        o["differingAnalyses"] <- selections.DifferingAnalyses
-        o["unverifiableAnalyses"] <- selections.UnverifiableAnalyses
-        Write.impactDbCopy o selections.Copy
+
+        match answer with
+        | SelectionsAnswer.Refused reason ->
+            o["result"] <- "refused"
+            o["reason"] <- reason
+        | SelectionsAnswer.Selected selections ->
+            o["result"] <- "selected"
+            o["s"] <- names selections.S
+            o["sPrime"] <- names selections.SPrime
+            o["differingAnalyses"] <- selections.DifferingAnalyses
+            o["unverifiableAnalyses"] <- selections.UnverifiableAnalyses
+            Write.impactDbCopy o selections.Copy
+
         o.ToJsonString()
 
-    let tryOfJson (text: string) : Selections option =
+    let tryOfJson (text: string) : SelectionsAnswer option =
         Read.document SelectionsSchema text (fun root ->
             let names (name: string) =
                 Read.items root name |> List.map (fun e -> e.ToString()) |> Set.ofList
 
-            { S = names "s"
-              SPrime = names "sPrime"
-              DifferingAnalyses = Read.int root "differingAnalyses"
-              UnverifiableAnalyses = Read.int root "unverifiableAnalyses"
-              Copy = Read.impactDbCopy root })
+            match Read.str root "result" with
+            | "refused" -> SelectionsAnswer.Refused(Read.str root "reason")
+            | "selected" ->
+                SelectionsAnswer.Selected
+                    { S = names "s"
+                      SPrime = names "sPrime"
+                      DifferingAnalyses = Read.int root "differingAnalyses"
+                      UnverifiableAnalyses = Read.int root "unverifiableAnalyses"
+                      Copy = Read.impactDbCopy root }
+            | other -> raise (MalformedException $"selections result %s{other}"))
 
 // --- files -------------------------------------------------------------------------------
 

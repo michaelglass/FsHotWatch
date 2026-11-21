@@ -25,6 +25,10 @@ let private nothingBefore =
 let private askNothing: ScopeCommands.Send =
     fun name _ -> failwith $"the daemon was asked `%s{name}`"
 
+/// test-prune's answer when the index held this run's analysis.
+let private selectedReply (selections: Selections) =
+    SelectionsReply.toJson (SelectionsAnswer.Selected selections)
+
 let private onLandHost =
     FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost "land-box"
 
@@ -111,7 +115,7 @@ let ``on the land host each plugin is asked about the servable files and the rep
                     test <@ (TestPruneRequest.tryOfJson args |> Option.map _.Changed) = Some [ "Lib.f" ] @>
 
                     Some(
-                        SelectionsReply.toJson
+                        selectedReply
                             { S = set [ "T" ]
                               SPrime = Set.empty
                               DifferingAnalyses = 1
@@ -151,7 +155,8 @@ let ``on the land host each plugin is asked about the servable files and the rep
             match counts.TestPrune with
             | TestPruneSummary.Compared tp ->
                 test <@ tp.Attributable = 1 && tp.ImpactDbCopy = ImpactDbCopy.Copied(4096L, 3L) @>
-            | TestPruneSummary.NotCompared why -> failwith why
+            | TestPruneSummary.NotCompared why
+            | TestPruneSummary.Invalid why -> failwith why
         | other -> failwith $"expected one compared summary, got %A{other}"
 
         test <@ asked |> Seq.contains LintCommand @>
@@ -426,7 +431,7 @@ let private answering (asked: Collections.Generic.List<string>) : ScopeCommands.
             )
         | n when n = TestPruneCommand ->
             Some(
-                SelectionsReply.toJson
+                selectedReply
                     { S = set [ "M.T" ]
                       SPrime = Set.empty
                       DifferingAnalyses = 1
@@ -490,7 +495,8 @@ let ``a fresh confirm that graded a run on the land host files that run's report
                 match counts.TestPrune with
                 // M.T passed in the watermark run and failed here, in S and not S′: attributable.
                 | TestPruneSummary.Compared tp -> test <@ tp.Attributable = 1 && tp.SelectorMiss = 0 @>
-                | TestPruneSummary.NotCompared why -> failwith why
+                | TestPruneSummary.NotCompared why
+                | TestPruneSummary.Invalid why -> failwith why
             | SummaryResult.HostMismatch _ -> failwith "expected a comparison"
         | other -> failwith $"expected one summary, got %A{other}")
 
@@ -616,3 +622,41 @@ let ``the nightly shadow on or off, the confirm's exit code, verdict and ledgers
             File.ReadAllText(FsHotWatch.TestPrune.PendingVerification.sidecarPath repoRoot))
 
     test <@ confirm onLandHost = confirm FsHotWatch.InMemoryCheckCache.NightlyShadow.Off @>
+
+/// test-prune refusing S′ (its index did not hold this run's analysis) marks the comparison
+/// invalid with the reason, loudly in the report; the confirm's exit code is untouched.
+[<Fact>]
+let ``a refused S-prime files an invalid test-prune comparison and keeps the run's exit code`` () =
+    withTempDir "refshadow-trigger-refused" (fun repoRoot ->
+        writeVerdict repoRoot (Some BaselineFixtures.runId) (Verdict.Green BaselineFixtures.baseline)
+        let asked = Collections.Generic.List<string>()
+        let reason = "the impact index is not sealed"
+
+        let send: ScopeCommands.Send =
+            fun name args ->
+                match name with
+                | n when n = TestPruneCommand ->
+                    asked.Add name
+                    Some(SelectionsReply.toJson (SelectionsAnswer.Refused reason))
+                | _ -> answering asked name args
+
+        let exitCode =
+            aroundConfirm
+                repoRoot
+                onLandHost
+                "land-box"
+                CheckVerdict.Freshness.RequireNewRun
+                send
+                (fun () -> false)
+                (fun () ->
+                    writeVerdict repoRoot (Some runId) (Verdict.Incomplete "fixture")
+                    1)
+
+        test <@ exitCode = 1 @>
+
+        match readSummaries repoRoot with
+        | [ { Result = SummaryResult.Compared counts } ] ->
+            test <@ counts.TestPrune = TestPruneSummary.Invalid reason @>
+            // The other plugins are still compared.
+            test <@ counts.Analyzers.Equal = 1 @>
+        | other -> failwith $"expected one compared summary, got %A{other}")

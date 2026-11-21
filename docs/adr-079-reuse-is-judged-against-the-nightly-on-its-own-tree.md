@@ -58,3 +58,9 @@ compare. Rejected:
   unverifiable, per plugin.
 - Test-prune sees only tests the nightly ran, and a stale dependency edge that matters only for a
   change set other than the nightly's is invisible.
+- Test-prune's S′ diffs each reused analysis against the rows the impact index holds for its file,
+  so it is valid only when those rows are the nightly's own analysis. That premise is a value:
+  S′ takes an `IndexAtRun` witness, built only when the index is sealed (no flush has written rows
+  since a cohort sealed it), at the tree on disk now, with nothing pending a flush. Otherwise
+  test-prune refuses, and the report files the test-prune comparison as `invalid` with the reason:
+  loud in the report, never a gate failure.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat!: test-prune may refuse S' (AUTOMATION-1816 step 2b). `SelectionsAnswer` is `Selected of Selections` or
+  `Refused of reason`, and `SelectionsReply` speaks it (schema `fshw-references-shadow-selections-v2`, `"result"`).
+  A refusal files the test-prune comparison as `TestPruneSection.Invalid` / `TestPruneSummary.Invalid` with its
+  reason (`"result": "invalid"` in the report and summary): a defect signal, apart from `NotCompared`, and never a
+  gate failure. **Breaking:** `SelectionsReply.toJson` takes and `tryOfJson` returns a `SelectionsAnswer`.
+
 - feat!: the nightly shadow's SPOT-CHECK of `sameKey` files (AUTOMATION-1816 step 2b). `ReferencesShadowReport` gains
   `SpotCheckSize` (50), `Recheck` (a live FCS check, never from a filed record), `SpotOutcome` (`Equal`, `Mismatch`
   of cached and recomputed findings, `NotRecomputed` with why), `SpotChecks` (the seed and each plugin's sampled files
