@@ -15,7 +15,12 @@ open FSharpLint.Application
 let LintTimeoutDefaultSec = 120
 
 type LintState =
-    { WarningsByFile: Map<AbsFilePath, string list> }
+    {
+        WarningsByFile: Map<AbsFilePath, string list>
+        /// Each file's findings as the ledger holds them, by the same rule as `WarningsByFile`:
+        /// what the nightly shadow compares reuse's answer with (AUTOMATION-1816 step 2b).
+        FindingsByFile: Map<AbsFilePath, ErrorEntry list>
+    }
 
     // Out-of-repo compile items are never linted (see the `FileChecked` arm).
     interface ISkipsOutOfRepoFiles
@@ -27,7 +32,8 @@ type LintState =
         member this.Replayed _ currentModel result analysis =
             match analysis with
             | Result.Ok findings when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
-                { WarningsByFile = this.WarningsByFile |> Map.add result.File (findings |> List.map _.Message) }
+                { WarningsByFile = this.WarningsByFile |> Map.add result.File (findings |> List.map _.Message)
+                  FindingsByFile = this.FindingsByFile |> Map.add result.File findings }
             | Result.Ok _
             | Result.Error _ -> this
 
@@ -155,12 +161,93 @@ let private ignoredBy (configPath: string) : string -> bool =
         fun file -> FSharpLint.Framework.Configuration.IgnoreFiles.shouldFileBeIgnored parsed (IO.Path.GetFullPath file)
     | None -> fun _ -> false
 
+/// The labelled inputs of lint's cache key for one check, BEFORE the two that describe what the
+/// check resolved (`used-signatures`, `fcs-signature`), in the order `merkleCacheKey` folds them.
+type private KeyBase = (string * string) list
+
+/// Lint's cache key: `keyBase`, then the check's used signatures and FCS signature. The one
+/// definition both the live key and the key reuse would have read are made by.
+let private keyOf (keyBase: KeyBase) (usedSignatures: string) (fcsSignature: string) : ContentHash =
+    FsHotWatch.TaskCache.merkleCacheKey (
+        keyBase
+        @ [
+            // A typed rule (NoPartialFunctions, say) reads the types this
+            // file resolved in other files. Neither the source nor the
+            // file's own diagnostics move when one of those changes shape
+            // and the file still compiles.
+            "used-signatures", usedSignatures
+            // The file's own diagnostics: a check that newly fails or
+            // recovers changes what the typed tree holds.
+            "fcs-signature", fcsSignature ]
+    )
+
+/// Each file's latest key base, kept only for the nightly shadow, with what reads the entries
+/// lint's writes displaced.
+[<NoComparison; NoEquality>]
+type private ReuseKeyBases =
+    | NotKept
+    | Kept of
+        bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase> *
+        displaced: FsHotWatch.TaskCache.DisplacedEntries
+
+/// AUTOMATION-1816 step 2b: what reuse would have handed lint for `servable`, read from the entry
+/// lint's own write displaced. Reuse would have read the key built from this run's key base and
+/// the record's signatures; the displaced entry answers only when it was filed under exactly that
+/// key. Any other key, or nothing displaced, is unverifiable, never equal.
+let private reusedFor
+    (repoRoot: string)
+    (bases: Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase>)
+    (displaced: FsHotWatch.TaskCache.DisplacedEntries)
+    (servable: FsHotWatch.ReferencesShadowReport.ServableFile)
+    : FsHotWatch.ReferencesShadowReport.Reused =
+    let file = IO.Path.Combine(repoRoot, servable.File)
+
+    let keyBase =
+        match bases.TryGetValue(AbsFilePath.create file) with
+        | true, keyBase -> Some keyBase
+        | false, _ -> None
+
+    match keyBase, servable.UsedSignatures with
+    | Some keyBase, FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Described used ->
+        let reusedKey = displaced.Stored(keyOf keyBase used servable.FcsSignature)
+
+        let compositeKey: FsHotWatch.TaskCache.CompositeKey =
+            { Plugin = "lint"
+              File =
+                Some(
+                    FsHotWatch.CachePathIdentity.ofPath repoRoot file
+                    |> FsHotWatch.CachePathIdentity.toKey
+                ) }
+
+        match displaced.Displaced compositeKey with
+        | [] ->
+            FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
+                FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedEntry
+        | entries ->
+            match entries |> List.tryFind (fun e -> e.Key = reusedKey) with
+            | Some entry ->
+                FsHotWatch.TaskCache.findingsFor file entry.Result
+                |> List.map FsHotWatch.ReferencesShadowReport.Finding.ofEntry
+                |> FsHotWatch.ReferencesShadowReport.Reused.Found
+            | None ->
+                FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
+                    FsHotWatch.ReferencesShadowReport.UnverifiableReason.DisplacedKeyDiffers
+    | None, _
+    | _, FsHotWatch.ReferencesShadowReport.UsedSignaturesKey.Undescribed ->
+        FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
+            FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedKey
+
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker. Cache key is
 /// content-merkle (file source, tool/config hashes, and the shape of every symbol the
 /// file's check resolved outside the file); jj commit_id is not
 /// consulted.
-let create
+///
+/// With `displacement` captured (the daemon's `cache.nightlyShadow`), lint keeps each file's key
+/// base and answers `references-shadow-lint` from the entries its writes displaced. That changes
+/// nothing it lints, reports, files or serves.
+let createWith
+    (displacement: FsHotWatch.TaskCache.DisplacementCapture)
     (repoRoot: string option)
     (lintConfigPath: string option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
@@ -201,6 +288,12 @@ let create
             loaded.Value <- Some(text, config)
             config
 
+    let reuseKeyBases =
+        match displacement with
+        | FsHotWatch.TaskCache.DisplacementCapture.Captured displaced ->
+            Kept(Collections.Concurrent.ConcurrentDictionary<AbsFilePath, KeyBase>(), displaced)
+        | FsHotWatch.TaskCache.DisplacementCapture.Off -> NotKept
+
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
         match event with
         | FileChecked r ->
@@ -208,7 +301,7 @@ let create
             // is read from or written to the cache.
             FsHotWatch.CacheInputs.usedSignaturesHash repoRoot r.ProjectOptions r.CheckResults
             |> Option.map (fun usedSignatures ->
-                FsHotWatch.TaskCache.merkleCacheKey
+                let keyBase: KeyBase =
                     [ "plugin-version", PluginCacheSalt
                       "tool", fsharpLintVersion
                       "config", (currentConfig ()).Hash
@@ -218,15 +311,13 @@ let create
                       // absolute path that used to be here was salt, and it was the
                       // only reason two workspaces could not share a lint result.
                       "file", FsHotWatch.CachePathIdentity.keyOf repoRoot (AbsFilePath.value r.File)
-                      "source", r.Source
-                      // A typed rule (NoPartialFunctions, say) reads the types this
-                      // file resolved in other files. Neither the source nor the
-                      // file's own diagnostics move when one of those changes shape
-                      // and the file still compiles.
-                      "used-signatures", usedSignatures
-                      // The file's own diagnostics: a check that newly fails or
-                      // recovers changes what the typed tree holds.
-                      "fcs-signature", FsHotWatch.CheckCache.fcsCheckSignature r ])
+                      "source", r.Source ]
+
+                match reuseKeyBases with
+                | Kept(bases, _) -> bases[r.File] <- keyBase
+                | NotKept -> ()
+
+                keyOf keyBase usedSignatures (FsHotWatch.CheckCache.fcsCheckSignature r))
         | _ -> None
 
 
@@ -271,7 +362,9 @@ let create
         | None -> lintFile result
 
     { Name = PluginName.create "lint"
-      Init = { WarningsByFile = Map.empty }
+      Init =
+        { WarningsByFile = Map.empty
+          FindingsByFile = Map.empty }
       Update =
         fun ctx state event ->
             async {
@@ -366,7 +459,9 @@ let create
 
                                         PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
-                                        let newState = { WarningsByFile = newWarnings }
+                                        let newState =
+                                            { WarningsByFile = newWarnings
+                                              FindingsByFile = state.FindingsByFile |> Map.add result.File entries }
 
                                         let totalIssues =
                                             newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
@@ -401,7 +496,50 @@ let create
                           { Files = current.Count
                             Warnings = count }
               })
-          |> PluginCommand.typed LintReplies.WarningsSchema ]
+          |> PluginCommand.typed LintReplies.WarningsSchema
+          // AUTOMATION-1816 step 2b: what reuse would have handed lint for each servable file
+          // (the request: `FsHotWatch.ReferencesShadowReport.Servable`), against what it found here.
+          FsHotWatch.ReferencesShadowReport.LintCommand,
+          PluginCommand.Observe(fun ctx state args ->
+              async {
+                  let servable =
+                      match
+                          args
+                          |> Array.tryHead
+                          |> Option.bind FsHotWatch.ReferencesShadowReport.Servable.tryOfJson
+                      with
+                      | Some servable -> servable
+                      | None ->
+                          invalidArg "args" "expects the servable files (FsHotWatch.ReferencesShadowReport.Servable)"
+
+                  let reused =
+                      match reuseKeyBases with
+                      | Kept(bases, displaced) -> reusedFor ctx.RepoRoot bases displaced
+                      | NotKept ->
+                          fun _ ->
+                              FsHotWatch.ReferencesShadowReport.Reused.Unverifiable
+                                  FsHotWatch.ReferencesShadowReport.UnverifiableReason.NoReusedKey
+
+                  let fresh (file: string) =
+                      state.FindingsByFile
+                      |> Map.tryFind (AbsFilePath.create (IO.Path.Combine(ctx.RepoRoot, file)))
+                      |> Option.defaultValue []
+
+                  return
+                      FsHotWatch.ReferencesShadowReport.PluginReply.toJson (
+                          FsHotWatch.ReferencesShadowReport.comparePlugin "lint" reused fresh servable
+                      )
+              })
+          |> PluginCommand.typed FsHotWatch.ReferencesShadowReport.PluginReplySchema ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = Some(fun _state event -> cacheKey event)
       Teardown = None }
+
+/// `createWith` with nothing captured: no nightly shadow.
+let create
+    (repoRoot: string option)
+    (lintConfigPath: string option)
+    (lintRunner: (FileCheckResult -> Lint.LintResult) option)
+    (timeoutSec: int option)
+    : PluginHandler<LintState, unit> =
+    createWith FsHotWatch.TaskCache.DisplacementCapture.Off repoRoot lintConfigPath lintRunner timeoutSec

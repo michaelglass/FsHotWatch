@@ -3735,7 +3735,10 @@ type Daemon
         // This session's snapshot epoch and manifest (ADR-045), shared with its change batches.
         snapshots: SnapshotEpoch.Ledger,
         // The test seam scans call before each publication (ADR-047).
-        beforeScanPublication: (FileCheckResult -> unit) ref
+        beforeScanPublication: (FileCheckResult -> unit) ref,
+        // What lint reads of the task-cache entries its writes displaced, for the nightly shadow
+        // (AUTOMATION-1816 step 2b; `DisplacementCapturingTaskCache`).
+        displacement: TaskCache.DisplacementCapture
     ) =
 
     // 0 until the first Dispose claims it. `Run`, `RunWithIpc` and the owner's `use` all
@@ -3861,6 +3864,10 @@ type Daemon
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
     member _.Host = host
+
+    /// What a plugin reads of the task-cache entries its writes displaced: captured with
+    /// `cache.nightlyShadow` on (AUTOMATION-1816 step 2b), off otherwise.
+    member _.Displacement = displacement
 
     /// The checker this daemon checks through. In a repository host, sessions of one
     /// checker configuration share it.
@@ -5727,9 +5734,37 @@ module Daemon =
             // under another. One `dotnet --version` per process, not per task.
             let toolchain = FsHotWatch.DotnetToolchain.identity repoRoot
 
+            // AUTOMATION-1816 step 2b: with the nightly shadow on, lint's entries a fresh write
+            // displaces are kept with their keys (lint keeps one entry per file, so the one reuse
+            // would have read is gone once this run's lint writes). Below the toolchain scope, so
+            // the keys kept are the keys the store holds. Record only: nothing read or served moves.
+            let routed, displacement =
+                match opts.CheckCache with
+                | FsHotWatch.InMemoryCheckCache.CheckCacheSetup.On(_,
+                                                                   _,
+                                                                   _,
+                                                                   FsHotWatch.InMemoryCheckCache.ReferencesKey.Shadow(FsHotWatch.InMemoryCheckCache.NightlyShadow.OnLandHost _)) ->
+                    let entriesOf (compositeKey: FsHotWatch.TaskCache.CompositeKey) =
+                        match FsHotWatch.CacheResidency.of_ compositeKey.Plugin with
+                        | FsHotWatch.CacheResidency.Residency.SharedAcrossCheckouts ->
+                            stores.Shared.EntriesOf compositeKey
+                        | FsHotWatch.CacheResidency.Residency.WorkspaceLocal _ -> stores.Local.EntriesOf compositeKey
+
+                    let capturing =
+                        FsHotWatch.TaskCache.DisplacementCapturingTaskCache(
+                            stores.Routed,
+                            entriesOf,
+                            Set.ofList [ "lint" ]
+                        )
+
+                    capturing :> FsHotWatch.TaskCache.ITaskCache,
+                    FsHotWatch.TaskCache.DisplacementCapture.Captured
+                        { Displaced = capturing.Displaced
+                          Stored = FsHotWatch.TaskCache.scopeToToolchain toolchain }
+                | _ -> stores.Routed :> FsHotWatch.TaskCache.ITaskCache, FsHotWatch.TaskCache.DisplacementCapture.Off
+
             let taskCache =
-                FsHotWatch.TaskCache.ToolchainScopedTaskCache(stores.Routed, toolchain)
-                :> FsHotWatch.TaskCache.ITaskCache
+                FsHotWatch.TaskCache.ToolchainScopedTaskCache(routed, toolchain) :> FsHotWatch.TaskCache.ITaskCache
 
             Logging.info "task-cache" $"Task keys scoped to toolchain: %s{toolchain.Replace('\n', ' ')}"
             let stats = stores.Local.Stats
@@ -6242,7 +6277,8 @@ module Daemon =
                 (fun () -> vcsNotice.Value),
                 checker,
                 snapshots,
-                beforeScanPublication
+                beforeScanPublication,
+                displacement
             )
         with _ ->
             lifetime.Dispose()

@@ -84,6 +84,9 @@ type UnverifiableReason =
     /// Reuse would have read no key for the file: its record names no used signatures, or this
     /// run's plugin keyed no result for it (a file outside its scope).
     | NoReusedKey
+    /// The entry this run's write displaced was filed under another key than the reused one, so
+    /// it is not what reuse would have read (lint: its task cache keeps one entry per file).
+    | DisplacedKeyDiffers
 
 module UnverifiableReason =
     let token =
@@ -91,12 +94,14 @@ module UnverifiableReason =
         | UnverifiableReason.NoReusedEntry -> "no-reused-entry"
         | UnverifiableReason.ConfigChanged -> "config-changed"
         | UnverifiableReason.NoReusedKey -> "no-reused-key"
+        | UnverifiableReason.DisplacedKeyDiffers -> "displaced-key-differs"
 
     let tryParse =
         function
         | "no-reused-entry" -> Some UnverifiableReason.NoReusedEntry
         | "config-changed" -> Some UnverifiableReason.ConfigChanged
         | "no-reused-key" -> Some UnverifiableReason.NoReusedKey
+        | "displaced-key-differs" -> Some UnverifiableReason.DisplacedKeyDiffers
         | _ -> None
 
 /// What reuse would have handed a plugin for one file.

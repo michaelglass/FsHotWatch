@@ -398,6 +398,79 @@ type ToolchainScopedTaskCache(inner: ITaskCache, toolchain: string) =
         member _.ClearFile file = inner.ClearFile file
         member _.ClearPluginFile plugin file = inner.ClearPluginFile plugin file
 
+/// An entry a store holds, with the key it was filed under (the entry's own `CacheKey`).
+[<NoComparison>]
+type DisplacedEntry =
+    { Key: ContentHash
+      Result: TaskCacheResult }
+
+/// How many displaced entries are kept per plugin and file: the oldest goes first. A nightly
+/// daemon displaces each file's entry once; a long-lived one re-linting a file under new keys
+/// would otherwise grow without bound.
+[<Literal>]
+let DisplacedKeptPerFile = 4
+
+/// AUTOMATION-1816 step 2b: keeps, for the per-file entries of `plugins`, the entries a write
+/// displaces, WITH THEIR KEYS, so the nightly shadow can still read what reuse would have served
+/// after this run's own result replaced it. `entriesOf` lists the entries the store holds for
+/// one plugin and file (`FileTaskCache.EntriesOf`), which are exactly those a write under a new
+/// key deletes, so they are read BEFORE the write is handed on.
+///
+/// Record only: every answer and every write is `inner`'s, unchanged. Which plugin reads what it
+/// kept, and what it compares, is that plugin's business.
+type DisplacementCapturingTaskCache
+    (inner: ITaskCache, entriesOf: CompositeKey -> DisplacedEntry list, plugins: Set<string>) =
+    let kept = ConcurrentDictionary<CompositeKey, DisplacedEntry list>()
+
+    let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
+        match compositeKey.File with
+        | Some _ when plugins.Contains compositeKey.Plugin ->
+            match entriesOf compositeKey |> List.filter (fun e -> e.Key <> cacheKey) with
+            | [] -> ()
+            | displaced ->
+                kept.AddOrUpdate(
+                    compositeKey,
+                    displaced,
+                    fun _ prior -> displaced @ prior |> List.distinctBy _.Key |> List.truncate DisplacedKeptPerFile
+                )
+                |> ignore
+        | Some _
+        | None -> ()
+
+        inner.Set compositeKey cacheKey result
+
+    /// The entries writes to `compositeKey` displaced in this process, newest first.
+    member _.Displaced(compositeKey: CompositeKey) : DisplacedEntry list =
+        match kept.TryGetValue compositeKey with
+        | true, entries -> entries
+        | false, _ -> []
+
+    interface ITaskCache with
+        member _.TryGet compositeKey cacheKey = inner.TryGet compositeKey cacheKey
+        member _.Lookup compositeKey cacheKey = inner.Lookup compositeKey cacheKey
+        member _.Set compositeKey cacheKey result = set compositeKey cacheKey result
+        member _.Clear() = inner.Clear()
+        member _.ClearPlugin plugin = inner.ClearPlugin plugin
+        member _.ClearFile file = inner.ClearFile file
+        member _.ClearPluginFile plugin file = inner.ClearPluginFile plugin file
+
+/// What a plugin reads of the entries its writes displaced (`DisplacementCapturingTaskCache`).
+[<NoComparison; NoEquality>]
+type DisplacedEntries =
+    {
+        /// The entries writes to one plugin and file displaced, newest first.
+        Displaced: CompositeKey -> DisplacedEntry list
+        /// The key the store files a plugin's key under (`scopeToToolchain`): a displaced
+        /// entry's key is the stored one.
+        Stored: ContentHash -> ContentHash
+    }
+
+/// Whether the displaced entries are kept for the nightly shadow.
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type DisplacementCapture =
+    | Off
+    | Captured of DisplacedEntries
+
 /// Cache key: jj commit_id, salted per-event by `getSalt`. None for Custom events (uncacheable).
 /// Plugins whose cache validity depends on extra state beyond the commit (e.g. a config file
 /// whose edits don't change the commit) should salt the key with a hash of that state.
