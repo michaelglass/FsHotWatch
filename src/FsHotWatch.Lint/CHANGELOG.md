@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-## 0.7.0-alpha.46 - 2026-11-21
-
-- chore: rebuild to bundle updated dependencies
-
-
 - feat!: `createWith` takes a `LintPlugin.Shadow` (`Off`, or `On` with the displaced entries and a `Recheck`) in place
   of a `TaskCache.DisplacementCapture`. On, `references-shadow-lint-spot-check` lints each sampled `sameKey` file again on
   a live check, the task cache bypassed, against the findings this run served; nothing it lints is reported, filed or
@@ -20,6 +15,11 @@
   write displaced, compared only when that entry's key equals the key reuse would have read (this run's key base with
   the record's used and FCS signatures); a different key, or nothing displaced, is unverifiable, never equal.
   **Breaking:** `LintState` gains `FindingsByFile` (each file's findings, by the rule `WarningsByFile` follows).
+
+## 0.7.0-alpha.46 - 2026-11-21
+
+- chore: rebuild to bundle updated dependencies
+
 
 ## 0.7.0-alpha.45 - 2026-11-18
 

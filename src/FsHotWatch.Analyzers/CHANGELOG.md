@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-## 0.7.0-alpha.61 - 2026-11-21
-
-- chore: rebuild to bundle updated dependencies
-
-
 - feat!: `AnalyzeRecords.ReuseKeys.Kept` carries a `Recheck`; `references-shadow-analyzers-spot-check` analyses each
   sampled `sameKey` file again on a live check, records and task cache bypassed, against the findings this run served;
   nothing it analyses is reported, filed or served (AUTOMATION-1816 step 2b).
@@ -20,6 +15,11 @@
   what reuse would have handed it (the `analyze` record under the key rebuilt with the stored check's signatures)
   against what this run found: `equal`, `mismatch` (both lists) or `unverifiable`. Keeping the parts changes nothing the
   plugin reads, files or serves.
+
+## 0.7.0-alpha.61 - 2026-11-21
+
+- chore: rebuild to bundle updated dependencies
+
 
 ## 0.7.0-alpha.60 - 2026-11-18
 

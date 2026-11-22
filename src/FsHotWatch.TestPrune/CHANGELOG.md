@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-## 0.13.0-alpha.122 - 2026-11-21
-
-- chore: rebuild to bundle updated dependencies
-
-
 - feat: AUTOMATION-1816 step 2b. S' is computed only over an index that holds this run's analysis: `selections`
   takes an `IndexAtRun` witness, built only when the index is sealed (`IndexSeal`: a cohort sealed it and no flush has
   written rows since), at the tree on disk now, with no analysis pending a flush. Otherwise
@@ -26,6 +21,11 @@
   the differing reused analyses re-indexed), with how many analyses differed or could not be read. The copy is a SQLite
   backup under the system temporary directory, named for the run, deleted in a `finally`, its size and copy time in
   the reply; none is made when no analysis differs. The index the gate selects from is never written.
+
+## 0.13.0-alpha.122 - 2026-11-21
+
+- chore: rebuild to bundle updated dependencies
+
 
 ## 0.13.0-alpha.121 - 2026-11-21
 

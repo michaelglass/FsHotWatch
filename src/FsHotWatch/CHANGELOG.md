@@ -81,6 +81,8 @@
   per-workspace directory in once at start (each record dated by its file's last write, damaged files dropped) and
   deletes it.
 
+## 0.10.0-alpha.126 - 2026-11-21
+
 - fix!: the record audit judges an INDEX kind by its answer only (AUTOMATION-1841). `options-inputs` and
   `options-portable-inputs` are keyed by the request, not by content: each evaluation appends what that request read
   on the tree of the day, so an older record under the key describes an older tree. The audit compared every stored
