@@ -27,8 +27,9 @@ type CachedEvent =
 /// Per-file entries (composite key `File = Some _`) are keyed on ONE file's content,
 /// so they cannot testify to a whole-session claim — yet plugins build their status
 /// summaries from whole-session state (analyzers' `DiagnosticsByFile`, lint's
-/// `WarningsByFile`). So the `CachedFile*` variants carry no summary (replay derives
-/// one from the live ledger) and no timestamp (replay re-stamps `now`).
+/// `WarningsByFile`). So the `CachedFile*` variants carry no summary (replay asks the
+/// plugin for its own, `IFileReplayState.ReplaySummary`) and no timestamp (replay
+/// re-stamps `now`).
 ///
 /// Whole-run entries (`File = None`, e.g. BuildPlugin keyed on the full project-graph
 /// content hash) store a verdict that IS a pure function of the key, so `CachedRun*`
@@ -36,9 +37,9 @@ type CachedEvent =
 /// unrepresentable here by construction.
 [<NoComparison>]
 type CachedStatus =
-    /// Per-file completion: elapsed only — the summary is derived at replay.
+    /// Per-file completion: elapsed only — the plugin gives its summary at replay.
     | CachedFileCompleted of elapsed: System.TimeSpan
-    /// Per-file failure: the diagnosis and elapsed — the summary is derived at replay.
+    /// Per-file failure: the diagnosis and elapsed — the plugin gives its summary at replay.
     | CachedFileFailed of error: string * elapsed: System.TimeSpan
     /// Whole-run completion: the stored verdict is a pure function of the key.
     | CachedRunCompleted of verdict: FsHotWatch.Events.RunVerdict

@@ -899,6 +899,8 @@ type EarnedEvidence =
         }
 
     member this.RunId = this.Completion.RunId
+    /// What each project of the run that earned this found, by project name.
+    member this.Results = this.Completion.Results
     member this.Generation = this.ModelGeneration
     member this.FailureReasons = this.Refusals
 

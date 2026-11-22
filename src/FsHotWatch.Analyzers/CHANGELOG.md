@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a replayed analysis reports the analyzers' own summary (AUTOMATION-1836): `analyzed E files, replayed R from
+  cache, N findings (…), C analyzer crashes — analyzer set …`, the line a live run writes, instead of the framework's
+  ledger count.
+
 ## 0.7.0-alpha.62 - 2026-11-22
 
 - feat!: `AnalyzeRecords.ReuseKeys.Kept` carries a `Recheck`; `references-shadow-analyzers-spot-check` analyses each

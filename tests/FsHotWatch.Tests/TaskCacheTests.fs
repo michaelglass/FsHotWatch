@@ -425,7 +425,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
     host.RegisterHandler(handler)
     host.EmitFileChecked(dummyFileCheckResult "/src/A.fs")
 
-    waitUntil (fun () -> host.GetStatus("test-plugin") <> Some Idle) 12000
+    waitForQuiescent host 12000
 
     test <@ updateCallCount = 0 @>
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>

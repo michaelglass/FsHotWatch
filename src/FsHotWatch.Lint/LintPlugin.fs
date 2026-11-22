@@ -29,6 +29,12 @@ type LintState =
     // against the model published now is linted (see `notCurrent`), and a completed lint
     // replaces the file's warnings with the ones it reported. A failed one leaves them.
     interface IFileReplayState<LintState> with
+        // A live lint's words (`linted N files, M issues`), plus how this run met its files.
+        member this.ReplaySummary tally =
+            let issues = this.WarningsByFile |> Map.toList |> List.sumBy (snd >> List.length)
+
+            $"linted %d{this.WarningsByFile.Count} files, %d{issues} issues; %d{tally.Examined} examined, %d{tally.Replayed} replayed from cache"
+
         member this.Replayed _ currentModel result analysis =
             match analysis with
             | Result.Ok findings when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->

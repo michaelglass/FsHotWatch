@@ -13,7 +13,6 @@ let defaultServices: PluginHostServices =
       ReportErrors = fun _ _ _ -> ()
       ClearErrors = fun _ _ -> ()
       ClearPlugin = fun _ -> ()
-      GetPluginDiagnostics = fun _ -> Map.empty
       EmitBuildCompleted = fun _ -> ()
       EmitTestRunStarted = fun _ -> ()
       EmitTestProgress = fun _ -> ()

@@ -281,6 +281,7 @@
     <Compile Include="AnalyzerReloadTests.fs" />
     <Compile Include="AnalyzerFcsBandTests.fs" />
     <Compile Include="LintPluginTests.fs" />
+    <Compile Include="ReplayedSummaryTests.fs" />
     <Compile Include="LintConfigShapeTests.fs" />
     <Compile Include="FantomasToolTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />

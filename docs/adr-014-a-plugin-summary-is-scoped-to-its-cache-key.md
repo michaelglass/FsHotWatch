@@ -74,6 +74,31 @@ contract, using framework contracts that already existed.
   separately; it is a framework-wide property of the replay path, not a
   format-check one.
 
+## Amendment (2026-11-22, AUTOMATION-1836): the per-file summary is the plugin's own
+
+The per-file half, "the replay derives one from the live error ledger", wrote ONE summary
+for every plugin: `N findings (…); E files examined, R replayed from cache`. A warm
+test-prune replays its symbol analyses after its test run, and each replay's status
+replaced the test verdict with that line, so the verdict's test-prune entry read like a
+linter's and a replayed test result could not be told apart from no test result.
+
+The scope rule is unchanged (a per-file entry still stores no summary). What replaces the
+derivation: `IFileReplayState.ReplaySummary`, asked of the state the replay left, with the
+run's `FileReplayTally`. The framework adds only ` (cached)`; a state with no replayed
+summary gets no status from a completed per-file replay, and a failed one reports the
+failure the run stored. Analyzers and lint replay the words their live runs write;
+test-prune names the run its evidence rests on.
+
+Roads not taken:
+
+- **A ninth `PluginHandler` field for the replayed summary.** Rejected for the reason (a)
+  above was: about 235 handler literals, and the summary needs the state the replay
+  left, which `IFileReplayState` already receives.
+- **Keeping the ledger line as a fallback for states without `ReplaySummary`.** Rejected:
+  it is the very text that let one plugin read like another, kept for states that can
+  name nothing of their own. A replayed failure still reports, from its stored error, so
+  the fallback's removal cannot turn a red green.
+
 ## Related
 
 - Completes: the per-file cache-summary fix (`src/FsHotWatch/CHANGELOG.md`, 0.10.0-alpha.4).

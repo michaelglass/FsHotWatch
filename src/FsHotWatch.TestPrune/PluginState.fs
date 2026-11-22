@@ -513,6 +513,25 @@ type TestPruneState =
     // leave (AUTOMATION-1469). Keeping the entry made every later run re-report a parse
     // error the file no longer has. A failed replay, or one that left findings, keeps it.
     interface IFileReplayState<TestPruneState> with
+        // A replayed `FileChecked` is a symbol analysis served from cache, and its status
+        // becomes this plugin's line in the verdict. So it says what it replayed AND names
+        // the test run this daemon's evidence rests on, with that run's per-project
+        // tally: a replayed test result never reads like no test result (AUTOMATION-1836).
+        member this.ReplaySummary tally =
+            let tests =
+                match this.Earned with
+                | Some earned ->
+                    let runId = earned.RunId.ToString "N"
+                    let verdicts = earned.Results |> Map.toList |> List.map (snd >> TestResult.verdict)
+
+                    let count verdict =
+                        verdicts |> List.filter ((=) verdict) |> List.length
+
+                    $"tests: run %s{runId}, %d{count Verified} passed, %d{count Refuted} failed, %d{count NothingVerified} verified nothing in %d{verdicts.Length} projects"
+                | None -> "tests: no run completed in this daemon"
+
+            $"symbol analysis: %d{tally.Examined} files examined, %d{tally.Replayed} replayed from cache; %s{tests}"
+
         member this.Replayed suppressedCodes currentModel result analysis =
             if result.ModelGeneration.IsNone || result.ModelGeneration <> currentModel then
                 this

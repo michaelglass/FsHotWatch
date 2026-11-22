@@ -278,75 +278,6 @@ type AnalyzerSetLoad =
     /// run is red with `AnalyzerLoad.describeFcsRefusal` of these until a reload lifts it.
     | RefusedFcsMismatch of AnalyzerLoad.FcsMismatch * AnalyzerLoad.FcsMismatch list
 
-/// The ledger key a refused analyzer set reports under: one entry for the set, never
-/// one per file. Angle brackets mark it as no file (`PluginHost.PruneVanishedErrors`).
-[<Literal>]
-let FcsRefusalLedgerKey = "<analyzer-set>"
-
-type AnalyzersState =
-    {
-        /// Every entry this plugin reported to the ledger for each file: the analyzers'
-        /// findings and one Error finding per analyzer that crashed on the file.
-        DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
-        /// The analyzers that crashed on each file, replaced per file like
-        /// `DiagnosticsByFile` so a file that stops crashing drops out of the tally.
-        CrashesByFile: Map<AbsFilePath, AnalyzerCrash list>
-        /// The analyzer set as this handler loaded it at construction.
-        Load: AnalyzerSetLoad
-        RunAnalyzed: int
-        /// The inputs each file's `DiagnosticsByFile` entry was computed from — what
-        /// `fshw findings` compares with the disk before it trusts the entry. A file
-        /// whose latest analysis did not complete (timed out) has none.
-        AnalyzedByFile: Map<AbsFilePath, FsHotWatch.Analyzers.AnalyzerFindings.AnalyzedFile>
-        /// See `ReplayStamps`.
-        Stamps: ReplayStamps
-        /// See `AnalyzeRecordBook`.
-        Records: AnalyzeRecordBook
-    }
-
-    /// How many analyzers this handler loaded at construction: none from a refused set.
-    member this.LoadedCount: int =
-        match this.Load with
-        | AnalyzerSetLoad.Loaded byPath -> byPath |> List.sumBy snd
-        | AnalyzerSetLoad.RefusedFcsMismatch _ -> 0
-
-    // Out-of-repo compile items are never analyzed (see the `FileChecked` arm).
-    interface ISkipsOutOfRepoFiles
-
-    // AUTOMATION-1609, for `analyze` records: the task cache answers a file only once the
-    // store holds its record. A refusal runs `Update`, which analyses and files it.
-    interface IFileCacheReadGuard with
-        member this.MayReadFileCache result = this.Records.MayReadFileCache result
-
-    // AUTOMATION-1585: with records `on`, a replayed check whose analysis is filed is
-    // answered from the record, with no live check demanded.
-    interface IReplayedCheckReader with
-        member this.CanAnswer result = this.Records.CanAnswer result
-
-    // A replayed analysis is recorded by the rule a live fold applies: only a result
-    // published against the model published now is analyzed (see `notCurrent`), and a
-    // completed analysis replaces the file's entries and crashes with the ones it
-    // reported. `RunAnalyzed` counts what this handler analyzed, so a replay leaves it.
-    interface IFileReplayState<AnalyzersState> with
-        member this.Replayed _ currentModel result analysis =
-            match analysis with
-            | Result.Ok entries when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
-                let analyzed =
-                    match this.Stamps.Take(AbsFilePath.value result.File) with
-                    | Some(analyzerSet, configDigest) ->
-                        this.AnalyzedByFile
-                        |> Map.add result.File (stampOf result analyzerSet configDigest)
-                    | None -> this.AnalyzedByFile |> Map.remove result.File
-
-                { this with
-                    DiagnosticsByFile = this.DiagnosticsByFile |> Map.add result.File entries
-                    CrashesByFile =
-                        this.CrashesByFile
-                        |> Map.add result.File (entries |> List.choose crashOfFinding)
-                    AnalyzedByFile = analyzed }
-            | Result.Ok _
-            | Result.Error _ -> this
-
 /// Render the analyzer run summary from the LIVE per-file diagnostic map — the
 /// SAME `DiagnosticsByFile` set that backs `reportOrClearFile` → ErrorLedger →
 /// the pass/fail verdict for the current cycle.
@@ -392,6 +323,88 @@ let internal summarize
             $"%d{List.length crashes} analyzer crashes (%s{perAnalyzer})"
 
     $"analyzed %d{analyzed} files, replayed %d{replayed} from cache, %d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings), %s{crashed} — %s{analyzerSet}"
+
+/// The label of the analyzer set the handler holds NOW (`analyzerSetLabel`), read when a
+/// summary renders: a reload replaces the set, and the state cannot read the handler's
+/// closure, so it holds this reader instead.
+[<Sealed>]
+type AnalyzerSetLabel internal (read: unit -> string) =
+    member internal _.Current: string = read ()
+
+/// The ledger key a refused analyzer set reports under: one entry for the set, never
+/// one per file. Angle brackets mark it as no file (`PluginHost.PruneVanishedErrors`).
+[<Literal>]
+let FcsRefusalLedgerKey = "<analyzer-set>"
+
+type AnalyzersState =
+    {
+        /// Every entry this plugin reported to the ledger for each file: the analyzers'
+        /// findings and one Error finding per analyzer that crashed on the file.
+        DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
+        /// The analyzers that crashed on each file, replaced per file like
+        /// `DiagnosticsByFile` so a file that stops crashing drops out of the tally.
+        CrashesByFile: Map<AbsFilePath, AnalyzerCrash list>
+        /// The analyzer set as this handler loaded it at construction.
+        Load: AnalyzerSetLoad
+        RunAnalyzed: int
+        /// The inputs each file's `DiagnosticsByFile` entry was computed from — what
+        /// `fshw findings` compares with the disk before it trusts the entry. A file
+        /// whose latest analysis did not complete (timed out) has none.
+        AnalyzedByFile: Map<AbsFilePath, FsHotWatch.Analyzers.AnalyzerFindings.AnalyzedFile>
+        /// See `ReplayStamps`.
+        Stamps: ReplayStamps
+        /// See `AnalyzeRecordBook`.
+        Records: AnalyzeRecordBook
+        /// See `AnalyzerSetLabel`.
+        SetLabel: AnalyzerSetLabel
+    }
+
+    /// How many analyzers this handler loaded at construction: none from a refused set.
+    member this.LoadedCount: int =
+        match this.Load with
+        | AnalyzerSetLoad.Loaded byPath -> byPath |> List.sumBy snd
+        | AnalyzerSetLoad.RefusedFcsMismatch _ -> 0
+
+    // Out-of-repo compile items are never analyzed (see the `FileChecked` arm).
+    interface ISkipsOutOfRepoFiles
+
+    // AUTOMATION-1609, for `analyze` records: the task cache answers a file only once the
+    // store holds its record. A refusal runs `Update`, which analyses and files it.
+    interface IFileCacheReadGuard with
+        member this.MayReadFileCache result = this.Records.MayReadFileCache result
+
+    // AUTOMATION-1585: with records `on`, a replayed check whose analysis is filed is
+    // answered from the record, with no live check demanded.
+    interface IReplayedCheckReader with
+        member this.CanAnswer result = this.Records.CanAnswer result
+
+    // A replayed analysis is recorded by the rule a live fold applies: only a result
+    // published against the model published now is analyzed (see `notCurrent`), and a
+    // completed analysis replaces the file's entries and crashes with the ones it
+    // reported. `RunAnalyzed` counts what this handler analyzed, so a replay leaves it.
+    interface IFileReplayState<AnalyzersState> with
+        // The live summary (`summarize`) over this run's tally: a hit says what a run says.
+        member this.ReplaySummary tally =
+            summarize tally.Examined tally.Replayed this.SetLabel.Current this.DiagnosticsByFile this.CrashesByFile
+
+        member this.Replayed _ currentModel result analysis =
+            match analysis with
+            | Result.Ok entries when result.ModelGeneration.IsSome && result.ModelGeneration = currentModel ->
+                let analyzed =
+                    match this.Stamps.Take(AbsFilePath.value result.File) with
+                    | Some(analyzerSet, configDigest) ->
+                        this.AnalyzedByFile
+                        |> Map.add result.File (stampOf result analyzerSet configDigest)
+                    | None -> this.AnalyzedByFile |> Map.remove result.File
+
+                { this with
+                    DiagnosticsByFile = this.DiagnosticsByFile |> Map.add result.File entries
+                    CrashesByFile =
+                        this.CrashesByFile
+                        |> Map.add result.File (entries |> List.choose crashOfFinding)
+                    AnalyzedByFile = analyzed }
+            | Result.Ok _
+            | Result.Error _ -> this
 
 /// Name the crash of `analyzer` by exception type and message.
 let internal crashOf (analyzer: string) (ex: exn) : AnalyzerCrash =
@@ -1144,7 +1157,8 @@ let internal createShadowedWithSeams
           RunAnalyzed = 0
           AnalyzedByFile = Map.empty
           Stamps = stamps
-          Records = recordBook }
+          Records = recordBook
+          SetLabel = AnalyzerSetLabel(fun () -> analyzerSetLabel (Volatile.Read(&snapshot)).Inputs) }
       Update =
         fun ctx state event ->
             async {

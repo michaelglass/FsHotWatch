@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: a replayed lint reports lint's own summary (AUTOMATION-1836): `linted N files, M issues; E examined, R
+  replayed from cache`, instead of the framework's ledger count.
+
 ## 0.7.0-alpha.47 - 2026-11-22
 
 - feat!: `createWith` takes a `LintPlugin.Shadow` (`Off`, or `On` with the displaced entries and a `Recheck`) in place

@@ -589,6 +589,12 @@ module PluginSubscriptions =
 [<NoComparison; NoEquality>]
 type PreparedCommit = { Finalize: Async<unit> }
 
+/// How a plugin's current run met its per-file events: `Examined` ran `Update`, `Replayed`
+/// were served from the task cache. A run is the cohort of `FileChecked` events one
+/// `BatchChecked` closes. The ledger reads the same whether every file was examined or
+/// every file was replayed; this is what tells the two apart.
+type FileReplayTally = { Examined: int; Replayed: int }
+
 /// Implemented by a plugin state that records each file's completed analysis. A task-cache
 /// hit on `FileChecked` skips `Update`, and the hit is itself a completed analysis: its key
 /// names the same file, source and compiler result as the run that wrote the entry. The
@@ -602,7 +608,18 @@ type PreparedCommit = { Finalize: Async<unit> }
 ///
 /// `suppressedCodes` are the host's configured FCS codes (`PluginCtx.FcsSuppressedCodes`),
 /// for a state that grades the result's diagnostics as a live fold would.
+///
+/// `ReplaySummary` is the summary a replayed file's terminal status carries, asked of the
+/// state the replay left. It is the plugin's own account, in the words its live runs
+/// use: the framework adds only the ` (cached)` marker and never writes a summary of its
+/// own for a plugin. A shared one read the same for every plugin, so a test-prune whose
+/// replayed analyses replaced its test verdict said `0 findings` like a linter, and a
+/// replayed test result read like no test result (AUTOMATION-1836). A state that does not
+/// implement this has no replayed summary: a completed per-file replay reports no status
+/// for it, and a failed one reports the failure the run stored.
 type IFileReplayState<'State> =
+    abstract ReplaySummary: tally: FileReplayTally -> string
+
     abstract Replayed:
         suppressedCodes: Set<int> ->
         currentModel: int64 option ->
@@ -826,11 +843,6 @@ type PluginHostServices =
         ReportErrors: PluginName -> string -> ErrorEntry list -> unit
         ClearErrors: PluginName -> string -> unit
         ClearPlugin: PluginName -> unit
-        /// Read this plugin's CURRENT ledger set (file -> entries) — the same
-        /// set `fshw status` lists and the verdict gates on. The cache-replay
-        /// path derives per-file entries' summaries from it, since a per-file
-        /// cache entry carries no summary of its own.
-        GetPluginDiagnostics: PluginName -> Map<string, ErrorEntry list>
         EmitBuildCompleted: BuildResult -> unit
         EmitTestRunStarted: TestRunStarted -> unit
         EmitTestProgress: TestProgress -> unit
@@ -869,19 +881,6 @@ type PluginHostServices =
         /// when the check did not complete.
         DemandCheck: FileCheckResult -> Async<FileCheckResult option>
     }
-
-/// The replay summary for a per-file cache entry, derived from the plugin's LIVE
-/// ledger set — the same findings the verdict is computed from, read AFTER the
-/// entry's own error replay has landed. Never taken from the stored entry: a
-/// per-file key cannot testify to a whole-session claim (the scope rule on
-/// `TaskCache.CachedStatus`). Non-empty by construction (counts always render), so
-/// `RunVerdict.create` can never throw on it.
-let internal ledgerSummary (diagnosticsByFile: Map<string, ErrorEntry list>) : string =
-    let allEntries = diagnosticsByFile |> Map.toList |> List.collect snd
-    let counts = DiagnosticCounts.ofEntries allEntries
-    let findings = List.length allEntries
-
-    $"%d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings)"
 
 /// Register a declarative plugin handler against an existing owner, returning a
 /// type-erased RegisteredPlugin.
@@ -928,9 +927,9 @@ let internal registerHandlerForOwner
     let statusLock = System.Threading.Lock()
 
     // Per-file results this registration produced by running `Update` in the current run,
-    // and per-file results it served from cache instead. A per-file replay's summary is
-    // derived from the ledger, which reads the same whether every file was examined or
-    // every file was replayed; the tally is what tells those apart. Both move only on the
+    // and per-file results it served from cache instead: the `FileReplayTally` a per-file
+    // replay hands the plugin's own summary. The ledger reads the same whether every file
+    // was examined or every file was replayed; the tally is what tells those apart. Both move only on the
     // plugin's own loop, one event at a time.
     let mutable perFileExamined = 0
     let mutable perFileReplayed = 0
@@ -970,8 +969,8 @@ let internal registerHandlerForOwner
     /// reports its own terminal. A finished worker whose result fold is still queued owes
     /// it too, so an unrelated fold that happens to run first cannot replace the run's
     /// `Running`. `reporter` is the event reporting: a result fold's own report is the
-    /// verdict. `status` is built only when it is reported, so a summary derived from the
-    /// ledger is read at the instant it lands. Returns whether the status was reported.
+    /// verdict. `status` is built only when it is reported, so a summary is read at the
+    /// instant it lands. Returns whether the status was reported.
     let reportStatus
         (reporter: PluginWorkOwner.WorkId option)
         (isTerminal: bool)
@@ -1573,7 +1572,39 @@ let internal registerHandlerForOwner
                                 ) }
                         | _ -> { Plugin = nameStr; File = None }
 
-                    /// Try to replay a cached result. Returns the replayed entry on a hit.
+                    /// The generation of the model the host publishes now; `None` while
+                    /// no model is available.
+                    let currentModelGeneration () =
+                        match services.ProjectGraph.ObserveModel() with
+                        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
+                        | _ -> None
+
+                    /// The state a replayed event leaves. A replay skips `Update`, but a
+                    /// `FileChecked` hit is a completed analysis of the same inputs, and a
+                    /// state that records per-file outcomes records this one too, against
+                    /// the model published now. See `IFileReplayState`.
+                    let replayedState
+                        (state: 'State)
+                        (event: PluginEvent<'Msg>)
+                        (replayed: TaskCache.TaskCacheResult)
+                        =
+                        match event, box state with
+                        | FileChecked result, (:? IFileReplayState<'State> as holder) ->
+                            let currentModel = currentModelGeneration ()
+
+                            let analysis =
+                                match replayed.Status with
+                                | TaskCache.CachedFileCompleted _
+                                | TaskCache.CachedRunCompleted _ ->
+                                    Result.Ok(TaskCache.findingsFor (AbsFilePath.value result.File) replayed)
+                                | TaskCache.CachedFileFailed(err, _)
+                                | TaskCache.CachedRunFailed(err, _) -> Result.Error err
+
+                            holder.Replayed services.FcsSuppressedCodes currentModel result analysis
+                        | _ -> state
+
+                    /// Try to replay a cached result over `state`. Returns the state the
+                    /// replay leaves (`replayedState`) on a hit.
                     ///
                     /// `cacheKeyOpt` is the key for this event, computed ONCE by
                     /// the dispatch loop and threaded here so the lookup and the
@@ -1582,7 +1613,7 @@ let internal registerHandlerForOwner
                     /// graph — recomputing per call doubles that cost per
                     /// trigger). Threading one value also makes lookup key ≡
                     /// store key by construction.
-                    let tryReplayCache (event: PluginEvent<'Msg>) (cacheKeyOpt: ContentHash option) =
+                    let tryReplayCache (state: 'State) (event: PluginEvent<'Msg>) (cacheKeyOpt: ContentHash option) =
                         match services.TaskCache, cacheKeyOpt with
                         | Some cache, Some cacheKey ->
                             let compKey = compositeKey event
@@ -1672,6 +1703,10 @@ let internal registerHandlerForOwner
                                     else
                                         RunVerdict.create (v.Summary + cachedSuffix) v.Elapsed
 
+                                // The state this replay leaves: what the plugin's own
+                                // summary of a per-file replay is asked of.
+                                let leftState = replayedState state event result
+
                                 // What the replayed verdict may say is bounded by the
                                 // entry's scope:
                                 //
@@ -1680,38 +1715,43 @@ let internal registerHandlerForOwner
                                 //   ORIGINAL run's summary + true duration replay
                                 //   verbatim.
                                 // • Per-file entries (`CachedFile*`) carry no summary
-                                //   BY CONSTRUCTION. Theirs is derived from the
-                                //   plugin's live ledger set AFTER the error replay
-                                //   above has landed this entry's findings. The
-                                //   derivation runs INSIDE the status funnel below
-                                //   (never here), so the ledger snapshot the summary
-                                //   reflects is exactly the one the report lands on.
-                                //   Otherwise: "analyzed 1044 files, 5 findings
-                                //   (cached)" over an empty ledger and a green
-                                //   verdict.
+                                //   BY CONSTRUCTION. Theirs is the plugin's own
+                                //   (`IFileReplayState.ReplaySummary`), asked of the
+                                //   state the replay left, with this run's tally of
+                                //   examined and replayed files. The framework writes
+                                //   no summary of its own: one derived here read the
+                                //   same for every plugin, so test-prune's replayed
+                                //   analyses replaced its test verdict with a
+                                //   linter's `0 findings` (AUTOMATION-1836). A state
+                                //   with no replayed summary gets no replayed status
+                                //   for a completed file (its findings still land in
+                                //   the ledger), and its own stored error for a failed one.
                                 //
-                                //   The ledger alone reads the same whether this plugin
-                                //   examined every file or replayed every file, so the
-                                //   summary carries the tally of both.
-                                let derivedVerdict elapsed =
-                                    let examined = System.Threading.Volatile.Read(&perFileExamined)
-                                    let replayed = System.Threading.Volatile.Read(&perFileReplayed)
-
-                                    RunVerdict.create
-                                        $"%s{ledgerSummary (services.GetPluginDiagnostics handler.Name)}; %d{examined} files examined, %d{replayed} replayed from cache"
-                                        elapsed
-
                                 // Built lazily: the status funnel evaluates this only when
-                                // it reports, so the per-file ledger read never happens
-                                // for a replay whose terminal is dropped.
-                                let mkReplayTerminal () =
-                                    match result.Status with
-                                    | TaskCache.CachedRunCompleted v -> Completed(nowAt, markCached v)
-                                    | TaskCache.CachedRunFailed(err, v) -> Failed(err, nowAt, markCached v)
-                                    | TaskCache.CachedFileCompleted elapsed ->
-                                        Completed(nowAt, markCached (derivedVerdict elapsed))
-                                    | TaskCache.CachedFileFailed(err, elapsed) ->
-                                        Failed(err, nowAt, markCached (derivedVerdict elapsed))
+                                // it reports, so the summary is read at the instant it lands
+                                // and never for a replay whose terminal is dropped.
+                                let ownVerdict (holder: IFileReplayState<'State>) elapsed =
+                                    let tally =
+                                        { Examined = System.Threading.Volatile.Read(&perFileExamined)
+                                          Replayed = System.Threading.Volatile.Read(&perFileReplayed) }
+
+                                    RunVerdict.create (holder.ReplaySummary tally) elapsed
+
+                                let replayTerminal: (unit -> PluginStatus) option =
+                                    match result.Status, box leftState with
+                                    | TaskCache.CachedRunCompleted v, _ ->
+                                        Some(fun () -> Completed(nowAt, markCached v))
+                                    | TaskCache.CachedRunFailed(err, v), _ ->
+                                        Some(fun () -> Failed(err, nowAt, markCached v))
+                                    | TaskCache.CachedFileCompleted elapsed, (:? IFileReplayState<'State> as holder) ->
+                                        Some(fun () -> Completed(nowAt, markCached (ownVerdict holder elapsed)))
+                                    | TaskCache.CachedFileFailed(err, elapsed), (:? IFileReplayState<'State> as holder) ->
+                                        Some(fun () -> Failed(err, nowAt, markCached (ownVerdict holder elapsed)))
+                                    // A replayed failure stays red whatever the state: its
+                                    // summary is the plugin's own failure, as the run stored it.
+                                    | TaskCache.CachedFileFailed(err, elapsed), _ ->
+                                        Some(fun () -> Failed(err, nowAt, markCached (RunVerdict.create err elapsed)))
+                                    | TaskCache.CachedFileCompleted _, _ -> None
 
                                 // A cached TERMINAL status must never claim the plugin is
                                 // at rest while it is mid-exclusive-run. On a warm scan
@@ -1723,7 +1763,9 @@ let internal registerHandlerForOwner
                                 // replayed event is never a run's result fold, so it
                                 // reports as no one's. Errors and emitted events still
                                 // replay.
-                                reportStatus None true mkReplayTerminal "cache replay" |> ignore
+                                replayTerminal
+                                |> Option.iter (fun terminal ->
+                                    reportStatus None true terminal "cache replay" |> ignore)
 
                                 // Replay emitted events. Cached test-lifecycle events carry the
                                 // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
@@ -1769,15 +1811,8 @@ let internal registerHandlerForOwner
                                         services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
                                     | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
 
-                                Some result
+                                Some leftState
                             | None -> None
-                        | _ -> None
-
-                    /// The generation of the model the host publishes now; `None` while
-                    /// no model is available.
-                    let currentModelGeneration () =
-                        match services.ProjectGraph.ObserveModel() with
-                        | FsHotWatch.ProjectModel.Observation.Available model -> Some model.Generation
                         | _ -> None
 
                     /// Whether the cache may serve or store this event's result: only a
@@ -1809,30 +1844,6 @@ let internal registerHandlerForOwner
                         | FileChecked({ CheckResults = Replayed _ } as result), (:? IReplayedCheckReader as reader) ->
                             reader.CanAnswer result
                         | _ -> false
-
-                    /// The state a replayed event leaves. A replay skips `Update`, but a
-                    /// `FileChecked` hit is a completed analysis of the same inputs, and a
-                    /// state that records per-file outcomes records this one too, against
-                    /// the model published now. See `IFileReplayState`.
-                    let replayedState
-                        (state: 'State)
-                        (event: PluginEvent<'Msg>)
-                        (replayed: TaskCache.TaskCacheResult)
-                        =
-                        match event, box state with
-                        | FileChecked result, (:? IFileReplayState<'State> as holder) ->
-                            let currentModel = currentModelGeneration ()
-
-                            let analysis =
-                                match replayed.Status with
-                                | TaskCache.CachedFileCompleted _
-                                | TaskCache.CachedRunCompleted _ ->
-                                    Result.Ok(TaskCache.findingsFor (AbsFilePath.value result.File) replayed)
-                                | TaskCache.CachedFileFailed(err, _)
-                                | TaskCache.CachedRunFailed(err, _) -> Result.Error err
-
-                            holder.Replayed services.FcsSuppressedCodes currentModel result analysis
-                        | _ -> state
 
                     /// Force a terminal `Failed` for a fault the plugin could not report
                     /// itself, so a handler that throws out of `Update` cannot leave the
@@ -2201,16 +2212,15 @@ let internal registerHandlerForOwner
                                         // batch is: the handler only ever runs, and stores, under a key
                                         // that read the disk for this event (`DispatchBatch`).
                                         let cacheKeyOpt, replayHit =
-                                            match tryReplayCache event (replayKeyOf batchKey) with
+                                            match tryReplayCache state event (replayKeyOf batchKey) with
                                             | Some replayed -> batchKey, Some replayed
                                             | None when reusedBatch ->
                                                 let freshKey, _ = keyIn DispatchBatchScope.Outside
-                                                freshKey, tryReplayCache event (replayKeyOf freshKey)
+                                                freshKey, tryReplayCache state event (replayKeyOf freshKey)
                                             | None -> batchKey, None
 
                                         match replayHit with
-                                        | Some replayed ->
-                                            return Result.Ok(replayedState state event replayed, None, false)
+                                        | Some leftState -> return Result.Ok(leftState, None, false)
                                         // ADR-059 §17: a replayed check of a file this plugin never
                                         // inspects needs no live one. `Update` would leave the state as
                                         // it is (`ISkipsOutOfRepoFiles`); so does this.

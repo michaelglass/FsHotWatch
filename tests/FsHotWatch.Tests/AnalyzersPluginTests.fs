@@ -1778,7 +1778,10 @@ let ``a replay-only run says it examined nothing; one that analyzed says how man
         | Some(Failed(_, _, v)) -> v.Summary
         | other -> failwith $"expected a terminal analyzers status, got %A{other}"
 
-    test <@ summary () = "0 findings (0 errors, 0 warnings); 0 files examined, 2 replayed from cache (cached)" @>
+    test
+        <@
+            summary () = $"analyzed 0 files, replayed 2 from cache, 0 findings (0 errors, 0 warnings), 0 analyzer crashes — %s{setLabelOf []} (cached)"
+        @>
 
     // A file with no cache entry runs the handler (it crashes on the null parse
     // results — still an examination), then a replay reports both tallies.
@@ -1787,7 +1790,7 @@ let ``a replay-only run says it examined nothing; one that analyzed says how man
     host.EmitFileChecked a
     waitForQuiescent host 15000
 
-    test <@ (summary ()).EndsWith("; 1 files examined, 3 replayed from cache (cached)") @>
+    test <@ (summary ()).StartsWith("analyzed 1 files, replayed 3 from cache, ") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
 let ``a run's summary counts only that run's files, not every file since start`` () =
@@ -1832,7 +1835,7 @@ let ``a run's summary counts only that run's files, not every file since start``
     host.EmitBatchChecked(fakeBatchChecked [ "/tmp/evidence/Fresh.fs"; "/tmp/evidence/A.fs"; "/tmp/evidence/B.fs" ])
     waitForQuiescent host 15000
 
-    test <@ (summary ()).EndsWith("; 1 files examined, 2 replayed from cache (cached)") @>
+    test <@ (summary ()).StartsWith("analyzed 1 files, replayed 2 from cache, ") @>
 
     // Second run: a rescan that replays both files and examines none.
     host.EmitFileChecked a
@@ -1840,7 +1843,7 @@ let ``a run's summary counts only that run's files, not every file since start``
     host.EmitBatchChecked(fakeBatchChecked [ "/tmp/evidence/A.fs"; "/tmp/evidence/B.fs" ])
     waitForQuiescent host 15000
 
-    test <@ (summary ()).EndsWith("; 0 files examined, 2 replayed from cache (cached)") @>
+    test <@ (summary ()).StartsWith("analyzed 0 files, replayed 2 from cache, ") @>
 
 // ---------------------------------------------------------------------------
 // A raising analyzer is a failure, never a clean file. The SDK hands the exception

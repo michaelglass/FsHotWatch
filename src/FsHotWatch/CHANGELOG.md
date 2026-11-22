@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix!: a per-file cache replay's status summary is the plugin's own (AUTOMATION-1836). The framework used to write
+  one for every plugin from the error ledger (`N findings (…); E files examined, R replayed from cache`), so a warm
+  test-prune whose replayed symbol analyses replaced its test verdict read exactly like a linter: a replayed test
+  result could not be told apart from no test result. `IFileReplayState` gains `ReplaySummary: FileReplayTally ->
+  string`, asked of the state the replay left with the run's tally (`FileReplayTally`: `Examined`, `Replayed`); the
+  framework adds only ` (cached)`. A state with no replayed summary gets no status from a completed per-file replay
+  (its replayed findings still land in the ledger), and a failed one reports the failure the run stored.
+  `EarnedEvidence.Results` exposes the per-project results of the run that earned it. **Breaking:**
+  `IFileReplayState` implementers must add `ReplaySummary`; `PluginHostServices.GetPluginDiagnostics` and the
+  internal `ledgerSummary` are removed (nothing reads them).
+
 ## 0.10.0-alpha.127 - 2026-11-22
 
 - refactor!: `ReferencesShadowReport.fs` (~1,280 lines) is split in two (AUTOMATION-1816 step 2b): the model stays in

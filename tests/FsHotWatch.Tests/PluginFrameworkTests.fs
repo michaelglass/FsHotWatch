@@ -20,7 +20,6 @@ let private defaultServices: PluginHostServices =
       ReportErrors = fun _ _ _ -> ()
       ClearErrors = fun _ _ -> ()
       ClearPlugin = fun _ -> ()
-      GetPluginDiagnostics = fun _ -> Map.empty
       EmitBuildCompleted = fun _ -> ()
       EmitTestRunStarted = fun _ -> ()
       EmitTestProgress = fun _ -> ()
@@ -2964,35 +2963,6 @@ let ``a cache hit must NEVER be replayed over a Custom message — its payload i
     |> Async.RunSynchronously
 
 // ---------------------------------------------------------------------------
-// the derived per-file replay summary feeds `RunVerdict.create`, which
-// THROWS on an empty summary. `ledgerSummary` must therefore render a non-empty string for
-// EVERY ledger state — including the empty ledger a clean per-file replay derives from — or
-// the replay path crashes instead of reporting a green "0 findings".
-// ---------------------------------------------------------------------------
-
-[<Fact(Timeout = 15000)>]
-let ``ledgerSummary is non-empty on an empty ledger and survives RunVerdict.create`` () =
-    let emptySummary = ledgerSummary Map.empty
-    test <@ emptySummary <> "" @>
-
-    // The replay path builds exactly this; RunVerdict.create must not throw.
-    let verdict = RunVerdict.create emptySummary System.TimeSpan.Zero
-    test <@ verdict.Summary = emptySummary @>
-
-[<Fact(Timeout = 15000)>]
-let ``ledgerSummary counts a populated ledger and stays non-empty`` () =
-    let populated =
-        Map.ofList
-            [ "/a.fs", [ ErrorEntry.error "boom"; ErrorEntry.warningWithDetail "meh" "d" ]
-              "/b.fs", [ ErrorEntry.error "kaput" ] ]
-
-    let summary = ledgerSummary populated
-    test <@ summary <> "" @>
-    // Three findings total across the two files (two errors, one warning).
-    test <@ summary.Contains "3 findings" @>
-    test <@ (RunVerdict.create summary System.TimeSpan.Zero).Summary = summary @>
-
-// ---------------------------------------------------------------------------
 // a cache HIT must leave the ledger where a cache MISS leaves it
 // ---------------------------------------------------------------------------
 //
@@ -3376,6 +3346,9 @@ type private ReplayLog =
     { Replays: (string * int64 option * Result<string list, string>) list }
 
     interface IFileReplayState<ReplayLog> with
+        member this.ReplaySummary tally =
+            $"%d{this.Replays.Length} replays, %d{tally.Replayed} this run"
+
         member this.Replayed _ currentModel result analysis =
             let findings = analysis |> Result.map (List.map _.Message)
             { Replays = this.Replays @ [ AbsFilePath.value result.File, currentModel, findings ] }

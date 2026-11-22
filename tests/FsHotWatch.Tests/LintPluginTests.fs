@@ -290,12 +290,11 @@ let ``warnings command reflects warning count after lint with warnings`` () =
     test <@ cmdResult.Value.Contains("\"warnings\": 2") @>
 
 [<Fact(Timeout = SyncHangBackstopMs)>]
-let ``lint per-file cache replay derives its summary from the live ledger`` () =
-    // Lint is a `FileChecked` plugin (per-file, `File = Some`), so it shares the
-    // analyzers' defect class: its status summary is built from whole-session
-    // accumulation. The framework fix reaches it through the SAME per-file
-    // derive path — a replayed per-file entry must report EXACTLY the findings
-    // the live ledger holds, never a stale stored count.
+let ``lint per-file cache replay reports lint's own count, matching the live ledger`` () =
+    // Lint is a `FileChecked` plugin (per-file, `File = Some`): a replayed entry stores no
+    // summary. Its replayed status is lint's own (`IFileReplayState.ReplaySummary`), asked
+    // of the state the replay left, and must count EXACTLY the findings the live ledger
+    // holds, never a stale stored count.
     let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
@@ -345,7 +344,9 @@ let ``lint per-file cache replay derives its summary from the live ledger`` () =
         | other -> failwith $"expected a terminal lint status, got %A{other}"
 
     let claimedFindings =
-        let m = System.Text.RegularExpressions.Regex.Match(summary, @"(\d+) findings")
+        let m =
+            System.Text.RegularExpressions.Regex.Match(summary, @"^linted \d+ files, (\d+) issues; ")
+
         if m.Success then int m.Groups.[1].Value else 0
 
     Assert.True(
