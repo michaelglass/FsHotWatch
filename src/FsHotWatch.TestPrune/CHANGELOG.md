@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.123 - 2026-11-22
+
 - feat: AUTOMATION-1816 step 2b. S' is computed only over an index that holds this run's analysis: `selections`
   takes an `IndexAtRun` witness, built only when the index is sealed (`IndexSeal`: a cohort sealed it and no flush has
   written rows since), at the tree on disk now, with no analysis pending a flush. Otherwise

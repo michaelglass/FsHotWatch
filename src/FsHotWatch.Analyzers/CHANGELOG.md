@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.62 - 2026-11-22
+
 - feat!: `AnalyzeRecords.ReuseKeys.Kept` carries a `Recheck`; `references-shadow-analyzers-spot-check` analyses each
   sampled `sameKey` file again on a live check, records and task cache bypassed, against the findings this run served;
   nothing it analyses is reported, filed or served (AUTOMATION-1816 step 2b).

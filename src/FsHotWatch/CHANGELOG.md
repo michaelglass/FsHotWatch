@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.127 - 2026-11-22
+
 - refactor!: `ReferencesShadowReport.fs` (~1,280 lines) is split in two (AUTOMATION-1816 step 2b): the model stays in
   `ReferencesShadowReport`; its JSON forms and files move to the new module `FsHotWatch.ReferencesShadowJson`. No
   behaviour change and the JSON written is byte-for-byte the same. **Breaking (paths only):** the schema and command

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.47 - 2026-11-22
+
 - feat!: `createWith` takes a `LintPlugin.Shadow` (`Off`, or `On` with the displaced entries and a `Recheck`) in place
   of a `TaskCache.DisplacementCapture`. On, `references-shadow-lint-spot-check` lints each sampled `sameKey` file again on
   a live check, the task cache bypassed, against the findings this run served; nothing it lints is reported, filed or

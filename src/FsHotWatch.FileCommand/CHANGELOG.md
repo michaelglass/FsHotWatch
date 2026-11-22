@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.36 - 2026-11-22
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0-alpha.35 - 2026-11-21
 
 - fix: a script command's closure also follows `#r` to a local path (the assembly's bytes are keyed; missing is

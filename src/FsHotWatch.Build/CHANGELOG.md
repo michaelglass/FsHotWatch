@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.60 - 2026-11-22
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0-alpha.59 - 2026-11-21
 
 - chore: rebuild to bundle updated dependencies

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.161 - 2026-11-22
+
 - feat: `fshw analytics` rolls up the nightly spot-check mismatches of every recorded night, whatever `--since`:
   nights, files sampled and mismatches in total, then each mismatch's night, plugin and file; `--json` carries them
   as `referencesShadowSpotChecks` (AUTOMATION-1816 step 2b).
