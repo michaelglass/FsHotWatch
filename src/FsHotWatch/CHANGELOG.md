@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.128 - 2026-11-23
+
 - fix!: a per-file cache replay's status summary is the plugin's own (AUTOMATION-1836). The framework used to write
   one for every plugin from the error ledger (`N findings (…); E files examined, R replayed from cache`), so a warm
   test-prune whose replayed symbol analyses replaced its test verdict read exactly like a linter: a replayed test

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.124 - 2026-11-23
+
 - fix: a replayed symbol analysis names test-prune's evidence (AUTOMATION-1836). Its status line, which becomes
   test-prune's entry in the verdict, reads `symbol analysis: E files examined, R replayed from cache; tests: run
   <runId>, P passed, F failed, N verified nothing in K projects`, or `tests: no run completed in this daemon`,

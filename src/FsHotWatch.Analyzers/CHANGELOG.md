@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.63 - 2026-11-23
+
 - fix: a replayed analysis reports the analyzers' own summary (AUTOMATION-1836): `analyzed E files, replayed R from
   cache, N findings (…), C analyzer crashes — analyzer set …`, the line a live run writes, instead of the framework's
   ledger count.

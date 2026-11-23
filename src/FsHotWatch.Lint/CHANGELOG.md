@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.48 - 2026-11-23
+
 - fix: a replayed lint reports lint's own summary (AUTOMATION-1836): `linted N files, M issues; E examined, R
   replayed from cache`, instead of the framework's ledger count.
 
