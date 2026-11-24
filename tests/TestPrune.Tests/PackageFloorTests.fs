@@ -167,3 +167,25 @@ let ``the package floor check runs in mise ci and GitHub CI`` () =
         |> Array.exists (fun line -> line.TrimStart().StartsWith "run" && line.Contains command)
 
     test <@ (ciRunsCheck, workflowRunsCheck) = (true, true) @>
+
+// AUTOMATION-1896: mise.toml's [env] pins the SDK's implicit FSharp.Core for every project a
+// build in this repository reaches (the optional Falco.UnionRoutes sibling takes the implicit
+// one). It must name exactly the central pin, or restore fails with NU1109 again.
+[<Fact>]
+let ``mise.toml pins the implicit FSharp.Core to exactly the central pin`` () =
+    let root = repoRoot ()
+
+    let versionIn (path: string) (pattern: string) =
+        let m =
+            Text.RegularExpressions.Regex.Match(File.ReadAllText(Path.Combine(root, path)), pattern)
+
+        if m.Success then Some m.Groups.[1].Value else None
+
+    let pinned =
+        versionIn "Directory.Packages.props" "Include=\"FSharp\\.Core\"\\s+Version=\"([^\"]+)\""
+
+    let implicitVersion =
+        versionIn "mise.toml" "(?m)^FSharpCoreImplicitPackageVersion\\s*=\\s*\"([^\"]+)\""
+
+    test <@ pinned.IsSome @>
+    test <@ implicitVersion = pinned @>
