@@ -17,11 +17,17 @@ open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.TestPrune
 open FsHotWatch.TestPrune.InputTrees
+open FsHotWatch.Events
+open FsHotWatch.TestPrune.PluginTypes
 open FsHotWatch.TestPrune.PluginState
 open FsHotWatch.Tests.TestHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.SymbolDiff
+
+/// A run id for `tree`, stable across a test: what a test run names itself by.
+let private runOf (tree: string) =
+    Guid(Security.Cryptography.MD5.HashData(Text.Encoding.UTF8.GetBytes tree)).ToString "N"
 
 let private storeIn (dir: string) =
     OutcomeStore.Store(
@@ -41,12 +47,14 @@ let private recordOf (entries: (string * string) list) (analysed: string list) :
 
     { Tree = tree
       Key = (TestBaseline.keyOf tree).Value.Text
-      RunId = "run-" + tree
+      RunId = runOf tree
       Entries = entries
       Analyses =
         analysed
         |> List.map (fun path -> path, TestBaseline.RowAnalysis.Pinned("id-" + path, "P", "key-" + path))
-        |> Map.ofList }
+        |> Map.ofList
+      FullKeys = Map.empty
+      FiledAt = DateTimeOffset.MinValue }
 
 let private treeOf (entries: (string * string) list) : ReceiptTree =
     { Identity = TreeHash.hashEntries entries
@@ -235,7 +243,8 @@ let private rowOf (entries: (string * string) list) (unpinned: Set<string>) =
 
 /// File T's `test-baseline` record, as a green full run in "live" files it, and name it at
 /// the front of the index.
-let private fileBaselineWith
+let private fileBaselineShaped
+    (edit: JsonObject -> unit)
     (store: OutcomeStore.Store)
     (tree: ReceiptTree)
     (unpinned: Set<string>)
@@ -244,7 +253,7 @@ let private fileBaselineWith
     let key = TestBaseline.keyOf tree.Identity
     let o = JsonObject()
     o["schema"] <- TestBaseline.Schema
-    o["runId"] <- "run-" + tree.Identity
+    o["runId"] <- runOf tree.Identity
     o["tree"] <- tree.Identity
     o["analyzer"] <- AnalysisRecords.analyzerIdentity
     o["projects"] <- JsonObject()
@@ -261,6 +270,7 @@ let private fileBaselineWith
         | Unanalysed(path, hash) -> manifest.Add(JsonArray(text path, text hash, null, null, null))
 
     o["manifest"] <- manifest
+    edit o
 
     let producer: TestBaseline.Producer =
         { Binary = "fshw-test"
@@ -281,10 +291,12 @@ let private fileBaselineWith
             producer
             { Tree = tree.Identity
               Baseline = key.Value.Text
-              RunId = "run-" + tree.Identity
+              RunId = runOf tree.Identity
               At = at }
 
     test <@ indexed.IsSome @>
+
+let private fileBaselineWith = fileBaselineShaped ignore
 
 let private fileBaseline (store: OutcomeStore.Store) (tree: ReceiptTree) =
     fileBaselineWith store tree Set.empty (DateTimeOffset(2026, 11, 24, 12, 0, 0, TimeSpan.Zero))
@@ -372,6 +384,7 @@ let private envOf (l: Land) (log: string -> unit) : BoxBaseline.RebuildEnv =
                 noDeclaration
                 results
                 keys
+      Judge = fun _ -> Map.empty
       Log = log }
 
 /// The box after "live" passed T: its analyses and its baseline filed.
@@ -389,7 +402,7 @@ let ``a retained T whose analyses all resolve is rebuilt into the index, sealed,
         | Ok rebuilt ->
             test <@ rebuilt.Baseline.Tree = treeT.Identity @>
             test <@ rebuilt.Baseline.Key = (TestBaseline.keyOf treeT.Identity).Value.Text @>
-            test <@ rebuilt.Baseline.RunId = "run-" + treeT.Identity @>
+            test <@ rebuilt.Baseline.RunId = runOf treeT.Identity @>
             test <@ rebuilt.Baseline.Manifest = treeT @>
             test <@ rebuilt.Distance = { Differing = 1; NonSource = 0 } @>
             test <@ IndexSeal.load l.DbPath = Some treeT.Identity @>
@@ -579,3 +592,576 @@ let ``an index entry whose record no longer reads is not a candidate`` () =
         |> refusedWith [ "no retained test-baseline" ]
 
         unchanged l)
+
+// ---------------------------------------------------------------------------
+// Step 2b: T's pass as this checkout's ledger, what it vouches for per project, and what a
+// restart would do, re-checked at the CURRENT K_P.
+// ---------------------------------------------------------------------------
+
+let private at (minute: int) =
+    DateTimeOffset(2026, 11, 24, 12, minute, 0, TimeSpan.Zero)
+
+/// A K_P whose labels are `base`, with `moved` labels given another digest.
+let private kpWith (moved: (string * string) list) : TestEvidenceKey.Key =
+    [ "toolchain", "t1"
+      "testConfig", "c1"
+      "options", "o1"
+      "packages", "p1"
+      "closure", "cl1"
+      "shared", "s1"
+      "otherProjects", "op1"
+      "declared", "d1"
+      "envFiles", "e1"
+      "envFilesLoaded", "el1"
+      "env", "v1"
+      "scope", "sc1" ]
+    |> List.map (fun (label, digest) ->
+        label,
+        moved
+        |> List.tryFind (fst >> (=) label)
+        |> Option.map snd
+        |> Option.defaultValue digest)
+    |> TestEvidenceKey.ofLabels
+
+/// File a run's outcome for a project at K_P `kp` in `scope`.
+let private fileOutcome
+    (store: OutcomeStore.Store)
+    (kp: TestEvidenceKey.Key)
+    (scope: string)
+    (outcome: OutcomeStore.Outcome)
+    (recordedAt: DateTimeOffset)
+    =
+    let record: OutcomeStore.Record =
+        { Key = TestEvidenceRun.testActionKey kp scope
+          Subject = "P"
+          Outcome = outcome
+          Counts = None
+          DurationMs = None
+          Producer =
+            { Binary = "fshw-test"
+              Worktree = "/ws/live"
+              RunId = Some "run-1" }
+          RecordedAt = recordedAt }
+
+    test <@ store.Record record @>
+
+let private fullKeyText (kp: TestEvidenceKey.Key) =
+    (TestEvidenceRun.testActionKey kp "full").Value.Text
+
+let private compileInputs = Map.ofList [ "P", ("tests/P/P.fsproj", "identity:P") ]
+
+/// `judgeProject` for P, its pass at T filed under `atT`, its current K_P `now`.
+let private judgedWith
+    (store: OutcomeStore.Store)
+    (atT: TestEvidenceKey.Key)
+    (now: Result<TestEvidenceKey.Key, string>)
+    =
+    BoxBaseline.judgeProject store (Map.ofList [ "P", fullKeyText atT ]) (Map.ofList [ "P", now ]) compileInputs "P"
+
+let private refusal (project: BoxProject) =
+    match project with
+    | BoxProject.Refused why -> why
+    | BoxProject.Vouched _ -> failwith "expected a refusal"
+
+[<Fact>]
+let ``a project whose K_P is unchanged since T is vouched for, with its compile inputs now`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+
+        test <@ judgedWith store (kpWith []) (Ok(kpWith [])) = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>)
+
+[<Fact>]
+let ``a project whose K_P moved only in the tree's file contents is vouched for: the T to T' diff answers those`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        let now = kpWith [ "closure", "cl2"; "shared", "s2"; "otherProjects", "op2" ]
+
+        test <@ judgedWith store (kpWith []) (Ok now) = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>)
+
+[<Theory>]
+[<InlineData("toolchain")>]
+[<InlineData("testConfig")>]
+[<InlineData("options")>]
+[<InlineData("packages")>]
+[<InlineData("declared")>]
+[<InlineData("envFiles")>]
+[<InlineData("envFilesLoaded")>]
+[<InlineData("env")>]
+[<InlineData("scope")>]
+let ``a project whose K_P moved outside the tree's file contents is refused, naming what moved`` (label: string) =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        let why = judgedWith store (kpWith []) (Ok(kpWith [ label, "moved" ])) |> refusal
+        test <@ why.Contains "moved beyond the tree's file contents" && why.Contains label @>)
+
+[<Fact>]
+let ``a newer full fail at the K_P T's baseline names refuses the project`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Fail (at 1)
+        let why = judgedWith store (kpWith []) (Ok(kpWith [])) |> refusal
+        test <@ why.Contains "not a pass" @>)
+
+[<Fact>]
+let ``a newer impact fail at the K_P T's baseline names refuses the project, through the reuse path's refusal`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        fileOutcome store (kpWith []) "impact" OutcomeStore.Outcome.Fail (at 1)
+        let why = judgedWith store (kpWith []) (Ok(kpWith [])) |> refusal
+        test <@ why.Contains "at the K_P T's baseline names" && why.Contains "impact fail" @>)
+
+[<Fact>]
+let ``a newer fail at the project's CURRENT K_P refuses it`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        let now = kpWith [ "closure", "cl2" ]
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        fileOutcome store now "impact" OutcomeStore.Outcome.Fail (at 1)
+        let why = judgedWith store (kpWith []) (Ok now) |> refusal
+        test <@ why.Contains "at its current K_P" @>)
+
+[<Fact>]
+let ``every other miss refuses the project and says why`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        let atT = Map.ofList [ "P", fullKeyText (kpWith []) ]
+        let now = Map.ofList [ "P", Ok(kpWith []) ]
+
+        let judged fullKeys current inputs =
+            BoxBaseline.judgeProject store fullKeys current inputs "P" |> refusal
+
+        test <@ (judged Map.empty now compileInputs).Contains "names no full-run K_P" @>
+        test <@ (judged (Map.ofList [ "P", "not a key" ]) now compileInputs).Contains "names no full-run K_P" @>
+
+        test
+            <@
+                (judged (Map.ofList [ "P", fullKeyText (kpWith [ "toolchain", "never-filed" ]) ]) now compileInputs)
+                    .Contains
+                    "no full-scope record"
+            @>
+
+        test <@ (judged atT Map.empty compileInputs).Contains "the project model does not name it" @>
+
+        test
+            <@
+                (judged atT (Map.ofList [ "P", Error "project options unknown" ]) compileInputs).Contains
+                    "no current K_P: project options unknown"
+            @>
+
+        test <@ (judged atT now Map.empty).Contains "no compile-input identity" @>)
+
+[<Fact>]
+let ``a record at T's named key that carries no K_P refuses the project`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        let foreign = ActionKey.create "test" [ "something", "else" ]
+
+        test
+            <@
+                store.Record
+                    { Key = foreign
+                      Subject = "P"
+                      Outcome = OutcomeStore.Outcome.Pass
+                      Counts = None
+                      DurationMs = None
+                      Producer =
+                        { Binary = "fshw-test"
+                          Worktree = "/ws/live"
+                          RunId = Some "run-1" }
+                      RecordedAt = at 0 }
+            @>
+
+        let why =
+            BoxBaseline.judgeProject
+                store
+                (Map.ofList [ "P", foreign.Value.Text ])
+                (Map.ofList [ "P", Ok(kpWith []) ])
+                compileInputs
+                "P"
+            |> refusal
+
+        test <@ why.Contains "carries no K_P" @>)
+
+[<Fact>]
+let ``judge answers for every project T's pass names and every one the model configures`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+
+        let record =
+            { recordOf current sources with
+                FullKeys = Map.ofList [ "P", fullKeyText (kpWith []); "Gone", fullKeyText (kpWith []) ] }
+
+        let judged =
+            BoxBaseline.judge store (Map.ofList [ "P", Ok(kpWith []); "New", Ok(kpWith []) ]) compileInputs record
+
+        test <@ judged |> Map.keys |> Set.ofSeq = set [ "P"; "Gone"; "New" ] @>
+        test <@ judged["P"] = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>
+        test <@ (refusal judged["Gone"]).Contains "the project model does not name it" @>
+        test <@ (refusal judged["New"]).Contains "names no full-run K_P" @>)
+
+[<Fact>]
+let ``a rebuilt box baseline carries T's pass as the ledger records an own one, and what it vouches for`` () =
+    withTempDir "box" (fun dir ->
+        let l = landing dir
+        fileAnalyses l.Store "/ws/live"
+
+        fileBaselineShaped
+            (fun o ->
+                let projects = JsonObject()
+                projects["T"] <- "ak1:" + String('a', 64)
+                projects["Lib"] <- "ak1:" + String('b', 64)
+                o["projects"] <- projects)
+            l.Store
+            treeT
+            Set.empty
+            (at 0)
+
+        let judged = Map.ofList [ "T", BoxProject.Refused "for the test" ]
+
+        match
+            BoxBaseline.rebuild
+                { envOf l ignore with
+                    Judge = fun _ -> judged }
+                treeT'
+        with
+        | Ok rebuilt ->
+            test <@ rebuilt.Ledger.RunId = Guid.Parse(runOf treeT.Identity) @>
+            test <@ rebuilt.Ledger.Projects = set [ "T"; "Lib" ] @>
+            test <@ rebuilt.Ledger.Tree = Some treeT.Identity @>
+            test <@ List.isEmpty rebuilt.Ledger.EarlierTrees @>
+            test <@ rebuilt.Projects = judged @>
+        | Error why -> failwith $"expected a rebuild: %s{why}")
+
+[<Fact>]
+let ``a baseline whose run is not a run id is no baseline and the seal is unchanged`` () =
+    withTempDir "box" (fun dir ->
+        let l = landing dir
+        fileAnalyses l.Store "/ws/live"
+        fileBaselineShaped (fun o -> o["runId"] <- "not-a-run") l.Store treeT Set.empty (at 0)
+
+        BoxBaseline.rebuild (envOf l ignore) treeT'
+        |> refusedWith [ "not-a-run"; "not a run id" ]
+
+        unchanged l)
+
+[<Fact>]
+let ``a baseline's projects are read as filed, and a record with no projects names none`` () =
+    withTempDir "box" (fun dir ->
+        let l = landing dir
+
+        fileBaselineShaped
+            (fun o ->
+                let projects = JsonObject()
+                projects["T"] <- "ak1:" + String('a', 64)
+                projects["Odd"] <- 3
+                o["projects"] <- projects)
+            l.Store
+            treeT
+            Set.empty
+            (at 0)
+
+        test
+            <@
+                TestBaseline.checkoutRecordFor l.Store treeT.Identity |> Result.map _.FullKeys = Ok(
+                    Map.ofList [ "T", "ak1:" + String('a', 64) ]
+                )
+            @>
+
+        fileBaselineShaped (fun o -> o.Remove "projects" |> ignore) l.Store treeT' Set.empty (at 1)
+
+        test <@ TestBaseline.checkoutRecordFor l.Store treeT'.Identity |> Result.map _.FullKeys = Ok Map.empty @>)
+
+[<Fact>]
+let ``predict names the tree a restart would rebuild from, and writes nothing`` () =
+    withTempDir "box" (fun dir ->
+        let l = landing dir
+        boxAfterLivePassedT l
+
+        test
+            <@
+                BoxBaseline.predict l.Store l.Root treeT'
+                |> Result.map (fun (record, distance) -> record.Tree, distance) = Ok(
+                    treeT.Identity,
+                    { Differing = 1; NonSource = 0 }
+                )
+            @>
+
+        unchanged l)
+
+[<Fact>]
+let ``predict refuses what a rebuild would refuse`` () =
+    withTempDir "box" (fun dir ->
+        let l = landing dir
+
+        test <@ BoxBaseline.predict l.Store l.Root treeT' |> Result.isError @>
+        fileAnalyses l.Store "/ws/live"
+        fileBaselineWith l.Store treeT (Set.singleton LibPath) (at 0)
+
+        match BoxBaseline.predict l.Store l.Root treeT' with
+        | Error why -> test <@ why.Contains "no-record=1" @>
+        | Ok _ -> failwith "an unpinned row predicted a rebuild"
+
+        match BoxBaseline.predict l.Store l.Root treeT with
+        | Error why -> test <@ why.Contains "has not moved" @>
+        | Ok _ -> failwith "an unmoved tree predicted a rebuild")
+
+// ---------------------------------------------------------------------------
+// SOUNDNESS from REAL analyses: a small F# project checked by the compiler. "live" folds the
+// checks through the test-prune plugin itself (FileChecked, then the cohort's seal flushes
+// the index) and files each analysis under the key the plugin files it by; "land", a second
+// checkout of the same bytes, rebuilds its index from those records. For a real body edit,
+// both select the same tests from the same rows.
+// ---------------------------------------------------------------------------
+
+[<Literal>]
+let private ValuePath = "tests/P/Value.fs"
+
+/// Project `P` under `root`: a test attribute, two values, a test calling each.
+let private writeRealProject (root: string) (answerBody: string) =
+    let dir = Path.Combine(root, "tests", "P")
+    Directory.CreateDirectory dir |> ignore
+    let attr = Path.Combine(dir, "Attr.fs")
+    let value = Path.Combine(dir, "Value.fs")
+    let tests = Path.Combine(dir, "Tests.fs")
+    File.WriteAllText(attr, "namespace Xunit\ntype FactAttribute() =\n    inherit System.Attribute()\n")
+    File.WriteAllText(value, $"module P.Value\nlet answer () = %s{answerBody}\nlet other () = 3\n")
+
+    File.WriteAllText(
+        tests,
+        "module P.Tests\nopen Xunit\n[<Fact>]\nlet ``observes the answer`` () = P.Value.answer () = 2\n"
+        + "[<Fact>]\nlet ``observes the other`` () = P.Value.other () = 3\n"
+    )
+
+    [ attr; value; tests ]
+
+/// Every file of `P` checked by the compiler under `root`.
+let private checkReal (root: string) (files: string list) : FileCheckResult list =
+    let checker = sharedChecker.Value
+    let pipeline = FsHotWatch.CheckPipeline.CheckPipeline(checker)
+    let first = List.head files
+
+    let options, _ =
+        scriptProjectOptions (checker, first, FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText first))
+        |> Async.RunSynchronously
+
+    pipeline.RegisterProject(
+        "P",
+        { options with
+            ProjectFileName = Path.Combine(root, "tests", "P", "P.fsproj")
+            SourceFiles = List.toArray files }
+    )
+
+    files
+    |> List.map (fun file ->
+        pipeline.CheckFile(AbsFilePath.create file)
+        |> Async.RunSynchronously
+        |> Option.defaultWith (fun () -> failwith $"no check result for {file}")
+        |> stampFixture)
+
+let private relOf (root: string) (result: FileCheckResult) =
+    Path.GetRelativePath(root, AbsFilePath.value result.File).Replace('\\', '/')
+
+/// The analysis the plugin takes from a live check: `analyzeSourceFromResults`, as
+/// `onFileCheckedWith` calls it.
+let private analysisOfCheck (result: FileCheckResult) : AnalysisResult =
+    match result.CheckResults with
+    | FullCheck(parse, check) ->
+        match analyzeSourceFromResults (AbsFilePath.value result.File) result.Source parse check "P" with
+        | Ok analysis -> analysis
+        | Error why -> failwith $"analysis failed: %s{why}"
+    | other -> failwith $"expected a full check, got %A{other}"
+
+let private realConfig (root: string) : TestConfig =
+    { Project = "P"
+      Command = "sh"
+      Args = "-c true"
+      Group = "default"
+      Environment = []
+      FilterTemplate = None
+      ClassJoin = " "
+      TimeoutSec = None
+      ReportVerificationFormat = AutoDetect
+      Starvation = None
+      CheckSkip = None
+      NameHungTests = false
+      Weight = 1.0
+      AlwaysClasses = [] }
+
+/// "live"'s index at T, written by the plugin from its own fold of the live checks.
+let private liveIndexFromPlugin (root: string) (results: FileCheckResult list) =
+    let dbPath = Path.Combine(root, "tp.db")
+    let host = FsHotWatch.PluginHost.PluginHost.create sharedChecker.Value root
+    host.WorkStore.PublishProjectModel fixtureModel
+    host.RegisterHandler(TestPrunePlugin.create dbPath root (Some [ realConfig root ]) None None None None [])
+
+    try
+        for result in results do
+            host.EmitFileChecked result
+
+        waitForQuiescent host 30000
+        host.EmitBatchChecked(fakeBatchChecked (results |> List.map (_.File >> AbsFilePath.value)))
+        waitForQuiescent host 30000
+    finally
+        host.Teardown()
+
+    Database.create dbPath
+
+/// What the cold scan selects for the T' check of `Value.fs` under `root`, against `db`'s rows.
+let private realSelection (db: Database) (root: string) (edited: FileCheckResult) =
+    let current =
+        (FileCheckedHandler.indexedAnalysisOf root "P" (analysisOfCheck edited)).Symbols
+
+    let changes, _ = detectChanges current (db.GetSymbolsInFile ValuePath)
+
+    db.QueryAffectedTests(changedSymbolNames changes)
+    |> List.map (fun t -> t.TestProject, t.TestClass, t.TestMethod)
+    |> Set.ofList
+
+[<Fact(Timeout = 180000)>]
+let ``SOUNDNESS from real compiler analyses: the box-rebuilt index selects what the live index selects`` () =
+    withTempDir "box-real" (fun dir ->
+        let liveRoot = Path.Combine(dir, "live")
+        let landRoot = Path.Combine(dir, "land")
+        let liveFiles = writeRealProject liveRoot "2"
+        let landFiles = writeRealProject landRoot "2"
+        let liveChecks = checkReal liveRoot liveFiles
+        let live = liveIndexFromPlugin liveRoot liveChecks
+
+        // The box: each analysis filed under the key the plugin files it by, and T's baseline
+        // pinning exactly those records.
+        let store = storeIn (Path.Combine(dir, "outcomes"))
+
+        let rows =
+            liveChecks
+            |> List.map (fun result ->
+                let rel = relOf liveRoot result
+                let key = (AnalysisRecords.keyFor liveRoot result).Value
+                let identity = (IndexedAnalysis.identityOf liveRoot result).Value
+                test <@ AnalysisRecords.file store liveRoot rel key (analysisOfCheck result) @>
+                rel, ContentHash.ofFile (AbsFilePath.value result.File), identity, key.Value.Text)
+
+        let entries = rows |> List.map (fun (rel, hash, _, _) -> rel, hash)
+        let tree = treeOf entries
+        let key = TestBaseline.keyOf tree.Identity
+        let o = JsonObject()
+        o["schema"] <- TestBaseline.Schema
+        o["runId"] <- runOf tree.Identity
+        o["tree"] <- tree.Identity
+        o["analyzer"] <- AnalysisRecords.analyzerIdentity
+        o["projects"] <- JsonObject()
+        let manifest = JsonArray()
+        let text (value: string) = JsonValue.Create value :> JsonNode
+
+        for rel, hash, identity, pinned in rows do
+            manifest.Add(JsonArray(text rel, text hash, text identity, text "P", text pinned))
+
+        o["manifest"] <- manifest
+
+        test
+            <@
+                (store.Supersede(
+                    OutcomeStore.Record.ofAction
+                        key
+                        tree.Identity
+                        OutcomeStore.Outcome.Pass
+                        "fshw-test"
+                        liveRoot
+                        (at 0),
+                    Some(o.ToJsonString())
+                ))
+                    .IsSome
+            @>
+
+        test
+            <@
+                (TestBaseline.appendIndex
+                    store
+                    { Binary = "fshw-test"
+                      Worktree = liveRoot
+                      Now = at 0 }
+                    { Tree = tree.Identity
+                      Baseline = key.Value.Text
+                      RunId = runOf tree.Identity
+                      At = at 0 })
+                    .IsSome
+            @>
+
+        // T': the same real body edit in both checkouts.
+        let edit (root: string) (files: string list) =
+            File.WriteAllText(
+                Path.Combine(root, ValuePath),
+                "module P.Value\nlet answer () = 1 + 1\nlet other () = 3\n"
+            )
+
+            checkReal root files |> List.find (fun r -> relOf root r = ValuePath)
+
+        let liveEdited = edit liveRoot liveFiles
+        let fromLive = realSelection live liveRoot liveEdited
+
+        // Positive control: the live index selects the test that calls the edited body only.
+        test <@ fromLive = Set.singleton ("P", "P.Tests", "``observes the answer``") @>
+
+        let landDbPath = Path.Combine(landRoot, "tp.db")
+        let landDb = Database.create landDbPath
+        let landEdited = edit landRoot landFiles
+
+        let current =
+            treeOf (
+                entries
+                |> List.map (fun (rel, hash) ->
+                    rel,
+                    (if rel = ValuePath then
+                         ContentHash.ofFile (Path.Combine(landRoot, rel))
+                     else
+                         hash))
+            )
+
+        let env: BoxBaseline.RebuildEnv =
+            { Store = store
+              Root = landRoot
+              ProjectsOf =
+                fun path ->
+                    if entries |> List.exists (fst >> (=) path) then
+                        [ "P" ]
+                    else
+                        []
+              DbPath = landDbPath
+              Write =
+                fun results keys ->
+                    IndexMaintenance.writeAnalyses
+                        landDb
+                        landDbPath
+                        (IndexMaintenance.dbBusyTimeout landDb)
+                        noDeclaration
+                        results
+                        keys
+              Judge = fun _ -> Map.empty
+              Log = ignore }
+
+        match BoxBaseline.rebuild env current with
+        | Ok rebuilt -> test <@ rebuilt.Baseline.Tree = tree.Identity @>
+        | Error why -> failwith $"expected a rebuild: %s{why}"
+
+        test <@ realSelection landDb landRoot landEdited = fromLive @>
+
+        // The whole index agrees, from the compiler's own analyses.
+        let rowsOf (db: Database) =
+            entries
+            |> List.map (fun (path, _) ->
+                path,
+                db.GetSymbolsInFile path
+                |> List.map (fun s -> s.FullName, s.ContentHash)
+                |> List.sort,
+                db.GetDependenciesFromFile path
+                |> List.sortBy (fun d -> d.FromSymbol, d.ToSymbol),
+                db.GetTestMethodsInFile path |> List.sortBy _.SymbolFullName)
+
+        test <@ rowsOf landDb = rowsOf live @>
+        test <@ landDb.GetFileKeys() = live.GetFileKeys() @>)

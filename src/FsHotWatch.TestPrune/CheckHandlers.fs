@@ -495,14 +495,23 @@ let internal onBuildCompletedWith
                                 | None -> WaitBasis.NoBaseline
                                 | Some tree ->
                                     match findCheckoutBaseline ctx state.ColdScan state.Debt.Baseline tree with
-                                    | Ok(RestartBaseline.OwnBaseline _ as baseline) ->
-                                        WaitBasis.CheckoutBaseline baseline
-                                    | Ok(RestartBaseline.BoxBaseline _ as baseline) ->
-                                        env.PublishRestartSelection state.Debt.Baseline
-                                        WaitBasis.CheckoutBaseline baseline
+                                    | Ok baseline -> WaitBasis.CheckoutBaseline baseline
                                     | Error why ->
                                         Logging.info "test-prune" $"diff-wait: no checkout baseline: %s{why}"
                                         WaitBasis.NoBaseline
+
+                        // A box baseline counts as an own full pass at T would: the ledger's
+                        // baseline, and whole-project evidence for each project it vouches for.
+                        let stateWithAffected =
+                            match basis with
+                            | WaitBasis.CheckoutBaseline(RestartBaseline.BoxBaseline rebuilt) ->
+                                let adopted = BoxBaseline.adopt rebuilt stateWithAffected
+                                // The rebuild wrote the seal and the ledger moved: say so.
+                                env.PublishRestartSelection adopted.Debt.Baseline
+                                adopted
+                            | WaitBasis.CheckoutBaseline(RestartBaseline.OwnBaseline _)
+                            | WaitBasis.NoBaseline
+                            | WaitBasis.SessionBaseline -> stateWithAffected
 
                         // Only a launch with a baseline in hand can wait for the diff,
                         // and whether it does reads the extensions' failures. Without

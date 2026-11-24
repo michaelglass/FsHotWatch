@@ -8,7 +8,7 @@
 /// tick. Core cannot reference the plugin, and a file is what a restarted daemon would read
 /// anyway.
 ///
-/// Anything that is not a readable `SelectsCorrectly` is `WouldRunFullSuite`: an absent,
+/// Anything that is not a readable `SelectsCorrectly` or `RebuildsFromBox` is `WouldRunFullSuite`: an absent,
 /// empty or malformed file never shortens a window.
 module FsHotWatch.Restart
 
@@ -19,6 +19,10 @@ open System.IO
 type Selection =
     /// A restart diffs from this checkout's full pass of `tree` and selects from the diff.
     | SelectsCorrectly of tree: string
+    /// A restart has no full pass of this checkout's own, rebuilds its index from the box's
+    /// retained green tree `tree` (`tests.restartFromBoxBaseline`, AUTOMATION-1793 step 2b), and
+    /// selects from the diff: `differing` paths moved since, `nonSource` of them not sources.
+    | RebuildsFromBox of tree: string * differing: int * nonSource: int
     /// A restart has no full pass to diff from, and its first check runs every project in
     /// full. `reason` is the condition that failed, as the plugin's log names it.
     | WouldRunFullSuite of reason: string
@@ -33,9 +37,18 @@ let private SelectsTag = "selects-correctly"
 [<Literal>]
 let private FullSuiteTag = "would-run-full-suite"
 
+[<Literal>]
+let private BoxTag = "rebuilds-from-box"
+
+/// A box selection's value: the tree and its two counts, as `render` writes them.
+let private boxValue =
+    System.Text.RegularExpressions.Regex(@"^(\S+) differing=(\d{1,9}) non-source=(\d{1,9})$")
+
 let private render (selection: Selection) : string =
     match selection with
     | Selection.SelectsCorrectly tree -> $"%s{SelectsTag} %s{tree}"
+    | Selection.RebuildsFromBox(tree, differing, nonSource) ->
+        $"%s{BoxTag} %s{tree} differing=%d{differing} non-source=%d{nonSource}"
     | Selection.WouldRunFullSuite reason -> $"%s{FullSuiteTag} %s{reason}"
 
 let private parse (text: string) : Selection =
@@ -49,6 +62,13 @@ let private parse (text: string) : Selection =
 
         match tag with
         | SelectsTag when value <> "" -> Selection.SelectsCorrectly value
+        | BoxTag ->
+            let m = boxValue.Match value
+
+            if m.Success then
+                Selection.RebuildsFromBox(m.Groups[1].Value, int m.Groups[2].Value, int m.Groups[3].Value)
+            else
+                Selection.WouldRunFullSuite $"the published restart selection is unreadable: %s{line}"
         | FullSuiteTag -> Selection.WouldRunFullSuite value
         | _ -> Selection.WouldRunFullSuite $"the published restart selection is unreadable: %s{line}"
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1793 step 2b, behind the same `tests.restartFromBoxBaseline`. A rebuilt box baseline counts as an own
+  full pass at its tree would: it becomes the full-suite baseline (a ledger with none, or one naming no more projects,
+  no longer owes a cold full suite), and each project its pass vouches for counts as whole-project evidence. Every
+  K_P refusal is re-checked per project through `TestEvidenceRun.reuseRefusal`: the full-scope record at the K_P the
+  baseline names must be the newest there and a pass, no newer fail may stand there or at the current K_P, and only
+  the tree-content labels (`closure`, `shared`, `otherProjects`) may have moved since; any other refused project runs
+  whole while the rest narrow. The restart selection idle-exit reads reports `RebuildsFromBox` with the tree and its
+  distance.
+
 - feat: AUTOMATION-1793 step 2, behind `tests.restartFromBoxBaseline` (off by default). A launch with no session
   baseline whose checkout has no full pass of its own restarts from the box's retained green baseline: of the newest
   `RetainedTrees` baselines, the tree whose manifest differs least from the working files (fewest non-source

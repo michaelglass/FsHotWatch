@@ -861,6 +861,8 @@ let private autoDeps (idleMinutes: float) (selection: Restart.Selection ref) (pr
 let ``AUTO's window is 5 minutes when a restart selects correctly and 30 when it would run the full suite`` () =
     test <@ autoWindowFor (Restart.Selection.SelectsCorrectly "sha256:t") = minutes 5 @>
     test <@ autoWindowFor (Restart.Selection.WouldRunFullSuite "no checkout baseline") = minutes 30 @>
+    // A restart that rebuilds from the box's retained tree selects too (AUTOMATION-1793 step 2b).
+    test <@ autoWindowFor (Restart.Selection.RebuildsFromBox("sha256:t", 2, 0)) = minutes 5 @>
 
 [<Fact>]
 let ``AUTO exits after 5 idle minutes when a restart would select its tests correctly`` () =
@@ -874,6 +876,22 @@ let ``AUTO exits after 5 idle minutes when a restart would select its tests corr
         <@
             logs
             |> Seq.exists (fun l -> l.Contains "idle for 5min" && l.Contains "sha256:t")
+        @>
+
+[<Fact>]
+let ``AUTO exits after 5 idle minutes when a restart would rebuild from the box, and says from which tree`` () =
+    let deps, shutdownCalls, logs =
+        autoDeps 6.0 (ref (Restart.Selection.RebuildsFromBox("sha256:box", 4, 1))) false
+
+    test <@ runTick deps (FireLatch.create ()) = TickOutcome.Fired @>
+    test <@ shutdownCalls.Value = 1 @>
+
+    test
+        <@
+            logs
+            |> Seq.exists (fun l ->
+                l.Contains "rebuilds its index from the box's retained tree sha256:box"
+                && l.Contains "4 path(s) differing, 1 non-source")
         @>
 
 [<Fact>]

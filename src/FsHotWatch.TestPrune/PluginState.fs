@@ -104,12 +104,31 @@ type BoxDistance =
         NonSource: int
     }
 
+/// Whether the box's full pass at T vouches for one project now (AUTOMATION-1793 step 2b),
+/// re-checked at restart: what a resident daemon's whole-project evidence says for it.
+[<RequireQualifiedAccess>]
+type BoxProject =
+    /// The project's full-scope record at the K_P T's baseline names is the newest there and
+    /// a pass, no newer fail stands at it or at its CURRENT K_P, and nothing but the tree's
+    /// file contents moved in its K_P since T (the T to T' diff answers those). Its `.fsproj`
+    /// and compile-input identity now: the whole-project evidence it counts as.
+    | Vouched of fsproj: string * identity: string
+    /// Why not: the project runs whole, as it would with no evidence.
+    | Refused of reason: string
+
 /// A box baseline rebuilt into this checkout's index: the retained tree T, presented to the
 /// restart path as `restartBaselineIn` presents an own one, with how far T was from the
-/// working files when it was chosen.
+/// working files when it was chosen, the full pass at T as this checkout's ledger would
+/// record an own one, and what that pass vouches for per project.
 type BoxRebuilt =
-    { Baseline: CheckoutBaseline
-      Distance: BoxDistance }
+    {
+        Baseline: CheckoutBaseline
+        Distance: BoxDistance
+        /// The full-suite baseline T's pass is, for the debt a ledger with none owes.
+        Ledger: FullSuiteBaseline.Baseline
+        /// Each project T's pass names or the current model configures, judged now.
+        Projects: Map<string, BoxProject>
+    }
 
 /// The baseline a restarted daemon diffs from.
 [<RequireQualifiedAccess>]

@@ -61,7 +61,9 @@ let private recordWith (analyses: Map<string, TestBaseline.RowAnalysis>) : TestB
         [ "src/A/A.fs", "sha256:a"
           "src/A/A.fsproj", "sha256:ap"
           "tests/TA/T.fs", "sha256:t" ]
-      Analyses = analyses }
+      Analyses = analyses
+      FullKeys = Map.empty
+      FiledAt = DateTimeOffset.MinValue }
 
 /// File `path`'s analysis as `project`'s check in checkout `root` would have, under
 /// `analyzer`'s key.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: `Restart.Selection.RebuildsFromBox(tree, differing, nonSource)` (AUTOMATION-1793 step 2b): a restart with no full
+  pass of its own that would rebuild its index from the box's retained tree. Idle-exit's AUTO window treats it like
+  `SelectsCorrectly` (5 minutes) and its log line names the tree and the distance.
+
 ## 0.10.0-alpha.128 - 2026-11-23
 
 - fix!: a per-file cache replay's status summary is the plugin's own (AUTOMATION-1836). The framework used to write

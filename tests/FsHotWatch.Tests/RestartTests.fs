@@ -43,7 +43,9 @@ let ``nothing published reads as WouldRunFullSuite, never as SelectsCorrectly`` 
 
         match Restart.read root with
         | Restart.Selection.WouldRunFullSuite _ -> ()
-        | Restart.Selection.SelectsCorrectly tree -> failwith $"an absent file claimed a restart selects at %s{tree}")
+        | Restart.Selection.SelectsCorrectly tree -> failwith $"an absent file claimed a restart selects at %s{tree}"
+        | Restart.Selection.RebuildsFromBox(tree, _, _) ->
+            failwith $"an absent file claimed a restart rebuilds from %s{tree}")
 
 [<Fact>]
 let ``an unreadable publication reads as WouldRunFullSuite`` () =
@@ -51,12 +53,24 @@ let ``an unreadable publication reads as WouldRunFullSuite`` () =
         let path = Restart.pathOf root
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
 
-        for junk in [ ""; "selects-correctly"; "selects-correctly "; "maybe sha256:t"; "\n\n" ] do
+        let junks =
+            [ ""
+              "selects-correctly"
+              "selects-correctly "
+              "maybe sha256:t"
+              "\n\n"
+              "rebuilds-from-box sha256:t"
+              "rebuilds-from-box sha256:t differing=x non-source=0"
+              "rebuilds-from-box sha256:t differing=1 non-source=2 extra" ]
+
+        for junk in junks do
             File.WriteAllText(path, junk)
 
             match Restart.read root with
             | Restart.Selection.WouldRunFullSuite _ -> ()
-            | Restart.Selection.SelectsCorrectly tree -> failwith $"%A{junk} was read as SelectsCorrectly %s{tree}")
+            | Restart.Selection.SelectsCorrectly tree -> failwith $"%A{junk} was read as SelectsCorrectly %s{tree}"
+            | Restart.Selection.RebuildsFromBox(tree, _, _) ->
+                failwith $"%A{junk} was read as RebuildsFromBox %s{tree}")
 
 [<Fact>]
 let ``the publication lives under the daemon's state directory`` () =
@@ -77,7 +91,9 @@ let ``a publication that cannot be written is logged, does not throw, and leaves
         match Restart.read root with
         | Restart.Selection.WouldRunFullSuite _ -> ()
         | Restart.Selection.SelectsCorrectly tree ->
-            failwith $"an unwritten publication read as SelectsCorrectly %s{tree}")
+            failwith $"an unwritten publication read as SelectsCorrectly %s{tree}"
+        | Restart.Selection.RebuildsFromBox(tree, _, _) ->
+            failwith $"an unwritten publication read as RebuildsFromBox %s{tree}")
 
 [<Fact>]
 let ``a publication that cannot be read reads as WouldRunFullSuite`` () =
@@ -98,4 +114,15 @@ let ``a publication that cannot be read reads as WouldRunFullSuite`` () =
         match Restart.read root with
         | Restart.Selection.WouldRunFullSuite _ -> ()
         | Restart.Selection.SelectsCorrectly tree ->
-            failwith $"an unreadable publication read as SelectsCorrectly %s{tree}")
+            failwith $"an unreadable publication read as SelectsCorrectly %s{tree}"
+        | Restart.Selection.RebuildsFromBox(tree, _, _) ->
+            failwith $"an unreadable publication read as RebuildsFromBox %s{tree}")
+
+[<Fact>]
+let ``a published RebuildsFromBox reads back with its tree and distance`` () =
+    // AUTOMATION-1793 step 2b: a restart with no full pass of its own that would rebuild its
+    // index from the box's retained tree says so, with the tree and how far it is.
+    withTempDir "restart" (fun root ->
+        Restart.publish ignore root (Restart.Selection.RebuildsFromBox("sha256:t", 3, 1))
+        test <@ File.ReadAllText(Restart.pathOf root) = "rebuilds-from-box sha256:t differing=3 non-source=1" @>
+        test <@ Restart.read root = Restart.Selection.RebuildsFromBox("sha256:t", 3, 1) @>)

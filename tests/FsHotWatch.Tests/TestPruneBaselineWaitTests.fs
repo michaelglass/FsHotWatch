@@ -137,7 +137,13 @@ let private batch () : BatchChecked =
 
 /// File the `test-baseline` record a green full run over a sealed index files for the tree
 /// on disk, in step 2's shape (schema, run, tree, analyser build, manifest).
-let private fileRecord (outcomes: OutcomeStore.Store) (root: string) (runId: string) (analyzer: string) =
+let private fileRecordWith
+    (projects: Map<string, string>)
+    (outcomes: OutcomeStore.Store)
+    (root: string)
+    (runId: string)
+    (analyzer: string)
+    =
     let tree = (ReceiptInputTree.readTree root).Value
     let key = TestBaseline.keyOf tree.Identity
     let o = JsonObject()
@@ -145,7 +151,12 @@ let private fileRecord (outcomes: OutcomeStore.Store) (root: string) (runId: str
     o["runId"] <- runId
     o["tree"] <- tree.Identity
     o["analyzer"] <- analyzer
-    o["projects"] <- JsonObject()
+    let named = JsonObject()
+
+    for KeyValue(project, key) in projects do
+        named[project] <- key
+
+    o["projects"] <- named
     let manifest = JsonArray()
 
     for path, hash in tree.Entries do
@@ -168,6 +179,8 @@ let private fileRecord (outcomes: OutcomeStore.Store) (root: string) (runId: str
     Assert.True(filed.IsSome, "positive control: the baseline record was filed")
     key.Value.Text
 
+let private fileRecord = fileRecordWith Map.empty
+
 /// A checkout whose daemon sealed its index at T, passed every project in full there and
 /// published it, with T's `test-baseline` record filed (unless `record` is false): what a
 /// green `confirm --fresh` leaves behind.
@@ -178,9 +191,7 @@ type private Verified =
       Tree: string
       Key: string option }
 
-let private verified (record: bool) =
-    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
-    let f = fixture () |> withIdentities identities
+let private verifiedOver (f: Fixture) (record: bool) =
     write f.Ctx.RepoRoot "src/Lib.fs" "module Lib\nlet f x = x\n"
     write f.Ctx.RepoRoot "tests/ProjA/data.json" "{ \"v\": 1 }\n"
     let outcomes, wiring = storesBeside f.Ctx.RepoRoot
@@ -222,6 +233,9 @@ let private verified (record: bool) =
       Wiring = wiring
       Tree = tree
       Key = key }
+
+let private verified (record: bool) =
+    verifiedOver (fixture () |> withIdentities (identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ])) record
 
 let private restart (v: Verified) = daemonOver v.F v.Wiring
 
@@ -688,6 +702,7 @@ let private restartFor (restartFrom: RestartBaselines) (coldScan: ColdScan) (v: 
             (dbPathOf v.F)
             (fun _ _ -> writes.Value <- writes.Value + 1)
             (fun _ -> [])
+            (fun _ _ _ -> Map.empty)
             coldScan
             (Some(ledgerOf v))
             current
@@ -769,6 +784,7 @@ let ``flag on: with no outcome store, or a tree that cannot be read, there is no
             (dbPathOf v.F)
             (fun _ _ -> failwith "nothing may be written")
             (fun _ -> [])
+            (fun _ _ _ -> Map.empty)
             ColdScan.NotStarted
             (Some(ledgerOf v))
             "sha256:current"
@@ -818,6 +834,302 @@ let ``flag off: the same land runs every project in full, as today`` () =
     test <@ (scheduledLaunch d.F).Selection = everyProjectInFull @>
     test <@ waitLines lines |> List.exists (fun l -> l.Contains "no checkout baseline") @>
     test <@ IndexSeal.load (dbPathOf v.F) = None @>
+
+// ---------------------------------------------------------------------------
+// (8) AUTOMATION-1793 step 2b: a box baseline counts as the checkout's earned baseline and
+// per-project evidence, re-checked at the CURRENT K_P, and idle-exit is told.
+// ---------------------------------------------------------------------------
+
+let private repoFsproj (root: string) (project: string) =
+    Path.Combine(root, "tests", project, project + ".fsproj")
+
+/// The fixture with its test projects' `.fsproj` inside the checkout, so each one's K_P can be
+/// keyed over the tree (`TestEvidenceRun.keysOf`), and `identity` naming each one's
+/// compile-input identity by project.
+let private inRepo (identity: Map<string, string> ref) =
+    let f = fixture ()
+
+    for project in [ "ProjA"; "ProjB" ] do
+        write f.Ctx.RepoRoot $"tests/%s{project}/%s{project}.fsproj" "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+
+    let byFsproj () =
+        identity.Value
+        |> Map.toList
+        |> List.map (fun (project, id) -> repoFsproj f.Ctx.RepoRoot project, id)
+        |> Map.ofList
+
+    { f with
+        Ctx =
+            { f.Ctx with
+                ProjectGraph =
+                    { f.Ctx.ProjectGraph with
+                        ObserveProjectInputs = fun () -> Some(f.Generation.Value, byFsproj ())
+                        GetAllProjects = fun () -> byFsproj () |> Map.keys |> List.ofSeq } } }
+
+/// Each project's K_P over the tree as it is now, as the daemon keys it.
+let private keysNow (v: Verified) =
+    let graph = v.F.Ctx.ProjectGraph
+
+    let identities =
+        ReceiptTransitions.ObservedModel.inputs graph |> Option.defaultValue Map.empty
+
+    TestEvidenceRun.keysOf
+        v.Wiring
+        v.F.Ctx.RepoRoot
+        (fun fsproj -> Map.tryFind fsproj identities)
+        (PluginSteps.evidenceCandidates graph configs)
+    |> fst
+
+/// A checkout that passed T in full with its projects' full passes filed box-wide at their K_P
+/// over T, and T's record naming them: what a green `confirm --fresh` leaves for the box.
+let private verifiedInRepo () =
+    let identity = ref (Map.ofList [ "ProjA", "a1"; "ProjB", "b1" ])
+    let v = verifiedOver (inRepo identity) true
+    let runId = (ledgerOf v).RunId.ToString "N"
+
+    let fullKeys =
+        keysNow v
+        |> Map.map (fun project key ->
+            match key with
+            | Ok kp ->
+                let full = TestEvidenceRun.testActionKey kp "full"
+
+                let filed =
+                    v.Outcomes.Record
+                        { Key = full
+                          Subject = project
+                          Outcome = OutcomeStore.Outcome.Pass
+                          Counts = None
+                          DurationMs = None
+                          Producer =
+                            { Binary = "test-producer"
+                              Worktree = v.F.Ctx.RepoRoot
+                              RunId = Some runId }
+                          RecordedAt = DateTimeOffset.UtcNow }
+
+                Assert.True(filed, "positive control: the full pass was filed")
+                full.Value.Text
+            | Error why -> failwith $"positive control: %s{project} has a K_P over T, not %s{why}")
+
+    Assert.True((fullKeys.Count = 2), "positive control: both projects are keyed")
+
+    let key =
+        fileRecordWith fullKeys v.Outcomes v.F.Ctx.RepoRoot runId AnalysisRecords.analyzerIdentity
+
+    let indexed =
+        TestBaseline.appendIndex
+            v.Outcomes
+            { Binary = "test-producer"
+              Worktree = v.F.Ctx.RepoRoot
+              Now = DateTimeOffset.UtcNow }
+            { Tree = v.Tree
+              Baseline = key
+              RunId = runId
+              At = DateTimeOffset.UtcNow }
+
+    Assert.True(indexed.IsSome, "positive control: T is named in the index")
+    v, identity
+
+/// The land: this checkout as a fresh land workspace finds it, after `edit` moved the tree:
+/// no ledger at all, no whole-project evidence of its own, nothing queued, and an unsealed index.
+let private asLand (v: Verified) =
+    File.Delete(FullSuiteBaseline.sidecarPath v.F.Ctx.RepoRoot)
+    File.Delete(WholeProjectEvidence.sidecarPath v.F.Ctx.RepoRoot)
+    // The resident above queued Lib.f durably; a fresh land workspace owes nothing yet.
+    File.Delete(PendingVerification.sidecarPath v.F.Ctx.RepoRoot)
+    IndexSeal.save ignore (dbPathOf v.F) None
+
+    Assert.True(
+        (FullSuiteBaseline.load v.F.Ctx.RepoRoot = FullSuiteBaseline.LoadedBaseline.Loaded None),
+        "positive control: the land's ledger records no full pass at all"
+    )
+
+/// A daemon's first build over `d` and the launch the fold releases.
+let private holdThenLaunch (d: Daemon) =
+    let held, lines = firstBuild d
+
+    Assert.True(
+        held.AwaitingDiff.IsSome,
+        "the launch must hold for the fold: "
+        + String.concat
+            " | "
+            (lines
+             |> List.filter (fun l ->
+                 l.Contains "diff-wait"
+                 || l.Contains "box-baseline"
+                 || l.Contains "Evidence gap"
+                 || l.Contains "owed"))
+    )
+
+    update d.F (withDiff held) (BatchChecked(batch ())) |> ignore
+    held, lines, scheduledLaunch d.F
+
+[<Fact(Timeout = 30000)>]
+let ``END-TO-END: a land with no full pass of its own selects exactly what a resident checkout that passed T selects``
+    ()
+    =
+    let v, _ = verifiedInRepo ()
+    editLib v
+
+    // The resident: this checkout's own full pass at T, its own evidence, its index sealed at T.
+    let _, residentLines, resident = holdThenLaunch (restart v)
+
+    test
+        <@
+            waitLines residentLines
+            |> List.exists (fun l -> l.Contains "diff-wait: holding" && not (l.Contains "from=box"))
+        @>
+
+    test <@ resident.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+    // The land: the same bytes and edit, no ledger, no evidence, the box's T.
+    asLand v
+    let landing = daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring
+    let held, lines, landed = holdThenLaunch landing
+
+    test
+        <@
+            waitLines lines
+            |> List.exists (fun l -> l.Contains "diff-wait: holding" && l.Contains "from=box")
+        @>
+
+    test <@ landed.Selection = resident.Selection @>
+    test <@ landed.Symbols = resident.Symbols @>
+    // (a) T's pass is the land's full-suite baseline, as an own full pass at T would be.
+    test <@ held.Debt.Baseline |> Option.bind _.Tree = Some v.Tree @>
+    // (b) both projects are covered by the box's evidence: none runs whole.
+    test <@ (TestPruneState.coverageEvidence held).IsSome @>
+
+[<Fact(Timeout = 30000)>]
+let ``a land whose own ledger names no more than T's pass takes T's pass as its baseline, keeping its earlier trees``
+    ()
+    =
+    let v, _ = verifiedInRepo ()
+    editLib v
+    asLand v
+    // This land once passed another tree in full; T's pass names every project it did.
+    FullSuiteBaseline.save
+        v.F.Ctx.RepoRoot
+        { RunId = Guid.NewGuid()
+          EarnedAt = DateTime.UtcNow
+          Projects = set [ "ProjA"; "ProjB" ]
+          Tree = Some "sha256:elsewhere"
+          EarlierTrees = [] }
+
+    let held, _, landed =
+        holdThenLaunch (daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring)
+
+    test
+        <@
+            held.Debt.Baseline |> Option.map (fun b -> b.Tree, b.EarlierTrees) = Some(
+                Some v.Tree,
+                [ "sha256:elsewhere" ]
+            )
+        @>
+
+    test <@ landed.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag off: the same land owes a full suite and runs every project in full, as today`` () =
+    let v, _ = verifiedInRepo ()
+    editLib v
+    asLand v
+    let d = restart v
+    let held, _ = firstBuild d
+    test <@ held.AwaitingDiff.IsNone @>
+    test <@ held.Debt.Baseline = None @>
+    test <@ (scheduledLaunch d.F).Selection = everyProjectInFull @>
+
+[<Fact(Timeout = 30000)>]
+let ``K_P: a project whose K_P moved outside the tree's contents is refused and runs whole, while the others narrow``
+    ()
+    =
+    let v, identity = verifiedInRepo ()
+    editLib v
+    asLand v
+    // ProjB's options move (a pin, a compiler option): its K_P's `options` label moves.
+    identity.Value <- identity.Value |> Map.add "ProjB" "b2"
+    let d = daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring
+    d.F.Scheduled.Value <- None
+
+    // The fold has already found Lib.f changed when the build lands, so the launch takes it.
+    let held, lines =
+        withLogLines (fun () -> update d.F (withDiff d.F.Handler.Init) (BuildCompleted BuildSucceeded))
+
+    let adopted = lines |> List.filter (fun l -> l.Contains "box-baseline: adopted")
+
+    test <@ adopted.Length = 1 @>
+    test <@ adopted.Head.Contains "vouches for 1 project(s); refused 1" @>
+    test <@ adopted.Head.Contains "ProjB (its K_P moved beyond the tree's file contents since T (options))" @>
+    test <@ held.Debt.Baseline |> Option.bind _.Tree = Some v.Tree @>
+
+    test
+        <@
+            (scheduledLaunch d.F).Selection = Map.ofList
+                [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ]
+        @>
+
+[<Fact(Timeout = 30000)>]
+let ``idle-exit: a land a restart would rebuild from the box publishes RebuildsFromBox with T and its distance`` () =
+    let v, _ = verifiedInRepo ()
+    editLib v
+    asLand v
+
+    // Flag off: today's answer.
+    restart v |> ignore
+
+    match Restart.read v.F.Ctx.RepoRoot with
+    | Restart.Selection.WouldRunFullSuite why ->
+        test <@ why = "this checkout's ledger records no full-suite baseline" @>
+    | other -> failwith $"flag off must publish today's answer, got %A{other}"
+
+    // Flag on: the daemon publishes, at start, the box tree a restart would rebuild from.
+    daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring |> ignore
+
+    match Restart.read v.F.Ctx.RepoRoot with
+    | Restart.Selection.RebuildsFromBox(tree, differing, _) ->
+        test <@ tree = v.Tree @>
+        test <@ differing >= 1 @>
+    | other -> failwith $"expected RebuildsFromBox, got %A{other}"
+
+[<Fact(Timeout = 30000)>]
+let ``idle-exit: with no box tree to rebuild from, the flag reports a full suite and says why`` () =
+    let v = boxed ()
+    let ledger = Some(ledgerOf v)
+    let dbPath = dbPathOf v.F
+
+    let selection evidence root =
+        PluginSteps.restartSelectionIn RestartBaselines.RetainedBoxBaselines evidence root dbPath ledger
+
+    test
+        <@
+            selection None v.F.Ctx.RepoRoot = Restart.Selection.WouldRunFullSuite
+                "the index is sealed at no tree; box baseline: no outcome store is wired"
+        @>
+
+    test
+        <@
+            selection (Some v.Wiring) (Path.Combine(v.F.Ctx.RepoRoot, "missing")) = Restart.Selection.WouldRunFullSuite
+                "the index is sealed at no tree; box baseline: the tree could not be read"
+        @>
+
+    // `boxed` names T in the index; once it is gone there is nothing to rebuild from.
+    Directory.Delete(v.Outcomes.DirectoryOf TestBaseline.indexKey, true)
+
+    match selection (Some v.Wiring) v.F.Ctx.RepoRoot with
+    | Restart.Selection.WouldRunFullSuite why -> test <@ why.Contains "box baseline: no retained test-baseline" @>
+    | other -> failwith $"expected a full suite, got %A{other}"
+
+    // And an own pass still answers first, flag or not.
+    test
+        <@
+            PluginSteps.restartSelectionIn
+                RestartBaselines.OwnCheckoutOnly
+                (Some v.Wiring)
+                v.F.Ctx.RepoRoot
+                dbPath
+                ledger = Restart.Selection.WouldRunFullSuite "the index is sealed at no tree"
+        @>
 
 // ---------------------------------------------------------------------------
 // The seal itself.

@@ -343,7 +343,9 @@ let internal createWithEvidenceAndQueries
     // something or a refresh is owed: their answer is a function of the tree.
     // AUTOMATION-1623 (ADR-069): what a restarted daemon's first check would select, published
     // for idle-exit's AUTO window at start and whenever the ledger or the seal can change.
-    let publishRestartSelection = publishRestartSelectionIn evidence repoRoot dbPath
+    let publishRestartSelection =
+        publishRestartSelectionIn restartFrom evidence repoRoot dbPath
+
     publishRestartSelection loadedDebt.Baseline
 
     let flushEnv: FlushEnv =
@@ -627,6 +629,7 @@ let internal createWithEvidenceAndQueries
                     (writeAnalyses db dbPath busyTimeout (fun label ->
                         ctx.DeclareBoundedWork label ImpactSelectionDeadline))
                     (projectsOfIn repoRoot ctx.ProjectGraph)
+                    (boxJudgeIn repoRoot testConfigs ctx.ProjectGraph)
                     coldScan
                     ledger
                     current

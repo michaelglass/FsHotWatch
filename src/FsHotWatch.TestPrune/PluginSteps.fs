@@ -639,6 +639,34 @@ let internal currentOutcomeKeyResultsIn
     | None, _ -> refuseAll "no test-evidence store is wired"
     | Some _, None -> refuseAll "the project model publishes no compile-input identities"
 
+/// What the box's full pass at T vouches for per project now (`BoxBaseline.judge`, AUTOMATION-1793
+/// step 2b): each configured project's K_P over the tree as it is now, keyed as the reuse path
+/// keys it (`TestEvidenceRun.keysOf`), and its `.fsproj` and compile-input identity under the
+/// current model. A project the model names no identity for has no current K_P, and is refused.
+let internal boxJudgeIn
+    (repoRoot: string)
+    (testConfigs: TestConfig list option)
+    (graph: ProjectGraphAccessor)
+    (wiring: TestEvidenceRun.Wiring)
+    (store: OutcomeRecords.IOutcomeStore)
+    (record: TestBaseline.CheckoutRecord)
+    : Map<string, BoxProject> =
+    let identities = ObservedModel.inputs graph |> Option.defaultValue Map.empty
+    let candidates = evidenceCandidates graph (defaultArg testConfigs [])
+
+    let keys =
+        TestEvidenceRun.keysOf wiring repoRoot (fun fsproj -> Map.tryFind fsproj identities) candidates
+        |> fst
+
+    let compileInputs =
+        candidates
+        |> List.choose (fun c ->
+            Map.tryFind c.ProjectFile identities
+            |> Option.map (fun identity -> c.Project, (c.ProjectFile, identity)))
+        |> Map.ofList
+
+    BoxBaseline.judge store keys compileInputs record
+
 /// The full pass a restarted daemon would diff from, whatever the tree is when it restarts:
 /// the tree T the impact index beside `dbPath` is sealed at, which is the tree the cold
 /// scan's diff against the index's rows starts from. T must be one this checkout's own full
@@ -739,6 +767,7 @@ let private boxBaselineIn
     (dbPath: string)
     (write: AnalysisResult list -> (string * string) list -> unit)
     (projectsOf: string -> string list)
+    (judge: BoxBaseline.Judge)
     (coldScan: ColdScan)
     : Result<BoxRebuilt, string> =
     match coldScan with
@@ -747,9 +776,12 @@ let private boxBaselineIn
         Error
             "files were already checked this session against the index as it was, so it is not rebuilt under their diff"
     | ColdScan.NotStarted ->
-        match evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store with
+        match
+            evidence
+            |> Option.bind (fun wiring -> wiring.Outcomes |> Option.map (fun o -> wiring, o.Store))
+        with
         | None -> Error "no outcome store is wired"
-        | Some store ->
+        | Some(wiring, store) ->
             match ReceiptInputTree.readTree repoRoot with
             | None -> Error "the tree could not be read"
             | Some tree ->
@@ -759,6 +791,7 @@ let private boxBaselineIn
                       ProjectsOf = projectsOf
                       DbPath = dbPath
                       Write = write
+                      Judge = judge wiring store
                       Log = Logging.info "test-prune" }
                     tree
 
@@ -774,6 +807,7 @@ let internal restartBaselineForIn
     (dbPath: string)
     (write: AnalysisResult list -> (string * string) list -> unit)
     (projectsOf: string -> string list)
+    (judge: BoxBaseline.Judge)
     (coldScan: ColdScan)
     (ledger: FullSuiteBaseline.Baseline option)
     (current: string)
@@ -787,32 +821,52 @@ let internal restartBaselineForIn
         | Ok baseline -> Ok(RestartBaseline.OwnBaseline baseline)
         | Error OwnMiss.Unmoved -> Error unmovedText
         | Error(OwnMiss.NoOwnBaseline why) ->
-            boxBaselineIn evidence repoRoot dbPath write projectsOf coldScan
+            boxBaselineIn evidence repoRoot dbPath write projectsOf judge coldScan
             |> Result.map RestartBaseline.BoxBaseline
             |> Result.mapError (fun box -> $"%s{why}; box baseline: %s{box}")
 
 /// What a restarted daemon's first check would select (AUTOMATION-1623, ADR-069): it diffs
-/// from the full pass `restartBaselineIn` finds and selects from the diff, or it finds none
-/// and runs every project in full.
+/// from the full pass `restartBaselineIn` finds and selects from the diff; or, with
+/// `RestartBaselines.RetainedBoxBaselines` and no own pass, it rebuilds its index from the
+/// retained box tree `BoxBaseline.predict` names and selects from that diff (AUTOMATION-1793
+/// step 2b); or it finds neither and runs every project in full. READ-ONLY.
 let internal restartSelectionIn
+    (restartFrom: RestartBaselines)
     (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
     (dbPath: string)
     (ledger: FullSuiteBaseline.Baseline option)
     : Restart.Selection =
-    match restartBaselineIn evidence dbPath ledger with
-    | Ok baseline -> Restart.Selection.SelectsCorrectly baseline.Tree
-    | Error why -> Restart.Selection.WouldRunFullSuite why
+    match restartBaselineIn evidence dbPath ledger, restartFrom with
+    | Ok baseline, _ -> Restart.Selection.SelectsCorrectly baseline.Tree
+    | Error why, RestartBaselines.OwnCheckoutOnly -> Restart.Selection.WouldRunFullSuite why
+    | Error why, RestartBaselines.RetainedBoxBaselines ->
+        let predicted =
+            match evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store with
+            | None -> Error "no outcome store is wired"
+            | Some store ->
+                match ReceiptInputTree.readTree repoRoot with
+                | None -> Error "the tree could not be read"
+                | Some tree -> BoxBaseline.predict store repoRoot tree
+
+        match predicted with
+        | Ok(record, distance) -> Restart.Selection.RebuildsFromBox(record.Tree, distance.Differing, distance.NonSource)
+        | Error box -> Restart.Selection.WouldRunFullSuite $"%s{why}; box baseline: %s{box}"
 
 /// Publish what a restarted daemon's first check would select, for idle-exit's AUTO window.
 /// Called whenever one of the facts it rests on can change: at start, after every completion
 /// (the ledger), and after every write or clear of the index seal.
 let internal publishRestartSelectionIn
+    (restartFrom: RestartBaselines)
     (evidence: TestEvidenceRun.Wiring option)
     (repoRoot: string)
     (dbPath: string)
     (ledger: FullSuiteBaseline.Baseline option)
     : unit =
-    Restart.publish (Logging.warn "test-prune") repoRoot (restartSelectionIn evidence dbPath ledger)
+    Restart.publish
+        (Logging.warn "test-prune")
+        repoRoot
+        (restartSelectionIn restartFrom evidence repoRoot dbPath ledger)
 
 /// Every project the host's project graph compiles the repository-relative `path` in, by the
 /// name its analyses are filed under (`AnalysisRecords.projectNameOf`): more than one for a

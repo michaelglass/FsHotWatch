@@ -226,6 +226,11 @@ type CheckoutRecord =
         /// entry has none): what another checkout rebuilds its index at T from
         /// (`BaselineRebuild`, AUTOMATION-1793).
         Analyses: Map<string, RowAnalysis>
+        /// Each runnable project at T and the full-run K_P key its pass rests on: what a box
+        /// baseline re-checks per project at restart (AUTOMATION-1793 step 2b).
+        FullKeys: Map<string, string>
+        /// When the record was filed.
+        FiledAt: DateTimeOffset
     }
 
 /// One cell of a manifest row, as JSON holds it.
@@ -257,8 +262,24 @@ let private rowOf (r: JsonElement) : (string * string * RowAnalysis option) opti
     else
         None
 
+/// The record's `projects` object: each project and the K_P key text its pass rests on.
+/// A value that is not a string is no entry.
+let private fullKeysOf (o: JsonElement) : Map<string, string> =
+    match Json.tryProp o "projects" with
+    | Some projects when projects.ValueKind = JsonValueKind.Object ->
+        projects.EnumerateObject()
+        |> Seq.filter (fun p -> p.Value.ValueKind = JsonValueKind.String)
+        |> Seq.map (fun p -> p.Name, p.Value.GetString())
+        |> Map.ofSeq
+    | _ -> Map.empty
+
 /// A filed record's outputs: always JSON, since the store files nothing else.
-let private parseRecord (tree: string) (key: string) (outputs: string) : Result<CheckoutRecord, string> =
+let private parseRecord
+    (tree: string)
+    (key: string)
+    (filedAt: DateTimeOffset)
+    (outputs: string)
+    : Result<CheckoutRecord, string> =
     use doc = JsonDocument.Parse outputs
     let o = doc.RootElement
 
@@ -292,7 +313,9 @@ let private parseRecord (tree: string) (key: string) (outputs: string) : Result<
                       Analyses =
                         rows
                         |> List.choose (fun (path, _, analysis) -> analysis |> Option.map (fun a -> path, a))
-                        |> Map.ofList }
+                        |> Map.ofList
+                      FullKeys = fullKeysOf o
+                      FiledAt = filedAt }
         | _ -> Error "the record has no run or no manifest"
 
 /// The `test-baseline` record for exactly `tree`, when it is still the store's passing
@@ -307,7 +330,7 @@ let checkoutRecordFor (store: OutcomeRecords.IOutcomeStore) (tree: string) : Res
     | Some(record, _) when record.Outcome <> OutcomeStore.Outcome.Pass ->
         Error "the test-baseline record for that tree is not a pass"
     | Some(_, None) -> Error "the test-baseline record for that tree has no outputs"
-    | Some(_, Some outputs) -> parseRecord tree key.Value.Text outputs
+    | Some(record, Some outputs) -> parseRecord tree key.Value.Text record.RecordedAt outputs
 
 /// The analysis keys a baseline pinned; none for a baseline that cannot be read or was filed
 /// before keys were pinned.

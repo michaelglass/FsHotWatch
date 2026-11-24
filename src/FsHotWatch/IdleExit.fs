@@ -58,7 +58,8 @@ type IdleWindow =
 /// AUTO's window for what a restart would select.
 let autoWindowFor (selection: Restart.Selection) : PositiveMinutes =
     match selection with
-    | Restart.Selection.SelectsCorrectly _ -> PositiveMinutes AutoRestartSelectsMin
+    | Restart.Selection.SelectsCorrectly _
+    | Restart.Selection.RebuildsFromBox _ -> PositiveMinutes AutoRestartSelectsMin
     | Restart.Selection.WouldRunFullSuite _ -> PositiveMinutes AutoThresholdMin
 
 /// The default pressure floor (minutes). When an idle-exit-eligible daemon is on a
@@ -548,6 +549,8 @@ let private tickWindow (deps: IdleExitDeps) : PositiveMinutes * string =
         let note =
             match selection with
             | Restart.Selection.SelectsCorrectly tree -> $"; AUTO: a restart selects its tests correctly from %s{tree}"
+            | Restart.Selection.RebuildsFromBox(tree, differing, nonSource) ->
+                $"; AUTO: a restart rebuilds its index from the box's retained tree %s{tree} (%d{differing} path(s) differing, %d{nonSource} non-source) and selects from it"
             | Restart.Selection.WouldRunFullSuite reason -> $"; AUTO: a restart would run the full suite (%s{reason})"
 
         autoWindowFor selection, note
