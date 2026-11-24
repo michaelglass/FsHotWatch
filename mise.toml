@@ -1,3 +1,14 @@
+# AUTOMATION-1896: MSBuild reads environment variables as properties, so this pins the SDK's
+# IMPLICIT FSharp.Core for every project a build or restore here reaches, including ones
+# outside the tree. The optional Falco.UnionRoutes sibling (tests/TestPrune.Tests, ADR 0001's
+# drift alarm) declares no FSharp.Core and takes the implicit one, newer (10.1.404 under SDK
+# 10.0.404) than the exact central pin, so restore failed with NU1109 on every machine with
+# the sibling checked out, a release machine included. A Directory.Build.rsp was tried first:
+# `dotnet restore` honours it but `dotnet build`'s implicit restore does not (measured).
+# MUST equal the FSharp.Core version in Directory.Packages.props (PackageFloorTests checks).
+[env]
+FSharpCoreImplicitPackageVersion = "10.1.402"
+
 [tools]
 dotnet = "10.0.404"
 
