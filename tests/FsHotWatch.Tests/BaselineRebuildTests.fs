@@ -3,9 +3,14 @@
 /// box-wide analysis records T's `test-baseline` manifest names. The soundness of the whole
 /// thing is that EVERY analysable entry resolves, or there is no baseline: never a partial
 /// index, which would diff T to T' against missing rows and select too little.
+///
+/// Amendment 2: each analysable row names the exact record (project and key) filing found
+/// it under, so resolving is an exact lookup, never a search; a row from a record filed
+/// before that names no key, and its analyses were never pinned against GC.
 module FsHotWatch.Tests.BaselineRebuildTests
 
 open System
+open System.IO
 open Xunit
 open Swensen.Unquote
 open FsHotWatch
@@ -23,18 +28,6 @@ let private storeIn (dir: string) =
 
 let private analysis: AnalysisResult = AnalysisResult.Create([], [], [])
 
-/// T's manifest as a `test-baseline` record carries it: a source file and a test file with
-/// analysis identities, and a project file, which is never analysed and has none.
-let private recordWith (identities: Map<string, string>) : TestBaseline.CheckoutRecord =
-    { Tree = "sha256:tree-1"
-      Key = "k"
-      RunId = "run-1"
-      Entries =
-        [ "src/A/A.fs", "sha256:a"
-          "src/A/A.fsproj", "sha256:ap"
-          "tests/TA/T.fs", "sha256:t" ]
-      Identities = identities }
-
 let private identities =
     Map.ofList [ "src/A/A.fs", "id-a"; "tests/TA/T.fs", "id-t" ]
 
@@ -44,6 +37,31 @@ let private projectsOf (path: string) =
     | "src/A/A.fs" -> [ "A" ]
     | "tests/TA/T.fs" -> [ "TA" ]
     | _ -> []
+
+/// The row a filed record carries for `path`, pinned to `project`'s record.
+let private pinnedTo (project: string) (path: string) =
+    TestBaseline.RowAnalysis.Pinned(
+        identities[path],
+        project,
+        (AnalysisRecords.keyOf identities[path] path project).Value.Text
+    )
+
+let private pinned =
+    Map.ofList
+        [ "src/A/A.fs", pinnedTo "A" "src/A/A.fs"
+          "tests/TA/T.fs", pinnedTo "TA" "tests/TA/T.fs" ]
+
+/// T's manifest as a `test-baseline` record carries it: a source file and a test file with
+/// analyses, and a project file, which is never analysed and has none.
+let private recordWith (analyses: Map<string, TestBaseline.RowAnalysis>) : TestBaseline.CheckoutRecord =
+    { Tree = "sha256:tree-1"
+      Key = "k"
+      RunId = "run-1"
+      Entries =
+        [ "src/A/A.fs", "sha256:a"
+          "src/A/A.fsproj", "sha256:ap"
+          "tests/TA/T.fs", "sha256:t" ]
+      Analyses = analyses }
 
 /// File `path`'s analysis as `project`'s check in checkout `root` would have, under
 /// `analyzer`'s key.
@@ -66,13 +84,14 @@ let private fileBoth (store: OutcomeStore.Store) =
     fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
 
 [<Fact>]
-let ``every analysable manifest entry resolves to its record, and a file with no identity is not asked for`` () =
+let ``every pinned manifest entry resolves to its record, and a file with no analysis is not asked for`` () =
     withTempDir "rebuild" (fun dir ->
         let store = storeIn dir
         fileBoth store
 
-        match BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith identities) with
-        | Ok resolved -> test <@ resolved |> List.map _.Path = [ "src/A/A.fs"; "tests/TA/T.fs" ] @>
+        match BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith pinned) with
+        | Ok resolved ->
+            test <@ resolved |> List.map (fun r -> r.Path, r.Project) = [ "src/A/A.fs", "A"; "tests/TA/T.fs", "TA" ] @>
         | Error misses -> failwith $"expected every entry to resolve: %A{misses}")
 
 [<Fact>]
@@ -83,8 +102,22 @@ let ``one missing record is no baseline, never a partial index`` () =
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith identities) = Error
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith pinned) = Error
                     [ BaselineRebuild.Miss.NoRecord "tests/TA/T.fs" ]
+            @>)
+
+[<Fact>]
+let ``a pinned record that GC has since evicted is no baseline`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileBoth store
+        let evicted = AnalysisRecords.keyOf identities["src/A/A.fs"] "src/A/A.fs" "A"
+        Directory.Delete(store.DirectoryOf evicted, true)
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith pinned) = Error
+                    [ BaselineRebuild.Miss.NoRecord "src/A/A.fs" ]
             @>)
 
 [<Fact>]
@@ -96,8 +129,30 @@ let ``a record whose identity matches but whose analyser build differs is no bas
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith identities) = Error
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith pinned) = Error
                     [ BaselineRebuild.Miss.NoRecord "tests/TA/T.fs" ]
+            @>)
+
+[<Fact>]
+let ``a pinned key that this analyser would not compute for the row is no baseline`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileBoth store
+
+        let foreign =
+            pinned
+            |> Map.add
+                "src/A/A.fs"
+                (TestBaseline.RowAnalysis.Pinned(
+                    "id-a",
+                    "A",
+                    (AnalysisRecords.keyWith "another-analyser-build" "id-a" "src/A/A.fs" "A").Value.Text
+                ))
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith foreign) = Error
+                    [ BaselineRebuild.Miss.NoRecord "src/A/A.fs" ]
             @>)
 
 [<Fact>]
@@ -111,8 +166,42 @@ let ``a manifest file the reading checkout no longer has is no baseline`` () =
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/a" gone (recordWith identities) = Error
+                BaselineRebuild.resolve store "/ws/a" gone (recordWith pinned) = Error
                     [ BaselineRebuild.Miss.NoProject "src/A/A.fs" ]
+            @>)
+
+[<Fact>]
+let ``a file the recorded project no longer compiles, though another still does, is no baseline`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileBoth store
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" analysis "src/A/A.fs"
+
+        let onlyInGateHook (path: string) =
+            if path = "src/A/A.fs" then
+                [ "GateHook" ]
+            else
+                projectsOf path
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" onlyInGateHook (recordWith pinned) = Error
+                    [ BaselineRebuild.Miss.NoProject "src/A/A.fs" ]
+            @>)
+
+[<Fact>]
+let ``a row filed before keys were pinned is no baseline, even when a record under its identity exists`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileBoth store
+
+        let older =
+            pinned |> Map.add "tests/TA/T.fs" (TestBaseline.RowAnalysis.Unpinned "id-t")
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith older) = Error
+                    [ BaselineRebuild.Miss.NoRecord "tests/TA/T.fs" ]
             @>)
 
 [<Fact>]
@@ -123,15 +212,16 @@ let ``records filed by checkout A resolve in checkout B at another path`` () =
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/b" projectsOf (recordWith identities)
+                BaselineRebuild.resolve store "/ws/b" projectsOf (recordWith pinned)
                 |> Result.isOk
             @>)
 
 [<Fact>]
-let ``a filed test-baseline record carries each file's analysis identity back to its reader`` () =
+let ``a test-baseline record filed by checkout A resolves in checkout B through the keys it pinned`` () =
     withTempDir "rebuild" (fun dir ->
         let store = storeIn dir
-        let tree = "sha256:tree-1", (recordWith identities).Entries
+        fileBoth store
+        let tree = "sha256:tree-1", (recordWith pinned).Entries
 
         let fullKeyOf (project: string) =
             TestEvidenceRun.testActionKey
@@ -139,20 +229,19 @@ let ``a filed test-baseline record carries each file's analysis identity back to
                   Labels = [ "closure", "c-" + project ] }
                 "full"
 
-        for project in [ "TA" ] do
-            let record: OutcomeStore.Record =
-                { Key = fullKeyOf project
-                  Subject = project
-                  Outcome = OutcomeStore.Outcome.Pass
-                  Counts = None
-                  DurationMs = None
-                  Producer =
-                    { Binary = "fshw-test"
-                      Worktree = "/ws/a"
-                      RunId = Some "run-1" }
-                  RecordedAt = DateTimeOffset(2026, 11, 24, 12, 0, 0, TimeSpan.Zero) }
+        let record: OutcomeStore.Record =
+            { Key = fullKeyOf "TA"
+              Subject = "TA"
+              Outcome = OutcomeStore.Outcome.Pass
+              Counts = None
+              DurationMs = None
+              Producer =
+                { Binary = "fshw-test"
+                  Worktree = "/ws/a"
+                  RunId = Some "run-1" }
+              RecordedAt = DateTimeOffset(2026, 11, 24, 12, 0, 0, TimeSpan.Zero) }
 
-            test <@ store.Record record @>
+        test <@ store.Record record @>
 
         let facts: TestBaseline.Facts =
             { RunId = "run-1"
@@ -169,6 +258,8 @@ let ``a filed test-baseline record carries each file's analysis identity back to
         match
             TestBaseline.file
                 (Some store)
+                "/ws/a"
+                projectsOf
                 (fun () -> Map.ofList [ "TA", Ok (fullKeyOf "TA").Value.Text ])
                 (fun () -> identities)
                 producer
@@ -178,83 +269,12 @@ let ``a filed test-baseline record carries each file's analysis identity back to
         | Error refusals -> failwith $"refused: %A{refusals}"
 
         match TestBaseline.checkoutRecordFor store (fst tree) with
-        | Ok record -> test <@ record.Identities = identities @>
-        | Error why -> failwith $"expected a hit: %s{why}")
+        | Ok record ->
+            test <@ record.Analyses = pinned @>
 
-// A file linked into two projects (intelligence links Build.Dev's Adr*.fs into GateHook):
-// the record is found under the manifest's exact identity for whichever project filed it,
-// never under a guessed one.
-
-let private linked (path: string) =
-    match path with
-    | "src/A/A.fs" -> [ "A"; "GateHook" ]
-    | other -> projectsOf other
-
-let private differing: AnalysisResult =
-    { analysis with
-        Diagnostics =
-            { analysis.Diagnostics with
-                FilteredSymbols = 2 } }
-
-[<Fact>]
-let ``a linked file resolves through the one project whose record holds its identity`` () =
-    withTempDir "rebuild" (fun dir ->
-        let store = storeIn dir
-        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" analysis "src/A/A.fs"
-        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
-
-        match BaselineRebuild.resolve store "/ws/a" linked (recordWith identities) with
-        | Ok resolved ->
             test
                 <@
-                    resolved |> List.map (fun r -> r.Path, r.Project) = [ "src/A/A.fs", "GateHook"
-                                                                          "tests/TA/T.fs", "TA" ]
+                    BaselineRebuild.resolve store "/ws/b" projectsOf record
+                    |> Result.map (List.map _.Path) = Ok [ "src/A/A.fs"; "tests/TA/T.fs" ]
                 @>
-        | Error misses -> failwith $"expected the linked file to resolve: %A{misses}")
-
-[<Fact>]
-let ``a linked file whose two projects filed the SAME analysis resolves`` () =
-    withTempDir "rebuild" (fun dir ->
-        let store = storeIn dir
-        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "A" analysis "src/A/A.fs"
-        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" analysis "src/A/A.fs"
-        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
-
-        test
-            <@
-                BaselineRebuild.resolve store "/ws/a" linked (recordWith identities)
-                |> Result.isOk
-            @>)
-
-[<Fact>]
-let ``a linked file whose two projects filed DIFFERENT analyses is ambiguous, so no baseline`` () =
-    withTempDir "rebuild" (fun dir ->
-        let store = storeIn dir
-        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "A" analysis "src/A/A.fs"
-        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" differing "src/A/A.fs"
-        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
-
-        test
-            <@
-                BaselineRebuild.resolve store "/ws/a" linked (recordWith identities) = Error
-                    [ BaselineRebuild.Miss.Ambiguous("src/A/A.fs", [ "A"; "GateHook" ]) ]
-            @>)
-
-[<Fact>]
-let ``a file removed from the project that filed its record, still in the other, is no baseline`` () =
-    withTempDir "rebuild" (fun dir ->
-        let store = storeIn dir
-        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "A" analysis "src/A/A.fs"
-        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
-
-        let onlyInGateHook (path: string) =
-            if path = "src/A/A.fs" then
-                [ "GateHook" ]
-            else
-                projectsOf path
-
-        test
-            <@
-                BaselineRebuild.resolve store "/ws/a" onlyInGateHook (recordWith identities) = Error
-                    [ BaselineRebuild.Miss.NoRecord "src/A/A.fs" ]
-            @>)
+        | Error why -> failwith $"expected a hit: %s{why}")

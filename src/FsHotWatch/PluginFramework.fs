@@ -379,6 +379,10 @@ and [<NoComparison; NoEquality>] ProjectGraphAccessor =
         /// The given project's canonical compiled-DLL path, or None when the
         /// target framework couldn't be resolved.
         GetCanonicalDllPath: string -> string option
+        /// Every project that compiles the given absolute source path, as absolute `.fsproj`
+        /// paths: more than one for a file linked into several projects, none for a file no
+        /// registered project compiles.
+        GetProjectsForFile: string -> string list
     }
 
 /// The subtask a plugin shows from the moment a finished exclusive run's result is
@@ -470,7 +474,8 @@ module ProjectGraphAccessor =
           GetAllProjects = fun () -> []
           GetTransitiveDependentProjects = fun _ -> []
           GetProjectReferences = fun _ -> []
-          GetCanonicalDllPath = fun _ -> None }
+          GetCanonicalDllPath = fun _ -> None
+          GetProjectsForFile = fun _ -> [] }
 
 /// The DELIBERATELY narrow context handed to IPC command handlers
 /// (`PluginHandler.Commands`). Commands run on the IPC thread, outside the

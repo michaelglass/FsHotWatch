@@ -732,10 +732,19 @@ let internal publishRestartSelectionIn
     : unit =
     Restart.publish (Logging.warn "test-prune") repoRoot (restartSelectionIn evidence dbPath ledger)
 
+/// Every project the host's project graph compiles the repository-relative `path` in, by the
+/// name its analyses are filed under (`AnalysisRecords.projectNameOf`): more than one for a
+/// linked file, none when the graph has no project compiling it (or no graph is wired).
+let internal projectsOfIn (repoRoot: string) (graph: ProjectGraphAccessor) (path: string) : string list =
+    graph.GetProjectsForFile(Path.Combine(repoRoot, path))
+    |> List.map AnalysisRecords.projectNameOf
+    |> List.distinct
+
 /// File the shadow `test-baseline` record a completion may earn (AUTOMATION-1587 step 2) and
 /// log one line saying whether it did, and if not, which conditions refused it. The K_P keys
 /// are those `test-scope` reports, with why a project has none (`currentOutcomeKeyResultsIn`), and the per-file analysis
-/// identities are the index's `file_keys`. Never fails the completion: a baseline that
+/// identities are the index's `file_keys`. Each analysable file is pinned to its analysis record
+/// through the projects the graph compiles it in (`projectsOfIn`). Never fails the completion: a baseline that
 /// cannot be written is logged as `not-filed`.
 let internal fileBaselineIn
     (evidence: TestEvidenceRun.Wiring option)
@@ -759,6 +768,8 @@ let internal fileBaselineIn
         try
             TestBaseline.file
                 (evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store)
+                repoRoot
+                (projectsOfIn repoRoot ctx.ProjectGraph)
                 (fun () -> currentOutcomeKeys ctx.ProjectGraph)
                 fileKeys
                 producer

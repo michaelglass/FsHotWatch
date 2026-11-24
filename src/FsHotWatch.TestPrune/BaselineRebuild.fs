@@ -13,6 +13,12 @@
 /// baseline. A partial index would diff T to T' against missing rows and select too little,
 /// the one failure a test-impact tool must not have. So `resolve` returns either every
 /// analysis or every miss, never some of the analyses.
+///
+/// Each analysable row names the exact record its analysis is read from (`RowAnalysis.Pinned`:
+/// the project and key filing found it under, AUTOMATION-1793 step 1 amendment 2), and the
+/// index keeps the records of its newest `TestBaseline.RetainedTrees` baselines alive against
+/// GC. Resolving is an exact lookup, never a search: a linked file's choice of project was
+/// made, or refused, when the baseline was filed.
 module FsHotWatch.TestPrune.BaselineRebuild
 
 open FsHotWatch
@@ -21,17 +27,14 @@ open TestPrune.AstAnalyzer
 /// Why an analysable manifest entry did not resolve. Each one means "no baseline".
 [<RequireQualifiedAccess>]
 type Miss =
-    /// The reading checkout's project model places the file in no project: the tree no
-    /// longer has it, or no longer compiles it.
+    /// The reading checkout's project model no longer compiles the file in the project whose
+    /// record the row pinned: the tree no longer has it, or that project no longer compiles it.
     | NoProject of path: string
-    /// No analysis record under the file's key for any project that compiles it: none was
-    /// filed, or it was filed by another analyser build (whose key differs), or it does not
-    /// read under this root.
+    /// No readable analysis record under the row's pinned key: evicted (the baseline fell out
+    /// of the retained trees), a key this analyser build would not compute for the row, a
+    /// record that does not read under this root, or a row filed before keys were pinned
+    /// (`RowAnalysis.Unpinned`), whose analyses were never kept.
     | NoRecord of path: string
-    /// The file compiles in several projects (a linked file) and their records under the
-    /// manifest's exact identity hold DIFFERENT analyses: which one the index held cannot
-    /// be told, so there is no baseline.
-    | Ambiguous of path: string * projects: string list
 
 /// One analysable file of T, with the analysis that holds for it there.
 type Resolved =
@@ -39,12 +42,37 @@ type Resolved =
       Project: string
       Analysis: AnalysisResult }
 
-/// Every analysable file of `record`'s manifest (each one with an analysis identity) with
-/// its analysis read from `store` under this checkout's `root`, in manifest order; or every
-/// entry that did not resolve. `projectsOf` is the reading checkout's project model: every
-/// project a repo-relative path compiles in (more than one for a linked file). The record
-/// is looked up under the manifest's EXACT identity for each; one hit, or several holding
-/// the same analysis, resolves it. READ-ONLY.
+/// One pinned row's analysis, read from `store` under `root`.
+let private resolvePinned
+    (store: OutcomeRecords.IOutcomeStore)
+    (root: string)
+    (projectsOf: string -> string list)
+    (path: string)
+    (identity: string)
+    (project: string)
+    (pinnedKey: string)
+    : Result<Resolved, Miss> =
+    if not (List.contains project (projectsOf path)) then
+        Error(Miss.NoProject path)
+    else
+        let key = AnalysisRecords.keyOf identity path project
+
+        if key.Value.Text <> pinnedKey then
+            Error(Miss.NoRecord path)
+        else
+            match AnalysisRecords.lookup store root key with
+            | None -> Error(Miss.NoRecord path)
+            | Some analysis ->
+                Ok
+                    { Path = path
+                      Project = project
+                      Analysis = analysis }
+
+/// Every analysable file of `record`'s manifest with its analysis read from `store` under
+/// this checkout's `root`, in manifest order; or every entry that did not resolve.
+/// `projectsOf` is the reading checkout's project model: every project a repo-relative path
+/// compiles in. A pinned row resolves only while its project still compiles the file, this
+/// analyser computes the key it pinned, and the record under that key reads. READ-ONLY.
 let resolve
     (store: OutcomeRecords.IOutcomeStore)
     (root: string)
@@ -53,25 +81,12 @@ let resolve
     : Result<Resolved list, Miss list> =
     let attempts =
         record.Entries
-        |> List.choose (fun (path, _) -> record.Identities |> Map.tryFind path |> Option.map (fun id -> path, id))
-        |> List.map (fun (path, identity) ->
-            match projectsOf path with
-            | [] -> Error(Miss.NoProject path)
-            | projects ->
-                let hits =
-                    projects
-                    |> List.choose (fun project ->
-                        AnalysisRecords.lookup store root (AnalysisRecords.keyOf identity path project)
-                        |> Option.map (fun analysis -> project, analysis))
-
-                match hits with
-                | [] -> Error(Miss.NoRecord path)
-                | (project, analysis) :: others when others |> List.forall (fun (_, other) -> other = analysis) ->
-                    Ok
-                        { Path = path
-                          Project = project
-                          Analysis = analysis }
-                | _ -> Error(Miss.Ambiguous(path, hits |> List.map fst)))
+        |> List.choose (fun (path, _) -> record.Analyses |> Map.tryFind path |> Option.map (fun a -> path, a))
+        |> List.map (fun (path, analysis) ->
+            match analysis with
+            | TestBaseline.RowAnalysis.Pinned(identity, project, key) ->
+                resolvePinned store root projectsOf path identity project key
+            | TestBaseline.RowAnalysis.Unpinned _ -> Error(Miss.NoRecord path))
 
     let resolved, misses =
         List.foldBack

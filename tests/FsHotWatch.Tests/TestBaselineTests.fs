@@ -86,6 +86,39 @@ let private tree =
 let private fileKeys () =
     Map.ofList [ "src/A/A.fs", "id-a"; "tests/TA/T.fs", "id-t" ]
 
+/// The checkout the baselines are filed from.
+let private root = "/ws/a"
+
+/// The projects each file compiles in, in the filing checkout's model.
+let private projectsOf (path: string) =
+    match path with
+    | "src/A/A.fs" -> [ "A" ]
+    | "tests/TA/T.fs" -> [ "TA" ]
+    | _ -> []
+
+let private analysis: TestPrune.AstAnalyzer.AnalysisResult =
+    TestPrune.AstAnalyzer.AnalysisResult.Create([], [], [])
+
+/// File `path`'s analysis under `identity` as `project`'s check in `root` would have.
+let private fileAnalysisUnder
+    (store: OutcomeStore.Store)
+    (project: string)
+    (result: TestPrune.AstAnalyzer.AnalysisResult)
+    (identity: string)
+    (path: string)
+    =
+    let key = AnalysisRecords.keyOf identity path project
+    test <@ AnalysisRecords.file store root path key result @>
+
+/// File every analysable manifest file's analysis, as the checkout's checks would have.
+let private fileAnalyses (store: OutcomeStore.Store) =
+    for KeyValue(path, identity) in fileKeys () do
+        fileAnalysisUnder store (List.head (projectsOf path)) analysis identity path
+
+/// The key text a row is pinned to when `project`'s record holds its analysis.
+let private keyText (identity: string) (path: string) (project: string) =
+    (AnalysisRecords.keyOf identity path project).Value.Text
+
 let private facts: TestBaseline.Facts =
     { RunId = "run-1"
       EarnsBaseline = true
@@ -98,8 +131,10 @@ let ``an all-pass full run over a sealed tree files one baseline and names it in
     withTempDir "baseline" (fun dir ->
         let store = storeIn dir
         projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+        fileAnalyses store
 
-        let written = TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts
+        let written =
+            TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts
 
         match written with
         | Error refusals -> failwith $"refused: %A{refusals}"
@@ -128,20 +163,26 @@ let ``an all-pass full run over a sealed tree files one baseline and names it in
         test <@ field "analyzer" = AnalysisRecords.analyzerIdentity @>
         test <@ projectKey = (fullKeyOf "TA").Value.Text @>
 
+        let cell (row: JsonElement) (i: int) =
+            if row[i].ValueKind = JsonValueKind.Null then
+                None
+            else
+                Some(row[i].GetString())
+
         let manifest =
             [ for row in o.GetProperty("manifest").EnumerateArray() ->
-                  row[0].GetString(),
-                  row[1].GetString(),
-                  (if row[2].ValueKind = JsonValueKind.Null then
-                       None
-                   else
-                       Some(row[2].GetString())) ]
+                  row.GetArrayLength(), row[0].GetString(), row[1].GetString(), cell row 2, cell row 3, cell row 4 ]
 
         test
             <@
-                manifest = [ "src/A/A.fs", "sha256:a", Some "id-a"
-                             "src/A/A.fsproj", "sha256:ap", None
-                             "tests/TA/T.fs", "sha256:t", Some "id-t" ]
+                manifest = [ 5, "src/A/A.fs", "sha256:a", Some "id-a", Some "A", Some(keyText "id-a" "src/A/A.fs" "A")
+                             5, "src/A/A.fsproj", "sha256:ap", None, None, None
+                             5,
+                             "tests/TA/T.fs",
+                             "sha256:t",
+                             Some "id-t",
+                             Some "TA",
+                             Some(keyText "id-t" "tests/TA/T.fs" "TA") ]
             @>
 
         test
@@ -158,7 +199,14 @@ let ``a run that does not earn the baseline files nothing and says so`` () =
         projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
 
         let refused =
-            TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) { facts with EarnsBaseline = false }
+            TestBaseline.file
+                (Some store)
+                root
+                projectsOf
+                fullKeys
+                fileKeys
+                (producerAt t0)
+                { facts with EarnsBaseline = false }
 
         test <@ refused = Error [ TestBaseline.Refusal.NotEarned ] @>
         test <@ store.Lookup(TestBaseline.keyOf (fst tree)) = None @>
@@ -176,6 +224,8 @@ let ``an index not sealed at the receipt tree files nothing and names both trees
         let moved =
             TestBaseline.file
                 (Some store)
+                root
+                projectsOf
                 fullKeys
                 fileKeys
                 (producerAt t0)
@@ -183,7 +233,14 @@ let ``an index not sealed at the receipt tree files nothing and names both trees
                     SealedTree = Some "sha256:tree-0" }
 
         let unsealed =
-            TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) { facts with SealedTree = None }
+            TestBaseline.file
+                (Some store)
+                root
+                projectsOf
+                fullKeys
+                fileKeys
+                (producerAt t0)
+                { facts with SealedTree = None }
 
         test <@ moved = Error [ TestBaseline.Refusal.NotSealed(Some "sha256:tree-0", fst tree) ] @>
         test <@ unsealed = Error [ TestBaseline.Refusal.NotSealed(None, fst tree) ] @>
@@ -200,7 +257,8 @@ let ``a project whose full pass is a fail, or is missing, files nothing and is n
         let store = storeIn dir
         fileFull store "run-1" OutcomeStore.Outcome.Pass "TA"
 
-        let earlier = TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts
+        let earlier =
+            TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts
 
         match earlier with
         | Error [ TestBaseline.Refusal.LacksFullPass("TB", whyB) ] -> test <@ whyB.Contains "no full-scope record" @>
@@ -208,7 +266,7 @@ let ``a project whose full pass is a fail, or is missing, files nothing and is n
 
         fileFull store "run-1" OutcomeStore.Outcome.Fail "TB"
 
-        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts with
         | Error refusals ->
             test
                 <@
@@ -228,7 +286,7 @@ let ``a project whose full pass is a fail, or is missing, files nothing and is n
                 [ "TA", Ok (fullKeyOf "TA").Value.Text
                   "TB", Error "project options unknown for tests/TB/TB.fsproj" ]
 
-        match TestBaseline.file (Some store) keyFailed fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf keyFailed fileKeys (producerAt t0) facts with
         | Error refusals ->
             test
                 <@
@@ -240,7 +298,7 @@ let ``a project whose full pass is a fail, or is missing, files nothing and is n
                 @>
         | Ok _ -> failwith "filed a baseline over a project whose key failed"
 
-        match TestBaseline.file (Some store) noKey fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf noKey fileKeys (producerAt t0) facts with
         | Error refusals ->
             test
                 <@
@@ -268,9 +326,11 @@ let ``a full pass replayed at the project's current K_P from another checkout's 
     withTempDir "baseline" (fun dir ->
         let store = storeIn dir
         fileFullElsewhere store "run-0" OutcomeStore.Outcome.Pass "TA"
+        fileAnalyses store
         fileFull store "run-1" OutcomeStore.Outcome.Pass "TB"
 
-        let written = TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts
+        let written =
+            TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts
 
         match written with
         | Ok w ->
@@ -307,7 +367,7 @@ let ``negative control: a replayed pass at another K_P, under a newer fail, or n
         fileFullUnder elsewhere "/ws/other" t0 store "run-0" OutcomeStore.Outcome.Pass "TA"
         fileFull store "run-1" OutcomeStore.Outcome.Pass "TB"
 
-        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts with
         | Error [ TestBaseline.Refusal.LacksFullPass("TA", why) ] -> test <@ why.Contains "no full-scope record" @>
         | other -> failwith $"filed or refused wrongly over a pass at another K_P: %A{other}"
 
@@ -316,7 +376,7 @@ let ``negative control: a replayed pass at another K_P, under a newer fail, or n
 
         fileFullUnder (fullKeyOf "TA") "/ws/other" (t0.AddSeconds 1.0) store "run-2" OutcomeStore.Outcome.Fail "TA"
 
-        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts with
         | Error [ TestBaseline.Refusal.LacksFullPass("TA", why) ] -> test <@ why.Contains "fail" @>
         | other -> failwith $"filed or refused wrongly under a newer fail: %A{other}"
 
@@ -335,7 +395,7 @@ let ``negative control: a replayed pass at another K_P, under a newer fail, or n
 
         test <@ store.Record unnamed @>
 
-        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts with
         | Error [ TestBaseline.Refusal.LacksFullPass("TA", why) ] -> test <@ why.Contains "names no run" @>
         | other -> failwith $"filed or refused wrongly over a pass naming no run: %A{other}"
 
@@ -344,8 +404,14 @@ let ``negative control: a replayed pass at another K_P, under a newer fail, or n
 
         test
             <@
-                TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) { facts with EarnsBaseline = false } = Error
-                    [ TestBaseline.Refusal.NotEarned ]
+                TestBaseline.file
+                    (Some store)
+                    root
+                    projectsOf
+                    fullKeys
+                    fileKeys
+                    (producerAt t0)
+                    { facts with EarnsBaseline = false } = Error [ TestBaseline.Refusal.NotEarned ]
             @>
 
         test <@ store.Lookup(TestBaseline.keyOf (fst tree)) = None @>)
@@ -356,12 +422,21 @@ let ``with no store or no receipt tree nothing is filed, and the reason is named
         let store = storeIn dir
 
         test
-            <@ TestBaseline.file None fullKeys fileKeys (producerAt t0) facts = Error [ TestBaseline.Refusal.NoStore ] @>
+            <@
+                TestBaseline.file None root projectsOf fullKeys fileKeys (producerAt t0) facts = Error
+                    [ TestBaseline.Refusal.NoStore ]
+            @>
 
         test
             <@
-                TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) { facts with ReceiptTree = None } = Error
-                    [ TestBaseline.Refusal.NoReceiptTree ]
+                TestBaseline.file
+                    (Some store)
+                    root
+                    projectsOf
+                    fullKeys
+                    fileKeys
+                    (producerAt t0)
+                    { facts with ReceiptTree = None } = Error [ TestBaseline.Refusal.NoReceiptTree ]
             @>
 
         test <@ (TestBaseline.describe "r" 0L (Error [ TestBaseline.Refusal.NoStore ])).Contains "reason=no-store" @>)
@@ -438,6 +513,7 @@ let ``gc keeps a baseline the live index names and may evict one that fell off i
     withTempDir "baseline" (fun dir ->
         let store = storeIn dir
         projects |> Set.iter (fileFull store "run-0" OutcomeStore.Outcome.Pass)
+        fileAnalyses store
 
         // 21 baselines filed at t0: the first falls off the index of twenty.
         let trees = [ for i in 0..20 -> $"sha256:tree-%d{i}" ]
@@ -451,6 +527,8 @@ let ``gc keeps a baseline the live index names and may evict one that fell off i
             let result =
                 TestBaseline.file
                     (Some store)
+                    root
+                    projectsOf
                     fullKeys
                     fileKeys
                     (producerAt t0)
@@ -509,6 +587,7 @@ let ``a store that cannot file the baseline refuses it as not-filed, and the lin
         File.WriteAllText(blocker, "")
         let readable = storeIn (Path.Combine(dir, "store"))
         projects |> Set.iter (fileFull readable "run-1" OutcomeStore.Outcome.Pass)
+        fileAnalyses readable
 
         // A store under a regular file cannot file anything: Supersede says so and deletes nothing.
         let unwritable =
@@ -536,7 +615,7 @@ let ``a store that cannot file the baseline refuses it as not-filed, and the lin
 
         try
             let refused =
-                TestBaseline.file (Some readable) fullKeys fileKeys (producerAt t0) facts
+                TestBaseline.file (Some readable) root projectsOf fullKeys fileKeys (producerAt t0) facts
 
             match refused with
             | Error [ TestBaseline.Refusal.NotFiled _ ] -> ()
@@ -615,8 +694,9 @@ let ``checkoutRecordFor reads T's run and manifest, and misses every other case`
         test <@ TestBaseline.checkoutRecordFor store (fst tree) = Error "no test-baseline record for that tree" @>
 
         projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+        fileAnalyses store
 
-        match TestBaseline.file (Some store) fullKeys fileKeys (producerAt t0) facts with
+        match TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts with
         | Ok _ -> ()
         | Error refusals -> failwith $"refused: %A{refusals}"
 
@@ -630,6 +710,14 @@ let ``checkoutRecordFor reads T's run and manifest, and misses every other case`
                     && record.Key = key.Value.Text
                     && record.RunId = "run-1"
                     && record.Entries = snd tree
+                @>
+
+            test
+                <@
+                    record.Analyses = Map.ofList
+                        [ "src/A/A.fs", TestBaseline.RowAnalysis.Pinned("id-a", "A", keyText "id-a" "src/A/A.fs" "A")
+                          "tests/TA/T.fs",
+                          TestBaseline.RowAnalysis.Pinned("id-t", "TA", keyText "id-t" "tests/TA/T.fs" "TA") ]
                 @>
         | Error why -> failwith $"expected a hit: %s{why}"
 
@@ -655,7 +743,26 @@ let ``checkoutRecordFor reads T's run and manifest, and misses every other case`
             + fields
             + "}"
 
-        test <@ missWith (valid ",\"manifest\":[[\"a\",\"h\",null]]") |> Result.isOk @>
+        let analysesOf (manifest: string) =
+            missWith (valid (",\"manifest\":" + manifest)) |> Result.map _.Analyses
+
+        // Every unanalysed shape reads as no analysis; a 3-cell row from a record filed before
+        // keys were pinned reads as Unpinned; a 5-cell row as Pinned.
+        test <@ analysesOf "[[\"a\",\"h\",null]]" = Ok Map.empty @>
+        test <@ analysesOf "[[\"a\",\"h\"]]" = Ok Map.empty @>
+        test <@ analysesOf "[[\"a\",\"h\",null,null,null]]" = Ok Map.empty @>
+        test <@ analysesOf "[[\"a\",\"h\",\"id\"]]" = Ok(Map.ofList [ "a", TestBaseline.RowAnalysis.Unpinned "id" ]) @>
+
+        test
+            <@
+                analysesOf "[[\"a\",\"h\",\"id\",\"P\",\"k\"]]" = Ok(
+                    Map.ofList [ "a", TestBaseline.RowAnalysis.Pinned("id", "P", "k") ]
+                )
+            @>
+
+        test <@ analysesOf "[[\"a\",\"h\",\"id\",\"P\"]]" = Error "the record's manifest has a malformed row" @>
+        test <@ analysesOf "[[\"a\",\"h\",\"id\",null,\"k\"]]" = Error "the record's manifest has a malformed row" @>
+        test <@ analysesOf "[[\"a\",\"h\",1]]" = Error "the record's manifest has a malformed row" @>
         test <@ missWith (valid ",\"manifest\":[[\"a\"]]") = Error "the record's manifest has a malformed row" @>
         test <@ missWith (valid ",\"manifest\":[[1,2]]") = Error "the record's manifest has a malformed row" @>
         test <@ missWith (valid ",\"manifest\":[\"a\"]") = Error "the record's manifest has a malformed row" @>
@@ -702,3 +809,168 @@ let ``checkoutRecordFor reads T's run and manifest, and misses every other case`
                 TestBaseline.checkoutRecordFor store (fst tree) = Error
                     "the test-baseline record for that tree is not a pass"
             @>)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-1793 step 1, amendment 2: filing pins the exact analysis record each analysable
+// row needs, under whichever project that compiles the file holds it, or files nothing; and
+// the index keeps the pinned records of the newest `RetainedTrees` baselines alive.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``an analysable file with no analysis record refuses the baseline, naming exactly the files that lack one`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+        fileAnalysisUnder store "A" analysis "id-a" "src/A/A.fs"
+
+        let refused =
+            TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts
+
+        test <@ refused = Error [ TestBaseline.Refusal.AnalysesUnresolved [ "tests/TA/T.fs" ] ] @>
+        test <@ TestBaseline.checkoutRecordFor store (fst tree) |> Result.isError @>
+        test <@ List.isEmpty (TestBaseline.readIndex store) @>
+
+        let line = TestBaseline.describe "run-1" 3L refused
+        test <@ line.Contains "reason=analyses-unresolved" && line.Contains "tests/TA/T.fs" @>
+        test <@ not (line.Contains "src/A/A.fs") @>)
+
+/// `src/A/A.fs` linked into a second project, as intelligence links Build.Dev's Adr*.fs into
+/// GateHook.
+let private linked (path: string) =
+    match path with
+    | "src/A/A.fs" -> [ "A"; "GateHook" ]
+    | other -> projectsOf other
+
+let private differing: TestPrune.AstAnalyzer.AnalysisResult =
+    { analysis with
+        Diagnostics =
+            { analysis.Diagnostics with
+                FilteredSymbols = 2 } }
+
+let private analysesFiledWith (store: OutcomeStore.Store) (projectsOf: string -> string list) =
+    projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+
+    let filed =
+        TestBaseline.file (Some store) root projectsOf fullKeys fileKeys (producerAt t0) facts
+
+    filed,
+    TestBaseline.checkoutRecordFor store (fst tree)
+    |> Result.map (fun record -> Map.tryFind "src/A/A.fs" record.Analyses)
+
+[<Fact>]
+let ``a linked file whose record exists under one of its two projects pins that project's key`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        fileAnalysisUnder store "GateHook" analysis "id-a" "src/A/A.fs"
+        fileAnalysisUnder store "TA" analysis "id-t" "tests/TA/T.fs"
+
+        let filed, row = analysesFiledWith store linked
+        test <@ Result.isOk filed @>
+
+        test
+            <@
+                row = Ok(
+                    Some(TestBaseline.RowAnalysis.Pinned("id-a", "GateHook", keyText "id-a" "src/A/A.fs" "GateHook"))
+                )
+            @>)
+
+[<Fact>]
+let ``a linked file whose two projects hold EQUAL analyses files, pinned to one of them`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        fileAnalyses store
+        fileAnalysisUnder store "GateHook" analysis "id-a" "src/A/A.fs"
+
+        let filed, row = analysesFiledWith store linked
+        test <@ Result.isOk filed @>
+        test <@ row = Ok(Some(TestBaseline.RowAnalysis.Pinned("id-a", "A", keyText "id-a" "src/A/A.fs" "A"))) @>)
+
+[<Fact>]
+let ``a linked file whose two projects hold DIFFERENT analyses refuses the baseline, naming the file`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        fileAnalyses store
+        fileAnalysisUnder store "GateHook" differing "id-a" "src/A/A.fs"
+
+        let filed, row = analysesFiledWith store linked
+        test <@ filed = Error [ TestBaseline.Refusal.AnalysesUnresolved [ "src/A/A.fs" ] ] @>
+        test <@ Result.isError row @>)
+
+[<Fact>]
+let ``the index keeps the analysis records of the newest three baselines, not of the fourth newest`` () =
+    withTempDir "baseline" (fun dir ->
+        let store = storeIn dir
+        projects |> Set.iter (fileFull store "run-1" OutcomeStore.Outcome.Pass)
+
+        let keysOf (i: int) =
+            Map.ofList [ "src/A/A.fs", $"id-a-%d{i}"; "tests/TA/T.fs", $"id-t-%d{i}" ]
+
+        let analysisKeysOf (i: int) =
+            [ for KeyValue(path, identity) in keysOf i -> keyText identity path (List.head (projectsOf path)) ]
+
+        let treeOf (i: int) = $"sha256:tree-%d{i}"
+
+        for i in 1..4 do
+            for KeyValue(path, identity) in keysOf i do
+                fileAnalysisUnder store (List.head (projectsOf path)) analysis identity path
+
+            let filed =
+                TestBaseline.file
+                    (Some store)
+                    root
+                    projectsOf
+                    fullKeys
+                    (fun () -> keysOf i)
+                    (producerAt (t0.AddMinutes(float i)))
+                    { facts with
+                        SealedTree = Some(treeOf i)
+                        ReceiptTree = Some(treeOf i, snd tree) }
+
+            test <@ Result.isOk filed @>
+
+        let keeps () =
+            let _, outputs = (store.LookupWithOutputs TestBaseline.indexKey).Value
+            OutcomeStore.keepsOf outputs |> List.map _.Text |> Set.ofList
+
+        let baselines (trees: int list) =
+            trees |> List.map (fun i -> (TestBaseline.keyOf (treeOf i)).Value.Text)
+
+        test <@ TestBaseline.RetainedTrees = 3 @>
+
+        test <@ keeps () = Set.ofList (baselines [ 1..4 ] @ analysisKeysOf 4 @ analysisKeysOf 3 @ analysisKeysOf 2) @>
+
+        // A baseline filed before keys were pinned (3-cell rows) pins nothing, yet takes a
+        // retained place: the fourth newest's analyses go unkept.
+        let old = treeOf 5
+
+        store.Supersede(
+            OutcomeStore.Record.ofAction (TestBaseline.keyOf old) old OutcomeStore.Outcome.Pass "fshw-test" root t0,
+            Some(
+                $"""{{"schema":"%s{TestBaseline.Schema}","tree":"%s{old}","runId":"run-1","analyzer":"%s{AnalysisRecords.analyzerIdentity}","manifest":[["src/A/A.fs","sha256:a","id-a-5"]]}}"""
+            )
+        )
+        |> ignore
+
+        let entry: TestBaseline.IndexEntry =
+            { Tree = old
+              Baseline = (TestBaseline.keyOf old).Value.Text
+              RunId = "run-1"
+              At = t0.AddMinutes 5.0 }
+
+        test <@ (TestBaseline.appendIndex store (producerAt entry.At) entry).IsSome @>
+
+        test <@ keeps () = Set.ofList (baselines [ 1..5 ] @ analysisKeysOf 4 @ analysisKeysOf 3) @>)
+
+[<Fact>]
+let ``a file's projects are every project the graph compiles it in, by the name its analyses are filed under`` () =
+    let graph: FsHotWatch.PluginFramework.ProjectGraphAccessor =
+        { FsHotWatch.PluginFramework.ProjectGraphAccessor.none with
+            GetProjectsForFile =
+                fun file ->
+                    if file = Path.Combine("/repo", "src/A/A.fs") then
+                        [ "/repo/src/A/A.fsproj"; "/repo/tools/GateHook/GateHook.fsproj" ]
+                    else
+                        [] }
+
+    test <@ PluginSteps.projectsOfIn "/repo" graph "src/A/A.fs" = [ "A"; "GateHook" ] @>
+    test <@ List.isEmpty (PluginSteps.projectsOfIn "/repo" graph "src/B/B.fs") @>

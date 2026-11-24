@@ -461,7 +461,8 @@ type PluginHost
                   GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
                   GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
                   GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
-                  GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p }
+                  GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p
+                  GetProjectsForFile = fun file -> projectGraphAccessor.GetProjectsForFile file }
               StartAsync = Async.Start
               ClaimOrQueueSharedRun = fun key start -> sharedRunScheduler.ClaimOrQueue(key, start)
               ReleaseSharedRun = fun key state -> sharedRunScheduler.Release(key, state)

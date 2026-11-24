@@ -3785,7 +3785,11 @@ type Daemon
                 fun fsproj ->
                     graph.GetReferences(AbsProjectPath.create fsproj)
                     |> List.map AbsProjectPath.value
-              GetCanonicalDllPath = fun fsproj -> graph.GetCanonicalDllPath(AbsProjectPath.create fsproj) }
+              GetCanonicalDllPath = fun fsproj -> graph.GetCanonicalDllPath(AbsProjectPath.create fsproj)
+              GetProjectsForFile =
+                fun file ->
+                    graph.GetProjectsForFile(AbsFilePath.create file)
+                    |> List.map AbsProjectPath.value }
 
     /// The single live-coverage computation reused by every "incomplete" consumer
     /// (`status`/`WaitForScan`/logs via FormatScanStatus, and `check` via the

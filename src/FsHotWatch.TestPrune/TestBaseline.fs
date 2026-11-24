@@ -19,13 +19,19 @@
 ///
 /// Its outputs name the run, the K_P full-run key each project rests on (and, for a replayed
 /// pass, the run and checkout that filed it), the analyser build,
-/// and T's manifest: per file, its content hash and the analysis identity the index held for
-/// it (`file_keys`), which is what finds the file's analysis record at T (`AnalysisRecords`).
+/// and T's manifest: per file, its content hash and, for a file the index analysed, the
+/// analysis identity it held (`file_keys`) with the project and key of the exact analysis
+/// record that holds that analysis (`AnalysisRecords`): what another checkout rebuilds its
+/// index at T from (`BaselineRebuild`). A tree some analysable file of which resolves to no
+/// single record files no baseline (AUTOMATION-1793 step 1, amendment 2).
 ///
 /// One INDEX record per repository store names the newest `IndexCapacity` baselines. It is
 /// rewritten in place (`OutcomeStore.Store.Supersede`), never appended: appended, each
 /// pointer would supersede the last and GC would trim exactly the older candidates. GC keeps
-/// every baseline the live index names (`OutcomeStore.keepsOf`).
+/// every baseline the live index names (`OutcomeStore.keepsOf`), and the analysis records the
+/// newest `RetainedTrees` of them pinned. Measured on the box 2026-11-24: with the store over
+/// its budget, GC evicted 44-52 of each tree's analyses, and an unchanged file's analysis is
+/// never re-filed (`AnalysisRecords.fileIfAbsent`), so without the pins no baseline resolved.
 module FsHotWatch.TestPrune.TestBaseline
 
 open System
@@ -53,6 +59,14 @@ let IndexSchema = "fshw-test-baseline-index-v1"
 /// How many baselines the index names, newest first (design §7, Q1).
 [<Literal>]
 let IndexCapacity = 20
+
+/// How many of the index's newest baselines keep their analysis records alive (AUTOMATION-1793
+/// step 1, amendment 2). The index record keeps the exact analysis keys these baselines pinned
+/// (`appendIndex`); an older baseline keeps only its own record, may lose its analyses to GC,
+/// and then simply does not resolve (`BaselineRebuild`). Never each baseline's own keeps: that
+/// would pin the analyses of every baseline the store still holds.
+[<Literal>]
+let RetainedTrees = 3
 
 /// The key T's baseline is filed under: T's receipt identity (ADR-013 content address).
 let keyOf (tree: string) : ActionKey.ActionKey = ActionKey.create Kind [ "tree", tree ]
@@ -87,6 +101,11 @@ type Refusal =
     | NotSealed of sealedTree: string option * receiptTree: string
     /// A runnable project's newest full-scope record at its current K_P is missing or a fail.
     | LacksFullPass of project: string * why: string
+    /// Analysable files with no single analysis record in the store under any project that
+    /// compiles them: none filed (or evicted), or a linked file whose projects' records hold
+    /// different analyses. A baseline must name the exact record every analysable file's
+    /// analysis is read from, or a rebuild at its tree could not be whole.
+    | AnalysesUnresolved of paths: string list
     /// The store did not file the record.
     | NotFiled of why: string
 
@@ -124,7 +143,7 @@ type Written =
         Tree: string
         Projects: int
         Files: int
-        /// Manifest rows carrying an analysis identity (source files the index holds).
+        /// Manifest rows pinned to an analysis record (source files the index holds).
         Identified: int
         Bytes: int64
         IndexEntries: int
@@ -180,6 +199,18 @@ let readIndex (store: OutcomeRecords.IOutcomeStore) : IndexEntry list =
     | Some(_, Some outputs) -> parseIndex outputs
     | _ -> []
 
+/// The analysis an analysable manifest row names (AUTOMATION-1793 step 1, amendment 2).
+[<RequireQualifiedAccess>]
+type RowAnalysis =
+    /// The exact analysis record filing found the file's analysis under: the analysis
+    /// identity the index held for it, the project whose record it is, and that record's key
+    /// (`AnalysisRecords.keyOf identity path project`). Its record is kept alive while the
+    /// baseline is among the index's newest `RetainedTrees`.
+    | Pinned of identity: string * project: string * key: string
+    /// A row from a record filed before keys were pinned: only the identity. Its analyses
+    /// were never kept alive for it, so nothing may be rebuilt from it.
+    | Unpinned of identity: string
+
 /// A checkout's own baseline, as its `test-baseline` record names it: what a restarted daemon
 /// may diff its tree from (AUTOMATION-1587).
 type CheckoutRecord =
@@ -191,12 +222,40 @@ type CheckoutRecord =
         RunId: string
         /// T's manifest: each path and its content hash.
         Entries: (string * string) list
-        /// The analysis identity the index held for each analysable file at T (a project
-        /// file or other unanalysed entry has none): what finds the file's analysis record
-        /// (`AnalysisRecords`) when another checkout rebuilds its index at T
+        /// The analysis each analysable file of T names (a project file or other unanalysed
+        /// entry has none): what another checkout rebuilds its index at T from
         /// (`BaselineRebuild`, AUTOMATION-1793).
-        Identities: Map<string, string>
+        Analyses: Map<string, RowAnalysis>
     }
+
+/// One cell of a manifest row, as JSON holds it.
+type private Cell =
+    | Text of string
+    | Null
+    | Other
+
+let private cellOf (e: JsonElement) : Cell =
+    match e.ValueKind with
+    | JsonValueKind.String -> Text(e.GetString())
+    | JsonValueKind.Null -> Null
+    | _ -> Other
+
+/// A manifest row: `[path, hash]` and the analysis cells. An unanalysed row carries none, or
+/// nulls (3 cells before keys were pinned, 5 since); an analysed one its identity (3 cells,
+/// `Unpinned`) or its identity, project and key (5 cells, `Pinned`). Anything else is
+/// malformed.
+let private rowOf (r: JsonElement) : (string * string * RowAnalysis option) option =
+    if r.ValueKind = JsonValueKind.Array then
+        match [ for c in r.EnumerateArray() -> cellOf c ] with
+        | [ Text path; Text hash ]
+        | [ Text path; Text hash; Null ]
+        | [ Text path; Text hash; Null; Null; Null ] -> Some(path, hash, None)
+        | [ Text path; Text hash; Text identity ] -> Some(path, hash, Some(RowAnalysis.Unpinned identity))
+        | [ Text path; Text hash; Text identity; Text project; Text key ] ->
+            Some(path, hash, Some(RowAnalysis.Pinned(identity, project, key)))
+        | _ -> None
+    else
+        None
 
 /// A filed record's outputs: always JSON, since the store files nothing else.
 let private parseRecord (tree: string) (key: string) (outputs: string) : Result<CheckoutRecord, string> =
@@ -218,24 +277,7 @@ let private parseRecord (tree: string) (key: string) (outputs: string) : Result<
     else
         match Json.tryString o "runId", Json.tryProp o "manifest" with
         | Some runId, Some manifest when manifest.ValueKind = JsonValueKind.Array ->
-            let row (r: JsonElement) =
-                if r.ValueKind = JsonValueKind.Array && r.GetArrayLength() >= 2 then
-                    match r[0].ValueKind, r[1].ValueKind with
-                    | JsonValueKind.String, JsonValueKind.String ->
-                        // The third cell is the file's analysis identity, or null for a file
-                        // the index holds no analysis of.
-                        let identity =
-                            if r.GetArrayLength() >= 3 && r[2].ValueKind = JsonValueKind.String then
-                                Some(r[2].GetString())
-                            else
-                                None
-
-                        Some(r[0].GetString(), r[1].GetString(), identity)
-                    | _ -> None
-                else
-                    None
-
-            let rows = [ for r in manifest.EnumerateArray() -> row r ]
+            let rows = [ for r in manifest.EnumerateArray() -> rowOf r ]
 
             if rows |> List.exists Option.isNone then
                 Error "the record's manifest has a malformed row"
@@ -247,9 +289,9 @@ let private parseRecord (tree: string) (key: string) (outputs: string) : Result<
                       Key = key
                       RunId = runId
                       Entries = rows |> List.map (fun (path, hash, _) -> path, hash)
-                      Identities =
+                      Analyses =
                         rows
-                        |> List.choose (fun (path, _, identity) -> identity |> Option.map (fun id -> path, id))
+                        |> List.choose (fun (path, _, analysis) -> analysis |> Option.map (fun a -> path, a))
                         |> Map.ofList }
         | _ -> Error "the record has no run or no manifest"
 
@@ -267,7 +309,22 @@ let checkoutRecordFor (store: OutcomeRecords.IOutcomeStore) (tree: string) : Res
     | Some(_, None) -> Error "the test-baseline record for that tree has no outputs"
     | Some(_, Some outputs) -> parseRecord tree key.Value.Text outputs
 
-let private indexOutputs (entries: IndexEntry list) : string =
+/// The analysis keys a baseline pinned; none for a baseline that cannot be read or was filed
+/// before keys were pinned.
+let private pinnedKeysOf (store: OutcomeRecords.IOutcomeStore) (entry: IndexEntry) : string list =
+    match checkoutRecordFor store entry.Tree with
+    | Ok record ->
+        record.Analyses
+        |> Map.toList
+        |> List.choose (fun (_, analysis) ->
+            match analysis with
+            | RowAnalysis.Pinned(_, _, key) -> Some key
+            | RowAnalysis.Unpinned _ -> None)
+    | Error _ -> []
+
+/// The index's outputs: its entries, and as `keeps` every baseline it names plus `pinned`, the
+/// analysis keys of the newest `RetainedTrees` of them.
+let private indexOutputs (entries: IndexEntry list) (pinned: string list) : string =
     let o = JsonObject()
     o["schema"] <- IndexSchema
     let keeps = JsonArray()
@@ -282,19 +339,29 @@ let private indexOutputs (entries: IndexEntry list) : string =
         row["at"] <- e.At.ToString("o", CultureInfo.InvariantCulture)
         rows.Add row
 
+    for key in pinned do
+        keeps.Add(JsonValue.Create key)
+
     o[OutcomeStore.KeepsField] <- keeps
     o["entries"] <- rows
     o.ToJsonString()
 
 /// Put `entry` at the front of the index, drop any older entry for the same tree, keep the
-/// newest `IndexCapacity`, and rewrite the index as its key's one record. Returns the entry
-/// count and the record's bytes, or `None` when it could not be filed.
+/// newest `IndexCapacity`, and rewrite the index as its key's one record, keeping alive every
+/// baseline it names and the analysis records the newest `RetainedTrees` of them pinned.
+/// Returns the entry count and the record's bytes, or `None` when it could not be filed.
 let appendIndex (store: OutcomeRecords.IOutcomeStore) (producer: Producer) (entry: IndexEntry) : (int * int64) option =
     let entries =
         entry :: (readIndex store |> List.filter (fun e -> e.Tree <> entry.Tree))
         |> List.truncate IndexCapacity
 
-    OutcomeStore.Through.supersede store (recordOf indexKey "index" None producer) (Some(indexOutputs entries))
+    let pinned =
+        entries
+        |> List.truncate RetainedTrees
+        |> List.collect (pinnedKeysOf store)
+        |> List.distinct
+
+    OutcomeStore.Through.supersede store (recordOf indexKey "index" None producer) (Some(indexOutputs entries pinned))
     |> Option.map (fun bytes -> entries.Length, bytes)
 
 /// Each runnable project's full pass at its current K_P, or why it has none. The newest
@@ -354,12 +421,60 @@ let private fullPasses
         |> Ok
     | refusals -> Error refusals
 
+/// A manifest row as filing writes it.
+type private FiledRow =
+    /// A file the index holds no analysis of (a project file, a non-source input).
+    | Unanalysed of path: string * hash: string
+    /// An analysable file, with the exact analysis record its analysis is read from.
+    | Pinned of path: string * hash: string * identity: string * project: string * key: string
+
+/// Each manifest entry as a row, every analysable one (a path with an identity in `keys`)
+/// pinned to the exact analysis record that holds it in `store`, read under `root`: its key
+/// under each project that compiles the file (`projectsOf`, more than one for a linked
+/// file). One hit, or several holding equal analyses, pins the first; none, or hits holding
+/// different analyses, leave the file unresolved, and any unresolved file refuses the
+/// baseline, naming every one.
+let private pinRows
+    (store: OutcomeRecords.IOutcomeStore)
+    (root: string)
+    (projectsOf: string -> string list)
+    (entries: (string * string) list)
+    (keys: Map<string, string>)
+    : Result<FiledRow list, Refusal list> =
+    let rows =
+        entries
+        |> List.map (fun (path, hash) ->
+            match Map.tryFind path keys with
+            | None -> Ok(FiledRow.Unanalysed(path, hash))
+            | Some identity ->
+                let hits =
+                    projectsOf path
+                    |> List.choose (fun project ->
+                        let key = AnalysisRecords.keyOf identity path project
+
+                        AnalysisRecords.lookup store root key
+                        |> Option.map (fun analysis -> project, key, analysis))
+
+                match hits with
+                | (project, key, analysis) :: others when others |> List.forall (fun (_, _, other) -> other = analysis) ->
+                    Ok(FiledRow.Pinned(path, hash, identity, project, key.Value.Text))
+                | _ -> Error path)
+
+    match
+        rows
+        |> List.choose (fun row ->
+            match row with
+            | Error path -> Some path
+            | Ok _ -> None)
+    with
+    | [] -> Ok(rows |> List.choose Result.toOption)
+    | unresolved -> Error [ Refusal.AnalysesUnresolved unresolved ]
+
 let private baselineOutputs
     (facts: Facts)
     (tree: string)
-    (entries: (string * string) list)
+    (rows: FiledRow list)
     (projects: Map<string, FullPass>)
-    (fileKeys: Map<string, string>)
     : string =
     let o = JsonObject()
     o["schema"] <- Schema
@@ -384,13 +499,13 @@ let private baselineOutputs
     o["replayed"] <- replayed
     let manifest = JsonArray()
 
-    for path, hash in entries do
-        let identity =
-            match Map.tryFind path fileKeys with
-            | Some id -> JsonValue.Create id :> JsonNode
-            | None -> null
+    let text (value: string) = JsonValue.Create value :> JsonNode
 
-        manifest.Add(JsonArray(JsonValue.Create path, JsonValue.Create hash, identity))
+    for row in rows do
+        match row with
+        | FiledRow.Unanalysed(path, hash) -> manifest.Add(JsonArray(text path, text hash, null, null, null))
+        | FiledRow.Pinned(path, hash, identity, project, key) ->
+            manifest.Add(JsonArray(text path, text hash, text identity, text project, text key))
 
     o["manifest"] <- manifest
     o.ToJsonString()
@@ -398,9 +513,13 @@ let private baselineOutputs
 /// File T's baseline and name it in the index, or say which conditions refused it. The
 /// cheap conditions are judged first and all of them reported; the projects' K_P keys
 /// (`fullKeys`, which hashes the tree) and the index's file keys are read only once those
-/// hold. Never throws for a store that cannot be written: that is `NotFiled`.
+/// hold. Every analysable file is pinned to its analysis record in `store`, read under
+/// `root` through each project `projectsOf` says compiles it (`pinRows`), or nothing is filed.
+/// Never throws for a store that cannot be written: that is `NotFiled`.
 let file
     (store: OutcomeRecords.IOutcomeStore option)
+    (root: string)
+    (projectsOf: string -> string list)
     (fullKeys: unit -> Map<string, Result<string, string>>)
     (fileKeys: unit -> Map<string, string>)
     (producer: Producer)
@@ -420,9 +539,11 @@ let file
     | [], Some store, Some(tree, entries) ->
         fullPasses store facts.RunId facts.RunnableProjects (fullKeys ())
         |> Result.bind (fun projects ->
-            let keys = fileKeys ()
+            pinRows store root projectsOf entries (fileKeys ())
+            |> Result.map (fun rows -> projects, rows))
+        |> Result.bind (fun (projects, rows) ->
             let key = keyOf tree
-            let outputs = baselineOutputs facts tree entries projects keys
+            let outputs = baselineOutputs facts tree rows projects
 
             match
                 OutcomeStore.Through.supersede store (recordOf key tree (Some facts.RunId) producer) (Some outputs)
@@ -443,7 +564,13 @@ let file
                       Tree = tree
                       Projects = projects.Count
                       Files = entries.Length
-                      Identified = entries |> List.filter (fun (path, _) -> keys.ContainsKey path) |> List.length
+                      Identified =
+                        rows
+                        |> List.filter (fun row ->
+                            match row with
+                            | FiledRow.Pinned _ -> true
+                            | FiledRow.Unanalysed _ -> false)
+                        |> List.length
                       Bytes = bytes
                       IndexEntries = indexEntries
                       IndexBytes = indexBytes
@@ -465,6 +592,7 @@ let private token (refusal: Refusal) =
     | Refusal.NotSealed _ -> "not-sealed"
     | Refusal.LacksFullPass _ -> "lacks-full-pass"
     | Refusal.NotFiled _ -> "not-filed"
+    | Refusal.AnalysesUnresolved _ -> "analyses-unresolved"
 
 let private detail (refusal: Refusal) =
     match refusal with
@@ -476,6 +604,10 @@ let private detail (refusal: Refusal) =
         $"index not sealed at the receipt tree: sealed=%s{sealedText}, receipt=%s{receipt}"
     | Refusal.LacksFullPass(project, why) -> $"project %s{project} lacks a full-pass K_P record: %s{why}"
     | Refusal.NotFiled why -> why
+    | Refusal.AnalysesUnresolved paths ->
+        let named = String.concat ", " paths
+
+        $"%d{paths.Length} analysable file(s) resolve to no single analysis record under any project that compiles them: %s{named}"
 
 /// The completion's one log line. Every line starts `test-baseline: written` or
 /// `test-baseline: not written`, carries `run=`, and a refusal names each failed condition
