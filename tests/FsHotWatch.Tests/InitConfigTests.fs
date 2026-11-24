@@ -314,7 +314,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                        DependsOn = []
                        Traces = None
                        RunOn = TestRunTrigger.OnChange
-                       MaxParallelProjects = None |} }
+                       MaxParallelProjects = None
+                       RestartFrom = FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly |} }
 
 
     let json = serializeConfig config
@@ -357,7 +358,8 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                        DependsOn = []
                        Traces = None
                        RunOn = TestRunTrigger.OnChange
-                       MaxParallelProjects = None |} }
+                       MaxParallelProjects = None
+                       RestartFrom = FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly |} }
 
 
     let json = serializeConfig config

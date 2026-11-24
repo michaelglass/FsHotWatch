@@ -159,6 +159,24 @@ let internal markUnanalysableIn
                       Reason = detail }
                     state.UnanalyzableFiles }
 
+/// A file's analysis as the impact index holds it: its symbols named relative to
+/// `analysisRoot`, its test methods credited to `projectName`. What the fold writes for a live
+/// check, and what a box baseline's rebuild writes for a recorded one (`BoxBaseline`), so the
+/// two cannot index the same analysis differently.
+let internal indexedAnalysisOf
+    (analysisRoot: string)
+    (projectName: string)
+    (analysisResult: AnalysisResult)
+    : AnalysisResult =
+    { Symbols = normalizeSymbolPaths analysisRoot analysisResult.Symbols
+      Dependencies = analysisResult.Dependencies
+      TestMethods =
+        analysisResult.TestMethods
+        |> List.map (fun t -> { t with TestProject = projectName })
+      Attributes = analysisResult.Attributes
+      ParentLinks = analysisResult.ParentLinks
+      Diagnostics = analysisResult.Diagnostics }
+
 /// Fold one file's successful symbol analysis into the state: persist its symbols, diff
 /// them against what is stored, enqueue what changed, stamp its freshness, and report the
 /// analysis when no run is due.
@@ -196,17 +214,8 @@ let internal foldAnalysedFile
             "test-prune"
             $"FCS reported %d{errCount} error(s) for %s{relPath}; persisting symbols but marking file dirty in freshness sidecar (Phase B detectChanges will fall back for this file)"
 
-    let normalizedSymbols = normalizeSymbolPaths analysisRoot analysisResult.Symbols
-
-    let fileAnalysis =
-        { Symbols = normalizedSymbols
-          Dependencies = analysisResult.Dependencies
-          TestMethods =
-            analysisResult.TestMethods
-            |> List.map (fun t -> { t with TestProject = projectName })
-          Attributes = analysisResult.Attributes
-          ParentLinks = analysisResult.ParentLinks
-          Diagnostics = analysisResult.Diagnostics }
+    let fileAnalysis = indexedAnalysisOf analysisRoot projectName analysisResult
+    let normalizedSymbols = fileAnalysis.Symbols
 
     // Read stored symbols from the in-memory snapshot (populated after
     // each flush). Falls back to DB for warm starts where the snapshot

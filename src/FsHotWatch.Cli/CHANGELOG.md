@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `tests.restartFromBoxBaseline` (boolean, default `false`): a checkout with no full pass of its own restarts
+  from the box's retained green baseline (AUTOMATION-1793 step 2). Anything but a boolean is a config error.
+
 ## 0.14.0-alpha.162 - 2026-11-23
 
 - chore: rebuild to bundle updated dependencies

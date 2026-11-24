@@ -550,7 +550,9 @@ type DaemonConfiguration =
                DependsOn: string list
                Traces: FsHotWatch.TestPrune.TraceSettings option
                RunOn: TestRunTrigger
-               MaxParallelProjects: int option |} option
+               MaxParallelProjects: int option
+               // `tests.restartFromBoxBaseline` (AUTOMATION-1793 step 2). Off unless set.
+               RestartFrom: FsHotWatch.TestPrune.RestartBaselines |} option
         FileCommands:
             {| PluginName: string
                Pattern: string option
@@ -1725,6 +1727,18 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | _ -> refuse n
                 | true, n -> refuse n
 
+            // `tests.restartFromBoxBaseline`: a checkout with no full pass of its own restarts
+            // from the box's retained green baseline (AUTOMATION-1793 step 2). Off unless set;
+            // anything but a boolean is refused, so a typo never switches it on or off unseen.
+            let restartFrom =
+                match v.TryGetProperty("restartFromBoxBaseline") with
+                | false, _ -> FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly
+                | true, b when b.ValueKind = JsonValueKind.True ->
+                    FsHotWatch.TestPrune.RestartBaselines.RetainedBoxBaselines
+                | true, b when b.ValueKind = JsonValueKind.False ->
+                    FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly
+                | true, b -> refuseUnknown "tests.restartFromBoxBaseline" (describeValue b) [ "true"; "false" ]
+
             if projects.IsEmpty then
                 None
             else
@@ -1739,7 +1753,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                        DependsOn = dependsOn
                        Traces = traces
                        RunOn = runOn
-                       MaxParallelProjects = maxParallelProjects |}
+                       MaxParallelProjects = maxParallelProjects
+                       RestartFrom = restartFrom |}
         | _ -> None
 
     let fileCommands =
@@ -3356,6 +3371,7 @@ let registerPluginsIn
                 config.Exclude
                 testMode
                 t.MaxParallelProjects
+                t.RestartFrom
                 t.Traces
                 untracedProjects
                 weaveOverrides

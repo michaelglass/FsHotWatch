@@ -77,7 +77,7 @@ type private Daemon =
 
 let private dbPathOf (f: Fixture) = Path.Combine(f.Ctx.RepoRoot, "tp.db")
 
-let private daemonOver (f: Fixture) (wiring: TestEvidenceRun.Wiring) =
+let private daemonOverWith (restartFrom: RestartBaselines) (f: Fixture) (wiring: TestEvidenceRun.Wiring) =
     let next = restarted f
     let busy = ref false
     let queued = ref 0
@@ -88,6 +88,7 @@ let private daemonOver (f: Fixture) (wiring: TestEvidenceRun.Wiring) =
             ImpactQueries.ofDatabase
             (TimeSpan.FromMinutes 5.0)
             None
+            restartFrom
             (fun () -> Map.empty)
             (dbPathOf f)
             TestPrune.Domain.WalkPolicy.FollowAll
@@ -121,6 +122,9 @@ let private daemonOver (f: Fixture) (wiring: TestEvidenceRun.Wiring) =
             Ctx = ctx }
       Busy = busy
       Queued = queued }
+
+let private daemonOver (f: Fixture) (wiring: TestEvidenceRun.Wiring) =
+    daemonOverWith RestartBaselines.OwnCheckoutOnly f wiring
 
 let private batch () : BatchChecked =
     { Trigger = BootScan
@@ -632,6 +636,188 @@ let ``negative control (1587): a sealed tree this checkout's full suite never pa
             v.F.Ctx.RepoRoot
             { ledgerOf v with
                 Tree = Some "sha256:elsewhere" })
+
+// ---------------------------------------------------------------------------
+// (7) AUTOMATION-1793 step 2: behind `tests.restartFromBoxBaseline`, a checkout with no full
+// pass of its own restarts from the box's retained green baseline. Off, nothing changes.
+// ---------------------------------------------------------------------------
+
+/// A land: a checkout whose own full passes were all at another tree and whose index is
+/// unsealed, after the covered edit, with T's record filed box-wide and named in the index. (A
+/// checkout whose ledger records no full pass at all still owes one to earn its baseline, which
+/// no restart baseline answers.)
+let private boxed () =
+    let v = verified true
+
+    let producer: TestBaseline.Producer =
+        { Binary = "test-producer"
+          Worktree = "/elsewhere"
+          Now = DateTimeOffset.UtcNow }
+
+    let indexed =
+        TestBaseline.appendIndex
+            v.Outcomes
+            producer
+            { Tree = v.Tree
+              Baseline = v.Key.Value
+              RunId = "run"
+              At = DateTimeOffset.UtcNow }
+
+    Assert.True(indexed.IsSome, "positive control: T is named in the index")
+
+    FullSuiteBaseline.save
+        v.F.Ctx.RepoRoot
+        { ledgerOf v with
+            Tree = Some "sha256:elsewhere"
+            EarlierTrees = [] }
+
+    IndexSeal.save ignore (dbPathOf v.F) None
+    editLib v
+    v
+
+/// `restartBaselineForIn` over `v` as a first build would ask it, counting index writes.
+let private restartFor (restartFrom: RestartBaselines) (coldScan: ColdScan) (v: Verified) =
+    let writes = ref 0
+    let current = (ReceiptInputTree.read v.F.Ctx.RepoRoot).Value
+
+    let outcome =
+        PluginSteps.restartBaselineForIn
+            restartFrom
+            (Some v.Wiring)
+            v.F.Ctx.RepoRoot
+            (dbPathOf v.F)
+            (fun _ _ -> writes.Value <- writes.Value + 1)
+            (fun _ -> [])
+            coldScan
+            (Some(ledgerOf v))
+            current
+
+    outcome, writes.Value, current
+
+[<Fact(Timeout = 30000)>]
+let ``flag off: a checkout with no full pass of its own gets exactly today's answer, and the index is untouched`` () =
+    let v = boxed ()
+
+    let outcome, writes, current =
+        restartFor RestartBaselines.OwnCheckoutOnly ColdScan.NotStarted v
+
+    let today =
+        PluginSteps.checkoutBaselineIn (Some v.Wiring) (dbPathOf v.F) (Some(ledgerOf v)) current
+        |> Result.map RestartBaseline.OwnBaseline
+
+    test <@ outcome = today @>
+    test <@ outcome = Error "the index is sealed at no tree" @>
+    test <@ writes = 0 @>
+    test <@ IndexSeal.load (dbPathOf v.F) = None @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag on: a checkout with no full pass of its own restarts from the retained T, rebuilt and sealed there`` () =
+    let v = boxed ()
+
+    let outcome, writes, current =
+        restartFor RestartBaselines.RetainedBoxBaselines ColdScan.NotStarted v
+
+    match outcome with
+    | Ok(RestartBaseline.BoxBaseline rebuilt) ->
+        test <@ rebuilt.Baseline.Tree = v.Tree @>
+        test <@ rebuilt.Baseline.Key = v.Key.Value @>
+        test <@ rebuilt.Baseline.Tree <> current @>
+        test <@ rebuilt.Distance.Differing = 1 @>
+    | other -> failwith $"expected a box baseline, got %A{other}"
+
+    test <@ writes = 1 @>
+    test <@ IndexSeal.load (dbPathOf v.F) = Some v.Tree @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag on: a checkout with its own full pass still restarts from it, and nothing is rebuilt`` () =
+    let v = verified true
+    editLib v
+
+    let outcome, writes, current =
+        restartFor RestartBaselines.RetainedBoxBaselines ColdScan.NotStarted v
+
+    let own =
+        PluginSteps.checkoutBaselineIn (Some v.Wiring) (dbPathOf v.F) (Some(ledgerOf v)) current
+
+    test <@ outcome = (own |> Result.map RestartBaseline.OwnBaseline) @>
+    test <@ Result.isOk outcome @>
+    test <@ writes = 0 @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag on: once a file has been checked this session the index is not rebuilt under the diff`` () =
+    let v = boxed ()
+
+    let outcome, writes, _ =
+        restartFor RestartBaselines.RetainedBoxBaselines (ColdScan.InProgress []) v
+
+    match outcome with
+    | Error why -> test <@ why.Contains "already checked" @>
+    | Ok other -> failwith $"expected no baseline, got %A{other}"
+
+    test <@ writes = 0 @>
+    test <@ IndexSeal.load (dbPathOf v.F) = None @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag on: with no outcome store, or a tree that cannot be read, there is no box baseline`` () =
+    let v = boxed ()
+
+    let ask evidence root =
+        PluginSteps.restartBaselineForIn
+            RestartBaselines.RetainedBoxBaselines
+            evidence
+            root
+            (dbPathOf v.F)
+            (fun _ _ -> failwith "nothing may be written")
+            (fun _ -> [])
+            ColdScan.NotStarted
+            (Some(ledgerOf v))
+            "sha256:current"
+
+    test
+        <@ ask None v.F.Ctx.RepoRoot = Error "the index is sealed at no tree; box baseline: no outcome store is wired" @>
+
+    test
+        <@
+            ask (Some v.Wiring) (Path.Combine(v.F.Ctx.RepoRoot, "missing")) = Error
+                "the index is sealed at no tree; box baseline: the tree could not be read"
+        @>
+
+    test <@ IndexSeal.load (dbPathOf v.F) = None @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag on: the first build of a land holds for the fold and selects from the box baseline's diff`` () =
+    let v = boxed ()
+    let d = daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring
+
+    let held, lines = firstBuild d
+
+    test <@ held.AwaitingDiff.IsSome @>
+
+    test
+        <@
+            waitLines lines
+            |> List.exists (fun l ->
+                l.Contains "diff-wait: holding"
+                && l.Contains $"checkout-baseline tree=%s{v.Tree} record=%s{v.Key.Value}"
+                && l.Contains "from=box")
+        @>
+
+    test <@ IndexSeal.load (dbPathOf v.F) = Some v.Tree @>
+    update d.F (withDiff held) (BatchChecked(batch ())) |> ignore
+    let launch = scheduledLaunch d.F
+    test <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``flag off: the same land runs every project in full, as today`` () =
+    let v = boxed ()
+    let d = restart v
+
+    let held, lines = firstBuild d
+
+    test <@ held.AwaitingDiff.IsNone @>
+    test <@ (scheduledLaunch d.F).Selection = everyProjectInFull @>
+    test <@ waitLines lines |> List.exists (fun l -> l.Contains "no checkout baseline") @>
+    test <@ IndexSeal.load (dbPathOf v.F) = None @>
 
 // ---------------------------------------------------------------------------
 // The seal itself.

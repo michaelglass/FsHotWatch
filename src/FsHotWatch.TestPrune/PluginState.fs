@@ -91,6 +91,42 @@ type CheckoutBaseline =
         Manifest: ReceiptTree
     }
 
+/// How far a box baseline's tree is from the working files it was chosen for (AUTOMATION-1793
+/// step 2): every path whose content differs, counting a path only one side holds, and how many
+/// of them are not sources. A project file, props, targets or config routes a project to a whole
+/// run, so the choice ranks fewer non-source differences first.
+type BoxDistance =
+    {
+        /// Paths whose content differs between the manifest and the working files.
+        Differing: int
+        /// Of those, the paths that are not sources: neither analysed at T nor, for a path
+        /// the manifest lacks, an F# source.
+        NonSource: int
+    }
+
+/// A box baseline rebuilt into this checkout's index: the retained tree T, presented to the
+/// restart path as `restartBaselineIn` presents an own one, with how far T was from the
+/// working files when it was chosen.
+type BoxRebuilt =
+    { Baseline: CheckoutBaseline
+      Distance: BoxDistance }
+
+/// The baseline a restarted daemon diffs from.
+[<RequireQualifiedAccess>]
+type RestartBaseline =
+    /// A full pass of this checkout's own (ADR-071).
+    | OwnBaseline of baseline: CheckoutBaseline
+    /// The box's retained green baseline, rebuilt into the index and sealed there
+    /// (`tests.restartFromBoxBaseline`, AUTOMATION-1793 step 2).
+    | BoxBaseline of rebuilt: BoxRebuilt
+
+module RestartBaseline =
+    /// The tree, record and manifest the restart diffs from, whichever kind it is.
+    let baseline (restart: RestartBaseline) : CheckoutBaseline =
+        match restart with
+        | RestartBaseline.OwnBaseline baseline -> baseline
+        | RestartBaseline.BoxBaseline rebuilt -> rebuilt.Baseline
+
 /// The baseline a build's launch has in hand, which is what makes its diff worth waiting
 /// for (`DiffWait`).
 [<RequireQualifiedAccess>]
@@ -102,7 +138,7 @@ type WaitBasis =
     /// No run has completed this session, and the tree MOVED from this checkout's own last
     /// full pass (`CheckoutBaseline`). An unchanged tree is not one: the skip on records
     /// answers it without a diff (ADR-067), so waiting would only cost time.
-    | CheckoutBaseline of baseline: CheckoutBaseline
+    | CheckoutBaseline of baseline: RestartBaseline
 
 module WaitBasis =
     /// The `reason=` token of a `diff-wait:` line.
@@ -110,7 +146,13 @@ module WaitBasis =
         match basis with
         | WaitBasis.NoBaseline -> "none"
         | WaitBasis.SessionBaseline -> "session-baseline"
-        | WaitBasis.CheckoutBaseline b -> $"checkout-baseline tree=%s{b.Tree} record=%s{b.Key} run=%s{b.RunId}"
+        | WaitBasis.CheckoutBaseline(RestartBaseline.OwnBaseline b) ->
+            $"checkout-baseline tree=%s{b.Tree} record=%s{b.Key} run=%s{b.RunId}"
+        | WaitBasis.CheckoutBaseline(RestartBaseline.BoxBaseline rebuilt) ->
+            let b = rebuilt.Baseline
+
+            $"checkout-baseline tree=%s{b.Tree} record=%s{b.Key} run=%s{b.RunId} from=box "
+            + $"differing=%d{rebuilt.Distance.Differing} non-source=%d{rebuilt.Distance.NonSource}"
 
 /// A launch `BuildSucceeded` held back because the symbol diff of the tree it built was
 /// not folded yet (`DiffWait`), and the baseline that made it wait.
@@ -288,7 +330,7 @@ type TestPruneState =
         /// this session's first run completes. While held, the launch the fold releases
         /// selects as with a session baseline, with T's manifest as its evidence. Cleared on
         /// expiry (that launch is today's full suite) and by any completion.
-        CheckoutBaseline: CheckoutBaseline option
+        CheckoutBaseline: RestartBaseline option
         /// A launch this session's mode held back since a command last asked for one: the
         /// session launches only requested runs (`TestMode.launchesOwedRuns`), and a build
         /// left a run owed. `OwedRunRequested` launches it.
@@ -651,7 +693,7 @@ module TestRunInputs =
           EvidenceTree =
             state.EvidenceReceipt
             |> Option.bind (fun receipt -> receipt.InputTreeHash)
-            |> Option.orElse (state.CheckoutBaseline |> Option.map _.Tree)
+            |> Option.orElse (state.CheckoutBaseline |> Option.map (RestartBaseline.baseline >> _.Tree))
           EvidenceWitness =
             match state.Receipt with
             | HeldReceipt.Standing(receipt, _) -> Some receipt.BeforeRun
@@ -664,6 +706,6 @@ module TestRunInputs =
                 |> Option.filter (fun manifest ->
                     ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity))
             | HeldReceipt.NoneYet
-            | HeldReceipt.Revoked _ -> state.CheckoutBaseline |> Option.map _.Manifest
+            | HeldReceipt.Revoked _ -> state.CheckoutBaseline |> Option.map (RestartBaseline.baseline >> _.Manifest)
           SealedTree = state.SealedTree |> Option.map _.Identity
           OnCheckoutBaselineOnly = state.LastResults.IsNone && state.CheckoutBaseline.IsSome }

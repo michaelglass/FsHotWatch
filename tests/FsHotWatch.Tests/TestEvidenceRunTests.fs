@@ -208,6 +208,7 @@ let internal checkoutSetUp
             ImpactQueries.ofDatabase
             (TimeSpan.FromMinutes 5.0)
             None
+            RestartBaselines.OwnCheckoutOnly
             (fun () -> Map.empty)
             (Path.Combine(root, "test-prune.db"))
             TestPrune.Domain.WalkPolicy.FollowAll

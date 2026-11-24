@@ -38,9 +38,13 @@ type Miss =
 
 /// One analysable file of T, with the analysis that holds for it there.
 type Resolved =
-    { Path: string
-      Project: string
-      Analysis: AnalysisResult }
+    {
+        Path: string
+        /// The analysis identity the row pinned: the `file_keys` entry a rebuilt index holds.
+        Identity: string
+        Project: string
+        Analysis: AnalysisResult
+    }
 
 /// One pinned row's analysis, read from `store` under `root`.
 let private resolvePinned
@@ -65,6 +69,7 @@ let private resolvePinned
             | Some analysis ->
                 Ok
                     { Path = path
+                      Identity = identity
                       Project = project
                       Analysis = analysis }
 

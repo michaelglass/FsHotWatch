@@ -79,6 +79,9 @@ let internal createWithEvidenceAndQueries
     (launchDeadline: TimeSpan)
     // `tests.maxParallelProjects`: at most this many test groups in flight; `None` for all.
     (maxParallelProjects: int option)
+    // `tests.restartFromBoxBaseline`: what a launch with no session baseline may diff from.
+    // `OwnCheckoutOnly` is the behaviour before the flag.
+    (restartFrom: RestartBaselines)
     // The declared exclusions: indexed test-project name -> written reason. Called once
     // per debt classification (flush, launch, completion), so a caller can re-resolve
     // them against the current project inventory. A throw is a refusal to classify, and
@@ -614,7 +617,20 @@ let internal createWithEvidenceAndQueries
           TestConfigs = testConfigs
           Launch = launchSteps
           HoldForDiff = holdForDiff
-          FindCheckoutBaseline = checkoutBaselineIn evidence dbPath
+          FindCheckoutBaseline =
+            fun ctx coldScan ledger current ->
+                restartBaselineForIn
+                    restartFrom
+                    evidence
+                    repoRoot
+                    dbPath
+                    (writeAnalyses db dbPath busyTimeout (fun label ->
+                        ctx.DeclareBoundedWork label ImpactSelectionDeadline))
+                    (projectsOfIn repoRoot ctx.ProjectGraph)
+                    coldScan
+                    ledger
+                    current
+          PublishRestartSelection = publishRestartSelection
           JoinRefresh = joinRefresh
           LaunchScopeOf = launchScopeOf
           ObserveModelGeneration = observeModelGeneration }
@@ -771,6 +787,7 @@ let internal createWithQueries
         queriesOf
         launchDeadline
         maxParallelProjects
+        RestartBaselines.OwnCheckoutOnly
         resolveExcludedProjects
         dbPath
         walkPolicy
@@ -834,6 +851,9 @@ let createWithTracesIn
     // `tests.maxParallelProjects`: at most this many test groups run at once, longest
     // expected wall first; `None` launches every group at once.
     (maxParallelProjects: int option)
+    // `tests.restartFromBoxBaseline`: `OwnCheckoutOnly` restarts only from this checkout's own
+    // full pass, as before the flag; `RetainedBoxBaselines` also from the box's retained ones.
+    (restartFrom: RestartBaselines)
     (traces: TraceSettings option)
     (untracedProjects: Set<string>)
     (weaveOverrides: Map<string, TraceWeaveTests>)
@@ -860,6 +880,7 @@ let createWithTracesIn
         ImpactQueries.ofDatabase
         launchDeadline
         maxParallelProjects
+        restartFrom
         resolveExcludedProjects
         dbPath
         walkPolicy
@@ -906,6 +927,7 @@ let createWithTraces
         []
         TestMode.initial
         None
+        RestartBaselines.OwnCheckoutOnly
         traces
         untracedProjects
         weaveOverrides

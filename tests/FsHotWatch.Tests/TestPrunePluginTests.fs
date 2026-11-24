@@ -4727,7 +4727,7 @@ let ``a build waits for its tree's check results only when the diff alone would 
         <@
             DiffWait.awaits
                 { held with
-                    Basis = WaitBasis.CheckoutBaseline checkout }
+                    Basis = WaitBasis.CheckoutBaseline(RestartBaseline.OwnBaseline checkout) }
         @>
     // With no model published, every seal is ignored: none could release the wait.
     test <@ not (DiffWait.awaits { held with HasModel = false }) @>

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1793 step 2, behind `tests.restartFromBoxBaseline` (off by default). A launch with no session
+  baseline whose checkout has no full pass of its own restarts from the box's retained green baseline: of the newest
+  `RetainedTrees` baselines, the tree whose manifest differs least from the working files (fewest non-source
+  differences, then fewest differences, then the newest). Its analyses are resolved from the records its manifest
+  pins, written into the index through the cold scan's own write path with the manifest's `file_keys`, and the index
+  is sealed there; the launch then diffs that tree to the working tree. Any miss, a failure while rebuilding, or a
+  file already checked this session is no baseline, and the index is left not sealed at that tree.
+
 ## 0.13.0-alpha.124 - 2026-11-23
 
 - fix: a replayed symbol analysis names test-prune's evidence (AUTOMATION-1836). Its status line, which becomes

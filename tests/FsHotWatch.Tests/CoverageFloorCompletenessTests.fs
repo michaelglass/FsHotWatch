@@ -24,7 +24,9 @@ let private platforms = [ "macos"; "linux" ]
 let private exemptions =
     Map.ofList
         [ "Plugin.fs",
-          "declares only a function type alias, a record and an interface: no executable line, so the cobertura report has no row for it on either platform. Measured 2026-10-17: absent from the macOS unit-suite report (mise run test-direct, 138 files) and from Linux CI run 39059935111's 138-file report" ]
+          "declares only a function type alias, a record and an interface: no executable line, so the cobertura report has no row for it on either platform. Measured 2026-10-17: absent from the macOS unit-suite report (mise run test-direct, 138 files) and from Linux CI run 39059935111's 138-file report"
+          "RestartBaselines.fs",
+          "declares only the `tests.restartFromBoxBaseline` union (AUTOMATION-1793 step 2): no executable line, so the cobertura report has no row for it. Measured 2026-11-24: absent from the macOS full-suite report of mise run ci (run 4de98274854e45c7bbea8ed2e83503a0). A union with no members compiles to no instrumented line on any platform" ]
 
 /// Every `src/**/*.fs` outside build output, as a path relative to the repo root.
 let private sourceFiles root =

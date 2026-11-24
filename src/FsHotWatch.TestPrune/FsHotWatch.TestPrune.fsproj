@@ -41,6 +41,7 @@
     <Compile Include="IndexedAnalysis.fs" />
     <Compile Include="AnalysisRecords.fs" />
     <Compile Include="TestBaseline.fs" />
+    <Compile Include="RestartBaselines.fs" />
     <Compile Include="BaselineRebuild.fs" />
     <Compile Include="IndexSeal.fs" />
     <Compile Include="PendingVerification.fs" />
@@ -97,6 +98,7 @@
     <Compile Include="ImpactLaunch.fs" />
     <Compile Include="ImpactRun.fs" />
     <Compile Include="FileCheckedHandler.fs" />
+    <Compile Include="BoxBaseline.fs" />
     <Compile Include="CheckHandlers.fs" />
     <Compile Include="RunOutcomeReport.fs" />
     <Compile Include="CompletionStages.fs" />

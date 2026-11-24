@@ -2550,7 +2550,8 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                        DependsOn = []
                        Traces = None
                        RunOn = TestRunTrigger.OnChange
-                       MaxParallelProjects = None |}
+                       MaxParallelProjects = None
+                       RestartFrom = FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly |}
             FileCommands =
                 [ {| PluginName = "a"
                      Pattern = Some "*.md"
@@ -3674,6 +3675,36 @@ let ``parseConfig refuses a tests.maxParallelProjects that is not a positive who
         Assert.Throws<ConfigErrorException>(fun () -> maxParallelOf value |> ignore)
 
     test <@ ex.message.Contains "tests.maxParallelProjects" && ex.message.Contains value @>
+
+// --- parseConfig: tests.restartFromBoxBaseline ---
+// AUTOMATION-1793 step 2: whether a checkout with no full pass of its own restarts from the
+// box's retained green baseline. Off unless set.
+
+let private restartFromOf (value: string) =
+    let json =
+        """{"tests": {"restartFromBoxBaseline": __V__, "projects": [{"project": "T"}]}}""".Replace("__V__", value)
+
+    (parseConfig json defaults).Tests.Value.RestartFrom
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig without tests.restartFromBoxBaseline restarts only from this checkout's own full pass`` () =
+    let config = parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults
+    test <@ config.Tests.Value.RestartFrom = FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig reads tests.restartFromBoxBaseline as a boolean`` () =
+    test <@ restartFromOf "true" = FsHotWatch.TestPrune.RestartBaselines.RetainedBoxBaselines @>
+    test <@ restartFromOf "false" = FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly @>
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("\"true\"")>]
+[<InlineData("1")>]
+[<InlineData("null")>]
+let ``parseConfig refuses a tests.restartFromBoxBaseline that is not a boolean`` (value: string) =
+    let ex =
+        Assert.Throws<ConfigErrorException>(fun () -> restartFromOf value |> ignore)
+
+    test <@ ex.message.Contains "tests.restartFromBoxBaseline" @>
 
 [<Fact(Timeout = 15000)>]
 let ``a daemon session starts in the mode tests.runOn names`` () =

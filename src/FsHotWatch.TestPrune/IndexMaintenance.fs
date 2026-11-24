@@ -115,6 +115,40 @@ let internal namedDbWriteFailure
         :> exn
     | other -> other
 
+/// Write `results` (one per file) and their analysis identities `fileKeys` to the index at
+/// `dbPath` in ONE `RebuildProjects` transaction: the index never claims an analysis it rolled
+/// back (`IndexedAnalysis`). Declared over itself (`declare`), timed and logged; a write blocked
+/// on a lock is raised as that (`namedDbWriteFailure`). The flush writes the cold scan's
+/// analyses through it, and a box baseline's rebuild its recorded ones (`BoxBaseline`).
+let internal writeAnalyses
+    (db: Database)
+    (dbPath: string)
+    (busyTimeout: TimeSpan)
+    (declare: string -> IDisposable)
+    (results: AnalysisResult list)
+    (fileKeys: (string * string) list)
+    : unit =
+    // Declared over itself, inside the impact selection's declaration: a write blocked on
+    // a lock or crawling through contention then reads as THIS write, with its size, its
+    // database and how far into its bound it is, rather than as a fold that never
+    // returned. Timed and logged when it returns, so daemon.log shows where the time went.
+    let label = dbWriteLabel dbPath results.Length
+    let clock = Diagnostics.Stopwatch.StartNew()
+
+    do
+        use _declaration = declare label
+
+        try
+            db.RebuildProjects(results, fileKeys = fileKeys)
+        with ex ->
+            match namedDbWriteFailure dbPath busyTimeout results.Length clock.Elapsed ex with
+            | named when obj.ReferenceEquals(named, ex) -> reraise ()
+            | named -> raise named
+
+    Logging.info
+        "test-prune"
+        $"Wrote %d{results.Length} file(s) to %s{dbPath} in %s{PluginWedge.formatElapsed clock.Elapsed}"
+
 /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
 /// call. Pure function: takes state, returns updated state.
 ///
@@ -144,29 +178,8 @@ let internal flushPendingAnalysis
         | None -> ()
 
     if allResults.Count > 0 then
-        // Each file's analysis identity goes in the same transaction as its symbols, so
-        // the index never claims an analysis it rolled back (`IndexedAnalysis`).
-        //
-        // Declared over itself, inside the impact selection's declaration: a write blocked on
-        // a lock or crawling through contention then reads as THIS write, with its size, its
-        // database and how far into its bound it is, rather than as a fold that never
-        // returned. Timed and logged when it returns, so daemon.log shows where the time went.
-        let label = dbWriteLabel dbPath allResults.Count
-        let clock = Diagnostics.Stopwatch.StartNew()
-
-        do
-            use _declaration = declare label
-
-            try
-                db.RebuildProjects(Seq.toList allResults, fileKeys = Map.toList state.PendingIdentities)
-            with ex ->
-                match namedDbWriteFailure dbPath busyTimeout allResults.Count clock.Elapsed ex with
-                | named when obj.ReferenceEquals(named, ex) -> reraise ()
-                | named -> raise named
-
-        Logging.info
-            "test-prune"
-            $"Wrote %d{allResults.Count} file(s) to %s{dbPath} in %s{PluginWedge.formatElapsed clock.Elapsed}"
+        // Each file's analysis identity goes in the same transaction as its symbols.
+        writeAnalyses db dbPath busyTimeout declare (Seq.toList allResults) (Map.toList state.PendingIdentities)
 
     // Update in-memory snapshot so subsequent FileChecked reads see the
     // new symbols instead of hitting the DB mid-rebuild.

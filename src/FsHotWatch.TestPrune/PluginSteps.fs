@@ -686,6 +686,32 @@ let internal restartBaselineIn
                                     { Identity = tree
                                       Entries = record.Entries } })
 
+/// Why this checkout's own full pass is no baseline to diff from.
+[<RequireQualifiedAccess>]
+type internal OwnMiss =
+    /// The tree has not moved from it: the skip on records answers it, without a diff.
+    | Unmoved
+    /// This checkout has no usable full pass of its own (`restartBaselineIn`'s refusal).
+    | NoOwnBaseline of why: string
+
+let private unmovedText =
+    "the tree has not moved from the ledger's full-suite baseline (the skip on records answers it)"
+
+/// `restartBaselineIn`'s conditions, and the current tree MOVED from T; otherwise which miss.
+let internal ownBaselineIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (dbPath: string)
+    (ledger: FullSuiteBaseline.Baseline option)
+    (current: string)
+    : Result<CheckoutBaseline, OwnMiss> =
+    match ledger |> Option.bind (fun baseline -> baseline.Tree) with
+    | Some tree when String.Equals(tree, current, StringComparison.Ordinal) -> Error OwnMiss.Unmoved
+    | _ ->
+        match restartBaselineIn evidence dbPath ledger with
+        | Error why -> Error(OwnMiss.NoOwnBaseline why)
+        | Ok baseline when String.Equals(baseline.Tree, current, StringComparison.Ordinal) -> Error OwnMiss.Unmoved
+        | Ok baseline -> Ok baseline
+
 /// A full pass of this checkout's own, when a restarted daemon may diff from it
 /// (AUTOMATION-1587): `restartBaselineIn`'s conditions, and the current tree MOVED from T.
 /// Every failure is a miss, and a miss is today's launch. An unchanged tree is a miss on
@@ -696,18 +722,74 @@ let internal checkoutBaselineIn
     (ledger: FullSuiteBaseline.Baseline option)
     (current: string)
     : Result<CheckoutBaseline, string> =
-    let unmoved =
-        Error "the tree has not moved from the ledger's full-suite baseline (the skip on records answers it)"
+    ownBaselineIn evidence dbPath ledger current
+    |> Result.mapError (fun miss ->
+        match miss with
+        | OwnMiss.Unmoved -> unmovedText
+        | OwnMiss.NoOwnBaseline why -> why)
 
-    match ledger |> Option.bind (fun baseline -> baseline.Tree) with
-    | Some tree when String.Equals(tree, current, StringComparison.Ordinal) -> unmoved
-    | _ ->
-        restartBaselineIn evidence dbPath ledger
-        |> Result.bind (fun baseline ->
-            if String.Equals(baseline.Tree, current, StringComparison.Ordinal) then
-                unmoved
-            else
-                Ok baseline)
+/// The box's retained green baseline, rebuilt into the index at `dbPath` and sealed there
+/// (`BoxBaseline.rebuild`), for a checkout with no full pass of its own; or why not. Only
+/// before any file is checked this session: the cold scan diffs each file against the index's
+/// rows as it first finds them, so rows rewritten after a file was checked would leave that
+/// file's diff against another tree.
+let private boxBaselineIn
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (dbPath: string)
+    (write: AnalysisResult list -> (string * string) list -> unit)
+    (projectsOf: string -> string list)
+    (coldScan: ColdScan)
+    : Result<BoxRebuilt, string> =
+    match coldScan with
+    | ColdScan.InProgress _
+    | ColdScan.Flushed ->
+        Error
+            "files were already checked this session against the index as it was, so it is not rebuilt under their diff"
+    | ColdScan.NotStarted ->
+        match evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store with
+        | None -> Error "no outcome store is wired"
+        | Some store ->
+            match ReceiptInputTree.readTree repoRoot with
+            | None -> Error "the tree could not be read"
+            | Some tree ->
+                BoxBaseline.rebuild
+                    { Store = store
+                      Root = repoRoot
+                      ProjectsOf = projectsOf
+                      DbPath = dbPath
+                      Write = write
+                      Log = Logging.info "test-prune" }
+                    tree
+
+/// The baseline a launch with no session baseline diffs from (AUTOMATION-1587, AUTOMATION-1793
+/// step 2): this checkout's own full pass (`checkoutBaselineIn`); or, with
+/// `RestartBaselines.RetainedBoxBaselines` and no own pass, the box's retained green baseline
+/// rebuilt into the index (`boxBaselineIn`). `OwnCheckoutOnly` is exactly `checkoutBaselineIn`.
+/// A box miss names both refusals, and is today's launch.
+let internal restartBaselineForIn
+    (restartFrom: RestartBaselines)
+    (evidence: TestEvidenceRun.Wiring option)
+    (repoRoot: string)
+    (dbPath: string)
+    (write: AnalysisResult list -> (string * string) list -> unit)
+    (projectsOf: string -> string list)
+    (coldScan: ColdScan)
+    (ledger: FullSuiteBaseline.Baseline option)
+    (current: string)
+    : Result<RestartBaseline, string> =
+    match restartFrom with
+    | RestartBaselines.OwnCheckoutOnly ->
+        checkoutBaselineIn evidence dbPath ledger current
+        |> Result.map RestartBaseline.OwnBaseline
+    | RestartBaselines.RetainedBoxBaselines ->
+        match ownBaselineIn evidence dbPath ledger current with
+        | Ok baseline -> Ok(RestartBaseline.OwnBaseline baseline)
+        | Error OwnMiss.Unmoved -> Error unmovedText
+        | Error(OwnMiss.NoOwnBaseline why) ->
+            boxBaselineIn evidence repoRoot dbPath write projectsOf coldScan
+            |> Result.map RestartBaseline.BoxBaseline
+            |> Result.mapError (fun box -> $"%s{why}; box baseline: %s{box}")
 
 /// What a restarted daemon's first check would select (AUTOMATION-1623, ADR-069): it diffs
 /// from the full pass `restartBaselineIn` finds and selects from the diff, or it finds none

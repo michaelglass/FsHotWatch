@@ -264,7 +264,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                            DependsOn = []
                            Traces = None
                            RunOn = TestRunTrigger.OnChange
-                           MaxParallelProjects = None |} }
+                           MaxParallelProjects = None
+                           RestartFrom = FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly |} }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)

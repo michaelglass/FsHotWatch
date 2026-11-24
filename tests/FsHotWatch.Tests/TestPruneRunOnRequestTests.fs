@@ -86,6 +86,7 @@ let private onRequestSession (tmpDir: string) (dbPath: string) (configs: TestCon
             []
             (TestMode.startingWith false)
             None
+            RestartBaselines.OwnCheckoutOnly
             None
             Set.empty
             Map.empty

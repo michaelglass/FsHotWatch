@@ -296,10 +296,20 @@ type internal BuildCompletedEnv =
         TestConfigs: TestConfig list option
         Launch: LaunchSteps
         HoldForDiff: WaitBasis -> StateStep
-        /// This checkout's own last full pass, given its ledger's baseline and the current
-        /// tree, when the tree moved from it and the index is still sealed there; otherwise
-        /// why not (`checkoutBaselineIn`).
-        FindCheckoutBaseline: FullSuiteBaseline.Baseline option -> string -> Result<CheckoutBaseline, string>
+        /// The baseline a launch with no session baseline diffs from, given whether a file has
+        /// been checked this session, the ledger's baseline and the current tree: this
+        /// checkout's own last full pass, when the tree moved from it and the index is still
+        /// sealed there, or, behind `tests.restartFromBoxBaseline`, the box's retained green
+        /// baseline rebuilt into the index; otherwise why not (`restartBaselineForIn`).
+        FindCheckoutBaseline:
+            PluginCtx<TestPruneMsg>
+                -> ColdScan
+                -> FullSuiteBaseline.Baseline option
+                -> string
+                -> Result<RestartBaseline, string>
+        /// Publish what a restarted daemon would select, after a box baseline's rebuild wrote
+        /// the index seal (AUTOMATION-1623): called after every write of the seal.
+        PublishRestartSelection: FullSuiteBaseline.Baseline option -> unit
         JoinRefresh: StateStep
         LaunchScopeOf: TestRunInputs -> LaunchScope
         ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
@@ -474,6 +484,9 @@ let internal onBuildCompletedWith
                         // tree T the current tree MOVED from, with the index still sealed at
                         // T (AUTOMATION-1587). An unchanged tree is no checkout baseline:
                         // the skip on records answers it at once, without a diff.
+                        // Behind `tests.restartFromBoxBaseline`, a checkout with no such pass
+                        // diffs from the box's retained green baseline instead, rebuilt into
+                        // the index before any file is checked (AUTOMATION-1793 step 2).
                         let basis =
                             if hasCachedResults then
                                 WaitBasis.SessionBaseline
@@ -481,8 +494,12 @@ let internal onBuildCompletedWith
                                 match currentTree with
                                 | None -> WaitBasis.NoBaseline
                                 | Some tree ->
-                                    match findCheckoutBaseline state.Debt.Baseline tree with
-                                    | Ok baseline -> WaitBasis.CheckoutBaseline baseline
+                                    match findCheckoutBaseline ctx state.ColdScan state.Debt.Baseline tree with
+                                    | Ok(RestartBaseline.OwnBaseline _ as baseline) ->
+                                        WaitBasis.CheckoutBaseline baseline
+                                    | Ok(RestartBaseline.BoxBaseline _ as baseline) ->
+                                        env.PublishRestartSelection state.Debt.Baseline
+                                        WaitBasis.CheckoutBaseline baseline
                                     | Error why ->
                                         Logging.info "test-prune" $"diff-wait: no checkout baseline: %s{why}"
                                         WaitBasis.NoBaseline
