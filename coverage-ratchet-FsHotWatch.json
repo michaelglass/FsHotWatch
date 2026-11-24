@@ -2733,6 +2733,20 @@
         "reason": "new file (AUTOMATION-1816 step 2b). Measured 2026-11-21 on Linux with the same counts as macOS: lines 148/148, branches 61/61. Floor = the measured value.",
         "platform": "linux"
       }
+    ],
+    "BaselineRebuild.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1793 step 1: resolve every analysable manifest entry from the box-wide analysis records, or none). Explicit so that a report which drops this file fails coverage-check. Measured on macOS 2026-11-24 by the CI coverage run of the full unit suite: line 100%, branch 100% (every arm of resolve is reached by BaselineRebuildTests).",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1793 step 1). The code takes no platform-specific path, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100%, branch 100%.",
+        "platform": "linux"
+      }
     ]
   },
   "countFloors": {

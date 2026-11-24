@@ -191,6 +191,11 @@ type CheckoutRecord =
         RunId: string
         /// T's manifest: each path and its content hash.
         Entries: (string * string) list
+        /// The analysis identity the index held for each analysable file at T (a project
+        /// file or other unanalysed entry has none): what finds the file's analysis record
+        /// (`AnalysisRecords`) when another checkout rebuilds its index at T
+        /// (`BaselineRebuild`, AUTOMATION-1793).
+        Identities: Map<string, string>
     }
 
 /// A filed record's outputs: always JSON, since the store files nothing else.
@@ -216,7 +221,16 @@ let private parseRecord (tree: string) (key: string) (outputs: string) : Result<
             let row (r: JsonElement) =
                 if r.ValueKind = JsonValueKind.Array && r.GetArrayLength() >= 2 then
                     match r[0].ValueKind, r[1].ValueKind with
-                    | JsonValueKind.String, JsonValueKind.String -> Some(r[0].GetString(), r[1].GetString())
+                    | JsonValueKind.String, JsonValueKind.String ->
+                        // The third cell is the file's analysis identity, or null for a file
+                        // the index holds no analysis of.
+                        let identity =
+                            if r.GetArrayLength() >= 3 && r[2].ValueKind = JsonValueKind.String then
+                                Some(r[2].GetString())
+                            else
+                                None
+
+                        Some(r[0].GetString(), r[1].GetString(), identity)
                     | _ -> None
                 else
                     None
@@ -226,11 +240,17 @@ let private parseRecord (tree: string) (key: string) (outputs: string) : Result<
             if rows |> List.exists Option.isNone then
                 Error "the record's manifest has a malformed row"
             else
+                let rows = List.choose id rows
+
                 Ok
                     { Tree = tree
                       Key = key
                       RunId = runId
-                      Entries = List.choose id rows }
+                      Entries = rows |> List.map (fun (path, hash, _) -> path, hash)
+                      Identities =
+                        rows
+                        |> List.choose (fun (path, _, identity) -> identity |> Option.map (fun id -> path, id))
+                        |> Map.ofList }
         | _ -> Error "the record has no run or no manifest"
 
 /// The `test-baseline` record for exactly `tree`, when it is still the store's passing
