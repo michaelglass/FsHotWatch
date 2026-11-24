@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.129 - 2026-11-25
+
 - feat: `Restart.Selection.RebuildsFromBox(tree, differing, nonSource)` (AUTOMATION-1793 step 2b): a restart with no full
   pass of its own that would rebuild its index from the box's retained tree. Idle-exit's AUTO window treats it like
   `SelectsCorrectly` (5 minutes) and its log line names the tree and the distance.

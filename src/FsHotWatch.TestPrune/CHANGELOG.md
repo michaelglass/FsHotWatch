@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.125 - 2026-11-25
+
 - feat: AUTOMATION-1793 step 2b conditions. A box baseline vouches for a project only while every entry its K_P's
   content labels (`closure`, `shared`, `otherProjects`) are computed from now is a path T's manifest names, or a
   known input the manifest never holds (`.config/dotnet-tools.json`) whose digest is the one T's record kept
