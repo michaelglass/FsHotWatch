@@ -654,8 +654,8 @@ let internal boxJudgeIn
     let identities = ObservedModel.inputs graph |> Option.defaultValue Map.empty
     let candidates = evidenceCandidates graph (defaultArg testConfigs [])
 
-    let keys =
-        TestEvidenceRun.keysOf wiring repoRoot (fun fsproj -> Map.tryFind fsproj identities) candidates
+    let inputs =
+        TestEvidenceRun.inputsOf wiring repoRoot (fun fsproj -> Map.tryFind fsproj identities) candidates
         |> fst
 
     let compileInputs =
@@ -665,7 +665,7 @@ let internal boxJudgeIn
             |> Option.map (fun identity -> c.Project, (c.ProjectFile, identity)))
         |> Map.ofList
 
-    BoxBaseline.judge store keys compileInputs record
+    BoxBaseline.judge store inputs compileInputs record
 
 /// The full pass a restarted daemon would diff from, whatever the tree is when it restarts:
 /// the tree T the impact index beside `dbPath` is sealed at, which is the tree the cold

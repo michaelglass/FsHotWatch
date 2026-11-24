@@ -78,15 +78,16 @@ let closureOf (references: string -> string list) (project: string) : string lis
 
     walk Set.empty (references project) |> Set.remove project |> Set.toList
 
-/// Every candidate's key from ONE walk of the tree, with the bytes hashed. A candidate
-/// that cannot be keyed is an `Error` naming why, and so is every candidate when the walk
-/// itself fails: an unkeyable project is simply launched, never a reason to stop the run.
-let keysOf
+/// Every candidate's K_P INPUTS from ONE walk of the tree, with the bytes hashed: the named
+/// entries each label of its key is the digest of (`TestEvidenceKey.Inputs`). A candidate that
+/// cannot be keyed is an `Error` naming why, and so is every candidate when the walk itself
+/// fails.
+let inputsOf
     (wiring: Wiring)
     (repoRoot: string)
     (optionsHash: string -> string option)
     (candidates: Candidate list)
-    : Map<string, Result<TestEvidenceKey.Key, string>> * int64 =
+    : Map<string, Result<TestEvidenceKey.Inputs, string>> * int64 =
     if List.isEmpty candidates then
         Map.empty, 0L
     else
@@ -94,7 +95,7 @@ let keysOf
             let snap = TestEvidenceKey.snapshot repoRoot wiring.ExcludePatterns
             let mutable bytes = snap.BytesHashed
 
-            let keys =
+            let inputs =
                 candidates
                 |> List.map (fun c ->
                     let request: TestEvidenceKey.Request =
@@ -113,15 +114,28 @@ let keysOf
                     (TestEvidenceKey.inputsFor snap request
                      |> Result.map (fun (inputs, extra) ->
                          bytes <- bytes + extra
-                         TestEvidenceKey.compute inputs)))
+                         inputs)))
                 |> Map.ofList
 
-            keys, bytes
+            inputs, bytes
         with ex ->
             candidates
             |> List.map (fun c -> c.Project, Error $"could not key the tree: %s{ex.Message}")
             |> Map.ofList,
             0L
+
+/// Every candidate's key from ONE walk of the tree (`inputsOf`), with the bytes hashed. A
+/// candidate that cannot be keyed is an `Error` naming why, and so is every candidate when
+/// the walk itself fails: an unkeyable project is simply launched, never a reason to stop
+/// the run.
+let keysOf
+    (wiring: Wiring)
+    (repoRoot: string)
+    (optionsHash: string -> string option)
+    (candidates: Candidate list)
+    : Map<string, Result<TestEvidenceKey.Key, string>> * int64 =
+    let inputs, bytes = inputsOf wiring repoRoot optionsHash candidates
+    inputs |> Map.map (fun _ -> Result.map TestEvidenceKey.compute), bytes
 
 /// The outcome-store action key of a test project's run over K_P `key`, in `scope`
 /// (`full` or `impact`). K_P's own labels travel in as `kp:<label>`, so a miss names the K_P

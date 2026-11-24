@@ -128,7 +128,8 @@ let ``settleDebt - a red full run keeps the earlier green baseline instead of re
           EarnedAt = DateTime.UtcNow.AddHours -1.0
           Projects = Set.ofList [ "P" ]
           Tree = None
-          EarlierTrees = [] }
+          EarlierTrees = []
+          Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
     let state =
         { handler.Init with

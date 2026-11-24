@@ -2255,7 +2255,8 @@ let private seedBaseline (projects: string list) (repoRoot: string) =
           EarnedAt = DateTime.UtcNow
           Projects = Set.ofList projects
           Tree = None
-          EarlierTrees = [] }
+          EarlierTrees = []
+          Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
 [<Fact>]
 let ``parse test-rerun --allow-full-suite returns TestRerun AllowFullSuite`` () =

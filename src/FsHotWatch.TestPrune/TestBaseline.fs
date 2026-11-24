@@ -229,6 +229,10 @@ type CheckoutRecord =
         /// Each runnable project at T and the full-run K_P key its pass rests on: what a box
         /// baseline re-checks per project at restart (AUTOMATION-1793 step 2b).
         FullKeys: Map<string, string>
+        /// The K_P inputs a test run depends on that T's manifest never holds
+        /// (`TestEvidenceKey.EvidenceKnownInputs`), each with its digest at T: a box baseline
+        /// accepts such an input of a project's content labels only while it is unchanged.
+        KnownInputs: Map<string, string>
         /// When the record was filed.
         FiledAt: DateTimeOffset
     }
@@ -262,12 +266,13 @@ let private rowOf (r: JsonElement) : (string * string * RowAnalysis option) opti
     else
         None
 
-/// The record's `projects` object: each project and the K_P key text its pass rests on.
-/// A value that is not a string is no entry.
-let private fullKeysOf (o: JsonElement) : Map<string, string> =
-    match Json.tryProp o "projects" with
-    | Some projects when projects.ValueKind = JsonValueKind.Object ->
-        projects.EnumerateObject()
+/// The record's object `name` of string values as a map: `projects` (each project and the K_P
+/// key text its pass rests on) and `knownInputs`. A record without it names none, and a value
+/// that is not a string is no entry.
+let private stringsOf (o: JsonElement) (name: string) : Map<string, string> =
+    match Json.tryProp o name with
+    | Some named when named.ValueKind = JsonValueKind.Object ->
+        named.EnumerateObject()
         |> Seq.filter (fun p -> p.Value.ValueKind = JsonValueKind.String)
         |> Seq.map (fun p -> p.Name, p.Value.GetString())
         |> Map.ofSeq
@@ -314,7 +319,8 @@ let private parseRecord
                         rows
                         |> List.choose (fun (path, _, analysis) -> analysis |> Option.map (fun a -> path, a))
                         |> Map.ofList
-                      FullKeys = fullKeysOf o
+                      FullKeys = stringsOf o "projects"
+                      KnownInputs = stringsOf o "knownInputs"
                       FiledAt = filedAt }
         | _ -> Error "the record has no run or no manifest"
 
@@ -498,6 +504,7 @@ let private baselineOutputs
     (tree: string)
     (rows: FiledRow list)
     (projects: Map<string, FullPass>)
+    (knownInputs: (string * string) list)
     : string =
     let o = JsonObject()
     o["schema"] <- Schema
@@ -520,6 +527,12 @@ let private baselineOutputs
 
     o["projects"] <- p
     o["replayed"] <- replayed
+    let known = JsonObject()
+
+    for path, digest in knownInputs do
+        known[path] <- digest
+
+    o["knownInputs"] <- known
     let manifest = JsonArray()
 
     let text (value: string) = JsonValue.Create value :> JsonNode
@@ -566,7 +579,9 @@ let file
             |> Result.map (fun rows -> projects, rows))
         |> Result.bind (fun (projects, rows) ->
             let key = keyOf tree
-            let outputs = baselineOutputs facts tree rows projects
+
+            let outputs =
+                baselineOutputs facts tree rows projects (TestEvidenceKey.knownInputDigests root)
 
             match
                 OutcomeStore.Through.supersede store (recordOf key tree (Some facts.RunId) producer) (Some outputs)

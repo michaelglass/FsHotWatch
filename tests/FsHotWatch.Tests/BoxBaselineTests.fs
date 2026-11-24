@@ -54,6 +54,7 @@ let private recordOf (entries: (string * string) list) (analysed: string list) :
         |> List.map (fun path -> path, TestBaseline.RowAnalysis.Pinned("id-" + path, "P", "key-" + path))
         |> Map.ofList
       FullKeys = Map.empty
+      KnownInputs = Map.empty
       FiledAt = DateTimeOffset.MinValue }
 
 let private treeOf (entries: (string * string) list) : ReceiptTree =
@@ -601,27 +602,39 @@ let ``an index entry whose record no longer reads is not a candidate`` () =
 let private at (minute: int) =
     DateTimeOffset(2026, 11, 24, 12, minute, 0, TimeSpan.Zero)
 
-/// A K_P whose labels are `base`, with `moved` labels given another digest.
-let private kpWith (moved: (string * string) list) : TestEvidenceKey.Key =
-    [ "toolchain", "t1"
-      "testConfig", "c1"
-      "options", "o1"
-      "packages", "p1"
-      "closure", "cl1"
-      "shared", "s1"
-      "otherProjects", "op1"
-      "declared", "d1"
-      "envFiles", "e1"
-      "envFilesLoaded", "el1"
-      "env", "v1"
-      "scope", "sc1" ]
-    |> List.map (fun (label, digest) ->
-        label,
+/// A project's K_P inputs: each label's entries, with `moved` labels given another digest.
+let private inputsWith (moved: (string * string) list) : TestEvidenceKey.Inputs =
+    let value (label: string) (digest: string) =
         moved
         |> List.tryFind (fst >> (=) label)
         |> Option.map snd
-        |> Option.defaultValue digest)
-    |> TestEvidenceKey.ofLabels
+        |> Option.defaultValue digest
+
+    { Toolchain = value "toolchain" "t1"
+      TestConfig = value "testConfig" "c1"
+      Options = [ "tests/P/P.fsproj", value "options" "o1" ]
+      Packages = [ "tests/P/P.fsproj", value "packages" "p1" ]
+      Closure = [ "tests/P/Tests.fs", value "closure" "cl1" ]
+      Shared = [ "src/Lib.fs", value "shared" "s1" ]
+      OtherProjects = [ "tests/Q/Q.fs", value "otherProjects" "op1" ]
+      Declared = [ "data/reads.json", value "declared" "d1" ]
+      EnvFiles = [ ".env.test", value "envFiles" "e1" ]
+      EnvFilesLoaded = [ ".env.test", value "envFilesLoaded" "el1" ]
+      Env = [ "VAR", value "env" "v1" ]
+      Scope = value "scope" "sc1" }
+
+/// The K_P of `inputsWith moved`.
+let private kpWith (moved: (string * string) list) : TestEvidenceKey.Key =
+    TestEvidenceKey.compute (inputsWith moved)
+
+/// T's manifest: every path P's content labels are digested from at T, and more.
+let private manifestAtT =
+    (BoxBaseline.contentInputs (inputsWith []) |> List.map fst)
+    @ [ "tests/P/P.fsproj"; "README.md" ]
+    |> Set.ofList
+
+/// What T's manifest covers: its paths, whatever their digest now.
+let private coveredAtT (path: string) (_: string) = manifestAtT.Contains path
 
 /// File a run's outcome for a project at K_P `kp` in `scope`.
 let private fileOutcome
@@ -650,13 +663,19 @@ let private fullKeyText (kp: TestEvidenceKey.Key) =
 
 let private compileInputs = Map.ofList [ "P", ("tests/P/P.fsproj", "identity:P") ]
 
-/// `judgeProject` for P, its pass at T filed under `atT`, its current K_P `now`.
+/// `judgeProject` for P, its pass at T filed under `atT`, its current K_P inputs `now`.
 let private judgedWith
     (store: OutcomeStore.Store)
     (atT: TestEvidenceKey.Key)
-    (now: Result<TestEvidenceKey.Key, string>)
+    (now: Result<TestEvidenceKey.Inputs, string>)
     =
-    BoxBaseline.judgeProject store (Map.ofList [ "P", fullKeyText atT ]) (Map.ofList [ "P", now ]) compileInputs "P"
+    BoxBaseline.judgeProject
+        store
+        (Map.ofList [ "P", fullKeyText atT ])
+        coveredAtT
+        (Map.ofList [ "P", now ])
+        compileInputs
+        "P"
 
 let private refusal (project: BoxProject) =
     match project with
@@ -669,14 +688,15 @@ let ``a project whose K_P is unchanged since T is vouched for, with its compile 
         let store = storeIn dir
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
 
-        test <@ judgedWith store (kpWith []) (Ok(kpWith [])) = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>)
+        test
+            <@ judgedWith store (kpWith []) (Ok(inputsWith [])) = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>)
 
 [<Fact>]
 let ``a project whose K_P moved only in the tree's file contents is vouched for: the T to T' diff answers those`` () =
     withTempDir "box" (fun dir ->
         let store = storeIn dir
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
-        let now = kpWith [ "closure", "cl2"; "shared", "s2"; "otherProjects", "op2" ]
+        let now = inputsWith [ "closure", "cl2"; "shared", "s2"; "otherProjects", "op2" ]
 
         test <@ judgedWith store (kpWith []) (Ok now) = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>)
 
@@ -694,8 +714,140 @@ let ``a project whose K_P moved outside the tree's file contents is refused, nam
     withTempDir "box" (fun dir ->
         let store = storeIn dir
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
-        let why = judgedWith store (kpWith []) (Ok(kpWith [ label, "moved" ])) |> refusal
+
+        let why =
+            judgedWith store (kpWith []) (Ok(inputsWith [ label, "moved" ])) |> refusal
+
         test <@ why.Contains "moved beyond the tree's file contents" && why.Contains label @>)
+
+[<Fact>]
+let ``GUARD: a project whose content labels digest a file T's manifest does not name is refused, and runs whole`` () =
+    // The content labels may differ between T and now only because the T to T' diff sees every
+    // path they digest. A closure file outside T's manifest (here one T never had) is a path
+    // that diff cannot see, so the box cannot vouch for the project.
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+
+        let now =
+            { inputsWith [] with
+                Closure = [ "tests/P/Tests.fs", "cl1"; "tests/P/Unseen.fs", "u1" ] }
+
+        test
+            <@
+                judgedWith store (kpWith []) (Ok now) = BoxProject.Refused
+                    "its K_P covers inputs outside the baseline manifest: tests/P/Unseen.fs"
+            @>)
+
+[<Fact>]
+let ``GUARD: a shared file, another project's file or an unreadable directory outside T's manifest refuses the project``
+    ()
+    =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+
+        let outside (inputs: TestEvidenceKey.Inputs) =
+            judgedWith store (kpWith []) (Ok inputs) |> refusal
+
+        test
+            <@
+                (outside
+                    { inputsWith [] with
+                        Shared = [ "src/Lib.fs", "s1"; "tools/gen.sh", "g" ] })
+                    .EndsWith
+                    "tools/gen.sh"
+            @>
+
+        test
+            <@
+                (outside
+                    { inputsWith [] with
+                        OtherProjects = [ "tests/Q/Q.fs", "op1"; "tests/Q/New.fs", "n" ] })
+                    .EndsWith
+                    "tests/Q/New.fs"
+            @>
+
+        // A directory the K_P walk could not read is keyed as a hole, `dir/`: never in a manifest.
+        test
+            <@
+                (outside
+                    { inputsWith [] with
+                        Closure = [ "tests/P/Tests.fs", "cl1"; "tests/P/locked/", "unhashable" ] })
+                    .EndsWith
+                    "tests/P/locked/"
+            @>)
+
+[<Fact>]
+let ``GUARD: a known input the manifest never holds counts only while its digest is the one T recorded`` () =
+    // `.config/dotnet-tools.json` is in every K_P's shared label and never in the verdict tree,
+    // so never in a manifest: T's record keeps its digest, and the guard compares it.
+    let tools = ".config/dotnet-tools.json"
+
+    let record =
+        { recordOf [ "src/A.fs", "a1" ] [ "src/A.fs" ] with
+            KnownInputs = Map.ofList [ tools, "sha256:tools-at-T" ] }
+
+    let covered = BoxBaseline.covers record
+    test <@ covered "src/A.fs" "any digest now" @>
+    test <@ covered tools "sha256:tools-at-T" @>
+    test <@ not (covered tools "sha256:tools-moved") @>
+    test <@ not (covered "src/Unseen.fs" "x") @>
+
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+
+        let withTools (digest: string) =
+            { inputsWith [] with
+                Shared = [ "src/Lib.fs", "s1"; tools, digest ] }
+
+        let judged (digest: string) =
+            BoxBaseline.judgeProject
+                store
+                (Map.ofList [ "P", fullKeyText (kpWith []) ])
+                (fun path digestNow -> coveredAtT path digestNow || (path = tools && digestNow = "sha256:tools-at-T"))
+                (Map.ofList [ "P", Ok(withTools digest) ])
+                compileInputs
+                "P"
+
+        test <@ judged "sha256:tools-at-T" = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>
+
+        test
+            <@
+                judged "sha256:tools-moved" = BoxProject.Refused
+                    "its K_P covers inputs outside the baseline manifest: .config/dotnet-tools.json"
+            @>)
+
+[<Fact>]
+let ``a baseline record keeps the known inputs it was filed with`` () =
+    withTempDir "box" (fun dir ->
+        let l = landing dir
+
+        fileBaselineShaped
+            (fun o ->
+                let known = JsonObject()
+                known[".config/dotnet-tools.json"] <- "sha256:tools"
+                o["knownInputs"] <- known)
+            l.Store
+            treeT
+            Set.empty
+            (at 0)
+
+        test
+            <@
+                TestBaseline.checkoutRecordFor l.Store treeT.Identity
+                |> Result.map _.KnownInputs = Ok(Map.ofList [ ".config/dotnet-tools.json", "sha256:tools" ])
+            @>)
+
+[<Fact>]
+let ``GUARD: a project every one of whose content inputs T's manifest names is vouched for`` () =
+    withTempDir "box" (fun dir ->
+        let store = storeIn dir
+        fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
+        let now = inputsWith [ "closure", "cl9"; "shared", "s9" ]
+        test <@ BoxBaseline.contentInputs now |> List.forall (fst >> manifestAtT.Contains) @>
+        test <@ judgedWith store (kpWith []) (Ok now) = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>)
 
 [<Fact>]
 let ``a newer full fail at the K_P T's baseline names refuses the project`` () =
@@ -703,7 +855,7 @@ let ``a newer full fail at the K_P T's baseline names refuses the project`` () =
         let store = storeIn dir
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Fail (at 1)
-        let why = judgedWith store (kpWith []) (Ok(kpWith [])) |> refusal
+        let why = judgedWith store (kpWith []) (Ok(inputsWith [])) |> refusal
         test <@ why.Contains "not a pass" @>)
 
 [<Fact>]
@@ -712,16 +864,16 @@ let ``a newer impact fail at the K_P T's baseline names refuses the project, thr
         let store = storeIn dir
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
         fileOutcome store (kpWith []) "impact" OutcomeStore.Outcome.Fail (at 1)
-        let why = judgedWith store (kpWith []) (Ok(kpWith [])) |> refusal
+        let why = judgedWith store (kpWith []) (Ok(inputsWith [])) |> refusal
         test <@ why.Contains "at the K_P T's baseline names" && why.Contains "impact fail" @>)
 
 [<Fact>]
 let ``a newer fail at the project's CURRENT K_P refuses it`` () =
     withTempDir "box" (fun dir ->
         let store = storeIn dir
-        let now = kpWith [ "closure", "cl2" ]
+        let now = inputsWith [ "closure", "cl2" ]
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
-        fileOutcome store now "impact" OutcomeStore.Outcome.Fail (at 1)
+        fileOutcome store (TestEvidenceKey.compute now) "impact" OutcomeStore.Outcome.Fail (at 1)
         let why = judgedWith store (kpWith []) (Ok now) |> refusal
         test <@ why.Contains "at its current K_P" @>)
 
@@ -731,10 +883,10 @@ let ``every other miss refuses the project and says why`` () =
         let store = storeIn dir
         fileOutcome store (kpWith []) "full" OutcomeStore.Outcome.Pass (at 0)
         let atT = Map.ofList [ "P", fullKeyText (kpWith []) ]
-        let now = Map.ofList [ "P", Ok(kpWith []) ]
+        let now = Map.ofList [ "P", Ok(inputsWith []) ]
 
         let judged fullKeys current inputs =
-            BoxBaseline.judgeProject store fullKeys current inputs "P" |> refusal
+            BoxBaseline.judgeProject store fullKeys coveredAtT current inputs "P" |> refusal
 
         test <@ (judged Map.empty now compileInputs).Contains "names no full-run K_P" @>
         test <@ (judged (Map.ofList [ "P", "not a key" ]) now compileInputs).Contains "names no full-run K_P" @>
@@ -781,7 +933,8 @@ let ``a record at T's named key that carries no K_P refuses the project`` () =
             BoxBaseline.judgeProject
                 store
                 (Map.ofList [ "P", foreign.Value.Text ])
-                (Map.ofList [ "P", Ok(kpWith []) ])
+                coveredAtT
+                (Map.ofList [ "P", Ok(inputsWith []) ])
                 compileInputs
                 "P"
             |> refusal
@@ -796,10 +949,15 @@ let ``judge answers for every project T's pass names and every one the model con
 
         let record =
             { recordOf current sources with
+                Entries = manifestAtT |> Set.toList |> List.map (fun path -> path, "h")
                 FullKeys = Map.ofList [ "P", fullKeyText (kpWith []); "Gone", fullKeyText (kpWith []) ] }
 
         let judged =
-            BoxBaseline.judge store (Map.ofList [ "P", Ok(kpWith []); "New", Ok(kpWith []) ]) compileInputs record
+            BoxBaseline.judge
+                store
+                (Map.ofList [ "P", Ok(inputsWith []); "New", Ok(inputsWith []) ])
+                compileInputs
+                record
 
         test <@ judged |> Map.keys |> Set.ofSeq = set [ "P"; "Gone"; "New" ] @>
         test <@ judged["P"] = BoxProject.Vouched("tests/P/P.fsproj", "identity:P") @>
@@ -1165,3 +1323,105 @@ let ``SOUNDNESS from real compiler analyses: the box-rebuilt index selects what 
 
         test <@ rowsOf landDb = rowsOf live @>
         test <@ landDb.GetFileKeys() = live.GetFileKeys() @>)
+
+// ---------------------------------------------------------------------------
+// A box-derived ledger entry is marked in the ledger itself, and vanishes with the flag off.
+// ---------------------------------------------------------------------------
+
+let private ledgerWith (origin: FullSuiteBaseline.Origin) : FullSuiteBaseline.Baseline =
+    { RunId = Guid.Parse "0123456789abcdef0123456789abcdef"
+      EarnedAt = DateTime(2026, 11, 24, 12, 0, 0, DateTimeKind.Utc)
+      Projects = set [ "P" ]
+      Tree = Some "sha256:box-tree"
+      EarlierTrees = [ "sha256:own-earlier" ]
+      Origin = origin }
+
+[<Fact>]
+let ``a box-derived ledger entry is written as such and read back as such`` () =
+    withTempDir "box-ledger" (fun root ->
+        FullSuiteBaseline.save root (ledgerWith FullSuiteBaseline.Origin.Box)
+
+        test
+            <@
+                FullSuiteBaseline.load root = FullSuiteBaseline.LoadedBaseline.Loaded(
+                    Some(ledgerWith FullSuiteBaseline.Origin.Box)
+                )
+            @>
+
+        FullSuiteBaseline.save root (ledgerWith FullSuiteBaseline.Origin.OwnRun)
+
+        test
+            <@
+                FullSuiteBaseline.load root = FullSuiteBaseline.LoadedBaseline.Loaded(
+                    Some(ledgerWith FullSuiteBaseline.Origin.OwnRun)
+                )
+            @>)
+
+[<Fact>]
+let ``with the flag off a box-derived ledger entry is absent; with it on, and for an own one, it stands`` () =
+    withTempDir "box-ledger" (fun root ->
+        FullSuiteBaseline.save root (ledgerWith FullSuiteBaseline.Origin.Box)
+
+        test
+            <@
+                FullSuiteBaseline.loadFor RestartBaselines.OwnCheckoutOnly root = FullSuiteBaseline.LoadedBaseline.Loaded
+                    None
+            @>
+
+        test
+            <@
+                FullSuiteBaseline.loadFor RestartBaselines.RetainedBoxBaselines root = FullSuiteBaseline
+                    .LoadedBaseline
+                    .Loaded(Some(ledgerWith FullSuiteBaseline.Origin.Box))
+            @>
+
+        FullSuiteBaseline.save root (ledgerWith FullSuiteBaseline.Origin.OwnRun)
+
+        test
+            <@
+                FullSuiteBaseline.loadFor RestartBaselines.OwnCheckoutOnly root = FullSuiteBaseline
+                    .LoadedBaseline
+                    .Loaded(Some(ledgerWith FullSuiteBaseline.Origin.OwnRun))
+            @>)
+
+[<Fact>]
+let ``a ledger written before origins were kept is its own run's; an unknown origin is unreadable`` () =
+    withTempDir "box-ledger" (fun root ->
+        let path = FullSuiteBaseline.sidecarPath root
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+
+        let written (origin: string) =
+            File.WriteAllText(
+                path,
+                """{"runId":"0123456789abcdef0123456789abcdef","earnedAt":"2026-11-24T12:00:00.0000000Z","projects":["P"]"""
+                + origin
+                + "}"
+            )
+
+            FullSuiteBaseline.load root
+
+        match written "" with
+        | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) ->
+            test <@ baseline.Origin = FullSuiteBaseline.Origin.OwnRun @>
+        | other -> failwith $"expected an own baseline, got %A{other}"
+
+        match written ""","origin":"elsewhere" """ with
+        | FullSuiteBaseline.LoadedBaseline.Unreadable why -> test <@ why.Contains "unknown `origin` elsewhere" @>
+        | other -> failwith $"expected unreadable, got %A{other}")
+
+[<Fact>]
+let ``an own baseline earned after a box-derived one does not carry the box tree as one this checkout passed`` () =
+    let own =
+        { ledgerWith FullSuiteBaseline.Origin.OwnRun with
+            Tree = Some "sha256:own-next"
+            EarlierTrees = [] }
+
+    let afterBox =
+        FullSuiteBaseline.succeed (Some(ledgerWith FullSuiteBaseline.Origin.Box)) own
+
+    test <@ afterBox.EarlierTrees = [ "sha256:own-earlier" ] @>
+
+    let afterOwn =
+        FullSuiteBaseline.succeed (Some(ledgerWith FullSuiteBaseline.Origin.OwnRun)) own
+
+    test <@ afterOwn.EarlierTrees = [ "sha256:box-tree"; "sha256:own-earlier" ] @>

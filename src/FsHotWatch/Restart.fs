@@ -19,6 +19,8 @@ open System.IO
 type Selection =
     /// A restart diffs from this checkout's full pass of `tree` and selects from the diff.
     | SelectsCorrectly of tree: string
+    /// PREDICTED, read-only (`BoxBaseline.predict`): it skips the check the real restart makes,
+    /// that its project model still compiles each recorded file in the project it was filed under.
     /// A restart has no full pass of this checkout's own, rebuilds its index from the box's
     /// retained green tree `tree` (`tests.restartFromBoxBaseline`, AUTOMATION-1793 step 2b), and
     /// selects from the diff: `differing` paths moved since, `nonSource` of them not sources.

@@ -63,6 +63,7 @@ let private recordWith (analyses: Map<string, TestBaseline.RowAnalysis>) : TestB
           "tests/TA/T.fs", "sha256:t" ]
       Analyses = analyses
       FullKeys = Map.empty
+      KnownInputs = Map.empty
       FiledAt = DateTimeOffset.MinValue }
 
 /// File `path`'s analysis as `project`'s check in checkout `root` would have, under
@@ -273,6 +274,8 @@ let ``a test-baseline record filed by checkout A resolves in checkout B through 
         match TestBaseline.checkoutRecordFor store (fst tree) with
         | Ok record ->
             test <@ record.Analyses = pinned @>
+            // Filing keeps the known inputs the manifest never holds, as K_P digests them.
+            test <@ record.KnownInputs = Map.ofList (TestEvidenceKey.knownInputDigests "/ws/a") @>
 
             test
                 <@

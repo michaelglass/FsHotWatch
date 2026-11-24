@@ -890,7 +890,9 @@ let ``AUTO exits after 5 idle minutes when a restart would rebuild from the box,
         <@
             logs
             |> Seq.exists (fun l ->
-                l.Contains "rebuilds its index from the box's retained tree sha256:box"
+                l.Contains "a restart is PREDICTED to rebuild its index from the box's retained tree sha256:box"
+                && l.Contains
+                    "predicted only: the restart itself still checks that its project model compiles each recorded file there"
                 && l.Contains "4 path(s) differing, 1 non-source")
         @>
 

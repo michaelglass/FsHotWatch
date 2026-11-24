@@ -893,7 +893,8 @@ let internal settleDebt (facts: DebtSettlementFacts) : DebtSettlement =
                           EarnedAt = DateTime.UtcNow
                           Projects = runnableProjects
                           Tree = None
-                          EarlierTrees = [] } }
+                          EarlierTrees = []
+                          Origin = FullSuiteBaseline.Origin.OwnRun } }
         else
             debt
 

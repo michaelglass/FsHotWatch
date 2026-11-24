@@ -896,7 +896,8 @@ let ``a red publication names the run the watermark records`` () =
               EarnedAt = DateTime.UtcNow
               Projects = Set.ofList projects
               Tree = None
-              EarlierTrees = [] }
+              EarlierTrees = []
+              Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
         let observation = ofVerdict repo (publishedRed ())
         let expected = Some(runId.ToString "N")

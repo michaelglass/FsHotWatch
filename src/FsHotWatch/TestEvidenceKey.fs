@@ -502,22 +502,27 @@ let EvidenceKnownInputs = [ ".config/dotnet-tools.json" ]
 /// hash is computed with. A file that hash leaves out is in no key: a generated cache
 /// that embeds the checkout's path (Fable's `project_cracked.json`) would otherwise give
 /// every checkout of one commit its own key, and no green would ever be reused.
+/// Each `EvidenceKnownInputs` path under `root` with the digest a K_P names it by: its content
+/// hash, or `VerdictInputs.AbsentDeclaration` when it does not exist. What `snapshot` adds for
+/// one the walk does not hold, and what a `test-baseline` record keeps of them at its tree
+/// (AUTOMATION-1793 step 2b), since the tree's manifest never holds them.
+let knownInputDigests (root: string) : (string * string) list =
+    EvidenceKnownInputs
+    |> List.map (fun rel ->
+        let abs = Path.Combine(root, rel)
+
+        rel,
+        (if File.Exists abs then
+             ContentHash.ofFile abs
+         else
+             VerdictInputs.AbsentDeclaration))
+
 let snapshot (repoRoot: string) (excludePatterns: string list) : Snapshot =
     let root = Path.GetFullPath repoRoot
     let walked = TreeHash.files root excludePatterns
     let inTree = walked.Files |> List.map fst |> Set.ofList
 
-    let known =
-        EvidenceKnownInputs
-        |> List.filter (inTree.Contains >> not)
-        |> List.map (fun rel ->
-            let abs = Path.Combine(root, rel)
-
-            rel,
-            (if File.Exists abs then
-                 ContentHash.ofFile abs
-             else
-                 VerdictInputs.AbsentDeclaration))
+    let known = knownInputDigests root |> List.filter (fst >> inTree.Contains >> not)
 
     let files =
         (walked.Files |> List.map (fun (rel, abs) -> rel, ContentHash.ofFile abs))

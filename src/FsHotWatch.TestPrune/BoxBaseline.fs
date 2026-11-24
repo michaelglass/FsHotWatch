@@ -99,15 +99,35 @@ let private kpOf (record: OutcomeStore.Record) : TestEvidenceKey.Key option =
     |> List.tryFind (fun (label, _) -> label = "kp")
     |> Option.map (fun (_, value) -> { Value = value; Labels = labels })
 
+/// Every entry (path, digest) a project's content labels (`treeContentLabels`) are digested
+/// from, as its K_P computes them: the closure's files, the shared files and other projects'
+/// files, holes and known inputs included.
+let contentInputs (inputs: TestEvidenceKey.Inputs) : (string * string) list =
+    inputs.Closure @ inputs.Shared @ inputs.OtherProjects
+
+/// Whether the T to T' diff answers a content input of `record`'s tree: a path T's manifest
+/// names, or a known input the manifest never holds whose digest is the one T recorded.
+let covers (record: TestBaseline.CheckoutRecord) : string -> string -> bool =
+    let manifest = record.Entries |> List.map fst |> Set.ofList
+
+    fun path digest -> manifest.Contains path || Map.tryFind path record.KnownInputs = Some digest
+
 /// Whether T's full pass vouches for `project` now (`BoxProject`). Every K_P refusal is
 /// re-checked here, through the reuse path's own `TestEvidenceRun.reuseRefusal`: the record
 /// at the K_P T's baseline names must be the newest there and a pass, no newer fail may stand
 /// at that K_P or at the project's CURRENT one, and nothing but the tree's file contents may
 /// have moved between the two (`treeContentLabels`).
+///
+/// That last allowance holds only while the T to T' diff sees every input those labels digest.
+/// The diff compares T's manifest with the working tree, so every entry the project's content
+/// labels are computed from NOW (`contentInputs` of its `TestEvidenceKey.Inputs`, the very
+/// entries the K_P is computed from) must be one `covered` accepts (`covers`): a path the
+/// manifest names, or a known input unchanged since T. Any other refuses the project.
 let judgeProject
     (store: OutcomeRecords.IOutcomeStore)
     (fullKeys: Map<string, string>)
-    (currentKeys: Map<string, Result<TestEvidenceKey.Key, string>>)
+    (covered: string -> string -> bool)
+    (currentInputs: Map<string, Result<TestEvidenceKey.Inputs, string>>)
     (compileInputs: Map<string, string * string>)
     (project: string)
     : BoxProject =
@@ -129,25 +149,39 @@ let judgeProject
         |> Result.bind (fun (kp, passedAt) ->
             match TestEvidenceRun.reuseRefusal (Some store) kp passedAt with
             | Some why -> Error $"at the K_P T's baseline names: %s{why}"
-            | None ->
-                match Map.tryFind project currentKeys with
-                | None -> Error "no current K_P: the project model does not name it as a configured test project"
-                | Some(Error why) -> Error $"no current K_P: %s{why}"
-                | Some(Ok now) ->
-                    match
-                        TestEvidenceKey.moved kp.Labels now.Labels
-                        |> List.filter (treeContentLabels.Contains >> not)
-                    with
-                    | _ :: _ as moved ->
-                        let names = String.concat ", " moved
-                        Error $"its K_P moved beyond the tree's file contents since T (%s{names})"
-                    | [] ->
-                        match TestEvidenceRun.reuseRefusal (Some store) now passedAt with
-                        | Some why -> Error $"at its current K_P: %s{why}"
-                        | None ->
-                            match Map.tryFind project compileInputs with
-                            | None -> Error "the project model publishes no compile-input identity for it"
-                            | Some inputs -> Ok inputs)
+            | None -> Ok(kp, passedAt))
+        |> Result.bind (fun (kp, passedAt) ->
+            match Map.tryFind project currentInputs with
+            | None -> Error "no current K_P: the project model does not name it as a configured test project"
+            | Some(Error why) -> Error $"no current K_P: %s{why}"
+            | Some(Ok inputs) -> Ok(kp, passedAt, inputs))
+        |> Result.bind (fun (kp, passedAt, inputs) ->
+            match
+                contentInputs inputs
+                |> List.filter (fun (path, digest) -> not (covered path digest))
+                |> List.map fst
+            with
+            | [] -> Ok(kp, passedAt, TestEvidenceKey.compute inputs)
+            | outside ->
+                let paths = String.concat ", " outside
+                Error $"its K_P covers inputs outside the baseline manifest: %s{paths}")
+        |> Result.bind (fun (kp, passedAt, now) ->
+            match
+                TestEvidenceKey.moved kp.Labels now.Labels
+                |> List.filter (treeContentLabels.Contains >> not)
+            with
+            | [] -> Ok(now, passedAt)
+            | moved ->
+                let names = String.concat ", " moved
+                Error $"its K_P moved beyond the tree's file contents since T (%s{names})")
+        |> Result.bind (fun (now, passedAt) ->
+            match TestEvidenceRun.reuseRefusal (Some store) now passedAt with
+            | Some why -> Error $"at its current K_P: %s{why}"
+            | None -> Ok())
+        |> Result.bind (fun () ->
+            match Map.tryFind project compileInputs with
+            | None -> Error "the project model publishes no compile-input identity for it"
+            | Some inputs -> Ok inputs)
 
     match vouched with
     | Ok(fsproj, identity) -> BoxProject.Vouched(fsproj, identity)
@@ -157,13 +191,15 @@ let judgeProject
 /// configures: a project T never passed is refused, and runs whole.
 let judge
     (store: OutcomeRecords.IOutcomeStore)
-    (currentKeys: Map<string, Result<TestEvidenceKey.Key, string>>)
+    (currentInputs: Map<string, Result<TestEvidenceKey.Inputs, string>>)
     (compileInputs: Map<string, string * string>)
     (record: TestBaseline.CheckoutRecord)
     : Map<string, BoxProject> =
-    Seq.append (Map.keys record.FullKeys) (Map.keys currentKeys)
+    let covered = covers record
+
+    Seq.append (Map.keys record.FullKeys) (Map.keys currentInputs)
     |> Seq.distinct
-    |> Seq.map (fun project -> project, judgeProject store record.FullKeys currentKeys compileInputs project)
+    |> Seq.map (fun project -> project, judgeProject store record.FullKeys covered currentInputs compileInputs project)
     |> Map.ofSeq
 
 /// T's full pass as this checkout's ledger records an own one (`FullSuiteBaseline`): its run,
@@ -177,7 +213,8 @@ let private ledgerOf (record: TestBaseline.CheckoutRecord) : Result<FullSuiteBas
               EarnedAt = record.FiledAt.UtcDateTime
               Projects = record.FullKeys |> Map.keys |> Set.ofSeq
               Tree = Some record.Tree
-              EarlierTrees = [] }
+              EarlierTrees = []
+              Origin = FullSuiteBaseline.Origin.Box }
     | false, _ -> Error $"T's baseline names run %s{record.RunId}, which is not a run id"
 
 /// What T's full pass vouches for per project, judged over the current model with the

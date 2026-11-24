@@ -136,11 +136,15 @@ module RerunBaseline =
     /// Why the workspace's full-suite baseline cannot vouch for `runnable` — `None` when
     /// it can, or when no test project is configured (then no baseline is owed). The same
     /// reading the test-prune plugin makes from the same sidecar.
-    let invalidReason (repoRoot: string) (runnable: Set<string>) : string option =
+    let invalidReason
+        (restartFrom: FsHotWatch.TestPrune.RestartBaselines)
+        (repoRoot: string)
+        (runnable: Set<string>)
+        : string option =
         if Set.isEmpty runnable then
             None
         else
-            match FullSuiteBaseline.load repoRoot with
+            match FullSuiteBaseline.loadFor restartFrom repoRoot with
             | FullSuiteBaseline.LoadedBaseline.Loaded None -> Some FullSuiteBaseline.absentReason
             | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) -> FullSuiteBaseline.staleness runnable baseline
             | FullSuiteBaseline.LoadedBaseline.Unreadable reason ->
@@ -4394,8 +4398,16 @@ let private executeCommandRendered
                 |> Option.map (fun t -> t.Projects |> List.map (fun p -> p.Project) |> Set.ofList)
                 |> Option.defaultValue Set.empty
 
+            let restartFrom =
+                config.Tests
+                |> Option.map _.RestartFrom
+                |> Option.defaultValue FsHotWatch.TestPrune.RestartBaselines.OwnCheckoutOnly
+
             let baselineDecision =
-                RerunBaseline.decide flags (ipc.IsRunning pipeName) (RerunBaseline.invalidReason repoRoot runnable)
+                RerunBaseline.decide
+                    flags
+                    (ipc.IsRunning pipeName)
+                    (RerunBaseline.invalidReason restartFrom repoRoot runnable)
 
             let runArgsJson =
                 match RerunFilter.render flags, projects with

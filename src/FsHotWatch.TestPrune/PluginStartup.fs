@@ -80,7 +80,7 @@ type internal RestoredState =
 /// Restore the plugin's sidecars: the pending queue, the publication marker, outstanding
 /// failures, the full-suite baseline, whole-project evidence, runtime obligations and
 /// coverage that was not ingested.
-let internal restorePersisted (repoRoot: string) : RestoredState =
+let internal restorePersisted (restartFrom: RestartBaselines) (repoRoot: string) : RestoredState =
     // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
     // symbols not yet proven test-equivalent to the last green run. Loaded once
     // at construction so a restart with a non-empty queue re-flags those
@@ -132,7 +132,8 @@ let internal restorePersisted (repoRoot: string) : RestoredState =
     /// relative to. `None` until a full-suite run has passed every configured
     /// project; an unreadable file is the same recovery, said out loud.
     let loadedBaseline =
-        match FullSuiteBaseline.load repoRoot with
+        // A box-derived baseline is absent unless the flag is on (AUTOMATION-1793 step 2b).
+        match FullSuiteBaseline.loadFor restartFrom repoRoot with
         | FullSuiteBaseline.LoadedBaseline.Loaded baseline -> baseline
         | FullSuiteBaseline.LoadedBaseline.Unreadable reason ->
             Logging.warn

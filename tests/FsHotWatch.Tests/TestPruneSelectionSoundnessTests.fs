@@ -534,7 +534,8 @@ let ``FullSuiteBaseline round-trips, reads a missing file as none, and an existi
               EarnedAt = DateTime(2026, 9, 6, 10, 30, 0, DateTimeKind.Utc)
               Projects = Set.ofList [ "A"; "B" ]
               Tree = None
-              EarlierTrees = [] }
+              EarlierTrees = []
+              Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
         FullSuiteBaseline.save tmpDir baseline
         test <@ FullSuiteBaseline.load tmpDir = FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) @>
@@ -554,7 +555,8 @@ let ``FullSuiteBaseline remembers the sealed trees its earlier full passes earne
           EarnedAt = DateTime(2026, 11, 14, 8, 0, 0, DateTimeKind.Utc)
           Projects = Set.ofList [ "A" ]
           Tree = tree
-          EarlierTrees = [] }
+          EarlierTrees = []
+          Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
     let first = FullSuiteBaseline.succeed None (earned (Some "t1"))
     test <@ FullSuiteBaseline.passedTrees first = [ "t1" ] @>
@@ -601,7 +603,8 @@ let ``FullSuiteBaseline.staleness names exactly the configured projects the base
           EarnedAt = DateTime.UtcNow
           Projects = Set.ofList [ "A"; "B" ]
           Tree = None
-          EarlierTrees = [] }
+          EarlierTrees = []
+          Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
     test <@ FullSuiteBaseline.staleness (Set.ofList [ "A" ]) baseline = None @>
     test <@ FullSuiteBaseline.staleness (Set.ofList [ "A"; "B" ]) baseline = None @>

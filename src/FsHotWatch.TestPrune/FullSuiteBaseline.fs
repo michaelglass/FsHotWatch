@@ -39,6 +39,17 @@ open System.IO
 open System.Text.Json.Nodes
 open FsHotWatch
 
+/// Who earned a full-suite baseline.
+[<RequireQualifiedAccess>]
+type Origin =
+    /// This checkout's own full-suite run.
+    | OwnRun
+    /// The box's retained green baseline, adopted when this checkout restarted from it
+    /// (`tests.restartFromBoxBaseline`, AUTOMATION-1793 step 2b). With the flag off it is read as
+    /// absent (`loadFor`), and a baseline earned after it never carries its tree as one this
+    /// checkout passed (`succeed`).
+    | Box
+
 /// The last accounted-for full-suite run.
 type Baseline =
     {
@@ -58,6 +69,8 @@ type Baseline =
         /// there, newest first, at most `TreeHistory`, never naming `Tree`. A restart whose
         /// index a revert re-sealed at one of them diffs from it (AUTOMATION-1682, ADR-071).
         EarlierTrees: string list
+        /// Who earned it.
+        Origin: Origin
     }
 
 /// How many trees a ledger remembers its full suite passing, `Tree` included.
@@ -69,11 +82,17 @@ let passedTrees (baseline: Baseline) : string list =
     Option.toList baseline.Tree @ baseline.EarlierTrees
 
 /// The ledger after `next` is earned over `previous`: `next`, remembering every tree the
-/// earlier ones passed, newest first and bounded, without repeating `next`'s own.
+/// earlier ones passed, newest first and bounded, without repeating `next`'s own. A
+/// box-derived baseline's tree is not one this checkout passed, so it is not carried.
 let succeed (previous: Baseline option) (next: Baseline) : Baseline =
+    let ownTrees (baseline: Baseline) =
+        match baseline.Origin with
+        | Origin.OwnRun -> passedTrees baseline
+        | Origin.Box -> baseline.EarlierTrees
+
     let earlier =
         previous
-        |> Option.map passedTrees
+        |> Option.map ownTrees
         |> Option.defaultValue []
         |> List.filter (fun tree -> Some tree <> next.Tree)
         |> List.distinct
@@ -139,15 +158,27 @@ let load (repoRoot: string) : LoadedBaseline =
                     | null -> []
                     | node -> node.AsArray() |> Seq.map (fun n -> n.GetValue<string>()) |> List.ofSeq
 
-                match runId, earnedAt, projects with
-                | Some runId, Some earnedAt, Some projects ->
+                // Absent in a ledger written before origins were kept: its own run earned it.
+                let origin =
+                    match obj.["origin"] with
+                    | null -> Ok Origin.OwnRun
+                    | node ->
+                        match node.GetValue<string>() with
+                        | "own" -> Ok Origin.OwnRun
+                        | "box" -> Ok Origin.Box
+                        | other -> Error $"the file names an unknown `origin` %s{other}"
+
+                match runId, earnedAt, projects, origin with
+                | _, _, _, Error why -> LoadedBaseline.Unreadable why
+                | Some runId, Some earnedAt, Some projects, Ok origin ->
                     LoadedBaseline.Loaded(
                         Some
                             { RunId = runId
                               EarnedAt = earnedAt
                               Projects = projects
                               Tree = tree
-                              EarlierTrees = earlierTrees }
+                              EarlierTrees = earlierTrees
+                              Origin = origin }
                     )
                 | _ ->
                     LoadedBaseline.Unreadable
@@ -177,7 +208,23 @@ let save (repoRoot: string) (baseline: Baseline) : unit =
 
     obj.["earlierTrees"] <- earlier
 
+    obj.["origin"] <-
+        JsonValue.Create(
+            match baseline.Origin with
+            | Origin.OwnRun -> "own"
+            | Origin.Box -> "box"
+        )
+
     FsHwPaths.atomicWriteAllText (sidecarPath repoRoot) (obj.ToJsonString())
+
+/// The ledger as a daemon restarting under `restartFrom` reads it: a box-derived baseline is
+/// absent unless `tests.restartFromBoxBaseline` is on, so with the flag off the checkout owes
+/// a full pass exactly as it did before it ever adopted one.
+let loadFor (restartFrom: RestartBaselines) (repoRoot: string) : LoadedBaseline =
+    match load repoRoot, restartFrom with
+    | LoadedBaseline.Loaded(Some baseline), RestartBaselines.OwnCheckoutOnly when baseline.Origin = Origin.Box ->
+        LoadedBaseline.Loaded None
+    | loaded, _ -> loaded
 
 /// Why `baseline` cannot vouch for the tests a run over `runnable` skips — `None` when it
 /// can. The one staleness this module can decide: a configured project the watermark

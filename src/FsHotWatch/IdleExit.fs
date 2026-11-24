@@ -550,7 +550,7 @@ let private tickWindow (deps: IdleExitDeps) : PositiveMinutes * string =
             match selection with
             | Restart.Selection.SelectsCorrectly tree -> $"; AUTO: a restart selects its tests correctly from %s{tree}"
             | Restart.Selection.RebuildsFromBox(tree, differing, nonSource) ->
-                $"; AUTO: a restart rebuilds its index from the box's retained tree %s{tree} (%d{differing} path(s) differing, %d{nonSource} non-source) and selects from it"
+                $"; AUTO: a restart is PREDICTED to rebuild its index from the box's retained tree %s{tree} (%d{differing} path(s) differing, %d{nonSource} non-source) and select from it; predicted only: the restart itself still checks that its project model compiles each recorded file there"
             | Restart.Selection.WouldRunFullSuite reason -> $"; AUTO: a restart would run the full suite (%s{reason})"
 
         autoWindowFor selection, note

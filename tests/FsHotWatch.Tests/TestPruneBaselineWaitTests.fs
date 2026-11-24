@@ -157,6 +157,12 @@ let private fileRecordWith
         named[project] <- key
 
     o["projects"] <- named
+    let known = JsonObject()
+
+    for path, digest in TestEvidenceKey.knownInputDigests root do
+        known[path] <- digest
+
+    o["knownInputs"] <- known
     let manifest = JsonArray()
 
     for path, hash in tree.Entries do
@@ -683,7 +689,8 @@ let private boxed () =
         v.F.Ctx.RepoRoot
         { ledgerOf v with
             Tree = Some "sha256:elsewhere"
-            EarlierTrees = [] }
+            EarlierTrees = []
+            Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
     IndexSeal.save ignore (dbPathOf v.F) None
     editLib v
@@ -1014,7 +1021,8 @@ let ``a land whose own ledger names no more than T's pass takes T's pass as its 
           EarnedAt = DateTime.UtcNow
           Projects = set [ "ProjA"; "ProjB" ]
           Tree = Some "sha256:elsewhere"
-          EarlierTrees = [] }
+          EarlierTrees = []
+          Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
     let held, _, landed =
         holdThenLaunch (daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring)
@@ -1028,6 +1036,32 @@ let ``a land whose own ledger names no more than T's pass takes T's pass as its 
         @>
 
     test <@ landed.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests") ] @>
+
+[<Fact(Timeout = 30000)>]
+let ``FLAG-OFF: the box baseline a land adopted is marked box-derived, and with the flag off it is absent again`` () =
+    let v, _ = verifiedInRepo ()
+    editLib v
+    asLand v
+    let d = daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring
+    let held, _ = firstBuild d
+    publish d.F d.F.Handler.Init held
+
+    match FullSuiteBaseline.load v.F.Ctx.RepoRoot with
+    | FullSuiteBaseline.LoadedBaseline.Loaded(Some baseline) ->
+        test <@ baseline.Origin = FullSuiteBaseline.Origin.Box @>
+        test <@ baseline.Tree = Some v.Tree @>
+    | other -> failwith $"expected the adopted ledger on disk, got %A{other}"
+
+    // The flag goes off: the checkout owes a full pass, exactly as before it adopted one.
+    let off = restart v
+    let offHeld, _ = firstBuild off
+    test <@ offHeld.Debt.Baseline = None @>
+    test <@ offHeld.AwaitingDiff.IsNone @>
+    test <@ (scheduledLaunch off.F).Selection = everyProjectInFull @>
+
+    // On again, the entry stands.
+    let on = daemonOverWith RestartBaselines.RetainedBoxBaselines v.F v.Wiring
+    test <@ on.F.Handler.Init.Debt.Baseline |> Option.map _.Origin = Some FullSuiteBaseline.Origin.Box @>
 
 [<Fact(Timeout = 30000)>]
 let ``flag off: the same land owes a full suite and runs every project in full, as today`` () =

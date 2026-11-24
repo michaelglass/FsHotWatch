@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1793 step 2b conditions. A box baseline vouches for a project only while every entry its K_P's
+  content labels (`closure`, `shared`, `otherProjects`) are computed from now is a path T's manifest names, or a
+  known input the manifest never holds (`.config/dotnet-tools.json`) whose digest is the one T's record kept
+  (`knownInputs`, now filed with every `test-baseline`); otherwise the project is refused ("its K_P covers inputs
+  outside the baseline manifest: ...") and runs whole. A box-derived ledger entry is marked `"origin": "box"`; with the
+  flag off it is read as absent, so the checkout owes a full pass as before, and an own baseline earned after it does
+  not keep its tree. Idle-exit's line for `RebuildsFromBox` says the rebuild is PREDICTED.
+
 - feat: AUTOMATION-1793 step 2b, behind the same `tests.restartFromBoxBaseline`. A rebuilt box baseline counts as an own
   full pass at its tree would: it becomes the full-suite baseline (a ledger with none, or one naming no more projects,
   no longer owes a cold full suite), and each project its pass vouches for counts as whole-project evidence. Every

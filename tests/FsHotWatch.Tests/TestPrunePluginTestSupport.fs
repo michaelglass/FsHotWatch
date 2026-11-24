@@ -273,7 +273,8 @@ let seedBaseline (root: string) (projects: string list) : unit =
           EarnedAt = DateTime.UtcNow
           Projects = Set.ofList projects
           Tree = None
-          EarlierTrees = [] }
+          EarlierTrees = []
+          Origin = FsHotWatch.TestPrune.FullSuiteBaseline.Origin.OwnRun }
 
 module PendingQueueHelpers =
     open FsHotWatch.TestPrune

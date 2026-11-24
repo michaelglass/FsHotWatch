@@ -140,7 +140,7 @@ let internal createWithEvidenceAndQueries
 
     let mayReplay = mayReplayIn indexedKey repoRoot testConfigs
 
-    let restored = restorePersisted repoRoot
+    let restored = restorePersisted restartFrom repoRoot
     let ledgerUnreadableReason = restored.LedgerUnreadableReason
     let debtPublicationPath = restored.DebtPublicationPath
     let loadedRuntimeObligations = restored.LoadedRuntimeObligations
