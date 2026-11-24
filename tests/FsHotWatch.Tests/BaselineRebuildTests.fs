@@ -38,18 +38,28 @@ let private recordWith (identities: Map<string, string>) : TestBaseline.Checkout
 let private identities =
     Map.ofList [ "src/A/A.fs", "id-a"; "tests/TA/T.fs", "id-t" ]
 
-/// The project each file belongs to in the reading checkout's model.
-let private projectOf (path: string) =
+/// The projects each file compiles in, in the reading checkout's model.
+let private projectsOf (path: string) =
     match path with
-    | "src/A/A.fs" -> Some "A"
-    | "tests/TA/T.fs" -> Some "TA"
-    | _ -> None
+    | "src/A/A.fs" -> [ "A" ]
+    | "tests/TA/T.fs" -> [ "TA" ]
+    | _ -> []
 
-/// File `path`'s analysis as checkout `root` would have, under `analyzer`'s key.
-let private fileAs (store: OutcomeStore.Store) (root: string) (analyzer: string) (path: string) =
-    let project = (projectOf path).Value
+/// File `path`'s analysis as `project`'s check in checkout `root` would have, under
+/// `analyzer`'s key.
+let private fileUnder
+    (store: OutcomeStore.Store)
+    (root: string)
+    (analyzer: string)
+    (project: string)
+    (result: AnalysisResult)
+    (path: string)
+    =
     let key = AnalysisRecords.keyWith analyzer identities[path] path project
-    test <@ AnalysisRecords.file store root path key analysis @>
+    test <@ AnalysisRecords.file store root path key result @>
+
+let private fileAs (store: OutcomeStore.Store) (root: string) (analyzer: string) (path: string) =
+    fileUnder store root analyzer (List.head (projectsOf path)) analysis path
 
 let private fileBoth (store: OutcomeStore.Store) =
     fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "src/A/A.fs"
@@ -61,7 +71,7 @@ let ``every analysable manifest entry resolves to its record, and a file with no
         let store = storeIn dir
         fileBoth store
 
-        match BaselineRebuild.resolve store "/ws/a" projectOf (recordWith identities) with
+        match BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith identities) with
         | Ok resolved -> test <@ resolved |> List.map _.Path = [ "src/A/A.fs"; "tests/TA/T.fs" ] @>
         | Error misses -> failwith $"expected every entry to resolve: %A{misses}")
 
@@ -73,7 +83,7 @@ let ``one missing record is no baseline, never a partial index`` () =
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/a" projectOf (recordWith identities) = Error
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith identities) = Error
                     [ BaselineRebuild.Miss.NoRecord "tests/TA/T.fs" ]
             @>)
 
@@ -86,7 +96,7 @@ let ``a record whose identity matches but whose analyser build differs is no bas
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/a" projectOf (recordWith identities) = Error
+                BaselineRebuild.resolve store "/ws/a" projectsOf (recordWith identities) = Error
                     [ BaselineRebuild.Miss.NoRecord "tests/TA/T.fs" ]
             @>)
 
@@ -97,7 +107,7 @@ let ``a manifest file the reading checkout no longer has is no baseline`` () =
         fileBoth store
 
         let gone (path: string) =
-            if path = "src/A/A.fs" then None else projectOf path
+            if path = "src/A/A.fs" then [] else projectsOf path
 
         test
             <@
@@ -113,7 +123,7 @@ let ``records filed by checkout A resolve in checkout B at another path`` () =
 
         test
             <@
-                BaselineRebuild.resolve store "/ws/b" projectOf (recordWith identities)
+                BaselineRebuild.resolve store "/ws/b" projectsOf (recordWith identities)
                 |> Result.isOk
             @>)
 
@@ -170,3 +180,81 @@ let ``a filed test-baseline record carries each file's analysis identity back to
         match TestBaseline.checkoutRecordFor store (fst tree) with
         | Ok record -> test <@ record.Identities = identities @>
         | Error why -> failwith $"expected a hit: %s{why}")
+
+// A file linked into two projects (intelligence links Build.Dev's Adr*.fs into GateHook):
+// the record is found under the manifest's exact identity for whichever project filed it,
+// never under a guessed one.
+
+let private linked (path: string) =
+    match path with
+    | "src/A/A.fs" -> [ "A"; "GateHook" ]
+    | other -> projectsOf other
+
+let private differing: AnalysisResult =
+    { analysis with
+        Diagnostics =
+            { analysis.Diagnostics with
+                FilteredSymbols = 2 } }
+
+[<Fact>]
+let ``a linked file resolves through the one project whose record holds its identity`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" analysis "src/A/A.fs"
+        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
+
+        match BaselineRebuild.resolve store "/ws/a" linked (recordWith identities) with
+        | Ok resolved ->
+            test
+                <@
+                    resolved |> List.map (fun r -> r.Path, r.Project) = [ "src/A/A.fs", "GateHook"
+                                                                          "tests/TA/T.fs", "TA" ]
+                @>
+        | Error misses -> failwith $"expected the linked file to resolve: %A{misses}")
+
+[<Fact>]
+let ``a linked file whose two projects filed the SAME analysis resolves`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "A" analysis "src/A/A.fs"
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" analysis "src/A/A.fs"
+        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" linked (recordWith identities)
+                |> Result.isOk
+            @>)
+
+[<Fact>]
+let ``a linked file whose two projects filed DIFFERENT analyses is ambiguous, so no baseline`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "A" analysis "src/A/A.fs"
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "GateHook" differing "src/A/A.fs"
+        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" linked (recordWith identities) = Error
+                    [ BaselineRebuild.Miss.Ambiguous("src/A/A.fs", [ "A"; "GateHook" ]) ]
+            @>)
+
+[<Fact>]
+let ``a file removed from the project that filed its record, still in the other, is no baseline`` () =
+    withTempDir "rebuild" (fun dir ->
+        let store = storeIn dir
+        fileUnder store "/ws/a" AnalysisRecords.analyzerIdentity "A" analysis "src/A/A.fs"
+        fileAs store "/ws/a" AnalysisRecords.analyzerIdentity "tests/TA/T.fs"
+
+        let onlyInGateHook (path: string) =
+            if path = "src/A/A.fs" then
+                [ "GateHook" ]
+            else
+                projectsOf path
+
+        test
+            <@
+                BaselineRebuild.resolve store "/ws/a" onlyInGateHook (recordWith identities) = Error
+                    [ BaselineRebuild.Miss.NoRecord "src/A/A.fs" ]
+            @>)

@@ -24,9 +24,14 @@ type Miss =
     /// The reading checkout's project model places the file in no project: the tree no
     /// longer has it, or no longer compiles it.
     | NoProject of path: string
-    /// No analysis record under the file's key: none was filed, or it was filed by another
-    /// analyser build (whose key differs), or it does not read under this root.
+    /// No analysis record under the file's key for any project that compiles it: none was
+    /// filed, or it was filed by another analyser build (whose key differs), or it does not
+    /// read under this root.
     | NoRecord of path: string
+    /// The file compiles in several projects (a linked file) and their records under the
+    /// manifest's exact identity hold DIFFERENT analyses: which one the index held cannot
+    /// be told, so there is no baseline.
+    | Ambiguous of path: string * projects: string list
 
 /// One analysable file of T, with the analysis that holds for it there.
 type Resolved =
@@ -36,28 +41,37 @@ type Resolved =
 
 /// Every analysable file of `record`'s manifest (each one with an analysis identity) with
 /// its analysis read from `store` under this checkout's `root`, in manifest order; or every
-/// entry that did not resolve. `projectOf` is the reading checkout's project model: the
-/// project a repo-relative path compiles in, if any. READ-ONLY.
+/// entry that did not resolve. `projectsOf` is the reading checkout's project model: every
+/// project a repo-relative path compiles in (more than one for a linked file). The record
+/// is looked up under the manifest's EXACT identity for each; one hit, or several holding
+/// the same analysis, resolves it. READ-ONLY.
 let resolve
     (store: OutcomeRecords.IOutcomeStore)
     (root: string)
-    (projectOf: string -> string option)
+    (projectsOf: string -> string list)
     (record: TestBaseline.CheckoutRecord)
     : Result<Resolved list, Miss list> =
     let attempts =
         record.Entries
         |> List.choose (fun (path, _) -> record.Identities |> Map.tryFind path |> Option.map (fun id -> path, id))
         |> List.map (fun (path, identity) ->
-            match projectOf path with
-            | None -> Error(Miss.NoProject path)
-            | Some project ->
-                match AnalysisRecords.lookup store root (AnalysisRecords.keyOf identity path project) with
-                | None -> Error(Miss.NoRecord path)
-                | Some analysis ->
+            match projectsOf path with
+            | [] -> Error(Miss.NoProject path)
+            | projects ->
+                let hits =
+                    projects
+                    |> List.choose (fun project ->
+                        AnalysisRecords.lookup store root (AnalysisRecords.keyOf identity path project)
+                        |> Option.map (fun analysis -> project, analysis))
+
+                match hits with
+                | [] -> Error(Miss.NoRecord path)
+                | (project, analysis) :: others when others |> List.forall (fun (_, other) -> other = analysis) ->
                     Ok
                         { Path = path
                           Project = project
-                          Analysis = analysis })
+                          Analysis = analysis }
+                | _ -> Error(Miss.Ambiguous(path, hits |> List.map fst)))
 
     let resolved, misses =
         List.foldBack
