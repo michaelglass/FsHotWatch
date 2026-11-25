@@ -600,12 +600,15 @@ let ``SHADOW: an evidence gap logs the additive-model verdict and runs the moved
         fun env ->
             test <@ env.Root = next.Ctx.RepoRoot @>
 
-            AdditiveShadow.Outcome.Judged(
-                "sha256:tree-T",
-                AdditiveModelChange.Narrowable
-                    { Added = Map.ofList [ "ProjB", [ "src/ProjB/New.fs" ] ]
-                      Checked = set [ "ProjB" ] }
-            )
+            AdditiveShadow.Outcome.Judged
+                { Tree = "sha256:tree-T"
+                  Verdict =
+                    AdditiveModelChange.Narrowable
+                        { Added = Map.ofList [ "ProjB", [ "src/ProjB/New.fs" ] ]
+                          Checked = set [ "ProjB" ] }
+                  BlindSpots =
+                    { Dropped = AdditiveModelChange.DroppedEdges(4, "src/ProjB/B.fs", 4)
+                      Overloads = AdditiveModelChange.Overloaded "ProjB.Api.Get" } }
 
     let shadowed =
         { next with
@@ -643,7 +646,7 @@ let ``SHADOW: an evidence gap logs the additive-model verdict and runs the moved
             shadowLines
             |> List.exists (fun l ->
                 l.Contains
-                    "additive-model: would-narrow projects=ProjB checked=ProjB added=src/ProjB/New.fs tree=sha256:tree-T")
+                    "additive-model: would-narrow projects=ProjB checked=ProjB added=src/ProjB/New.fs tree=sha256:tree-T dropped-edges=4 dropped-max=4 file=src/ProjB/B.fs multi-overload=yes entity=ProjB.Api.Get")
         @>
 
     test

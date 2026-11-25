@@ -302,3 +302,118 @@ let describe (verdict: Verdict) : string =
             $"not-narrowable reason=%s{reason}"
 
     "additive-model: " + body
+
+/// The uses a relied-on file's analysis dropped: none, or how many in all and the file that
+/// dropped the most.
+type Dropped =
+    | NoDroppedEdges
+    | DroppedEdges of total: int * maxFile: string * maxCount: int
+
+/// Whether a relied-on file uses a member that has more than one overload.
+type Overloads =
+    | NoOverloads
+    | Overloaded of entity: string
+
+/// What the symbol-use comparison cannot see in the files a judgement relied on. LOG FIELDS
+/// only: they refuse nothing and select nothing.
+///   * A use the analyser could not attach to an enclosing symbol (a top-level `do`, a bare
+///     module-level expression) is counted in `AnalysisDiagnostics.DroppedEdges` and recorded
+///     nowhere, so a rebinding there leaves the use set as it was.
+///   * The analyser names every overload of an entity by its member name, so a rebinding
+///     between two overloads of one entity leaves the use set as it was.
+type BlindSpots =
+    { Dropped: Dropped
+      Overloads: Overloads }
+
+module BlindSpots =
+    /// The files `judge` relies on unchanged for `change`: the pre-existing files outside the
+    /// diff of every project whose shape changed and of its dependents, in project-name and
+    /// compile order. None when no shape changed.
+    let reliedOn (change: Change) : string list =
+        let changed =
+            change.Before
+            |> Map.toList
+            |> List.filter (fun (project, before) ->
+                Map.tryFind project change.After |> Option.exists (fun after -> after <> before))
+            |> List.map fst
+
+        changed
+        |> Seq.collect (fun project ->
+            Seq.append [ project ] (Map.tryFind project change.Dependents |> Option.defaultValue Set.empty))
+        |> Set.ofSeq
+        |> Seq.collect (fun project ->
+            Map.tryFind project change.Before
+            |> Option.map _.CompileItems
+            |> Option.defaultValue [])
+        |> Seq.filter (fun file -> not (change.Diff.Contains file))
+        |> Seq.distinct
+        |> Seq.toList
+
+    /// The blind spots of `relied` (repo-relative paths), from the analyses at hand by path.
+    ///
+    /// Dropped edges are summed over the relied-on files' analyses; a file with no analysis
+    /// counts none. An overloaded member is a member, function or property full name that
+    /// one analysis DEFINES more than once (each overload is its own definition in the
+    /// analysis, which the index merges into one symbol), and it counts when a relied-on
+    /// file's analysis uses it. Its limits: only overloads declared in an analysis at hand are
+    /// seen, so a member declared outside them (another project the caller did not read, a
+    /// referenced assembly) is not; and a name defined twice for another reason (a property's
+    /// getter and setter) reads as overloaded.
+    let ofAnalyses (relied: string list) (analyses: Map<string, AnalysisResult>) : BlindSpots =
+        let reliedAnalyses =
+            relied
+            |> List.choose (fun file -> Map.tryFind file analyses |> Option.map (fun a -> file, a))
+
+        let dropped =
+            reliedAnalyses
+            |> List.map (fun (file, a) -> file, a.Diagnostics.DroppedEdges)
+            |> List.filter (fun (_, count) -> count > 0)
+
+        let overloaded =
+            analyses
+            |> Map.values
+            |> Seq.collect (fun a ->
+                a.Symbols
+                |> List.filter (fun s ->
+                    match s.Kind with
+                    | Function
+                    | Value
+                    | Property -> true
+                    | Type
+                    | Module
+                    | DuCase
+                    | ExternRef -> false)
+                |> List.countBy _.FullName
+                |> List.filter (fun (_, count) -> count > 1)
+                |> List.map fst)
+            |> Set.ofSeq
+
+        let used =
+            reliedAnalyses
+            |> Seq.collect (fun (_, a) -> a.Dependencies |> Seq.map _.ToSymbol)
+            |> Set.ofSeq
+
+        { Dropped =
+            match dropped with
+            | [] -> NoDroppedEdges
+            | counts ->
+                let maxFile, maxCount = counts |> List.maxBy snd
+                DroppedEdges(counts |> List.sumBy snd, maxFile, maxCount)
+          Overloads =
+            match Set.intersect overloaded used |> Set.toList with
+            | [] -> NoOverloads
+            | entity :: _ -> Overloaded entity }
+
+    /// The fields as a line suffix, in a fixed order.
+    let describe (spots: BlindSpots) : string =
+        let dropped =
+            match spots.Dropped with
+            | NoDroppedEdges -> "dropped-edges=0 dropped-max=0"
+            | DroppedEdges(total, file, count) -> $"dropped-edges=%d{total} dropped-max=%d{count} file=%s{file}"
+
+        let overloads =
+            match spots.Overloads with
+            | NoOverloads -> "multi-overload=no"
+            | Overloaded entity -> $"multi-overload=yes entity=%s{entity}"
+
+        $"%s{dropped} %s{overloads}"

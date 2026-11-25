@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1900 shadow blind-spot fields. Every `additive-model:` judgement line now ends with what the
+  symbol-use comparison cannot see in the files it relied on (the pre-existing files outside the diff of the changed
+  projects and their dependents): `dropped-edges=N dropped-max=M file=F` (uses the analyser could not attach to an
+  enclosing symbol, such as a top-level `do`, summed from T's analyses; `dropped-edges=0 dropped-max=0` when none) and
+  `multi-overload=yes entity=E|no` (a relied-on file uses a member that an analysis at T defines more than once, which
+  the index would merge under one name). Log fields only: they refuse nothing and select nothing. The shadow now reads
+  T's analysis of every compiled file, so a file whose pinned record no longer reads counts as having no analysis at T.
+
 - feat: AUTOMATION-1900 step 3, SHADOW only. Where a launch refuses "no whole-project run under the current project
   model" (the evidence gap), it now also logs what `AdditiveModelChange.judge` would decide, as one line:
   `additive-model: would-narrow projects=… checked=… added=… tree=T`, `additive-model: not-narrowable reason=<token> …

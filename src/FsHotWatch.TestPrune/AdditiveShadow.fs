@@ -11,9 +11,9 @@
 ///   * AFTER: each project's shape under the current model (`ObservedShapes`);
 ///   * the DIFF: T's manifest against the working tree;
 ///   * uses NOW: the impact index's core edges for the file;
-///   * uses AT T: the same set when the index's entry for the file IS T's analysis (its
-///     `file_keys` identity is the one T's manifest pinned: one analysis, one set), otherwise the
-///     analysis record T pinned for it.
+///   * uses AT T: the analysis record T pinned for the file;
+///   * the BLIND SPOTS (`BlindSpots`, log fields only): dropped edges in the relied-on files'
+///     analyses at T, and whether one uses a member any analysis at T defines more than once.
 module FsHotWatch.TestPrune.AdditiveShadow
 
 open FsHotWatch
@@ -30,10 +30,17 @@ type NotJudged =
     | NoCompileModelAtT of tree: string
     | Failed of reason: string
 
+/// A judgement against T: what `judge` decides, and the blind spots of the files it relied on
+/// (log fields only).
+type Judgement =
+    { Tree: string
+      Verdict: Verdict
+      BlindSpots: BlindSpots }
+
 /// What the shadow concluded for one launch.
 [<RequireQualifiedAccess>]
 type Outcome =
-    | Judged of tree: string * verdict: Verdict
+    | Judged of Judgement
     | NotJudged of NotJudged
 
 /// What the shadow reads.
@@ -79,30 +86,26 @@ let private diffOf (manifest: (string * string) list) (current: (string * string
     |> Seq.map fst
     |> Set.ofSeq
 
-/// The uses T's analysis of `path` records, or `None` when T pinned no analysis for it or its
-/// record no longer reads.
-let private usesAtT
+/// The analysis T pinned for `path`, or `None` when T pinned none or its record no longer reads.
+let private analysisAtT
     (env: Env)
     (store: OutcomeRecords.IOutcomeStore)
     (record: TestBaseline.CheckoutRecord)
-    (now: Map<string, Set<SymbolUse>>)
     (path: string)
-    : Set<SymbolUse> option =
+    : TestPrune.AstAnalyzer.AnalysisResult option =
     match Map.tryFind path record.Analyses with
     | Some(TestBaseline.RowAnalysis.Pinned(identity, project, pinned)) ->
-        match Map.tryFind path env.FileKeys, Map.tryFind path now with
-        | Some indexed, Some uses when indexed = identity -> Some uses
-        | _ ->
-            let key = AnalysisRecords.keyOf identity path project
+        let key = AnalysisRecords.keyOf identity path project
 
-            if key.Value.Text <> pinned then
-                None
-            else
-                AnalysisRecords.lookup store env.Root key |> Option.map SymbolUses.ofAnalysis
+        if key.Value.Text <> pinned then
+            None
+        else
+            AnalysisRecords.lookup store env.Root key
     | Some(TestBaseline.RowAnalysis.Unpinned _)
     | None -> None
 
-/// What `judge` decides for the model change between T and now.
+/// What `judge` decides for the model change between T and now, and the blind spots of the
+/// files it relied on.
 let observe (env: Env) : Outcome =
     match env.Store, env.Current with
     | None, _ -> Outcome.NotJudged NotJudged.NoStore
@@ -113,6 +116,16 @@ let observe (env: Env) : Outcome =
         | Some(record, _) when record.CompileModel.IsEmpty -> Outcome.NotJudged(NotJudged.NoCompileModelAtT record.Tree)
         | Some(record, _) ->
             let diff = diffOf record.Entries current.Entries
+
+            // Every compiled file's analysis at T: the uses the comparison reads, and the
+            // definitions an overload is detected from, in any project of T.
+            let analysesAtT =
+                record.CompileModel
+                |> Map.values
+                |> Seq.collect _.CompileItems
+                |> Seq.distinct
+                |> Seq.choose (fun path -> analysisAtT env store record path |> Option.map (fun a -> path, a))
+                |> Map.ofSeq
 
             let compared =
                 record.CompileModel
@@ -128,30 +141,34 @@ let observe (env: Env) : Outcome =
                 |> Map.ofSeq
 
             let atT =
-                compared
-                |> Seq.choose (fun path -> usesAtT env store record now path |> Option.map (fun uses -> path, uses))
-                |> Map.ofSeq
+                analysesAtT
+                |> Map.filter (fun path _ -> compared.Contains path)
+                |> Map.map (fun _ analysis -> SymbolUses.ofAnalysis analysis)
 
             let projects =
                 Seq.append (Map.keys record.CompileModel) (Map.keys env.ShapesNow)
                 |> Seq.distinct
 
-            Outcome.Judged(
-                record.Tree,
-                judge
-                    { Before = record.CompileModel
-                      After = env.ShapesNow
-                      Dependents = projects |> Seq.map (fun p -> p, env.Dependents p) |> Map.ofSeq
-                      UsesAtT = atT
-                      UsesNow = now
-                      Diff = diff }
-            )
+            let change =
+                { Before = record.CompileModel
+                  After = env.ShapesNow
+                  Dependents = projects |> Seq.map (fun p -> p, env.Dependents p) |> Map.ofSeq
+                  UsesAtT = atT
+                  UsesNow = now
+                  Diff = diff }
+
+            Outcome.Judged
+                { Tree = record.Tree
+                  Verdict = judge change
+                  BlindSpots = BlindSpots.ofAnalyses (BlindSpots.reliedOn change) analysesAtT }
 
 /// The outcome's one log line: `AdditiveModelChange.describe`'s for a verdict, with the tree it
-/// was judged against, or `additive-model: not-judged reason=<token>`.
+/// was judged against and the blind-spot fields (`BlindSpots.describe`), or
+/// `additive-model: not-judged reason=<token>`.
 let describe (outcome: Outcome) : string =
     match outcome with
-    | Outcome.Judged(tree, verdict) -> $"%s{AdditiveModelChange.describe verdict} tree=%s{tree}"
+    | Outcome.Judged judged ->
+        $"%s{AdditiveModelChange.describe judged.Verdict} tree=%s{judged.Tree} %s{BlindSpots.describe judged.BlindSpots}"
     | Outcome.NotJudged why ->
         let reason =
             match why with

@@ -86,10 +86,24 @@ let private treeNow =
 
 let private at = DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero)
 
-/// File T as a green full run would: each file's analysis record, TA's full pass, and the
-/// test-baseline record with `model` as T's compile model.
-let private fileT (store: OutcomeStore.Store) (model: Map<string, ProjectShape>) =
-    for path, analysis in [ LibPath, libAnalysis; TestsPath, testsAnalysis ] do
+/// A judgement whose relied-on files show no blind spot.
+let private judged (tree: string, verdict: Verdict) =
+    AdditiveShadow.Outcome.Judged
+        { Tree = tree
+          Verdict = verdict
+          BlindSpots =
+            { Dropped = NoDroppedEdges
+              Overloads = NoOverloads } }
+
+/// File T as a green full run would: each file's analysis record (`lib` and `tests`), TA's full
+/// pass, and the test-baseline record with `model` as T's compile model.
+let private fileTWith
+    (store: OutcomeStore.Store)
+    (model: Map<string, ProjectShape>)
+    (lib: AnalysisResult)
+    (tests: AnalysisResult)
+    =
+    for path, analysis in [ LibPath, lib; TestsPath, tests ] do
         let key = AnalysisRecords.keyOf identities[path] path (List.head (projectsOf path))
 
         test <@ AnalysisRecords.file store Root path key analysis @>
@@ -140,6 +154,9 @@ let private fileT (store: OutcomeStore.Store) (model: Map<string, ProjectShape>)
     | Ok _ -> ()
     | Error refusals -> failwith $"T was not filed: %A{refusals}"
 
+let private fileT (store: OutcomeStore.Store) (model: Map<string, ProjectShape>) =
+    fileTWith store model libAnalysis testsAnalysis
+
 /// The shadow's view after the land: `A` gained `New.fs` before `A.fs`; the index holds T's own
 /// analysis of `A.fs` and a new one of `T.fs`, whose uses are `testsUsesNow`.
 let private envAfter (store: OutcomeStore.Store option) (testsUsesNow: Set<SymbolUse>) : AdditiveShadow.Env =
@@ -181,7 +198,7 @@ let ``an insert that leaves every pre-existing file's uses as at T would narrow,
 
         test
             <@
-                outcome = AdditiveShadow.Outcome.Judged(
+                outcome = judged (
                     treeT.Identity,
                     Narrowable
                         { Added = Map.ofList [ "A", [ NewPath ] ]
@@ -191,7 +208,7 @@ let ``an insert that leaves every pre-existing file's uses as at T would narrow,
 
         test
             <@
-                AdditiveShadow.describe outcome = $"additive-model: would-narrow projects=A checked=A,TA added=%s{NewPath} tree=%s{treeT.Identity}"
+                AdditiveShadow.describe outcome = $"additive-model: would-narrow projects=A checked=A,TA added=%s{NewPath} tree=%s{treeT.Identity} dropped-edges=0 dropped-max=0 multi-overload=no"
             @>)
 
 [<Fact>]
@@ -208,7 +225,7 @@ let ``a downstream file the insert rebound is not narrowable, naming it`` () =
 
         test
             <@
-                AdditiveShadow.observe (envAfter (Some store) rebound) = AdditiveShadow.Outcome.Judged(
+                AdditiveShadow.observe (envAfter (Some store) rebound) = judged (
                     treeT.Identity,
                     NotNarrowable(SymbolUsesChanged("TA", TestsPath))
                 )
@@ -312,7 +329,7 @@ let private verdictWithTestsRow (testsRow: JsonArray) =
 [<Fact>]
 let ``a pre-existing file whose analysis at T does not read has no uses at T, and is not narrowable`` () =
     let expected =
-        AdditiveShadow.Outcome.Judged(treeT.Identity, NotNarrowable(NoAnalysisAtT("TA", TestsPath)))
+        judged (treeT.Identity, NotNarrowable(NoAnalysisAtT("TA", TestsPath)))
 
     let rightKey = (AnalysisRecords.keyOf "id-t" TestsPath "TA").Value.Text
 
@@ -369,11 +386,13 @@ let ``a shadow that throws is a line saying so, never a failed launch`` () =
 [<Fact>]
 let ``the line is the observer's outcome, described`` () =
     let line =
-        AdditiveShadow.lineWith
-            (fun _ -> AdditiveShadow.Outcome.Judged("sha256:t", NotNarrowable(ItemsReordered "A")))
-            (fun () -> envAfter None Set.empty)
+        AdditiveShadow.lineWith (fun _ -> judged ("sha256:t", NotNarrowable(ItemsReordered "A"))) (fun () ->
+            envAfter None Set.empty)
 
-    test <@ line = "additive-model: not-narrowable reason=items-reordered project=A tree=sha256:t" @>
+    test
+        <@
+            line = "additive-model: not-narrowable reason=items-reordered project=A tree=sha256:t dropped-edges=0 dropped-max=0 multi-overload=no"
+        @>
 
 // --- A record's compile model as JSON holds it ---------------------------------------------
 
@@ -468,3 +487,56 @@ let ``a file's uses now are its core edges only: an extension's edges are no use
                     To = "A.g"
                     Kind = Calls } ]
         @>
+
+// --- Blind-spot fields --------------------------------------------------------------------
+
+[<Fact>]
+let ``a judgement logs the relied-on files' dropped edges and a used overloaded member, and judges exactly as without them``
+    ()
+    =
+    withTempDir "additive-shadow" (fun dir ->
+        let store = storeIn dir
+
+        // A.fs defines `A.f` twice (two overloads, one name) and dropped 2 uses; T.fs, which uses
+        // `A.f`, dropped 3.
+        let lib =
+            { libAnalysis with
+                Symbols =
+                    [ { FullName = "A.f"
+                        Kind = Function
+                        Location = InSource(LibPath, 1, 1, "h1") }
+                      { FullName = "A.f"
+                        Kind = Function
+                        Location = InSource(LibPath, 2, 2, "h2") } ]
+                Diagnostics =
+                    { AnalysisDiagnostics.Zero with
+                        DroppedEdges = 2 } }
+
+        let tests =
+            { testsAnalysis with
+                Diagnostics =
+                    { AnalysisDiagnostics.Zero with
+                        DroppedEdges = 3 } }
+
+        fileTWith store modelAtT lib tests
+
+        let outcome =
+            AdditiveShadow.observe (envAfter (Some store) (SymbolUses.ofAnalysis testsAnalysis))
+
+        test
+            <@
+                outcome = AdditiveShadow.Outcome.Judged
+                    { Tree = treeT.Identity
+                      Verdict =
+                        Narrowable
+                            { Added = Map.ofList [ "A", [ NewPath ] ]
+                              Checked = set [ "A"; "TA" ] }
+                      BlindSpots =
+                        { Dropped = DroppedEdges(5, TestsPath, 3)
+                          Overloads = Overloaded "A.f" } }
+            @>
+
+        test
+            <@
+                AdditiveShadow.describe outcome = $"additive-model: would-narrow projects=A checked=A,TA added=%s{NewPath} tree=%s{treeT.Identity} dropped-edges=5 dropped-max=3 file=%s{TestsPath} multi-overload=yes entity=A.f"
+            @>)

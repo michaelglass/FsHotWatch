@@ -204,6 +204,7 @@
     <Compile Include="AdditiveModelChangeTests.fs" />
     <Compile Include="AdditiveRebindingFixtureTests.fs" />
     <Compile Include="AdditiveShadowTests.fs" />
+    <Compile Include="AdditiveBlindSpotTests.fs" />
     <Compile Include="TestBaselineRunTests.fs" />
     <Compile Include="TestOutcomeRecordsTests.fs" />
     <Compile Include="TestEvidenceReuseRefusalTests.fs" />
