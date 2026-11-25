@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0-alpha.164 - 2026-11-25
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.14.0-alpha.163 - 2026-11-25
 
 - feat: `tests.restartFromBoxBaseline` (boolean, default `false`): a checkout with no full pass of its own restarts

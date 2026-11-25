@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.126 - 2026-11-25
+
 - feat: AUTOMATION-1900 shadow blind-spot fields. Every `additive-model:` judgement line now ends with what the
   symbol-use comparison cannot see in the files it relied on (the pre-existing files outside the diff of the changed
   projects and their dependents): `dropped-edges=N dropped-max=M file=F` (uses the analyser could not attach to an
