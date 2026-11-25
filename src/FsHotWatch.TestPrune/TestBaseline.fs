@@ -86,6 +86,10 @@ type Facts =
         SealedTree: string option
         /// The receipt tree read at completion: its identity and per-file entries.
         ReceiptTree: (string * (string * string) list) option
+        /// Each project's shape under the model the run's check results came from
+        /// (`AdditiveModelChange.ObservedShapes`): filed as T's compile model, the "before" side
+        /// of the additive-model shadow (AUTOMATION-1900).
+        CompileModel: Map<string, AdditiveModelChange.ProjectShape>
     }
 
 /// Why no baseline was filed. Each names the condition that failed.
@@ -235,6 +239,9 @@ type CheckoutRecord =
         KnownInputs: Map<string, string>
         /// When the record was filed.
         FiledAt: DateTimeOffset
+        /// Each project's shape at T (`Facts.CompileModel`). Empty for a record filed before
+        /// it was recorded, or one whose shapes did not read.
+        CompileModel: Map<string, AdditiveModelChange.ProjectShape>
     }
 
 /// One cell of a manifest row, as JSON holds it.
@@ -276,6 +283,50 @@ let private stringsOf (o: JsonElement) (name: string) : Map<string, string> =
         |> Seq.filter (fun p -> p.Value.ValueKind = JsonValueKind.String)
         |> Seq.map (fun p -> p.Name, p.Value.GetString())
         |> Map.ofSeq
+    | _ -> Map.empty
+
+/// The record's `compileModel`: each project's shape at T. A record without it, or with any
+/// shape that does not read, has none: a partial model would read as projects removed.
+let private compileModelOf (o: JsonElement) : Map<string, AdditiveModelChange.ProjectShape> =
+    let strings (e: JsonElement) =
+        if e.ValueKind = JsonValueKind.Array then
+            let values = [ for v in e.EnumerateArray() -> v ]
+
+            if values |> List.forall (fun v -> v.ValueKind = JsonValueKind.String) then
+                Some(values |> List.map _.GetString())
+            else
+                None
+        else
+            None
+
+    let shapeOf (e: JsonElement) : AdditiveModelChange.ProjectShape option =
+        match
+            Json.tryProp e "items" |> Option.bind strings,
+            Json.tryProp e "defines" |> Option.bind strings,
+            Json.tryString e "references",
+            Json.tryString e "options"
+        with
+        | Some items, Some defines, Some references, Some options ->
+            Some
+                { CompileItems = items
+                  Defines = defines
+                  References = references
+                  Options = options }
+        | _ -> None
+
+    match Json.tryProp o "compileModel" with
+    | Some model when model.ValueKind = JsonValueKind.Object ->
+        let shapes =
+            [ for p in model.EnumerateObject() ->
+                  if p.Value.ValueKind = JsonValueKind.Object then
+                      shapeOf p.Value |> Option.map (fun shape -> p.Name, shape)
+                  else
+                      None ]
+
+        if shapes |> List.forall Option.isSome then
+            shapes |> List.choose id |> Map.ofList
+        else
+            Map.empty
     | _ -> Map.empty
 
 /// A filed record's outputs: always JSON, since the store files nothing else.
@@ -321,7 +372,8 @@ let private parseRecord
                         |> Map.ofList
                       FullKeys = stringsOf o "projects"
                       KnownInputs = stringsOf o "knownInputs"
-                      FiledAt = filedAt }
+                      FiledAt = filedAt
+                      CompileModel = compileModelOf o }
         | _ -> Error "the record has no run or no manifest"
 
 /// The `test-baseline` record for exactly `tree`, when it is still the store's passing
@@ -533,6 +585,20 @@ let private baselineOutputs
         known[path] <- digest
 
     o["knownInputs"] <- known
+    let model = JsonObject()
+
+    let strings (values: string list) =
+        JsonArray(values |> List.map (fun v -> JsonValue.Create v :> JsonNode) |> List.toArray)
+
+    for KeyValue(project, shape) in facts.CompileModel do
+        let s = JsonObject()
+        s["items"] <- strings shape.CompileItems
+        s["defines"] <- strings shape.Defines
+        s["references"] <- shape.References
+        s["options"] <- shape.Options
+        model[project] <- s
+
+    o["compileModel"] <- model
     let manifest = JsonArray()
 
     let text (value: string) = JsonValue.Create value :> JsonNode

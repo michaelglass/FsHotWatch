@@ -378,7 +378,8 @@ let internal onRunFinishedWith
                   EarnsBaseline = earnsBaseline
                   RunnableProjects = runnableProjects
                   SealedTree = state.SealedTree |> Option.map _.Identity
-                  ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries) })
+                  ReceiptTree = receipt.CurrentTree |> Option.map (fun tree -> tree.Identity, tree.Entries)
+                  CompileModel = AdditiveModelChange.ObservedShapes.current state.ObservedShapes })
 
         // AUTOMATION-1623 (ADR-069): this completion may have moved the ledger's full-suite
         // tree or filed T's record, so what a restart would select is published again now.

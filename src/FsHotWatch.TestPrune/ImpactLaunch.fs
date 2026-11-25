@@ -89,15 +89,20 @@ type internal EvidencePlanner =
 
 /// What a run asks the plugin and its host at launch.
 type internal RunLaunchSupport =
-    { AwaitDiscovery: PluginCtx<TestPruneMsg> -> Async<unit>
-      CompileInputsOf: PluginCtx<TestPruneMsg> -> unit -> string -> bool
-      CoverageIngestFailed: PluginCtx<TestPruneMsg> -> CoverageIngestFailure -> unit
-      EvidencePlanFor: EvidencePlanner
-      LogLaunch: string -> TestMode -> TestRunLaunch -> unit
-      PriceSelection: TestRunLaunch -> TestRunLaunch
-      ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
-      ObserveTestInputs: PluginCtx<TestPruneMsg> -> Map<string, string * string> option
-      TracesFor: PluginCtx<TestPruneMsg> -> TestMode -> TraceRunHost option }
+    {
+        AwaitDiscovery: PluginCtx<TestPruneMsg> -> Async<unit>
+        CompileInputsOf: PluginCtx<TestPruneMsg> -> unit -> string -> bool
+        CoverageIngestFailed: PluginCtx<TestPruneMsg> -> CoverageIngestFailure -> unit
+        EvidencePlanFor: EvidencePlanner
+        LogLaunch: string -> TestMode -> TestRunLaunch -> unit
+        PriceSelection: TestRunLaunch -> TestRunLaunch
+        ObserveModelGeneration: PluginCtx<TestPruneMsg> -> int64 option
+        ObserveTestInputs: PluginCtx<TestPruneMsg> -> Map<string, string * string> option
+        TracesFor: PluginCtx<TestPruneMsg> -> TestMode -> TraceRunHost option
+        /// The additive-model shadow line for a launch with an evidence gap (`AdditiveShadow`,
+        /// AUTOMATION-1900). Logged only: nothing it says reaches the selection.
+        AdditiveShadow: PluginCtx<TestPruneMsg> -> TestRunInputs -> string
+    }
 
 /// What an impact run reads from the plugin that launches it, grouped: its configuration,
 /// its index handles, how it classifies debt, what it asks at launch, and the poison-seed
@@ -276,6 +281,10 @@ let internal widenLaunch
         Logging.info
             "test-prune"
             $"Evidence gap: %d{Set.count evidenceGap} project(s) have no whole-project run under the current project model (%s{names}) — running them in full, so this run's evidence can support a green"
+
+        // Shadow only (AUTOMATION-1900): what the additive-model narrowing would decide for
+        // this gap. Its line is all it produces; `evidenceGap` and every widening above stand.
+        Logging.info "test-prune" (env.Launch.AdditiveShadow ctx inputs)
 
     match baselineInvalid with
     | Some reason when not ledgerUnreadable ->

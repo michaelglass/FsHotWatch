@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1900 step 3, SHADOW only. Where a launch refuses "no whole-project run under the current project
+  model" (the evidence gap), it now also logs what `AdditiveModelChange.judge` would decide, as one line:
+  `additive-model: would-narrow projects=… checked=… added=… tree=T`, `additive-model: not-narrowable reason=<token> …
+  tree=T`, or `additive-model: not-judged reason=no-store|no-tree|no-retained-baseline|no-compile-model-at-t|error`.
+  T is the retained box tree a box restart would diff from, read whether or not `tests.restartFromBoxBaseline` is on;
+  the before side is T's compile model, now filed with every `test-baseline` record (`compileModel`: each project's
+  compile items, defines, and digests of its references and other options), and the now side is each project's shape
+  as the plugin's check results carried it. A file whose index entry is T's own analysis compares as unchanged without
+  reading it; any other is compared against the analysis record T pinned. Selection is unchanged: the refusal and the
+  whole-project runs stand exactly as before, and a test proves it with a shadow that says "would narrow".
+
 - feat: AUTOMATION-1900 steps 1-2. `AdditiveModelChange.judge` decides, purely, whether a project-model change may
   narrow "no whole-project run under the current project model": only when it ADDS compile items and nothing else (no
   project added or removed, no item removed or reordered, no define, reference or other option change) and every

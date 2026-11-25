@@ -291,9 +291,22 @@ let internal updateWith
         | PluginEvent.FileChecked result ->
             let! folded = onFileChecked ctx state modelGeneration result
 
+            // An aborted check may carry no usable options, so only a completed one is read.
+            let observedShapes =
+                match result.CheckResults with
+                | ParseOnly _ -> folded.ObservedShapes
+                | Replayed _
+                | FullCheck _ ->
+                    AdditiveModelChange.ObservedShapes.observe
+                        ctx.RepoRoot
+                        result.ModelGeneration
+                        result.ProjectOptions
+                        folded.ObservedShapes
+
             return
                 { folded with
-                    ColdScan = ColdScan.onFileChecked folded.ColdScan }
+                    ColdScan = ColdScan.onFileChecked folded.ColdScan
+                    ObservedShapes = observedShapes }
 
         | PluginEvent.BatchChecked batch ->
             let! folded = onBatchChecked ctx state modelGeneration batch

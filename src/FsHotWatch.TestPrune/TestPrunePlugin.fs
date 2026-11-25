@@ -70,8 +70,10 @@ open FsHotWatch.TestPrune.PluginStartup
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
 /// queries against — structurally prevents the caller from wiring an extension
 /// to a different DB than the plugin's. `queriesOf` builds the impact queries over that
-/// same DB.
-let internal createWithEvidenceAndQueries
+/// same DB. `observeShadow` decides the additive-model shadow line a launch with an evidence
+/// gap logs (`AdditiveShadow.observe` in production); it reaches no selection.
+let internal createWithShadow
+    (observeShadow: AdditiveShadow.Env -> AdditiveShadow.Outcome)
     // The box-wide test-evidence store this plugin reuses from and publishes to;
     // `None` (the kill switch, or no store) runs exactly as without one.
     (evidence: TestEvidenceRun.Wiring option)
@@ -466,7 +468,17 @@ let internal createWithEvidenceAndQueries
               PriceSelection = priceSelection
               ObserveModelGeneration = observeModelGeneration
               ObserveTestInputs = observeTestInputs
-              TracesFor = tracesFor }
+              TracesFor = tracesFor
+              AdditiveShadow =
+                fun ctx inputs ->
+                    AdditiveShadow.lineWith observeShadow (fun () ->
+                        { Store = evidence |> Option.bind (fun wiring -> wiring.Outcomes) |> Option.map _.Store
+                          Root = repoRoot
+                          Current = ReceiptInputTree.readTree repoRoot
+                          ShapesNow = inputs.ObservedShapes
+                          Dependents = AdditiveShadow.dependentsIn ctx.ProjectGraph
+                          FileKeys = db.GetFileKeys()
+                          UsesNow = fun path -> AdditiveShadow.coreUses (db.GetDependenciesFromFile path) }) }
           BumpSeedAges =
             fun symbols -> Volatile.Write(&pendingAgeRef, bumpSeedAges (Volatile.Read(&pendingAgeRef)) symbols) }
 
@@ -774,6 +786,9 @@ let internal evidenceWiringWhen
 /// The test-evidence wiring a daemon gets for `repoRoot`, unless `FSHW_TEST_EVIDENCE=0`.
 let internal defaultEvidenceWiring (excludePatterns: string list) (repoRoot: string) =
     evidenceWiringWhen (TestEvidenceStore.enabled ()) excludePatterns repoRoot
+
+/// `createWithShadow` with the production additive-model shadow (`AdditiveShadow.observe`).
+let internal createWithEvidenceAndQueries = createWithShadow AdditiveShadow.observe
 
 /// `createWithEvidenceAndQueries` with the daemon's default test-evidence wiring.
 let internal createWithQueries

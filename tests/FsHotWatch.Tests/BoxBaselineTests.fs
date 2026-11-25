@@ -55,7 +55,8 @@ let private recordOf (entries: (string * string) list) (analysed: string list) :
         |> Map.ofList
       FullKeys = Map.empty
       KnownInputs = Map.empty
-      FiledAt = DateTimeOffset.MinValue }
+      FiledAt = DateTimeOffset.MinValue
+      CompileModel = Map.empty }
 
 let private treeOf (entries: (string * string) list) : ReceiptTree =
     { Identity = TreeHash.hashEntries entries

@@ -309,6 +309,7 @@ let internal initialStateOf
       Unindexed = Set.empty
       IndexGuard = IndexedAnalysis.Guard mayReplay
       FailedExtensions = Map.empty
+      ObservedShapes = Map.empty
       // The previous session's reds, quarantined into the first run.
       OutstandingFailures = loadedFailures
       LastCoverage = RunCoverage.none

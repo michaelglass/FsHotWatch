@@ -582,6 +582,92 @@ let internal withLogLines (body: unit -> 'T) : 'T * string list =
 
     result, List.ofSeq lines
 
+/// AUTOMATION-1900 shadow: a restarted daemon whose additive-model shadow says the moved project
+/// WOULD narrow still runs it in full. The verdict reaches the log line and nothing else.
+[<Fact(Timeout = 30000)>]
+let ``SHADOW: an evidence gap logs the additive-model verdict and runs the moved project in full exactly as without it``
+    ()
+    =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    identities.Value <- Map.add (fsprojOf "ProjB") "b2" identities.Value
+    let next = restarted f
+
+    let wouldNarrow: AdditiveShadow.Env -> AdditiveShadow.Outcome =
+        fun env ->
+            test <@ env.Root = next.Ctx.RepoRoot @>
+
+            AdditiveShadow.Outcome.Judged(
+                "sha256:tree-T",
+                AdditiveModelChange.Narrowable
+                    { Added = Map.ofList [ "ProjB", [ "src/ProjB/New.fs" ] ]
+                      Checked = set [ "ProjB" ] }
+            )
+
+    let shadowed =
+        { next with
+            Handler =
+                createWithShadow
+                    wouldNarrow
+                    (defaultEvidenceWiring [] next.Ctx.RepoRoot)
+                    FsHotWatch.TestPrune.PluginQueries.ImpactQueries.ofDatabase
+                    (FsHotWatch.ProcessHelper.resolveLaunchDeadline None)
+                    None
+                    RestartBaselines.OwnCheckoutOnly
+                    (fun () -> Map.empty)
+                    (Path.Combine(next.Ctx.RepoRoot, "tp.db"))
+                    TestPrune.Domain.WalkPolicy.FollowAll
+                    next.Ctx.RepoRoot
+                    (Some configs)
+                    None
+                    None
+                    None
+                    None
+                    []
+                    None
+                    FsHotWatch.TestPrune.TestMode.initial }
+
+    let (_, launch), lines =
+        withLogLines (fun () -> buildAndLaunch shadowed (withChangeToLibF shadowed.Handler.Init))
+
+    test
+        <@ launch.Selection = Map.ofList [ "ProjA", ProjectClasses(Set.singleton "ProjATests"); "ProjB", ProjectInFull ] @>
+
+    let shadowLines = lines |> List.filter (fun l -> l.Contains "additive-model:")
+
+    test
+        <@
+            shadowLines
+            |> List.exists (fun l ->
+                l.Contains
+                    "additive-model: would-narrow projects=ProjB checked=ProjB added=src/ProjB/New.fs tree=sha256:tree-T")
+        @>
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l.Contains "Evidence gap: 1 project(s)" && l.Contains "ProjB")
+        @>
+
+/// With no evidence gap there is nothing to shadow: no line.
+[<Fact(Timeout = 30000)>]
+let ``SHADOW: a launch with no evidence gap logs no additive-model line`` () =
+    let identities = identitiesOf [ "ProjA", "a1"; "ProjB", "b1" ]
+    let f = fixture () |> withIdentities identities
+    let verified = verifiedUnderModelOne f
+    publish f f.Handler.Init verified
+
+    let next = restarted f
+
+    let _, lines =
+        withLogLines (fun () -> buildAndLaunch next (withChangeToLibF next.Handler.Init))
+
+    test <@ lines |> List.forall (fun l -> not (l.Contains "additive-model:")) @>
+
+
 [<Fact(Timeout = 30000)>]
 let ``a full suite widened for unknown debt names the cause, not the pending-verification ledger`` () =
     // The cause the land daemon carried across its restart: a runtime-obligation write

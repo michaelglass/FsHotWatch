@@ -40,10 +40,10 @@
     <Compile Include="FileFreshness.fs" />
     <Compile Include="IndexedAnalysis.fs" />
     <Compile Include="AnalysisRecords.fs" />
+    <Compile Include="AdditiveModelChange.fs" />
     <Compile Include="TestBaseline.fs" />
     <Compile Include="RestartBaselines.fs" />
     <Compile Include="BaselineRebuild.fs" />
-    <Compile Include="AdditiveModelChange.fs" />
     <Compile Include="IndexSeal.fs" />
     <Compile Include="PendingVerification.fs" />
     <Compile Include="FullSuiteBaseline.fs" />
@@ -100,6 +100,7 @@
     <Compile Include="ImpactRun.fs" />
     <Compile Include="FileCheckedHandler.fs" />
     <Compile Include="BoxBaseline.fs" />
+    <Compile Include="AdditiveShadow.fs" />
     <Compile Include="CheckHandlers.fs" />
     <Compile Include="RunOutcomeReport.fs" />
     <Compile Include="CompletionStages.fs" />

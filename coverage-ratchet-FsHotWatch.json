@@ -2734,6 +2734,34 @@
         "platform": "linux"
       }
     ],
+    "AdditiveModelChange.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1900 steps 1-2: the pure additive project-model decision, project shapes and symbol uses). Explicit so that a report which drops this file fails coverage-check. Measured on macOS 2026-11-25 by the full unit suite under mise run ci (AdditiveModelChangeTests, AdditiveRebindingFixtureTests): line 100%, branch 100%.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1900 steps 1-2). Pure logic with no platform-specific path, so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100%, branch 100%.",
+        "platform": "linux"
+      }
+    ],
+    "AdditiveShadow.fs": [
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1900 step 3: the additive-model shadow line at the evidence-gap refusal). Explicit so that a report which drops this file fails coverage-check. Measured on macOS 2026-11-25 by the full unit suite under mise run ci (AdditiveShadowTests, TestPruneModelChangeTests): line 100%, branch 100%.",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 100,
+        "reason": "new file (AUTOMATION-1900 step 3). No platform-specific path (store, tree and index reads are the same on any runner), so the macOS measurement stands for Linux until a Linux CI coverage report refreshes it: line 100%, branch 100%.",
+        "platform": "linux"
+      }
+    ],
     "BoxBaseline.fs": [
       {
         "line": 100,

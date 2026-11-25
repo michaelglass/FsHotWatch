@@ -48,17 +48,19 @@ module SymbolUses =
     let ofAnalysis (analysis: AnalysisResult) : Set<SymbolUse> = ofDependencies analysis.Dependencies
 
 /// What one project compiles, read from its compiler options with every in-repository path
-/// relative to the checkout, so two checkouts of one tree read the same shape.
+/// relative to the checkout, so two checkouts of one tree read the same shape. References and
+/// the remaining options are kept as digests: the decision only asks whether they moved, and a
+/// baseline record files one shape per project (`TestBaseline`).
 type ProjectShape =
     {
         /// The source files, repo-relative, in compile order.
         CompileItems: string list
         /// `--define:` symbols, sorted.
         Defines: string list
-        /// `-r:` references (packages and referenced projects' outputs), sorted.
-        References: string list
-        /// Every other compiler option, in order.
-        Options: string list
+        /// The digest of the `-r:` references (packages and referenced projects' outputs), sorted.
+        References: string
+        /// The digest of every other compiler option, in order.
+        Options: string
     }
 
 module ProjectShape =
@@ -69,6 +71,9 @@ module ProjectShape =
                 Some(option.Substring prefix.Length)
             else
                 None)
+
+    let private digest (values: string seq) =
+        "sha256:" + FsHotWatch.CheckCache.sha256Hex (String.concat "\n" values)
 
     /// The shape `options` describe, read under the checkout `root`.
     let ofOptions (root: string) (options: FSharpProjectOptions) : ProjectShape =
@@ -85,21 +90,52 @@ module ProjectShape =
             |> Array.choose (prefixed [ "-r:"; "--reference:" ])
             |> Array.map relative
             |> Array.sort
-            |> Array.toList
 
         let others =
             options.OtherOptions
             |> Array.filter (fun option -> (prefixed [ "--define:"; "-d:"; "-r:"; "--reference:" ] option).IsNone)
             |> Array.map relative
-            |> Array.toList
 
         { CompileItems =
             options.SourceFiles
             |> Array.map (fun file -> Path.GetRelativePath(root, file).Replace('\\', '/'))
             |> Array.toList
           Defines = defines
-          References = references
-          Options = others }
+          References = digest references
+          Options = digest others }
+
+/// A project's shape as the check results of one model generation carried it.
+type ObservedShape =
+    { Generation: int64 option
+      Shape: ProjectShape }
+
+/// Each project's shape under the model the plugin's check results came from, by project name:
+/// what a test-baseline record files as its tree's compile model, and the "now" side of the
+/// shadow decision (`AdditiveShadow`).
+module ObservedShapes =
+    /// `shapes` with the project `options` describe read again, unless it was already read
+    /// under `generation`: a model generation's options are fixed, so one read per project
+    /// and generation suffices.
+    let observe
+        (root: string)
+        (generation: int64 option)
+        (options: FSharpProjectOptions)
+        (shapes: Map<string, ObservedShape>)
+        : Map<string, ObservedShape> =
+        let project = AnalysisRecords.projectNameOf options.ProjectFileName
+
+        match Map.tryFind project shapes with
+        | Some seen when generation.IsSome && seen.Generation = generation -> shapes
+        | _ ->
+            Map.add
+                project
+                { Generation = generation
+                  Shape = ProjectShape.ofOptions root options }
+                shapes
+
+    /// The shapes alone.
+    let current (shapes: Map<string, ObservedShape>) : Map<string, ProjectShape> =
+        shapes |> Map.map (fun _ observed -> observed.Shape)
 
 /// Everything `judge` decides from: the model at T and now, by project name, and every file's
 /// symbol uses at T and now, by repo-relative path.

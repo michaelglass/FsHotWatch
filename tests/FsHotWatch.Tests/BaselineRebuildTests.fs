@@ -64,7 +64,8 @@ let private recordWith (analyses: Map<string, TestBaseline.RowAnalysis>) : TestB
       Analyses = analyses
       FullKeys = Map.empty
       KnownInputs = Map.empty
-      FiledAt = DateTimeOffset.MinValue }
+      FiledAt = DateTimeOffset.MinValue
+      CompileModel = Map.empty }
 
 /// File `path`'s analysis as `project`'s check in checkout `root` would have, under
 /// `analyzer`'s key.
@@ -251,7 +252,8 @@ let ``a test-baseline record filed by checkout A resolves in checkout B through 
               EarnsBaseline = true
               RunnableProjects = Set.ofList [ "TA" ]
               SealedTree = Some(fst tree)
-              ReceiptTree = Some tree }
+              ReceiptTree = Some tree
+              CompileModel = Map.empty }
 
         let producer: TestBaseline.Producer =
             { Binary = "fshw-test"

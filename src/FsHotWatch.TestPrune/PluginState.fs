@@ -493,6 +493,11 @@ type TestPruneState =
         /// every flush. NOT persisted: a new process refreshes every extension on its
         /// first flush.
         FailedExtensions: Map<string, string>
+        /// Each project's shape under the model the check results came from, read once per
+        /// project and model generation (`AdditiveModelChange.ObservedShapes`): the compile model a
+        /// test-baseline record files, and the "now" side of the additive-model shadow
+        /// (AUTOMATION-1900). Changes no selection.
+        ObservedShapes: Map<string, AdditiveModelChange.ObservedShape>
         /// The reds no COVERING run has passed since. Rewritten on
         /// every `TestsFinished`: a red leaves ONLY when a run that actually executed
         /// it passes. The shared error ledger is a projection of this list.
@@ -678,6 +683,8 @@ type TestRunInputs =
         EvidenceTree: string option
         /// The entries of `EvidenceTree`, when they are held.
         EvidenceManifest: ReceiptTree option
+        /// Each project's shape under the current model (`TestPruneState.ObservedShapes`).
+        ObservedShapes: Map<string, AdditiveModelChange.ProjectShape>
         /// The witness the standing receipt's run earned with: that `tests.beforeRun` holds for
         /// its tree (AUTOMATION-1835). `None` when no receipt stands; a held checkout baseline
         /// vouches for no `beforeRun` of this session.
@@ -726,5 +733,6 @@ module TestRunInputs =
                     ReceiptInputTree.matches receipt.InputTreeHash (Some manifest.Identity))
             | HeldReceipt.NoneYet
             | HeldReceipt.Revoked _ -> state.CheckoutBaseline |> Option.map (RestartBaseline.baseline >> _.Manifest)
+          ObservedShapes = AdditiveModelChange.ObservedShapes.current state.ObservedShapes
           SealedTree = state.SealedTree |> Option.map _.Identity
           OnCheckoutBaselineOnly = state.LastResults.IsNone && state.CheckoutBaseline.IsSome }

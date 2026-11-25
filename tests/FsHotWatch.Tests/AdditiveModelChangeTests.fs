@@ -12,8 +12,8 @@ open TestPrune.AstAnalyzer
 let private shape (items: string list) : ProjectShape =
     { CompileItems = items
       Defines = [ "DEBUG" ]
-      References = [ "/nuget/fsharp.core.dll" ]
-      Options = [ "--optimize-" ] }
+      References = "refs-1"
+      Options = "opts-1" }
 
 let private uses (target: string) =
     set
@@ -86,7 +86,7 @@ let ``a reference or package change is not narrowable`` () =
     let change =
         withLib
             { shape libAfter with
-                References = [ "/nuget/fsharp.core.dll"; "/nuget/newtonsoft.json.dll" ] }
+                References = "refs-2" }
             additive
 
     test <@ judge change = NotNarrowable(ReferencesChanged "Lib") @>
@@ -96,7 +96,7 @@ let ``any other compiler option change is not narrowable`` () =
     let change =
         withLib
             { shape libAfter with
-                Options = [ "--optimize+" ] }
+                Options = "opts-2" }
             additive
 
     test <@ judge change = NotNarrowable(OptionsChanged "Lib") @>
@@ -208,57 +208,102 @@ let ``every refusal logs one not-narrowable line with a reason token`` () =
 
 // --- Reading a project's shape from its compiler options -----------------------------------
 
+
+let private optionsAt (root: string) (sources: string list) (others: string list) : FSharpProjectOptions =
+    { ProjectFileName = $"%s{root}/src/Lib/Lib.fsproj"
+      ProjectId = None
+      SourceFiles = sources |> List.map (fun s -> $"%s{root}/%s{s}") |> List.toArray
+      OtherOptions = others |> List.toArray
+      ReferencedProjects = [||]
+      IsIncompleteTypeCheckEnvironment = false
+      UseScriptResolutionRules = false
+      LoadTime = System.DateTime.MinValue
+      UnresolvedReferences = None
+      OriginalLoadReferences = []
+      Stamp = None }
+
+let private libOptions (root: string) (others: string list) =
+    optionsAt root [ "src/Lib/B.fs"; "src/Lib/A.fs" ] others
+
+let private baseOthers (root: string) =
+    [ "--define:TRACE"
+      $"-r:%s{root}/src/Core/bin/Core.dll"
+      "--optimize-"
+      "--define:DEBUG"
+      "-r:/nuget/fsharp.core.dll"
+      $"--out:%s{root}/src/Lib/obj/Lib.dll" ]
+
 [<Fact>]
-let ``a project's shape splits its options into compile items, defines, references and the rest, relative to the root``
-    ()
-    =
-    let root = "/repo"
-
-    let options: FSharpProjectOptions =
-        { ProjectFileName = "/repo/src/Lib/Lib.fsproj"
-          ProjectId = None
-          SourceFiles = [| "/repo/src/Lib/B.fs"; "/repo/src/Lib/A.fs" |]
-          OtherOptions =
-            [| "--define:TRACE"
-               "-r:/repo/src/Core/bin/Core.dll"
-               "--optimize-"
-               "--define:DEBUG"
-               "-r:/nuget/fsharp.core.dll"
-               "--out:/repo/src/Lib/obj/Lib.dll" |]
-          ReferencedProjects = [||]
-          IsIncompleteTypeCheckEnvironment = false
-          UseScriptResolutionRules = false
-          LoadTime = System.DateTime.MinValue
-          UnresolvedReferences = None
-          OriginalLoadReferences = []
-          Stamp = None }
-
-    let read = ProjectShape.ofOptions root options
+let ``a project's shape keeps its compile items relative and in order, and its defines sorted`` () =
+    let read = ProjectShape.ofOptions "/repo" (libOptions "/repo" (baseOthers "/repo"))
 
     test <@ read.CompileItems = [ "src/Lib/B.fs"; "src/Lib/A.fs" ] @>
     test <@ read.Defines = [ "DEBUG"; "TRACE" ] @>
-    test <@ read.References.Length = 2 @>
-    test <@ read.References |> List.exists (fun r -> r.Contains "/nuget/fsharp.core.dll") @>
-    test <@ read.References |> List.forall (fun r -> not (r.Contains "/repo/")) @>
-    test <@ read.Options.Length = 2 && read.Options[0] = "--optimize-" @>
-    test <@ read.Options |> List.forall (fun r -> not (r.Contains "/repo/")) @>
+
+[<Fact>]
+let ``a project's references and other options move apart, and neither moves with the defines or the reference order``
+    ()
+    =
+    let read others =
+        ProjectShape.ofOptions "/repo" (libOptions "/repo" others)
+
+    let original = read (baseOthers "/repo")
+    let reordered = read (List.rev (baseOthers "/repo"))
+    let addedReference = read (baseOthers "/repo" @ [ "-r:/nuget/newtonsoft.json.dll" ])
+
+    let changedOption =
+        read (
+            baseOthers "/repo"
+            |> List.map (fun o -> if o = "--optimize-" then "--optimize+" else o)
+        )
+
+    let addedDefine = read (baseOthers "/repo" @ [ "--define:EXTRA" ])
+
+    test <@ reordered.References = original.References @>
+
+    test
+        <@
+            addedReference.References <> original.References
+            && addedReference.Options = original.Options
+        @>
+
+    test
+        <@
+            changedOption.Options <> original.Options
+            && changedOption.References = original.References
+        @>
+
+    test
+        <@
+            addedDefine.Defines <> original.Defines
+            && addedDefine.Options = original.Options
+            && addedDefine.References = original.References
+        @>
 
 [<Fact>]
 let ``two checkouts compiling the same project read the same shape`` () =
-    let at (root: string) : FSharpProjectOptions =
-        { ProjectFileName = $"%s{root}/src/Lib/Lib.fsproj"
-          ProjectId = None
-          SourceFiles = [| $"%s{root}/src/Lib/A.fs" |]
-          OtherOptions = [| $"-r:%s{root}/src/Core/bin/Core.dll"; $"--out:%s{root}/obj/Lib.dll" |]
-          ReferencedProjects = [||]
-          IsIncompleteTypeCheckEnvironment = false
-          UseScriptResolutionRules = false
-          LoadTime = System.DateTime.MinValue
-          UnresolvedReferences = None
-          OriginalLoadReferences = []
-          Stamp = None }
+    test
+        <@
+            ProjectShape.ofOptions "/w/a" (libOptions "/w/a" (baseOthers "/w/a")) = ProjectShape.ofOptions
+                "/w/b"
+                (libOptions "/w/b" (baseOthers "/w/b"))
+        @>
 
-    test <@ ProjectShape.ofOptions "/w/a" (at "/w/a") = ProjectShape.ofOptions "/w/b" (at "/w/b") @>
+[<Fact>]
+let ``a project's shape is read once per model generation, and again under a new one or with no generation`` () =
+    let first = libOptions "/repo" (baseOthers "/repo")
+
+    let grown =
+        optionsAt "/repo" [ "src/Lib/B.fs"; "src/Lib/New.fs"; "src/Lib/A.fs" ] (baseOthers "/repo")
+
+    let seen = ObservedShapes.observe "/repo" (Some 1L) first Map.empty
+    let sameGeneration = ObservedShapes.observe "/repo" (Some 1L) grown seen
+    let nextGeneration = ObservedShapes.observe "/repo" (Some 2L) grown seen
+    let noGeneration = ObservedShapes.observe "/repo" None grown seen
+
+    test <@ (Map.find "Lib" (ObservedShapes.current sameGeneration)).CompileItems.Length = 2 @>
+    test <@ (Map.find "Lib" (ObservedShapes.current nextGeneration)).CompileItems.Length = 3 @>
+    test <@ (Map.find "Lib" (ObservedShapes.current noGeneration)).CompileItems.Length = 3 @>
 
 [<Fact>]
 let ``a file's symbol uses are its dependency edges, without their source stamp`` () =
@@ -283,3 +328,7 @@ let ``a file's symbol uses are its dependency edges, without their source stamp`
                     To = "M.g"
                     Kind = Calls } ]
         @>
+
+[<Fact>]
+let ``only a narrowable verdict is narrowable`` () =
+    test <@ not (Verdict.isNarrowable (NotNarrowable NoCompileItemsAdded)) @>

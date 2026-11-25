@@ -124,7 +124,8 @@ let private facts: TestBaseline.Facts =
       EarnsBaseline = true
       RunnableProjects = projects
       SealedTree = Some(fst tree)
-      ReceiptTree = Some tree }
+      ReceiptTree = Some tree
+      CompileModel = Map.empty }
 
 [<Fact>]
 let ``an all-pass full run over a sealed tree files one baseline and names it in the index`` () =
