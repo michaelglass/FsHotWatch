@@ -43,6 +43,7 @@
     <Compile Include="TestBaseline.fs" />
     <Compile Include="RestartBaselines.fs" />
     <Compile Include="BaselineRebuild.fs" />
+    <Compile Include="AdditiveModelChange.fs" />
     <Compile Include="IndexSeal.fs" />
     <Compile Include="PendingVerification.fs" />
     <Compile Include="FullSuiteBaseline.fs" />

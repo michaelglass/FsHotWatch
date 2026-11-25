@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: AUTOMATION-1900 steps 1-2. `AdditiveModelChange.judge` decides, purely, whether a project-model change may
+  narrow "no whole-project run under the current project model": only when it ADDS compile items and nothing else (no
+  project added or removed, no item removed or reordered, no define, reference or other option change) and every
+  pre-existing file of each changed project and its dependents resolves the same symbols (`SymbolUses`) as at the
+  baseline tree, or is in the diff. Otherwise it names the first reason. Real-compiler fixtures show an inserted file
+  rebinding an unchanged later file changes that file's symbol uses for each mechanism: a module shadowing a name
+  through an already-opened namespace, a new `[<AutoOpen>]` module, a C#-style extension method, an F# type
+  extension, and an extension overload winning overload resolution. An extension of an SRTP-constrained member does
+  not rebind the call (extensions do not satisfy member constraints), and a non-colliding insert leaves every
+  pre-existing file's uses identical. Nothing acts on the verdict yet.
+
 ## 0.13.0-alpha.125 - 2026-11-25
 
 - feat: AUTOMATION-1793 step 2b conditions. A box baseline vouches for a project only while every entry its K_P's

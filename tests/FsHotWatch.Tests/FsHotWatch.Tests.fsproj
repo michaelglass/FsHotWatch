@@ -201,6 +201,8 @@
     <Compile Include="TestBaselineTests.fs" />
     <Compile Include="BaselineRebuildTests.fs" />
     <Compile Include="BoxBaselineTests.fs" />
+    <Compile Include="AdditiveModelChangeTests.fs" />
+    <Compile Include="AdditiveRebindingFixtureTests.fs" />
     <Compile Include="TestBaselineRunTests.fs" />
     <Compile Include="TestOutcomeRecordsTests.fs" />
     <Compile Include="TestEvidenceReuseRefusalTests.fs" />
