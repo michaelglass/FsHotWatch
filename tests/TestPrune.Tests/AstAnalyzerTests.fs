@@ -3147,6 +3147,11 @@ module TestModule
 open System
 
 [<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type DependsOnGlobAttribute(pattern: string) =
+    inherit Attribute()
+    member _.Pattern = pattern
+
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
 type ReadsFromAttribute(table: string, column: string) =
     inherit Attribute()
     member _.Table = table
@@ -3488,6 +3493,20 @@ let quote () = ()
 [<DependsOnFile("data/a,b.json")>]
 let comma () = ()
 
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type DependsOnGlobAttribute(pattern: string) =
+    inherit Attribute()
+    member _.Pattern = pattern
+
+[<DependsOnGlob("data\\gl*.json")>]
+let globBackslash () = ()
+
+[<DependsOnGlob("data/quo\"te*.json")>]
+let globQuote () = ()
+
+[<DependsOnGlob("data/a,b*.json")>]
+let globComma () = ()
+
 [<ReadsFrom("schema,table", "col\"umn\\x")>]
 let reader () = ()
 """
@@ -3521,6 +3540,31 @@ let reader () = ()
     let ``a DependsOnFile path with a comma seeds its tests`` () =
         let result = analyze source
         test <@ selectsTestA result "comma" "data/a,b.json" @>
+
+    // AUTOMATION-1452 QA (2026-11): the same three shapes for DependsOnGlob, which reads its
+    // pattern through the same stored arguments but compiles it as a glob.
+    [<Fact>]
+    let ``a DependsOnGlob pattern with a backslash seeds its tests`` () =
+        let result = analyze source
+        test <@ selectsTestA result "globBackslash" "data/glob1.json" @>
+
+    [<Fact>]
+    let ``a DependsOnGlob pattern with a quote seeds its tests`` () =
+        let result = analyze source
+        test <@ selectsTestA result "globQuote" "data/quo\"te1.json" @>
+
+    [<Fact>]
+    let ``a DependsOnGlob pattern with a comma seeds its tests`` () =
+        let result = analyze source
+        test <@ selectsTestA result "globComma" "data/a,b1.json" @>
+
+    [<Fact>]
+    let ``a DependsOnGlob pattern selects only the files it matches`` () =
+        let result = analyze source
+        // Controls: the glob still discriminates, so the three facts above are not vacuous.
+        test <@ not (selectsTestA result "globComma" "data/a.json") @>
+        test <@ not (selectsTestA result "globQuote" "data/quote1.json") @>
+        test <@ not (selectsTestA result "globBackslash" "other/glob1.json") @>
 
     [<Fact>]
     let ``SQL attribute arguments with a comma, a quote and a backslash read back whole`` () =
